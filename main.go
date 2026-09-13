@@ -169,7 +169,10 @@ func main() {
 		if response != nil && response.StatusCode() != http.StatusOK {
 			logger.Error("error when trying to register one or more event types - some event type will not be discoverable", zap.String("status", response.Status()), zap.String("body", string(response.Body)))
 		}
-		if response.StatusCode() == http.StatusOK {
+		// nil when the bus could not be reached at all -- which is what a service
+		// starting a second before the bus sees, and what used to be a nil pointer
+		// panic on the first start of every fresh install
+		if response != nil && response.StatusCode() == http.StatusOK {
 			break
 		}
 		time.Sleep(time.Second)
