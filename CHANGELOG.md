@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.53] - 2026-09-13
+
+### Fixed
+
+- **A token stays valid while user-service restarts** (Common v0.4.25). The signing key was asked of user-service every ten seconds and every token failed the moment it did not answer, restarting or held still for a backup of the box. The key last seen serves until it answers again.
+- **Built without UPX.** On the amd64 leg of the v0.4.83 install check a first start exited 127, the UPX stub's own code, once in a run of five services starting at once; the same binary ran by hand. The binaries are static and stripped already.
+
 ## [0.4.52] - 2026-09-13
 
 ### Fixed

@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/Curtis-Milo/nat-type-identifier-go v0.0.0-20220215191915-18d42168c63d
-	github.com/ReCasaOS/CasaOS-Common v0.4.24
+	github.com/ReCasaOS/CasaOS-Common v0.4.25
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/deckarep/golang-set/v2 v2.3.0
 	github.com/deepmap/oapi-codegen v1.12.4
@@ -23,6 +23,7 @@ require (
 	github.com/h2non/filetype v1.1.3
 	github.com/hirochachacha/go-smb2 v1.1.0
 	github.com/json-iterator/go v1.1.12
+	github.com/labstack/echo-jwt/v4 v4.4.0
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/maruel/natural v1.1.0
 	github.com/mholt/archiver/v3 v3.5.1
@@ -81,7 +82,6 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
 	github.com/klauspost/pgzip v1.2.5 // indirect
-	github.com/labstack/echo-jwt/v4 v4.4.0 // indirect
 	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20230110061619-bbe2e5e100de // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect

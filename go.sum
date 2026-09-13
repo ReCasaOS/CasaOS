@@ -1,8 +1,8 @@
 github.com/Curtis-Milo/nat-type-identifier-go v0.0.0-20220215191915-18d42168c63d h1:62lEBImTxZ83pgzywgDNIrPPuQ+j4ep9QjqrWBn1hrU=
 github.com/Curtis-Milo/nat-type-identifier-go v0.0.0-20220215191915-18d42168c63d/go.mod h1:lW9x+yEjqKdPbE3+cf2fGPJXCw/hChX3Omi9QHTLFsQ=
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/ReCasaOS/CasaOS-Common v0.4.24 h1:aqFvb7ztHAE65YrmhjV0kMgyNEDepR/GRSk0LquBcIk=
-github.com/ReCasaOS/CasaOS-Common v0.4.24/go.mod h1:tOdXqfe3OdC5DRJ+9vPkDeeadEN9TPSWjrJdtTeQ5hw=
+github.com/ReCasaOS/CasaOS-Common v0.4.25 h1:QWN8jXUyo8kwK5jbPVVBSYPQCxgcLWnXExiuVn7Dl6I=
+github.com/ReCasaOS/CasaOS-Common v0.4.25/go.mod h1:tOdXqfe3OdC5DRJ+9vPkDeeadEN9TPSWjrJdtTeQ5hw=
 github.com/andybalholm/brotli v1.0.1/go.mod h1:loMXtMfwqflxFJPmdbJO0a3KNoPuLBgiu3qAvBg8x/Y=
 github.com/andybalholm/brotli v1.0.5 h1:8uQZIdzKmjc/iuPu7O2ioW48L81FgatrcpfFmiq/cCs=
 github.com/andybalholm/brotli v1.0.5/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
