@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.52] - 2026-09-13
+
+### Fixed
+
+- **Loopback is not an identity.** Any request from 127.0.0.1 skipped the token. Loopback is not this box's services alone: a container on the host network, or any local account, reaches the same addresses. A request skips the token only when it is one of this box's services, which come from loopback with the secret the gateway writes for this boot (`/var/run/casaos/internal.secret`, readable by root only); the dashboard always had a token. The hand-kept list of root-privileged routes that already refused loopback is gone with the exemption itself: every route here acts as root, the file manager on any path. `casaos-cli`, which relied on the exemption, needs a token now.
+- **`/v1/sys/debug` is behind the token.** The bug-report template (OS, version, disks, the configuration) sat outside the group, readable by anyone on the network.
+
+### Changed
+
+- echo 4.15 with echo-jwt, x/crypto 0.57, x/net 0.59, Go 1.26 (1.21 has been out of support since 2024).
+
 ## [0.4.50] - 2026-09-10
 
 ### Changed

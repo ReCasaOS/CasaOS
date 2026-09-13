@@ -11,41 +11,21 @@ import (
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	v1 "github.com/ReCasaOS/CasaOS/route/v1"
+	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
 )
 
-// rootPrivilegedRoutePrefixes covers the routes that act on the host as root:
-// installing operating system packages, creating or removing the system
-// accounts that protect Samba shares, and the file manager.
-var rootPrivilegedRoutePrefixes = []string{
-	"/v1/sys/packages",
-	// The whole samba family, not just account management: creating a share
-	// changes ownership and permissions of a caller-supplied directory as root.
-	"/v1/samba",
-	// The file manager reads, writes and deletes caller-supplied absolute paths as root.
-	"/v1/file",
-	"/v1/folder",
-	"/v1/batch",
-	"/v1/image",
-}
-
-// skipJWT reports whether the JWT check can be skipped for a request.
-//
-// Loopback requests are trusted for most of the API, but never for the
-// routes that act as root on the host: those run apt, useradd and smbpasswd, and
-// any local process can reach the gateway from 127.0.0.1 - including a container
-// CasaOS itself started on the host network. The only client of these routes is
-// the web UI, which always sends an Authorization header, so requiring a token
-// here costs nothing.
-func skipJWT(path, realIP string) bool {
-	for _, prefix := range rootPrivilegedRoutePrefixes {
-		if strings.HasPrefix(path, prefix) {
-			return false
-		}
-	}
-
-	return isLoopback(realIP)
+// skipJWT reports whether the JWT check can be skipped for a request: only
+// for one of this box's own services, which come from loopback with the secret
+// the gateway wrote for this boot. Loopback alone used to be enough for most of
+// the API, with a list of root-privileged routes excluded by hand; but any
+// local process reaches 127.0.0.1 -- a container CasaOS itself started on the
+// host network, any local account -- and every route here acts as root, the
+// file manager on any path. The dashboard always sends a token; the services
+// send the secret through CasaOS-Common's clients; nothing else is expected.
+func skipJWT(realIP, authorization string) bool {
+	return external.IsInternalRequest(realIP, authorization, config.CommonInfo.RuntimePath)
 }
 
 // internalNotifyPrefix is where CasaOS-LocalStorage POSTs sys_disk/sys_usb
@@ -84,8 +64,6 @@ func InitV1Router() http.Handler {
 		},
 	}))
 
-	e.GET("/v1/sys/debug", v1.GetSystemConfigDebug) // //debug
-
 	e.GET("/v1/sys/version/check", v1.GetSystemCheckVersion)
 	e.GET("/v1/sys/version/current", func(ctx echo.Context) error {
 		return ctx.String(200, common.VERSION)
@@ -96,11 +74,11 @@ func InitV1Router() http.Handler {
 	e.GET("/v1/recover/:type", v1.GetRecoverStorage)
 	v1Group := e.Group("/v1")
 	//	e.Any("/v1/test", v1.CheckNetwork)
-	v1Group.Use(echo_middleware.JWTWithConfig(echo_middleware.JWTConfig{
+	v1Group.Use(echojwt.WithConfig(echojwt.Config{
 		Skipper: func(c echo.Context) bool {
-			return skipJWT(c.Path(), c.RealIP())
+			return skipJWT(c.RealIP(), c.Request().Header.Get(echo.HeaderAuthorization))
 		},
-		ParseTokenFunc: func(token string, c echo.Context) (interface{}, error) {
+		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
 			valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(config.CommonInfo.RuntimePath) })
 			if err != nil || !valid {
 				return nil, echo.ErrUnauthorized
@@ -124,6 +102,9 @@ func InitV1Router() http.Handler {
 		v1SysGroup := v1Group.Group("/sys")
 		v1SysGroup.Use()
 		{
+			// The bug-report template: OS, version, disks, the configuration.
+			// It sat outside the group, readable by anyone on the network.
+			v1SysGroup.GET("/debug", v1.GetSystemConfigDebug)
 			v1SysGroup.GET("/version", v1.GetSystemCheckVersion) // version/check
 
 			v1SysGroup.POST("/update", v1.SystemUpdate)
