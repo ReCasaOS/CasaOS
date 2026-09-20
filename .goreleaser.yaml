@@ -16,6 +16,7 @@ builds:
     ldflags:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
+      - -X github.com/ReCasaOS/CasaOS/common.VERSION={{.Version}}
       - -X github.com/ReCasaOS/CasaOS/drivers/google_drive.client_id={{.Env.GoogleID}}
       - -X github.com/ReCasaOS/CasaOS/drivers/google_drive.client_secret={{.Env.GoogleSecret}}
       - -X github.com/ReCasaOS/CasaOS/drivers/onedrive.client_id={{.Env.OneDriveID}}
@@ -40,6 +41,7 @@ builds:
     ldflags:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
+      - -X github.com/ReCasaOS/CasaOS/common.VERSION={{.Version}}
       - -X github.com/ReCasaOS/CasaOS/drivers/google_drive.client_id={{.Env.GoogleID}}
       - -X github.com/ReCasaOS/CasaOS/drivers/google_drive.client_secret={{.Env.GoogleSecret}}
       - -X github.com/ReCasaOS/CasaOS/drivers/onedrive.client_id={{.Env.OneDriveID}}
@@ -64,6 +66,7 @@ builds:
     ldflags:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
+      - -X github.com/ReCasaOS/CasaOS/common.VERSION={{.Version}}
       - -X github.com/ReCasaOS/CasaOS/drivers/google_drive.client_id={{.Env.GoogleID}}
       - -X github.com/ReCasaOS/CasaOS/drivers/google_drive.client_secret={{.Env.GoogleSecret}}
       - -X github.com/ReCasaOS/CasaOS/drivers/onedrive.client_id={{.Env.OneDriveID}}
@@ -90,6 +93,7 @@ builds:
     ldflags:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
+      - -X github.com/ReCasaOS/CasaOS/common.VERSION={{.Version}}
       - -X github.com/ReCasaOS/CasaOS/drivers/google_drive.client_id={{.Env.GoogleID}}
       - -X github.com/ReCasaOS/CasaOS/drivers/google_drive.client_secret={{.Env.GoogleSecret}}
       - -X github.com/ReCasaOS/CasaOS/drivers/onedrive.client_id={{.Env.OneDriveID}}
@@ -115,6 +119,7 @@ builds:
     ldflags:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
+      - -X github.com/ReCasaOS/CasaOS/common.VERSION={{.Version}}
       - -s
       - -w
       - -extldflags "-static"
@@ -134,6 +139,7 @@ builds:
     ldflags:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
+      - -X github.com/ReCasaOS/CasaOS/common.VERSION={{.Version}}
       - -s
       - -w
       - -extldflags "-static"
@@ -153,6 +159,7 @@ builds:
     ldflags:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
+      - -X github.com/ReCasaOS/CasaOS/common.VERSION={{.Version}}
       - -s
       - -w
       - -extldflags "-static"
@@ -174,6 +181,7 @@ builds:
     ldflags:
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
+      - -X github.com/ReCasaOS/CasaOS/common.VERSION={{.Version}}
       - -s
       - -w
       - -extldflags "-static"
