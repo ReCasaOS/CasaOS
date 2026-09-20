@@ -16,7 +16,6 @@ package route
 import (
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/service"
@@ -29,7 +28,7 @@ func SendAllHardwareStatusBySocket() {
 	for _, n := range netList {
 		for _, netCardName := range nets {
 			if n.Name == netCardName {
-				item := *(*model.IOCountersStat)(unsafe.Pointer(&n))
+				item := model.IOCountersFrom(n)
 				item.State = strings.TrimSpace(service.MyService.System().GetNetState(n.Name))
 				item.Time = time.Now().Unix()
 				newNet = append(newNet, item)

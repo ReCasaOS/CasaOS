@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 
 	http2 "github.com/ReCasaOS/CasaOS-Common/utils/http"
 	"github.com/ReCasaOS/CasaOS-Common/utils/port"
@@ -309,7 +308,7 @@ func GetSystemUtilization(ctx echo.Context) error {
 	for _, n := range netList {
 		for _, netCardName := range nets {
 			if n.Name == netCardName {
-				item := *(*model.IOCountersStat)(unsafe.Pointer(&n))
+				item := model.IOCountersFrom(n)
 				item.State = strings.TrimSpace(service.MyService.System().GetNetState(n.Name))
 				item.Time = time.Now().Unix()
 				newNet = append(newNet, item)
@@ -380,7 +379,7 @@ func GetSystemNetInfo(ctx echo.Context) error {
 	for _, n := range netList {
 		for _, netCardName := range service.MyService.System().GetNet(true) {
 			if n.Name == netCardName {
-				item := *(*model.IOCountersStat)(unsafe.Pointer(&n))
+				item := model.IOCountersFrom(n)
 				item.State = strings.TrimSpace(service.MyService.System().GetNetState(n.Name))
 				item.Time = time.Now().Unix()
 				newNet = append(newNet, item)
