@@ -115,18 +115,19 @@ func InitV2Router() http.Handler {
 	// })
 
 	e.Use(middleware.OapiRequestValidatorWithOptions(_swagger, &middleware.Options{
-		Skipper: func(c echo.Context) bool {
-			// jump validate when upload file
-			// because file upload can't pass validate
-			// issue: https://github.com/deepmap/oapi-codegen/issues/514
-			return strings.Contains(c.Request().Header[echo.HeaderContentType][0], "multipart/form-data")
-		},
+		Skipper: skipRequestValidation,
 		Options: openapi3filter.Options{AuthenticationFunc: openapi3filter.NoopAuthenticationFunc},
 	}))
 
 	codegen.RegisterHandlersWithBaseURL(e, appManagement, V2APIPath)
 
 	return e
+}
+
+// skipRequestValidation exempts file uploads, which cannot pass validation
+// (https://github.com/deepmap/oapi-codegen/issues/514).
+func skipRequestValidation(c echo.Context) bool {
+	return strings.Contains(c.Request().Header.Get(echo.HeaderContentType), "multipart/form-data")
 }
 
 func InitV2DocRouter(docHTML string, docYAML string) http.Handler {
