@@ -2,20 +2,16 @@ package route
 
 import (
 	"crypto/ecdsa"
-	"log"
 	"net/http"
 	"net/url"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/ReCasaOS/CasaOS/codegen"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
-	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
-	cfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS-Common/utils/jwt"
 	v2Route "github.com/ReCasaOS/CasaOS/route/v2"
 	"github.com/deepmap/oapi-codegen/pkg/middleware"
@@ -170,80 +166,5 @@ func InitFile() http.Handler {
 		w.Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
 		http.ServeFile(w, r, filePath)
 		// http.ServeFile(w, r, filePath)
-	})
-}
-
-func InitDir() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := r.URL.Query().Get("token")
-		if len(token) == 0 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"message": "token not found"}`))
-			return
-		}
-
-		valid, _, errs := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(config.CommonInfo.RuntimePath) })
-		if errs != nil || !valid {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"message": "validation failure"}`))
-			return
-		}
-		t := r.URL.Query().Get("format")
-		files := r.URL.Query().Get("files")
-
-		if len(files) == 0 {
-			// w.JSON(common_err.CLIENT_ERROR, model.Result{
-			// 	Success: common_err.INVALID_PARAMS,
-			// 	Message: common_err.GetMsg(common_err.INVALID_PARAMS),
-			// })
-			return
-		}
-		list := strings.Split(files, ",")
-		for _, v := range list {
-			if !file.Exists(v) {
-				// return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
-				// 	Success: common_err.FILE_DOES_NOT_EXIST,
-				// 	Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
-				// })
-				return
-			}
-		}
-		// handles only single files not folders and multiple files
-		//		if len(list) == 1 {
-
-		// filePath := list[0]
-		//			info, err := os.Stat(filePath)
-		//			if err != nil {
-
-		// w.JSON(http.StatusOK, model.Result{
-		// 	Success: common_err.FILE_DOES_NOT_EXIST,
-		// 	Message: common_err.GetMsg(common_err.FILE_DOES_NOT_EXIST),
-		// })
-		//return
-		//			}
-		//}
-
-		extension, format, err := cfile.GetCompressionAlgorithm(t)
-		if err != nil {
-			// w.JSON(common_err.CLIENT_ERROR, model.Result{
-			// 	Success: common_err.INVALID_PARAMS,
-			// 	Message: common_err.GetMsg(common_err.INVALID_PARAMS),
-			// })
-			return
-		}
-		commonDir := file.CommonPrefix(filepath.Separator, list...)
-
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape("_"+filepath.Base(commonDir)+extension))
-		w.Header().Set("Cache-Control", "no-cache")
-		// The request context ends when the client goes away, which stops the walk and the copy.
-		if err := cfile.WriteArchive(r.Context(), w, format, commonDir, list); err != nil {
-			log.Printf("Failed to archive %v: %v", list, err)
-			// Abort the connection so the browser reports a failed download
-			// instead of saving a truncated file.
-			panic(http.ErrAbortHandler)
-		}
 	})
 }
