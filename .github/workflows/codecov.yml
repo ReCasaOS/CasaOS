@@ -19,7 +19,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version-file: go.mod
+          go-version: '1.26'
+          check-latest: true
       - name: generate OPENAPI
         run: go generate
       - name: Run coverage
