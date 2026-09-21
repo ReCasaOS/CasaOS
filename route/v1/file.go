@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	cfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/gorilla/websocket"
@@ -162,9 +163,6 @@ func GetDownloadFile(ctx echo.Context) error {
 			})
 		}
 	}
-	ctx.Request().Header.Add("Content-Type", "application/octet-stream")
-	ctx.Request().Header.Add("Content-Transfer-Encoding", "binary")
-	ctx.Request().Header.Add("Cache-Control", "no-cache")
 	// handles only single files not folders and multiple files
 	if len(list) == 1 {
 
@@ -177,49 +175,45 @@ func GetDownloadFile(ctx echo.Context) error {
 			})
 		}
 		if !info.IsDir() {
-
-			// 打开文件
-			fileTmp, _ := os.Open(filePath)
-			defer fileTmp.Close()
-
-			// 获取文件的名称
-			fileName := path.Base(filePath)
-			ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url2.PathEscape(fileName))
-			ctx.File(filePath)
+			ctx.Response().Header().Set(echo.HeaderContentDisposition, "attachment; filename*=utf-8''"+url2.PathEscape(path.Base(filePath)))
+			return ctx.File(filePath)
 		}
 	}
 
-	extension, ar, err := file.GetCompressionAlgorithm(t)
+	extension, format, err := cfile.GetCompressionAlgorithm(t)
 	if err != nil {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{
 			Success: common_err.INVALID_PARAMS,
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	commonDir := file.CommonPrefix(filepath.Separator, list...)
 
-	err = ar.Create(ctx.Response().Writer)
-	if err != nil {
+	h := ctx.Response().Header()
+	h.Set(echo.HeaderContentType, "application/octet-stream")
+	h.Set(echo.HeaderContentDisposition, "attachment; filename*=utf-8''"+url.PathEscape("_"+filepath.Base(commonDir)+extension))
+	h.Set("Cache-Control", "no-cache")
+
+	// The request context ends when the client goes away, which stops the walk and the copy.
+	err = cfile.WriteArchive(ctx.Request().Context(), ctx.Response(), format, commonDir, list)
+	if err == nil {
+		return nil
+	}
+	if !ctx.Response().Committed {
+		// Nothing sent yet: answer with a JSON error, not a file to save.
+		h.Del(echo.HeaderContentType)
+		h.Del(echo.HeaderContentDisposition)
+		h.Del("Cache-Control")
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
 			Success: common_err.SERVICE_ERROR,
 			Message: common_err.GetMsg(common_err.SERVICE_ERROR),
 			Data:    err.Error(),
 		})
 	}
-	defer ar.Close()
-	commonDir := file.CommonPrefix(filepath.Separator, list...)
-
-	currentPath := filepath.Base(commonDir)
-
-	name := "_" + currentPath
-	name += extension
-	ctx.Request().Header.Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
-	for _, fname := range list {
-		err = file.AddFile(ar, fname, commonDir)
-		if err != nil {
-			log.Printf("Failed to archive %s: %v", fname, err)
-		}
-	}
-	return nil
+	log.Printf("Failed to archive %v: %v", list, err)
+	// Part of the archive is out: abort the connection so the browser reports a
+	// failed download instead of saving a truncated file.
+	panic(http.ErrAbortHandler)
 }
 
 func GetDownloadSingleFile(ctx echo.Context) error {

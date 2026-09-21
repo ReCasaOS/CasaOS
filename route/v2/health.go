@@ -3,14 +3,12 @@ package v2
 import (
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 
+	cfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS/codegen"
-	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/labstack/echo/v4"
-	"github.com/mholt/archiver/v3"
 )
 
 func (s *CasaOS) GetHealthServices(ctx echo.Context) error {
@@ -47,54 +45,35 @@ func (s *CasaOS) GetHealthPorts(ctx echo.Context) error {
 	})
 }
 func (c *CasaOS) GetHealthlogs(ctx echo.Context) error {
-	var name, currentPath, commonDir, extension string
-	var err error
-	var ar archiver.Writer
-	fileList, err := os.ReadDir("/var/log/casaos")
+	const logDir = "/var/log/casaos"
+	extension, format, err := cfile.GetCompressionAlgorithm("zip")
 	if err != nil {
 		message := err.Error()
 		return ctx.JSON(http.StatusInternalServerError, codegen.ResponseInternalServerError{
 			Message: &message,
 		})
 	}
-	extension, ar, err = file.GetCompressionAlgorithm("zip")
-	if err != nil {
-		ctx.Response().Header().Set("Content-Type", "application/json")
+
+	h := ctx.Response().Header()
+	h.Set(echo.HeaderContentType, "application/octet-stream")
+	h.Set(echo.HeaderContentDisposition, "attachment; filename*=utf-8''"+url.PathEscape(filepath.Base(logDir)+extension))
+	h.Set("Cache-Control", "no-cache")
+
+	err = cfile.WriteArchive(ctx.Request().Context(), ctx.Response(), format, logDir, []string{logDir})
+	if err == nil {
+		return nil
+	}
+	if !ctx.Response().Committed {
+		// Nothing sent yet: answer with a JSON error, not a file to save.
+		h.Del(echo.HeaderContentType)
+		h.Del(echo.HeaderContentDisposition)
+		h.Del("Cache-Control")
 		message := err.Error()
-		return ctx.JSON(http.StatusNotFound, codegen.ResponseInternalServerError{
+		return ctx.JSON(http.StatusInternalServerError, codegen.ResponseInternalServerError{
 			Message: &message,
 		})
 	}
-	err = ar.Create(ctx.Response().Writer)
-	if err != nil {
-		ctx.Response().Header().Set("Content-Type", "application/json")
-		message := err.Error()
-		return ctx.JSON(http.StatusNotFound, codegen.ResponseInternalServerError{
-			Message: &message,
-		})
-	}
-	defer ar.Close()
-
-	commonDir = "/var/log/casaos"
-
-	currentPath = filepath.Base(commonDir)
-
-	name = currentPath
-	name += extension
-	ctx.Response().Header().Add("Content-Type", "application/octet-stream")
-	ctx.Response().Header().Add("Content-Transfer-Encoding", "binary")
-	ctx.Response().Header().Add("Cache-Control", "no-cache")
-	ctx.Response().Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
-
-	for _, fname := range fileList {
-		err := file.AddFile(ar, filepath.Join("/var/log/casaos", fname.Name()), commonDir)
-		if err != nil {
-			message := err.Error()
-			return ctx.JSON(http.StatusInternalServerError, codegen.ResponseInternalServerError{
-				Message: &message,
-			})
-		}
-
-	}
-	return nil
+	// Part of the archive is out: abort the connection so the browser reports a
+	// failed download instead of saving a truncated file.
+	panic(http.ErrAbortHandler)
 }

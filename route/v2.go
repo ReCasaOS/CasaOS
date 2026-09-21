@@ -15,6 +15,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
+	cfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS-Common/utils/jwt"
 	v2Route "github.com/ReCasaOS/CasaOS/route/v2"
 	"github.com/deepmap/oapi-codegen/pkg/middleware"
@@ -209,9 +210,6 @@ func InitDir() http.Handler {
 				return
 			}
 		}
-		w.Header().Add("Content-Type", "application/octet-stream")
-		w.Header().Add("Content-Transfer-Encoding", "binary")
-		w.Header().Add("Cache-Control", "no-cache")
 		// handles only single files not folders and multiple files
 		//		if len(list) == 1 {
 
@@ -227,7 +225,7 @@ func InitDir() http.Handler {
 		//			}
 		//}
 
-		extension, ar, err := file.GetCompressionAlgorithm(t)
+		extension, format, err := cfile.GetCompressionAlgorithm(t)
 		if err != nil {
 			// w.JSON(common_err.CLIENT_ERROR, model.Result{
 			// 	Success: common_err.INVALID_PARAMS,
@@ -235,29 +233,17 @@ func InitDir() http.Handler {
 			// })
 			return
 		}
-
-		err = ar.Create(w)
-		if err != nil {
-			//  return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
-			// 	Success: common_err.SERVICE_ERROR,
-			// 	Message: common_err.GetMsg(common_err.SERVICE_ERROR),
-			// 	Data:    err.Error(),
-			// })
-			return
-		}
-		defer ar.Close()
 		commonDir := file.CommonPrefix(filepath.Separator, list...)
 
-		currentPath := filepath.Base(commonDir)
-
-		name := "_" + currentPath
-		name += extension
-		w.Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(name))
-		for _, fname := range list {
-			err = file.AddFile(ar, fname, commonDir)
-			if err != nil {
-				log.Printf("Failed to archive %s: %v", fname, err)
-			}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape("_"+filepath.Base(commonDir)+extension))
+		w.Header().Set("Cache-Control", "no-cache")
+		// The request context ends when the client goes away, which stops the walk and the copy.
+		if err := cfile.WriteArchive(r.Context(), w, format, commonDir, list); err != nil {
+			log.Printf("Failed to archive %v: %v", list, err)
+			// Abort the connection so the browser reports a failed download
+			// instead of saving a truncated file.
+			panic(http.ErrAbortHandler)
 		}
 	})
 }
