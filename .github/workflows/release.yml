@@ -58,7 +58,7 @@ jobs:
                 -buildvcs=false \
                 -trimpath \
                 -tags "musl netgo osusergo" \
-                -ldflags "-s -w -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                -ldflags "-s -w -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X github.com/ReCasaOS/CasaOS/common.VERSION=${RELEASE_TAG#v}" \
                 -o "$stage_dir/build/sysroot/usr/bin/casaos" \
                 .
 

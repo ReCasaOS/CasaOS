@@ -7,56 +7,31 @@ import (
 	"testing"
 )
 
-// What a box answers about its version comes from the release build, so the constant
-// in this file cannot be what keeps it right. This is what keeps it right: every
-// binary the release builds carries the stamp -- including the one somebody adds for
-// a new architecture next year, which is the case that went wrong the first time.
-func TestEveryReleaseBuildStampsTheVersion(t *testing.T) {
-	stamp := "-X github.com/ReCasaOS/CasaOS/common.VERSION={{.Version}}"
-
-	config, err := os.ReadFile(filepath.Join("..", ".goreleaser.yaml"))
+// What a box answers about its version comes from the release build, not from the
+// default in constants.go. The first attempt stamped it in .goreleaser.yaml, which no
+// release uses, and nothing noticed. This reads the build the release workflow really
+// runs: every go build there must carry the stamp.
+func TestTheReleaseBuildStampsTheVersion(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", ".github", "workflows", "release.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	stamped := map[string]bool{}
-	id := ""
-	inBuilds := false
-
-	for _, line := range strings.Split(string(config), "\n") {
-		line = strings.TrimRight(line, "\r")
-
-		switch {
-		case line == "builds:":
-			inBuilds = true
-
-			continue
-		case inBuilds && len(line) > 0 && !strings.HasPrefix(line, " "):
-			// the next top-level key ends the builds
-			inBuilds = false
-		}
-
-		if !inBuilds {
+	builds, stamped := 0, 0
+	for _, line := range strings.Split(string(workflow), "\n") {
+		if !strings.Contains(line, "-ldflags") {
 			continue
 		}
-
-		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "- id: ") {
-			id = strings.TrimPrefix(trimmed, "- id: ")
-			stamped[id] = false
-		}
-
-		if id != "" && strings.Contains(line, stamp) {
-			stamped[id] = true
+		builds++
+		if strings.Contains(line, "-X github.com/ReCasaOS/CasaOS/common.VERSION=${RELEASE_TAG#v}") {
+			stamped++
 		}
 	}
 
-	if len(stamped) == 0 {
-		t.Fatal("no build found in .goreleaser.yaml -- has the file moved?")
+	if builds == 0 {
+		t.Fatal("no -ldflags in release.yml: has the build moved?")
 	}
-
-	for id, ok := range stamped {
-		if !ok {
-			t.Errorf("the build %s does not stamp the version, so its binary would answer %q for ever", id, VERSION)
-		}
+	if stamped != builds {
+		t.Errorf("%d of %d release builds stamp the version; the others would answer %q", stamped, builds, VERSION)
 	}
 }
