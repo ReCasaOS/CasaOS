@@ -138,6 +138,10 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/proxy", v1.GetSystemProxy)
 			v1SysGroup.PUT("/state/:state", v1.PutSystemState)
 			v1SysGroup.GET("/entry", v1.GetSystemEntry)
+			// Anonymous statistics: their state, the heartbeat as it would be
+			// sent, and the switch (dashboard notice and settings).
+			v1SysGroup.GET("/telemetry", v1.GetTelemetry)
+			v1SysGroup.PUT("/telemetry", v1.PutTelemetry)
 		}
 		v1PortGroup := v1Group.Group("/port")
 		v1PortGroup.Use()

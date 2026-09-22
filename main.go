@@ -23,6 +23,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/cache"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
+	"github.com/ReCasaOS/CasaOS/pkg/telemetry"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/ReCasaOS/CasaOS/route"
 	"github.com/ReCasaOS/CasaOS/service"
@@ -103,6 +104,15 @@ func init() {
 func main() {
 	if *versionFlag {
 		return
+	}
+
+	// The installer's --no-telemetry leaves a marker: fold it into
+	// telemetry.json before the API serves and before the first check. If it
+	// cannot be folded, the checks do not start: an opt-out is never lost.
+	if err := telemetry.Default.ApplyOffMarker(); err != nil {
+		logger.Error("anonymous statistics stay off: cannot apply the telemetry-off marker", zap.Error(err))
+	} else {
+		go telemetry.Default.Run(context.Background())
 	}
 	v1Router := route.InitV1Router()
 

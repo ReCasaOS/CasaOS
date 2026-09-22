@@ -1,6 +1,8 @@
 package route
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/labstack/echo/v4"
 )
 
 func TestSkipJWT(t *testing.T) {
@@ -77,5 +80,26 @@ func TestSkipAccessLog(t *testing.T) {
 				t.Fatalf("skipAccessLog(%q, %q) = %v, want %v", tc.path, tc.realIP, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestTheTelemetryRoutesAreSysRoutesBehindTheToken(t *testing.T) {
+	e, ok := InitV1Router().(*echo.Echo)
+	if !ok {
+		t.Fatal("InitV1Router() is not an *echo.Echo")
+	}
+	registered := map[string]bool{}
+	for _, r := range e.Routes() {
+		registered[r.Method+" "+r.Path] = true
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		if !registered[method+" /v1/sys/telemetry"] {
+			t.Errorf("%s /v1/sys/telemetry is not registered", method)
+		}
+		recorder := httptest.NewRecorder()
+		e.ServeHTTP(recorder, httptest.NewRequest(method, "/v1/sys/telemetry", nil))
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("%s /v1/sys/telemetry without a token = %d, want 401", method, recorder.Code)
+		}
 	}
 }
