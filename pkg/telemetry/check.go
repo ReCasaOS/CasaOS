@@ -47,12 +47,18 @@ func startDelay() time.Duration {
 
 // Check is one hourly pass:
 //  1. statistics off: delete upgraded-from, build nothing, send nothing;
-//  2. upgraded-from present: send version_changed, delete the file only once sent;
+//  2. upgraded-from present: send version_changed, delete the file only once sent
+//     (a value equal to the running release, a repair re-run or an upgrade that
+//     failed before the copy, is deleted unsent: nothing changed);
 //  3. last_sent absent or a day old: send heartbeat, record last_sent only once sent.
 //
 // A failure is logged and waits for the next check: nothing is retried sooner
 // or queued.
 func (t *Telemetry) Check(ctx context.Context) {
+	// One clock reading for the whole pass: last_sent then marks when the day
+	// was counted, not when the send returned, so the hourly check 24 hours
+	// later is due and the cadence does not slip to 25 hours.
+	now := t.Now()
 	upgradedFrom := t.path(upgradedFromFile)
 	state := t.load()
 	if !state.Enabled {
@@ -64,9 +70,11 @@ func (t *Telemetry) Check(ctx context.Context) {
 
 	_, err := os.Stat(upgradedFrom)
 	changed := err == nil
-	// As the spec says: absent or at least 24 hours old. A last_sent in the
-	// future (a clock that ran ahead) waits for the clock to catch up.
-	due := state.LastSent.IsZero() || t.Now().Sub(state.LastSent) >= 24*time.Hour
+	// As the spec says: absent or at least 24 hours old. A last_sent a little
+	// in the future waits for the clock; a day or more ahead (a clock that was
+	// once far off) is due, or the box would drop out of the count until then.
+	age := now.Sub(state.LastSent)
+	due := state.LastSent.IsZero() || age >= 24*time.Hour || age <= -24*time.Hour
 	if !changed && !due {
 		return
 	}
@@ -88,9 +96,13 @@ func (t *Telemetry) Check(ctx context.Context) {
 	}
 
 	properties := t.Properties()
-	if changed {
+	if previous := t.fileValue(upgradedFromFile); changed && previous == properties["distribution"] {
+		if err := os.Remove(upgradedFrom); err != nil {
+			logger.Info("telemetry: cannot delete upgraded-from", zap.Error(err))
+		}
+	} else if changed {
 		event := maps.Clone(properties)
-		event["previous_distribution"] = t.fileValue(upgradedFromFile)
+		event["previous_distribution"] = previous
 		if err := t.send(ctx, "version_changed", state.ID, event); err != nil {
 			logger.Info("telemetry: send failed", zap.String("event", "version_changed"), zap.Error(err))
 		} else if err := os.Remove(upgradedFrom); err != nil {
@@ -100,7 +112,7 @@ func (t *Telemetry) Check(ctx context.Context) {
 	if due {
 		if err := t.send(ctx, "heartbeat", state.ID, properties); err != nil {
 			logger.Info("telemetry: send failed", zap.String("event", "heartbeat"), zap.Error(err))
-		} else if _, err := t.modify(func(s *State) { s.LastSent = t.Now().UTC().Truncate(time.Second) }); err != nil {
+		} else if _, err := t.modify(func(s *State) { s.LastSent = now.UTC().Truncate(time.Second) }); err != nil {
 			logger.Info("telemetry: cannot save telemetry.json", zap.Error(err))
 		}
 	}

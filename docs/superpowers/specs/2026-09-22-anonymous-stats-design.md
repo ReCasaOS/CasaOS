@@ -52,7 +52,7 @@ A random UUID v4 generated on first use and kept in `/var/lib/casaos/telemetry.j
 | `model` | `Raspberry Pi 5 Model B Rev 1.0`, `ZimaBoard` | `/proc/device-tree/model`, else `/sys/class/dmi/id/product_name`; NUL and spaces trimmed, 64 characters max; `unknown` if empty or a known placeholder (`To Be Filled By O.E.M.`, `System Product Name`, `Default string`, `Not Specified`) |
 | `docker` | `28.3.1` | `GET /version` on `/var/run/docker.sock`, field `Version`; `unknown` if unavailable |
 | `cpu_cores` | `4` | `runtime.NumCPU()` |
-| `ram_gb` | `8` | `MemTotal` from `/proc/meminfo`, rounded to the nearest of 1, 2, 4, 8, 16, 32, 64, then `128+` |
+| `ram_gb` | `"8"` (a string, because of `128+`) | `MemTotal` from `/proc/meminfo`, rounded to the nearest of 1, 2, 4, 8, 16, 32, 64, then `128+` |
 | `disks` | `3` | entries of `/sys/block` whose resolved path is not under `/sys/devices/virtual/`, excluding `sr*` and `mmcblk*boot*` |
 | `storage_tb` | `4-8` | sum of those disks' sizes (`/sys/block/<d>/size` × 512 bytes), bucketed: `<0.5`, `0.5-1`, `1-2`, `2-4`, `4-8`, `8-16`, `16-32`, `32+` (TB, 10^12 bytes) |
 | `raid` | `true` | `/proc/mdstat` lists an active `md` array |
@@ -88,9 +88,11 @@ transport error is a failure.
      payload is built, no network connection is made.
   2. If `/var/lib/casaos/upgraded-from` exists: send `version_changed` with its content as
      `previous_distribution`. Delete the file only after a successful send; on failure keep it
-     for the next check.
-  3. If `last_sent` is absent or at least 24 hours old: send `heartbeat`. Update `last_sent`
-     only after a successful send.
+     for the next check. A content equal to the running `distribution` (a repair re-run, or an
+     upgrade that failed before the copy onto `/`) is deleted unsent: nothing changed.
+  3. If `last_sent` is absent, at least 24 hours old, or at least 24 hours in the future (a
+     clock that was once far off): send `heartbeat`. Update `last_sent` only after a successful
+     send, to the time the check started, so that the next day's hourly check is due.
 - **Failures** are logged at Info (event name and error), never retried faster than the next
   hourly check, never queued.
 - One function builds the properties, used by the sender and by the preview API: what the
@@ -201,9 +203,10 @@ Two environment variables on the core, documented as for tests only:
    preview whose `distribution` is the release tag.
 2. Start a local capture server (a few lines of Python) on the runner.
 3. Add a systemd drop-in to `casaos.service` with `CASAOS_TELEMETRY_ENDPOINT` pointing at it and
-   `CASAOS_TELEMETRY_START_DELAY=0s`; turn statistics on through `PUT /v1/sys/telemetry`; write
-   `new` to `/var/lib/casaos/upgraded-from` as the installer does (the core's first check may
-   already have consumed the installer's file while statistics were off); restart the core.
+   `CASAOS_TELEMETRY_START_DELAY=0s`; restart the core and check its environment carries both;
+   only then turn statistics on through `PUT /v1/sys/telemetry`; write `new` to
+   `/var/lib/casaos/upgraded-from` as the installer does (the core's first check may already
+   have consumed the installer's file while statistics were off); restart the core again.
 4. Assert the capture server received a `heartbeat` with `distribution` equal to the release tag,
    the runner's `arch` and `os`, and a `version_changed` with `previous_distribution: new`.
 

@@ -166,6 +166,89 @@ func TestASentVersionChangedDeletesUpgradedFrom(t *testing.T) {
 	}
 }
 
+func TestAnUpgradeWithinADaySendsOnlyVersionChanged(t *testing.T) {
+	c, endpoint := newCapture(t, http.StatusOK)
+	tel, root := fixture(t, endpoint)
+	lastSent := testNow.Add(-2 * time.Hour)
+	saveState(t, tel, State{Enabled: true, ID: "kept-id", LastSent: lastSent})
+	write(t, root, upgradedFromFile, "v0.4.99\n")
+
+	tel.Check(context.Background())
+
+	if events := c.events(); !reflect.DeepEqual(events, []string{"version_changed"}) {
+		t.Fatalf("sent %v, want version_changed alone", events)
+	}
+	if exists(t, root, upgradedFromFile) {
+		t.Fatal("upgraded-from was kept after a successful send")
+	}
+	if got := tel.load().LastSent; !got.Equal(lastSent) {
+		t.Fatalf("last_sent = %v, want it unchanged at %v", got, lastSent)
+	}
+}
+
+func TestUpgradedFromEqualToTheReleaseIsDeletedUnsent(t *testing.T) {
+	c, endpoint := newCapture(t, http.StatusOK)
+	tel, root := fixture(t, endpoint)
+	saveState(t, tel, State{Enabled: true, ID: "kept-id", LastSent: testNow.Add(-2 * time.Hour)})
+	write(t, root, upgradedFromFile, "v0.5.0\n") // a repair re-run, or an upgrade that failed
+
+	tel.Check(context.Background())
+
+	if events := c.events(); len(events) != 0 {
+		t.Fatalf("sent %v, want nothing", events)
+	}
+	if exists(t, root, upgradedFromFile) {
+		t.Fatal("upgraded-from was kept")
+	}
+}
+
+func TestLastSentIsTheCheckStartSoTheCadenceStaysDaily(t *testing.T) {
+	c, endpoint := newCapture(t, http.StatusOK)
+	tel, _ := fixture(t, endpoint)
+	saveState(t, tel, State{Enabled: true, ID: "kept-id", LastSent: testNow.Add(-24 * time.Hour)})
+	clock := testNow.Add(700 * time.Millisecond)
+	tel.Now = func() time.Time { // every reading is 2 s later, like a slow send
+		now := clock
+		clock = clock.Add(2 * time.Second)
+		return now
+	}
+
+	tel.Check(context.Background())
+
+	if got := tel.load().LastSent; !got.Equal(testNow) {
+		t.Fatalf("last_sent = %v, want the check start %v", got, testNow)
+	}
+	clock = testNow.Add(24*time.Hour + 700*time.Millisecond) // the hourly tick, a day later
+	tel.Check(context.Background())
+	if events := c.events(); !reflect.DeepEqual(events, []string{"heartbeat", "heartbeat"}) {
+		t.Fatalf("sent %v, want a heartbeat each day", events)
+	}
+}
+
+func TestALastSentADayInTheFutureIsDue(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ahead time.Duration
+		want  []string
+	}{
+		{"a little ahead waits", time.Hour, nil},
+		{"a day ahead is due", 24 * time.Hour, []string{"heartbeat"}},
+		{"years ahead is due", 3 * 365 * 24 * time.Hour, []string{"heartbeat"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, endpoint := newCapture(t, http.StatusOK)
+			tel, _ := fixture(t, endpoint)
+			saveState(t, tel, State{Enabled: true, ID: "kept-id", LastSent: testNow.Add(tc.ahead)})
+
+			tel.Check(context.Background())
+
+			if events := c.events(); !reflect.DeepEqual(events, tc.want) {
+				t.Fatalf("sent %v, want %v", events, tc.want)
+			}
+		})
+	}
+}
+
 func TestStartDelay(t *testing.T) {
 	t.Setenv("CASAOS_TELEMETRY_START_DELAY", "0s")
 	if got := startDelay(); got != 0 {
