@@ -200,10 +200,6 @@ func main() {
 		)
 	}
 
-	// run any script that needs to be executed
-	scriptDirectory := filepath.Join(constants.DefaultConfigPath, "start.d")
-	command.ExecuteScripts(scriptDirectory)
-
 	if supported, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
 		logger.Error("Failed to notify systemd that casaos main service is ready", zap.Any("error", err))
 	} else if supported {
@@ -211,6 +207,16 @@ func main() {
 	} else {
 		logger.Info("This process is not running as a systemd service.")
 	}
+
+	// start.d holds post-start hooks (the dashboard's registers its event types
+	// with the bus) and nothing here waits for them. They run after READY: each
+	// may take up to a minute, so a few of them before it would outlast
+	// systemd's start timeout and get the core killed and restarted in a loop.
+	go func() {
+		if err := command.ExecuteScripts(filepath.Join(constants.DefaultConfigPath, "start.d")); err != nil {
+			logger.Error("one or more start scripts failed", zap.Error(err))
+		}
+	}()
 	// http.HandleFunc("/v1/file/test", func(w http.ResponseWriter, r *http.Request) {
 
 	// 	//http.ServeFile(w, r, r.URL.Path[1:])
