@@ -57,6 +57,7 @@ func InitV1Router() http.Handler {
 	e.Use(echo_middleware.Gzip())
 	e.Use(echo_middleware.Recover())
 	e.Use(echo_middleware.LoggerWithConfig(echo_middleware.LoggerConfig{
+		Format: accessLogFormat,
 		Skipper: func(c echo.Context) bool {
 			// The registered route is /v1/notify/:path, so match on the request
 			// path rather than c.Path().

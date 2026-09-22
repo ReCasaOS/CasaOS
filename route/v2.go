@@ -64,7 +64,7 @@ func InitV2Router() http.Handler {
 
 	e.Use(echo_middleware.Gzip())
 
-	e.Use(echo_middleware.Logger())
+	e.Use(echo_middleware.LoggerWithConfig(echo_middleware.LoggerConfig{Format: accessLogFormat}))
 
 	e.Use(echojwt.WithConfig(echojwt.Config{
 		Skipper: func(c echo.Context) bool {
