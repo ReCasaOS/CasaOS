@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"maps"
@@ -12,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/common"
+	"go.uber.org/zap/zapcore"
 )
 
 var testNow = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
@@ -177,5 +180,48 @@ func TestTheClientWaitsTenSecondsThroughTheEnvironmentProxy(t *testing.T) {
 	// A nil Transport is http.DefaultTransport, whose Proxy is http.ProxyFromEnvironment.
 	if client.Transport != nil {
 		t.Fatalf("Transport = %T, want nil (http.DefaultTransport)", client.Transport)
+	}
+}
+
+// syncBuffer is a log the test reads while the logger writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestASuccessfulSendIsLoggedAndAFailedOneIsNot(t *testing.T) {
+	var out syncBuffer
+	logger.LogInitWithWriterSyncers(zapcore.AddSync(&out))
+	t.Cleanup(logger.LogInitConsoleOnly)
+
+	_, ok := newCapture(t, http.StatusOK)
+	tel, _ := fixture(t, ok)
+	if err := tel.send(context.Background(), "heartbeat", "kept-id", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	_, refused := newCapture(t, http.StatusInternalServerError)
+	tel.Endpoint = refused
+	if err := tel.send(context.Background(), "version_changed", "kept-id", map[string]any{}); err == nil {
+		t.Fatal("a 500 was taken for a success")
+	}
+
+	log := out.String()
+	if !bytes.Contains([]byte(log), []byte("telemetry: sent")) || !bytes.Contains([]byte(log), []byte(`"event": "heartbeat"`)) {
+		t.Fatalf("the log does not say the heartbeat was sent:\n%s", log)
+	}
+	if bytes.Contains([]byte(log), []byte(`"event": "version_changed"`)) {
+		t.Fatalf("a failed send was logged as sent:\n%s", log)
 	}
 }
