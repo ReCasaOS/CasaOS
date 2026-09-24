@@ -282,6 +282,44 @@ func TestSettlingTheLastAttempt(t *testing.T) {
 	}
 }
 
+// A check settles the last attempt before anything else: an update that ended
+// without restarting the core is not left running until the core next starts.
+// Settled, tonight's attempt still counts for tonight.
+func TestACheckSettlesTheLastAttemptFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		current      string
+		failures     *Failures
+		wantResult   string
+		wantFailures *Failures
+	}{
+		{"over without the release: failed", "0.5.7", nil, resultFailed, &Failures{Version: "v0.5.8", Count: 1}},
+		{"the release is installed: succeeded, failures cleared", "0.5.8", &Failures{Version: "v0.5.8", Count: 1}, resultSucceeded, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := newBox(t)
+			s := on()
+			s.Last, s.Failures = running("v0.5.8"), tc.failures // started tonight at 03:05
+			saveState(t, a, s)
+			b.current = tc.current
+			a.Now = func() time.Time { return local("2026-09-24 04:05") }
+
+			a.Check(context.Background())
+
+			got := a.load()
+			if got.Last == nil || got.Last.Version != "v0.5.8" || got.Last.Result != tc.wantResult || !got.Last.StartedAt.Equal(s.Last.StartedAt) {
+				t.Fatalf("last = %+v, want v0.5.8 %s", got.Last, tc.wantResult)
+			}
+			if !reflect.DeepEqual(got.Failures, tc.wantFailures) {
+				t.Fatalf("failures = %+v, want %+v", got.Failures, tc.wantFailures)
+			}
+			if len(b.started) != 0 {
+				t.Fatalf("started %v, want nothing: tonight's attempt is made", b.started)
+			}
+		})
+	}
+}
+
 func TestASecondFailurePausesThatReleaseOnly(t *testing.T) {
 	a, b := newBox(t)
 	s := on()
