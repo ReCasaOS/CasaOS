@@ -20,6 +20,7 @@ import (
 	util_http "github.com/ReCasaOS/CasaOS-Common/utils/http"
 
 	"github.com/ReCasaOS/CasaOS/common"
+	"github.com/ReCasaOS/CasaOS/pkg/autoupdate"
 	"github.com/ReCasaOS/CasaOS/pkg/cache"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
@@ -114,6 +115,11 @@ func main() {
 	} else {
 		go telemetry.Default.Run(context.Background())
 	}
+	// Automatic updates start the button's own update, read the button's own
+	// version.json, and settle an update that restarted the core before checking.
+	autoupdate.Default.Releases = service.MyService.Casa()
+	autoupdate.Default.Start = service.MyService.System().UpdateSystemVersion
+	go autoupdate.Default.Run(context.Background())
 	v1Router := route.InitV1Router()
 
 	v2Router := route.InitV2Router()

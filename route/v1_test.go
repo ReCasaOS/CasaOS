@@ -83,7 +83,7 @@ func TestSkipAccessLog(t *testing.T) {
 	}
 }
 
-func TestTheTelemetryRoutesAreSysRoutesBehindTheToken(t *testing.T) {
+func TestTheTelemetryAndAutoUpdateRoutesAreSysRoutesBehindTheToken(t *testing.T) {
 	e, ok := InitV1Router().(*echo.Echo)
 	if !ok {
 		t.Fatal("InitV1Router() is not an *echo.Echo")
@@ -92,14 +92,16 @@ func TestTheTelemetryRoutesAreSysRoutesBehindTheToken(t *testing.T) {
 	for _, r := range e.Routes() {
 		registered[r.Method+" "+r.Path] = true
 	}
-	for _, method := range []string{http.MethodGet, http.MethodPut} {
-		if !registered[method+" /v1/sys/telemetry"] {
-			t.Errorf("%s /v1/sys/telemetry is not registered", method)
-		}
-		recorder := httptest.NewRecorder()
-		e.ServeHTTP(recorder, httptest.NewRequest(method, "/v1/sys/telemetry", nil))
-		if recorder.Code != http.StatusUnauthorized {
-			t.Errorf("%s /v1/sys/telemetry without a token = %d, want 401", method, recorder.Code)
+	for _, path := range []string{"/v1/sys/telemetry", "/v1/sys/autoupdate"} {
+		for _, method := range []string{http.MethodGet, http.MethodPut} {
+			if !registered[method+" "+path] {
+				t.Errorf("%s %s is not registered", method, path)
+			}
+			recorder := httptest.NewRecorder()
+			e.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
+			if recorder.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s without a token = %d, want 401", method, path, recorder.Code)
+			}
 		}
 	}
 }

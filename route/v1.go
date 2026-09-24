@@ -142,6 +142,9 @@ func InitV1Router() http.Handler {
 			// sent, and the switch (dashboard notice and settings).
 			v1SysGroup.GET("/telemetry", v1.GetTelemetry)
 			v1SysGroup.PUT("/telemetry", v1.PutTelemetry)
+			// Automatic updates: their switch, window and state (settings).
+			v1SysGroup.GET("/autoupdate", v1.GetAutoUpdate)
+			v1SysGroup.PUT("/autoupdate", v1.PutAutoUpdate)
 		}
 		v1PortGroup := v1Group.Group("/port")
 		v1PortGroup.Use()
