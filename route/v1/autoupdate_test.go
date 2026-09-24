@@ -129,6 +129,9 @@ func TestPutAutoUpdateResumesAPausedRelease(t *testing.T) {
 	paused := `{"enabled":true,"window_start":"03:00","window_end":"05:00",` +
 		`"last":{"version":"v0.5.8","started_at":"2026-09-24T01:05:00Z","result":"failed"},` +
 		`"failures":{"version":"v0.5.8","count":2}}`
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, autoupdate.StateFile)), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(root, autoupdate.StateFile), []byte(paused), 0o600); err != nil {
 		t.Fatal(err)
 	}
