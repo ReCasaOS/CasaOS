@@ -401,7 +401,7 @@ func detachedUpdateArgs(installerURL, logPath, version string) []string {
 	return []string{
 		"--quiet",
 		"--collect",
-		"--unit=casaos-update",
+		"--unit=" + common.UPDATE_UNIT,
 		"--property=Type=exec",
 		"--setenv=CASAOS_INSTALLER_DETACHED=1",
 		"--description=CasaOS update " + version,
@@ -416,6 +416,9 @@ func detachedUpdateCommand(installerURL, logPath string) string {
 }
 
 func resolveUpdateInstallerURL() string {
+	if value := installCheckURL(installerURLEnv); value != "" {
+		return value
+	}
 	value := strings.TrimSpace(config.ServerInfo.UpdateUrl)
 	if validHTTPSURL(value) {
 		return value

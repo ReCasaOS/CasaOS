@@ -23,6 +23,26 @@ func TestResolveUpdateInstallerURL(t *testing.T) {
 	}
 }
 
+// The install check serves its own installer over loopback; plain HTTP
+// anywhere else is refused, and the release's installer answers.
+func TestTheInstallCheckOverridesTheInstallerURL(t *testing.T) {
+	original := config.ServerInfo.UpdateUrl
+	t.Cleanup(func() { config.ServerInfo.UpdateUrl = original })
+	config.ServerInfo.UpdateUrl = ""
+
+	for _, tc := range []struct{ override, want string }{
+		{"http://127.0.0.1:8123/install.sh", "http://127.0.0.1:8123/install.sh"},
+		{"https://releases.example.org/install.sh", "https://releases.example.org/install.sh"},
+		{"http://10.0.0.2:8123/install.sh", common.FORK_UPDATE_URL},
+		{"", common.FORK_UPDATE_URL},
+	} {
+		t.Setenv("CASAOS_AUTOUPDATE_INSTALLER_URL", tc.override)
+		if got := resolveUpdateInstallerURL(); got != tc.want {
+			t.Errorf("with the override %q, resolveUpdateInstallerURL() = %q, want %q", tc.override, got, tc.want)
+		}
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	got := shellQuote("https://example.com/a'b")
 	want := `'https://example.com/a'"'"'b'`

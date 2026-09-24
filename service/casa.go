@@ -2,7 +2,9 @@ package service
 
 import (
 	json2 "encoding/json"
+	"net"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -15,16 +17,39 @@ import (
 
 type CasaService interface {
 	GetCasaosVersion() model.Version
+	FetchCasaosVersion() model.Version
 }
 
 type casaService struct{}
+
+// The install check serves a version.json and an installer of its own and
+// points the updates at them through casaos.service's environment. Never set
+// on a box.
+const (
+	versionURLEnv   = "CASAOS_AUTOUPDATE_VERSION_URL"
+	installerURLEnv = "CASAOS_AUTOUPDATE_INSTALLER_URL"
+)
 
 func validHTTPSURL(value string) bool {
 	parsed, err := url.ParseRequestURI(value)
 	return err == nil && parsed.Scheme == "https" && parsed.Host != ""
 }
 
+// installCheckURL is the URL the install check sets in env: HTTPS, or plain
+// HTTP to a loopback address, where the check serves it; "" otherwise.
+func installCheckURL(env string) string {
+	value := strings.TrimSpace(os.Getenv(env))
+	parsed, err := url.ParseRequestURI(value)
+	if validHTTPSURL(value) || (err == nil && parsed.Scheme == "http" && net.ParseIP(parsed.Hostname()).IsLoopback()) {
+		return value
+	}
+	return ""
+}
+
 func resolveUpdateVersionURL() string {
+	if value := installCheckURL(versionURLEnv); value != "" {
+		return value
+	}
 	value := strings.TrimSpace(config.ServerInfo.UpdateVersionUrl)
 	if validHTTPSURL(value) {
 		return value
@@ -57,25 +82,27 @@ func parseReleaseVersion(payload string) model.Version {
  * @return {model.Version}
  */
 func (o *casaService) GetCasaosVersion() model.Version {
-	versionURL := resolveUpdateVersionURL()
-	keyName := "casa_version:" + versionURL
-	var dataStr string
-	var version model.Version
-	if result, ok := Cache.Get(keyName); ok {
-		dataStr, ok = result.(string)
-		if ok {
+	if result, ok := Cache.Get("casa_version:" + resolveUpdateVersionURL()); ok {
+		if dataStr, ok := result.(string); ok {
 			return parseReleaseVersion(dataStr)
 		}
 	}
+	return o.FetchCasaosVersion()
+}
 
+// FetchCasaosVersion reads version.json now, past the 20-minute cache, and
+// caches what it read: the automatic update's check must see a release
+// published since the dashboard last looked.
+func (o *casaService) FetchCasaosVersion() model.Version {
+	versionURL := resolveUpdateVersionURL()
 	v := httper.Get(versionURL, map[string]string{
 		"Accept":     "application/json",
 		"User-Agent": "CasaOS-Fork-Updater",
 	})
-	version = parseReleaseVersion(v)
+	version := parseReleaseVersion(v)
 
 	if len(version.Version) > 0 {
-		Cache.Set(keyName, v, time.Minute*20)
+		Cache.Set("casa_version:"+versionURL, v, time.Minute*20)
 	}
 
 	return version
