@@ -5,8 +5,9 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"time"
+
+	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 )
 
 // State is telemetry.json.
@@ -32,35 +33,15 @@ func (t *Telemetry) load() State {
 	return s
 }
 
-// save writes telemetry.json to a temporary file, syncs it to disk and renames
-// it over the old one: after a power cut (common on single-board boxes) the file
-// is the old state or the new one, never an empty one that load would read as
-// disabled. os.CreateTemp creates it 0600, whatever the old file's mode.
+// save writes telemetry.json atomically and 0600: after a power cut the file is
+// the old state or the new one, never an empty one that load would read as
+// disabled.
 func (t *Telemetry) save(s State) error {
-	path := t.path(StateFile)
 	data, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".telemetry-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name()) // nothing left to remove once renamed
-	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return file.WriteFileAtomic(t.path(StateFile), data)
 }
 
 // modify loads, changes and saves telemetry.json in one step, between the API
