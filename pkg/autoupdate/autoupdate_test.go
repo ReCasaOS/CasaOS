@@ -248,7 +248,9 @@ func TestSettlingTheLastAttempt(t *testing.T) {
 		wantFailures *Failures
 	}{
 		{"the release is installed: succeeded, failures cleared", "0.5.8", "inactive\n", &Failures{Version: "v0.5.8", Count: 1}, resultSucceeded, nil},
-		{"installed while the unit still runs: succeeded", "0.5.8", "active\n", nil, resultSucceeded, nil},
+		{"installed while the unit still runs: still running, it may yet put it back", "0.5.8", "active\n", nil, resultRunning, nil},
+		{"a newer release than attempted is installed: succeeded", "0.5.9", "inactive\n", &Failures{Version: "v0.5.8", Count: 1}, resultSucceeded, nil},
+		{"an older release is installed: failed", "0.5.6", "inactive\n", nil, resultFailed, &Failures{Version: "v0.5.8", Count: 1}},
 		{"still running", "0.5.7", "active\n", nil, resultRunning, nil},
 		{"still starting", "0.5.7", "activating\n", nil, resultRunning, nil},
 		{"systemctl did not answer: still running", "0.5.7", "", nil, resultRunning, nil},

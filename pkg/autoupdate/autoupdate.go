@@ -182,14 +182,19 @@ func (a *AutoUpdate) settle() {
 		if s.Last == nil || s.Last.Result != resultRunning {
 			return false
 		}
-		switch {
-		case strings.TrimPrefix(a.Current(), "v") == strings.TrimPrefix(s.Last.Version, "v"):
-			s.Last.Result, s.Failures = resultSucceeded, nil
-			logger.Info("automatic update: succeeded", zap.String("version", s.Last.Version))
-		case !a.unitActive():
-			fail(s)
-		default:
+		// The unit first: while the installer runs, fork-release may still be
+		// put back by a run that fails after its copy. Once it is over, the
+		// release it attempted, or a newer one it found at download time, counts
+		// as installed.
+		if a.unitActive() {
 			return false // still running
+		}
+		installed, attempted := strings.TrimPrefix(a.Current(), "v"), strings.TrimPrefix(s.Last.Version, "v")
+		if installed == attempted || version.IsVersionNewer(installed, attempted) {
+			s.Last.Result, s.Failures = resultSucceeded, nil
+			logger.Info("automatic update: succeeded", zap.String("version", s.Last.Version), zap.String("installed", installed))
+		} else {
+			fail(s)
 		}
 		return true
 	}); err != nil {
