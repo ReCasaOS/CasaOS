@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -262,12 +263,49 @@ func redact(err error, rawURL string) string {
 	if rawURL != "" {
 		text = strings.ReplaceAll(text, rawURL, "<url>")
 	}
-	if u, parseErr := url.Parse(rawURL); parseErr == nil && u.User != nil {
-		if password, ok := u.User.Password(); ok && password != "" {
-			text = strings.ReplaceAll(text, password, "<secret>")
-		}
+	for _, part := range secretParts(rawURL) {
+		text = strings.ReplaceAll(text, part, "<secret>")
 	}
 	return truncate(text, 300)
+}
+
+// secretParts is every piece of a channel URL that may be a token: the user
+// and password, each path segment and each query value, decoded and as
+// written, and the host of a service that keeps a credential there (not
+// serverHosts), when at least 6 characters long. Shoutrrr repeats some of them
+// in its own errors (a bot token in a path, an API key as the host).
+func secretParts(rawURL string) []string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil
+	}
+	parts := []string{}
+	if !serverHosts[u.Scheme] {
+		parts = append(parts, u.Host, u.Hostname())
+	}
+	if u.User != nil {
+		parts = append(parts, u.User.Username())
+		if password, ok := u.User.Password(); ok {
+			parts = append(parts, password)
+		}
+	}
+	for _, segment := range strings.Split(u.EscapedPath(), "/") {
+		if unescaped, err := url.PathUnescape(segment); err == nil {
+			parts = append(parts, segment, unescaped)
+		}
+	}
+	for _, values := range u.Query() {
+		parts = append(parts, values...)
+	}
+	secrets := []string{}
+	for _, part := range parts {
+		if len(part) >= 6 && !slices.Contains(secrets, part) {
+			secrets = append(secrets, part)
+		}
+	}
+	// longest first, so a token is not half-replaced by a shorter piece of it
+	slices.SortFunc(secrets, func(a, b string) int { return len(b) - len(a) })
+	return secrets
 }
 
 // truncate is the first n characters of text, "…" ending a cut.

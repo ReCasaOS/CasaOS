@@ -310,12 +310,26 @@ func TestRedactKeepsTheChannelsSecretsOut(t *testing.T) {
 		{"the channel's URL", errors.New("creating sender for URLs [" + telegram + "]: bad chat"), "creating sender for URLs [<url>]: bad chat"},
 		{"its password", errors.New("server said: ABCDEF-token is revoked"), "server said: <secret> is revoked"},
 		{"a long answer", errors.New(strings.Repeat("x", 400)), strings.Repeat("x", 300) + "…"},
+		{"its chat, a query value", errors.New("chat @home-family not found"), "chat @home-family not found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := redact(tc.err, telegram); got != tc.want {
 				t.Fatalf("redact() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+
+	// Shoutrrr repeats a token wherever the URL kept it: a path, a query, or the
+	// host of a service that keeps its key there; a server's address stays readable.
+	for rawURL, tc := range map[string]struct{ err, want string }{
+		"pushbullet://o.AbCdEf123456/device":              {"pushbullet: bad token o.AbCdEf123456", "pushbullet: bad token <secret>"},
+		"ntfy://ntfy.example.com/my-secret-topic":         {"POST https://ntfy.example.com/my-secret-topic: 403", "POST https://ntfy.example.com/<secret>: 403"},
+		"gotify://gotify.example.com/AppTokenXyz?title=x": {"gotify.example.com said AppTokenXyz is unknown", "gotify.example.com said <secret> is unknown"},
+		"discord://WebhookToken123@123456789":             {"discord 401 for WebhookToken123 on 123456789", "discord 401 for <secret> on <secret>"},
+	} {
+		if got := redact(errors.New(tc.err), rawURL); got != tc.want {
+			t.Errorf("redact(%q) = %q, want %q", tc.err, got, tc.want)
+		}
 	}
 }
 

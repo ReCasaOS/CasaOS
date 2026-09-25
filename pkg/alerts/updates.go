@@ -16,7 +16,8 @@ func (h *Hub) AutoUpdate(result, release string) {
 		"paused":    "The automatic update to " + release + " failed twice: it is paused until you resume it in the settings, or a newer release comes out.",
 	}
 	if sentence, known := sentences[result]; known {
-		h.raise(alert{key: "update:" + release, category: Updates, sentence: sentence})
+		// one key per result: a pause the next night is news, not a repeat of the failure
+		h.raise(alert{key: "update:" + release + ":" + result, category: Updates, sentence: sentence})
 	}
 }
 

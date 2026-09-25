@@ -35,6 +35,12 @@ var operations = map[string]string{
 	"git-deploy":    "Deploying",
 }
 
+// recheckRegistered is how often a subscription that lacks some of busEvents
+// asks whether AppManagement has registered them since: on an update the core
+// may subscribe before AppManagement has declared its new events. A var, so
+// tests can shorten it.
+var recheckRegistered = time.Minute
+
 // busEvents are the events of AppManagement this package subscribes to.
 func busEvents() []string {
 	names := []string{"backup:error", "app:container-died", "app:container-unhealthy", "app:container-restarting", "app:container-healthy"}
@@ -94,6 +100,24 @@ func (h *Hub) subscribe(ctx context.Context) bool {
 	defer connection.Close()
 	defer context.AfterFunc(ctx, func() { connection.Close() })()
 	logger.Info("alerts: subscribed to the message bus", zap.Strings("events", names))
+	if len(names) < len(busEvents()) {
+		watch, stop := context.WithCancel(ctx)
+		defer stop()
+		go func() {
+			for {
+				select {
+				case <-time.After(recheckRegistered):
+				case <-watch.Done():
+					return
+				}
+				if more, err := registered(watch, address, runtimePath); err == nil && len(more) > len(names) {
+					logger.Info("alerts: AppManagement registered more events, subscribing again", zap.Strings("events", more))
+					connection.Close()
+					return
+				}
+			}
+		}()
+	}
 	for {
 		_, data, err := connection.ReadMessage()
 		if err != nil {

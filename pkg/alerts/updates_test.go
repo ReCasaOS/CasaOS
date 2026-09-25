@@ -21,8 +21,8 @@ func TestAutomaticUpdatesAlerts(t *testing.T) {
 			if len(o.sent) != 2 || o.sent[0].title != "ReCasaOS · box · updates" || o.texts(phone)[0] != want+"\nhttp://192.168.1.20" {
 				t.Fatalf("sent %+v, want %q", o.sent, want)
 			}
-			if _, sent := h.sent["update:v0.5.8"]; !sent {
-				t.Fatal("not on record under update:v0.5.8")
+			if _, sent := h.sent["update:v0.5.8:"+result]; !sent {
+				t.Fatalf("not on record under update:v0.5.8:%s", result)
 			}
 		})
 	}

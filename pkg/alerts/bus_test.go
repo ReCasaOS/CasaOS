@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,6 +104,8 @@ func TestPlainKeepsAnErrorFitForANotification(t *testing.T) {
 // takes a subscription only with this boot's secret, to events it knows. Each
 // subscription gets the events of the channel, and ends when it closes.
 type bus struct {
+	mu            sync.Mutex
+	registered    []string
 	server        *httptest.Server
 	subscriptions chan []string // the names of each subscription
 	events        chan string   // the events to send, as JSON
@@ -115,7 +118,7 @@ func newBus(t *testing.T, runtimePath string, registered ...string) *bus {
 		t.Fatal(err)
 	}
 	secret := external.InternalAuthorization(runtimePath)
-	b := &bus{subscriptions: make(chan []string, 10), events: make(chan string, 10), drop: make(chan struct{}, 10)}
+	b := &bus{registered: registered, subscriptions: make(chan []string, 10), events: make(chan string, 10), drop: make(chan struct{}, 10)}
 	upgrader := websocket.Upgrader{}
 	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != secret {
@@ -125,7 +128,7 @@ func newBus(t *testing.T, runtimePath string, registered ...string) *bus {
 		switch r.URL.Path {
 		case "/v2/message_bus/event_type/app-management":
 			var types []map[string]any
-			for _, name := range registered {
+			for _, name := range b.known() {
 				types = append(types, map[string]any{"sourceID": "app-management", "name": name, "propertyTypeList": []any{}})
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -133,7 +136,7 @@ func newBus(t *testing.T, runtimePath string, registered ...string) *bus {
 		case "/v2/message_bus/event/app-management":
 			names := r.URL.Query()["names"]
 			for _, name := range names {
-				if !slices.Contains(registered, name) {
+				if !slices.Contains(b.known(), name) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
@@ -174,6 +177,20 @@ func newBus(t *testing.T, runtimePath string, registered ...string) *bus {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// known is what AppManagement has registered so far.
+func (b *bus) known() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.registered)
+}
+
+// register is AppManagement declaring more events, as it does when it starts.
+func (b *bus) register(names ...string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.registered = append(b.registered, names...)
 }
 
 func (b *bus) subscribed(t *testing.T) []string {
@@ -223,6 +240,34 @@ func TestTheBusIsFollowedAsAnInternalService(t *testing.T) {
 	}
 }
 
+// On an update the core may subscribe before AppManagement has declared its
+// new events: it subscribes again once they are, without waiting for the bus to
+// drop it.
+func TestEventsRegisteredLaterAreFollowed(t *testing.T) {
+	previous := recheckRegistered
+	recheckRegistered = 20 * time.Millisecond
+	t.Cleanup(func() { recheckRegistered = previous })
+	h, _, _ := newHub(t)
+	runtimePath := t.TempDir()
+	h.RuntimePath = func() string { return runtimePath }
+	b := newBus(t, runtimePath, "backup:error")
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { h.followBus(ctx); close(stopped) }()
+	defer func() {
+		cancel()
+		<-stopped
+	}()
+
+	if got := b.subscribed(t); !reflect.DeepEqual(got, []string{"backup:error"}) {
+		t.Fatalf("first subscription to %v", got)
+	}
+	b.register("app:container-died", "app:container-healthy")
+	if got := b.subscribed(t); !reflect.DeepEqual(sorted(got), []string{"app:container-died", "app:container-healthy", "backup:error"}) {
+		t.Fatalf("subscribed again to %v, want the events registered since", got)
+	}
+}
+
 func TestNoSubscriptionWithoutAnEventToFollow(t *testing.T) {
 	h, _, _ := newHub(t)
 	runtimePath := t.TempDir()
@@ -235,4 +280,11 @@ func TestNoSubscriptionWithoutAnEventToFollow(t *testing.T) {
 	if h.subscribe(context.Background()) {
 		t.Fatal("subscribed to nothing")
 	}
+}
+
+// sorted is names in order, whatever order the bus registered them in.
+func sorted(names []string) []string {
+	names = slices.Clone(names)
+	slices.Sort(names)
+	return names
 }
