@@ -6,10 +6,11 @@
 //
 // The alerts come from AppManagement's events on the message bus, from an
 // hourly look at LocalStorage's disks and storages, and from pkg/autoupdate,
-// in-process. An alert already sent is not sent again for six hours, and a
-// condition that clears sends one "resolved" message, only if its alert was
-// sent. That memory is the core's: a restart forgets it, and at worst a
-// reminder comes early.
+// in-process. An alert already sent is not sent again for six hours, even
+// when it cleared and came back meanwhile, and a condition that clears sends
+// one "resolved" message, only if its alert was sent and once per alert sent.
+// That memory is the core's: a restart forgets it, and at worst a reminder
+// comes early.
 package alerts
 
 import (
@@ -56,10 +57,13 @@ type alert struct {
 	sentence string
 }
 
-// record is an alert that was sent: when, and how often it came back since.
+// record is an alert that was sent: when, how often it came back since, and
+// whether its resolution was sent. It outlives the resolution, so that a
+// condition that flaps stays quiet for the six hours.
 type record struct {
-	at      time.Time
-	repeats int
+	at       time.Time
+	repeats  int
+	resolved bool
 }
 
 // Hub is the alerts of one box.
@@ -135,8 +139,9 @@ func (h *Hub) Run(ctx context.Context) {
 }
 
 // raise sends a, unless its category is off, there is no channel, or it was
-// sent less than six hours ago: then it is counted, and the next message says
-// how often it came back. It reports whether a is now on record as sent.
+// sent less than six hours ago, resolved since or not: then it is counted, and
+// the next message says how often it came back. It reports whether a is now
+// on record as sent.
 func (h *Hub) raise(a alert) bool {
 	c := h.load()
 	if len(c.Channels) == 0 || !c.Categories[a.category] {
@@ -160,13 +165,17 @@ func (h *Hub) raise(a alert) bool {
 	return true
 }
 
-// resolve sends one "resolved" message for key, only if its alert was sent.
+// resolve sends one "resolved" message for key, only if its alert was sent,
+// and once per alert sent.
 func (h *Hub) resolve(a alert) {
 	h.mu.Lock()
-	_, sent := h.sent[a.key]
-	delete(h.sent, a.key)
+	r := h.sent[a.key]
+	pending := r != nil && !r.resolved
+	if pending {
+		r.resolved = true
+	}
 	h.mu.Unlock()
-	if !sent {
+	if !pending {
 		return
 	}
 	if c := h.load(); len(c.Channels) > 0 && c.Categories[a.category] {

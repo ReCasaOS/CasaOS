@@ -231,10 +231,27 @@ func TestAResolutionIsSentOnlyAfterItsAlert(t *testing.T) {
 		t.Fatalf("sent %q, want %q", got, want)
 	}
 
-	// Resolved, it is a new condition when it comes back, within the six hours.
+	// Back within the six hours, it is counted and quiet, and so is its second
+	// resolution: a condition that flaps sends an alert and a resolution every
+	// six hours at most.
+	*now = now.Add(20 * time.Minute)
 	raise(h, crashed)
-	if got := o.texts(phone); len(got) != 3 {
-		t.Fatalf("sent %q, want the alert again", got)
+	resolve(h, healthy)
+	raise(h, crashed)
+	if got := o.texts(phone); !reflect.DeepEqual(got, want) {
+		t.Fatalf("sent %q, want nothing more within the six hours", got)
+	}
+
+	// Past them, it is sent with its count, and its resolution goes however
+	// late it comes.
+	*now = time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	raise(h, crashed)
+	*now = time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
+	resolve(h, healthy)
+	resolve(h, healthy)
+	want = append(want, "immich stopped unexpectedly. It happened 3 times since 06:00.\nhttp://192.168.1.20", "Resolved: immich runs normally again.\nhttp://192.168.1.20")
+	if got := o.texts(phone); !reflect.DeepEqual(got, want) {
+		t.Fatalf("sent %q, want %q", got, want)
 	}
 }
 
