@@ -28,15 +28,16 @@ require (
 	github.com/mileusna/useragent v1.2.1
 	github.com/moby/sys/mount v0.3.3
 	github.com/moby/sys/mountinfo v0.6.2
+	github.com/nicholas-fedor/shoutrrr v0.18.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/errors v0.9.1
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.38.1
 	github.com/shirou/gopsutil/v3 v3.23.2
 	github.com/sirupsen/logrus v1.9.4
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.1
 	github.com/tidwall/gjson v1.17.0
-	go.uber.org/goleak v1.2.1
+	go.uber.org/goleak v1.3.0
 	go.uber.org/zap v1.24.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sync v0.23.0
@@ -54,12 +55,12 @@ require (
 	github.com/bodgit/sevenzip v1.6.1 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
 	github.com/dsoprea/go-logging v0.0.0-20200710184922-b02d349568dd // indirect
 	github.com/dsoprea/go-utility/v2 v2.0.0-20221003172846-a3e1774ef349 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/fsnotify/fsnotify v1.7.0 // indirect
+	github.com/eclipse/paho.golang v0.23.0 // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/geoffgarside/ber v1.1.0 // indirect
 	github.com/glebarez/go-sqlite v1.21.1 // indirect
 	github.com/go-errors/errors v1.4.2 // indirect
@@ -82,7 +83,7 @@ require (
 	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20230110061619-bbe2e5e100de // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
-	github.com/mattn/go-isatty v0.0.22 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mholt/archives v0.1.5 // indirect
 	github.com/mikelolasagasti/xz v1.0.1 // indirect
 	github.com/minio/minlz v1.0.1 // indirect
@@ -93,7 +94,6 @@ require (
 	github.com/oasdiff/yaml3 v0.0.14 // indirect
 	github.com/orca-zhang/ecache v1.1.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20221212215047-62379fc7944b // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
@@ -109,16 +109,17 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.2 // indirect
 	go.uber.org/atomic v1.10.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/exp v0.0.0-20230713183714-613f0c0eb8a1 // indirect
 	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.22.4 // indirect
 	modernc.org/mathutil v1.5.0 // indirect
 	modernc.org/memory v1.5.0 // indirect
