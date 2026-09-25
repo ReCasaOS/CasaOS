@@ -86,7 +86,7 @@ func (c *systemService) GetDeviceInfo() model.DeviceInfo {
 		if len(port.Raw) == 0 {
 			m.Port = 80
 		} else {
-			p, err := strconv.Atoi(port.Raw)
+			p, err := strconv.Atoi(port.String()) // the gateway answers "80", a string
 			if err != nil {
 				m.Port = 80
 			} else {
