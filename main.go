@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
@@ -20,6 +21,7 @@ import (
 	util_http "github.com/ReCasaOS/CasaOS-Common/utils/http"
 
 	"github.com/ReCasaOS/CasaOS/common"
+	"github.com/ReCasaOS/CasaOS/pkg/alerts"
 	"github.com/ReCasaOS/CasaOS/pkg/autoupdate"
 	"github.com/ReCasaOS/CasaOS/pkg/cache"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
@@ -115,6 +117,15 @@ func main() {
 	} else {
 		go telemetry.Default.Run(context.Background())
 	}
+	// Push alerts end with the dashboard's address, look for a newer release
+	// with the update button's own check while automatic updates are off, and
+	// hear from automatic updates how each attempt ended: set before those
+	// settle the attempt that restarted the core.
+	alerts.Default.Address = dashboardAddress
+	alerts.Default.Latest = func() string { return service.MyService.Casa().GetCasaosVersion().Version }
+	alerts.Default.AutoUpdates = func() bool { return autoupdate.Default.Status().Enabled }
+	autoupdate.Default.Notify = alerts.Default.AutoUpdate
+	go alerts.Default.Run(context.Background())
 	// Automatic updates start the button's own update, read the button's own
 	// version.json, and settle an update that restarted the core before checking.
 	autoupdate.Default.Releases = service.MyService.Casa()
@@ -251,4 +262,18 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+// dashboardAddress is the dashboard's address on the box's first network, or
+// "" when it has none.
+func dashboardAddress() string {
+	info := service.MyService.System().GetDeviceInfo()
+	if len(info.LanIpv4) == 0 {
+		return ""
+	}
+	address := "http://" + info.LanIpv4[0]
+	if info.Port != 80 {
+		address += ":" + strconv.Itoa(info.Port)
+	}
+	return address
 }

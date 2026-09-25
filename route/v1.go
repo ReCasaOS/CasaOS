@@ -145,6 +145,11 @@ func InitV1Router() http.Handler {
 			// Automatic updates: their switch, window and state (settings).
 			v1SysGroup.GET("/autoupdate", v1.GetAutoUpdate)
 			v1SysGroup.PUT("/autoupdate", v1.PutAutoUpdate)
+			// Push alerts: their channels, categories and disk threshold, and a
+			// test message (settings).
+			v1SysGroup.GET("/alerts", v1.GetAlerts)
+			v1SysGroup.PUT("/alerts", v1.PutAlerts)
+			v1SysGroup.POST("/alerts/test", v1.PostAlertsTest)
 		}
 		v1PortGroup := v1Group.Group("/port")
 		v1PortGroup.Use()
