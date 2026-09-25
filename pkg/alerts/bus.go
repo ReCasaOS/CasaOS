@@ -103,10 +103,11 @@ func (h *Hub) subscribe(ctx context.Context) bool {
 	if len(names) < len(busEvents()) {
 		watch, stop := context.WithCancel(ctx)
 		defer stop()
+		interval := recheckRegistered // read here: the goroutine may outlive this call
 		go func() {
 			for {
 				select {
-				case <-time.After(recheckRegistered):
+				case <-time.After(interval):
 				case <-watch.Done():
 					return
 				}
