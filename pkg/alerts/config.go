@@ -98,12 +98,23 @@ type Status struct {
 
 // ChannelStatus is a channel as the dashboard sees it: service is the URL's
 // scheme, host its host part (the ntfy server, the SMTP host), enough to
-// recognise it.
+// recognise it. Host is "" for a service whose host part is not a server.
 type ChannelStatus struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Service string `json:"service"`
 	Host    string `json:"host"`
+}
+
+// serverHosts are the Shoutrrr services whose URL host is a server's address,
+// or a fixed word like telegram's. The others may keep a credential there,
+// pushbullet its token, ifttt its webhook key, notifiarr its API key, pushover
+// its user key, slack's older URLs their token, and so may a service Shoutrrr
+// adds later: their host is never answered.
+var serverHosts = map[string]bool{
+	"bark": true, "generic": true, "googlechat": true, "gotify": true, "hangouts": true, "lark": true,
+	"matrix": true, "mattermost": true, "mqtt": true, "mqtts": true, "ntfy": true, "opsgenie": true,
+	"pagerduty": true, "rocketchat": true, "signal": true, "smtp": true, "telegram": true, "zulip": true,
 }
 
 // Failure is the last send that failed, since the core started.
@@ -120,7 +131,10 @@ func (h *Hub) Status() Status {
 	for _, channel := range c.Channels {
 		status := ChannelStatus{ID: channel.ID, Name: channel.Name}
 		if u, err := url.Parse(channel.URL); err == nil {
-			status.Service, status.Host = u.Scheme, u.Hostname()
+			status.Service = u.Scheme
+			if serverHosts[u.Scheme] {
+				status.Host = u.Hostname()
+			}
 		}
 		s.Channels = append(s.Channels, status)
 	}

@@ -76,12 +76,19 @@ func TestAPutRewritesAMalformedFile0600(t *testing.T) {
 	}
 }
 
-// No answer carries a channel's URL: its scheme and host only.
+// No answer carries a channel's URL: its scheme, and its host when that is a
+// server's address. Some services keep their credential there instead.
 func TestTheStatusMasksTheURLs(t *testing.T) {
 	h, _, _ := newHub(t)
-	telegram := Channel{ID: "c3", Name: "Telegram", URL: "telegram://123456:ABC-DEF@telegram?chats=@home"}
 	c := h.load()
-	c.Channels = append(c.Channels, telegram)
+	c.Channels = append(c.Channels,
+		Channel{ID: "c3", Name: "Telegram", URL: "telegram://123456:ABC-DEF@telegram?chats=@home"},
+		Channel{ID: "d4", Name: "Pushbullet", URL: "pushbullet://o.pushbullettoken0123456789"},
+		Channel{ID: "e5", Name: "IFTTT", URL: "ifttt://iftttwebhookkey123/?events=box"},
+		Channel{ID: "f6", Name: "Notifiarr", URL: "notifiarr://notifiarrapikey789"},
+		Channel{ID: "g7", Name: "Pushover", URL: "pushover://shoutrrr:pushoverapitoken@pushoveruserkey/"},
+		Channel{ID: "h8", Name: "Slack", URL: "slack://box@slacktokena/slacktokenb/slacktokenc"},
+	)
 	saveConfig(t, h, c)
 
 	status := h.Status()
@@ -90,6 +97,11 @@ func TestTheStatusMasksTheURLs(t *testing.T) {
 		{ID: "a1", Name: "Phone", Service: "ntfy", Host: "ntfy.sh"},
 		{ID: "b2", Name: "Mail", Service: "smtp", Host: "mail.example.com"},
 		{ID: "c3", Name: "Telegram", Service: "telegram", Host: "telegram"},
+		{ID: "d4", Name: "Pushbullet", Service: "pushbullet"},
+		{ID: "e5", Name: "IFTTT", Service: "ifttt"},
+		{ID: "f6", Name: "Notifiarr", Service: "notifiarr"},
+		{ID: "g7", Name: "Pushover", Service: "pushover"},
+		{ID: "h8", Name: "Slack", Service: "slack"},
 	}
 	if !reflect.DeepEqual(status.Channels, want) {
 		t.Fatalf("channels = %+v, want %+v", status.Channels, want)
@@ -98,7 +110,7 @@ func TestTheStatusMasksTheURLs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"box-topic", "user", "pass", "ABC-DEF", "123456", `"url"`} {
+	for _, secret := range []string{"box-topic", "user", "pass", "ABC-DEF", "123456", "pushbullettoken", "iftttwebhookkey", "notifiarrapikey", "pushoveruserkey", "slacktoken", `"url"`} {
 		if strings.Contains(string(data), secret) {
 			t.Errorf("the status holds %q: %s", secret, data)
 		}
