@@ -71,6 +71,9 @@ type AutoUpdate struct {
 	// AppsBusy reports whether AppManagement lists an operation in progress,
 	// or did not answer.
 	AppsBusy func(ctx context.Context) bool
+	// Notify, when set, hears how an attempt ended: succeeded, failed, or
+	// paused on its second failure. main sets it to the push alerts' hook.
+	Notify func(result, version string)
 
 	mu sync.Mutex // serialises the read-modify-writes of autoupdate.json
 }
@@ -167,7 +170,7 @@ func (a *AutoUpdate) start(release string, now time.Time) {
 			if s.Last == nil || s.Last.Result != resultRunning {
 				return false
 			}
-			fail(s)
+			a.fail(s)
 			return true
 		}); err != nil {
 			logger.Info("automatic update: cannot save autoupdate.json", zap.Error(err))
@@ -193,8 +196,9 @@ func (a *AutoUpdate) settle() {
 		if installed == attempted || version.IsVersionNewer(installed, attempted) {
 			s.Last.Result, s.Failures = resultSucceeded, nil
 			logger.Info("automatic update: succeeded", zap.String("version", s.Last.Version), zap.String("installed", installed))
+			a.notify(resultSucceeded, s.Last.Version)
 		} else {
-			fail(s)
+			a.fail(s)
 		}
 		return true
 	}); err != nil {
@@ -204,7 +208,7 @@ func (a *AutoUpdate) settle() {
 
 // fail marks the last attempt failed and counts it against its release, whose
 // second failure pauses it; a failure of another release starts a new count.
-func fail(s *State) {
+func (a *AutoUpdate) fail(s *State) {
 	s.Last.Result = resultFailed
 	if s.Failures == nil || s.Failures.Version != s.Last.Version {
 		s.Failures = &Failures{Version: s.Last.Version}
@@ -213,6 +217,16 @@ func fail(s *State) {
 	logger.Info("automatic update: failed", zap.String("version", s.Last.Version), zap.Int("failures", s.Failures.Count))
 	if s.Failures.Count >= 2 {
 		logger.Info("automatic update: paused until resumed or a newer release", zap.String("version", s.Last.Version))
+		a.notify(statePaused, s.Last.Version)
+	} else {
+		a.notify(resultFailed, s.Last.Version)
+	}
+}
+
+// notify tells Notify, when set, how an attempt ended.
+func (a *AutoUpdate) notify(result, version string) {
+	if a.Notify != nil {
+		a.Notify(result, version)
 	}
 }
 

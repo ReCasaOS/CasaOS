@@ -360,6 +360,45 @@ func TestNothingToSettle(t *testing.T) {
 	}
 }
 
+// The alerts hear how each attempt ended: succeeded, failed, or paused on its
+// second failure; nothing while it runs.
+func TestTheAlertsHearHowAnAttemptEnded(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		current  string
+		unit     string
+		failures *Failures
+		startErr error
+		want     []string
+	}{
+		{"succeeded", "0.5.8", "inactive\n", nil, nil, []string{"succeeded v0.5.8"}},
+		{"failed", "0.5.7", "inactive\n", nil, nil, []string{"failed v0.5.8"}},
+		{"paused on the second failure", "0.5.7", "failed\n", &Failures{Version: "v0.5.8", Count: 1}, nil, []string{"paused v0.5.8"}},
+		{"still running", "0.5.7", "active\n", nil, nil, nil},
+		{"a start that fails", "0.5.7", "inactive\n", nil, errors.New("exit status 1"), []string{"failed v0.5.8"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := newBox(t)
+			var heard []string
+			a.Notify = func(result, version string) { heard = append(heard, result+" "+version) }
+			s := on()
+			b.current, b.unit, b.startErr = tc.current, tc.unit, tc.startErr
+			if tc.startErr != nil {
+				saveState(t, a, s)
+				a.Check(context.Background())
+			} else {
+				s.Last, s.Failures = running("v0.5.8"), tc.failures
+				saveState(t, a, s)
+				a.settle()
+			}
+
+			if !reflect.DeepEqual(heard, tc.want) {
+				t.Fatalf("the alerts heard %q, want %q", heard, tc.want)
+			}
+		})
+	}
+}
+
 func TestTheStatusReadsTheCacheAndOnlyWhenOn(t *testing.T) {
 	a, b := newBox(t)
 	want := Status{Window: Window{Start: "03:00", End: "05:00"}, State: stateOff}
