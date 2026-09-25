@@ -13,6 +13,7 @@
 package alerts
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -22,6 +23,8 @@ import (
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 	"github.com/nicholas-fedor/shoutrrr/pkg/router"
 	"github.com/nicholas-fedor/shoutrrr/pkg/types"
 	"go.uber.org/zap"
@@ -63,35 +66,71 @@ type record struct {
 type Hub struct {
 	// Root is where alerts.json is kept: "/" on a box, a temporary directory
 	// in tests.
-	Root     string
-	Now      func() time.Time
-	Hostname func() (string, error)
+	Root string
+	// RuntimePath is where the other services leave their addresses and this
+	// boot's secret.
+	RuntimePath func() string
+	Now         func() time.Time
+	Hostname    func() (string, error)
 	// Address is the dashboard's address, or "" when the core does not know it.
 	Address func() string
 	// Send delivers one message to one channel URL.
 	Send func(rawURL, title, message string) error
+	// Latest is the newest release as the update button reads it, Current the
+	// installed one, and AutoUpdates whether automatic updates are on: with
+	// them off, a newer release is an alert of its own.
+	Latest      func() string
+	Current     func() string
+	AutoUpdates func() bool
 
 	modifying   sync.Mutex // serialises Update's read-modify-writes of alerts.json
 	mu          sync.Mutex // guards sent and lastFailure
 	sent        map[string]*record
 	lastFailure *Failure
 
+	// Read and written by Run's goroutine only.
+	seen           []disk    // the disks of the previous poll, nil before the first
+	releaseChecked time.Time // the last look for a newer release
+	announced      string    // the release last announced
+
 	sending sync.WaitGroup // the sends in flight, which tests wait for
 }
 
-// Default is the box's own: the API answers from it.
+// Default is the box's own: the API answers from it and main runs its sources.
 var Default = New("/")
 
-// New keeps alerts.json under root and sends through Shoutrrr. Address is
-// left to the caller.
+// New keeps alerts.json under root and sends through Shoutrrr. Address,
+// Latest and AutoUpdates are left to the caller.
 func New(root string) *Hub {
 	return &Hub{
-		Root:     root,
-		Now:      time.Now,
-		Hostname: os.Hostname,
-		Address:  func() string { return "" },
-		Send:     send,
-		sent:     map[string]*record{},
+		Root:        root,
+		RuntimePath: func() string { return config.CommonInfo.RuntimePath },
+		Now:         time.Now,
+		Hostname:    os.Hostname,
+		Address:     func() string { return "" },
+		Send:        send,
+		Latest:      func() string { return "" },
+		Current:     version.CurrentVersion,
+		AutoUpdates: func() bool { return true },
+		sent:        map[string]*record{},
+	}
+}
+
+// Run follows the message bus until ctx is done, and looks at the disks and
+// for a newer release five minutes after the start, then every hour.
+func (h *Hub) Run(ctx context.Context) {
+	go h.followBus(ctx)
+	timer := time.NewTimer(5 * time.Minute)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return
+		}
+		h.pollDisks(ctx)
+		h.checkRelease()
+		timer.Reset(time.Hour)
 	}
 }
 
