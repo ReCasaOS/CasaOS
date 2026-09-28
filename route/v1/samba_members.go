@@ -7,6 +7,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"sync"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/labstack/echo/v4"
@@ -17,6 +18,11 @@ import (
 	"github.com/ReCasaOS/CasaOS/service"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 )
+
+// sharesMutex serialises every change to the shares. The duplicate checks read
+// the table and the insert comes after; two requests for the same folder in
+// flight together both passed the check, and the folder was shared twice.
+var sharesMutex sync.Mutex
 
 var (
 	errShareMemberTwice   = errors.New("an account is listed twice for the same share")
@@ -213,6 +219,9 @@ func withMember(members []model2.ShareMember, username string, in bool, readOnly
 // every account in, and turning it back into a guest share would publish a
 // private folder.
 func PutSambaUserShares(ctx echo.Context) error {
+	sharesMutex.Lock()
+	defer sharesMutex.Unlock()
+
 	username := ctx.Param("username")
 
 	if err := service.ValidateSambaUsername(username); err != nil {

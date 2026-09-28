@@ -59,6 +59,9 @@ func PutSambaUserPassword(ctx echo.Context) error {
 // resolves, which smbd treats as nobody being allowed in — the share would
 // simply stop working with no explanation.
 func DeleteSambaUser(ctx echo.Context) error {
+	sharesMutex.Lock()
+	defer sharesMutex.Unlock()
+
 	username := ctx.Param("username")
 
 	type change struct {

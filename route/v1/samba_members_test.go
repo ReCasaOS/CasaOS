@@ -43,3 +43,19 @@ func TestChooseShareOwner(t *testing.T) {
 		t.Errorf("a share with no members has no owner, got %q", owner)
 	}
 }
+
+func TestPathSharedElsewhere(t *testing.T) {
+	shares := []model2.SharesDBModel{
+		{ID: 2, Path: "/DATA/Downloads"},
+		{ID: 3, Path: "/DATA/Downloads"},
+		{ID: 5, Path: "/DATA/Media"},
+	}
+
+	if !pathSharedElsewhere(shares, shares[0]) {
+		t.Error("a duplicate row should keep the folder owned")
+	}
+
+	if pathSharedElsewhere(shares, shares[2]) {
+		t.Error("the only share of a folder is not shared elsewhere")
+	}
+}

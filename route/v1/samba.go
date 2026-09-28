@@ -117,6 +117,9 @@ func releaseShareFromUser(path string) error {
 }
 
 func PostSambaSharesCreate(ctx echo.Context) error {
+	sharesMutex.Lock()
+	defer sharesMutex.Unlock()
+
 	shares := []model.Shares{}
 	if err := ctx.Bind(&shares); err != nil {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
@@ -229,6 +232,9 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 // created under a guest share are world-readable, and files created under a
 // protected share stay reachable by root, which is who a guest session maps to.
 func PutSambaShare(ctx echo.Context) error {
+	sharesMutex.Lock()
+	defer sharesMutex.Unlock()
+
 	id := ctx.Param("id")
 
 	share, found := service.MyService.Shares().GetShareByID(id)
@@ -280,13 +286,30 @@ func shareResponse(share model2.SharesDBModel) model.Shares {
 	}
 }
 
+// pathSharedElsewhere says whether another share row names the same folder, as
+// the duplicates an unserialised create could leave behind do. Deleting one of
+// those must not hand the folder back to root under the one that stays.
+func pathSharedElsewhere(shares []model2.SharesDBModel, share model2.SharesDBModel) bool {
+	for _, other := range shares {
+		if other.ID != share.ID && other.Path == share.Path {
+			return true
+		}
+	}
+
+	return false
+}
+
 func DeleteSambaShares(ctx echo.Context) error {
+	sharesMutex.Lock()
+	defer sharesMutex.Unlock()
+
 	id := ctx.Param("id")
 	if id == "" {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INSUFFICIENT_PERMISSIONS, Message: common_err.GetMsg(common_err.INSUFFICIENT_PERMISSIONS)})
 	}
-	for _, share := range service.MyService.Shares().GetSharesList() {
-		if strconv.FormatUint(uint64(share.ID), 10) == id && share.Username != "" {
+	shares := service.MyService.Shares().GetSharesList()
+	for _, share := range shares {
+		if strconv.FormatUint(uint64(share.ID), 10) == id && share.Username != "" && !pathSharedElsewhere(shares, share) {
 			if err := releaseShareFromUser(share.Path); err != nil {
 				return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 			}
