@@ -60,10 +60,10 @@ func TestNothingIsBuiltOrSentWhenStatisticsAreOff(t *testing.T) {
 	}
 }
 
-func TestNoHeartbeatWithinADay(t *testing.T) {
+func TestNoHeartbeatWithinThreeHours(t *testing.T) {
 	c, endpoint := newCapture(t, http.StatusOK)
 	tel, _ := fixture(t, endpoint)
-	lastSent := testNow.Add(-23 * time.Hour)
+	lastSent := testNow.Add(-2*time.Hour - 59*time.Minute)
 	saveState(t, tel, State{Enabled: true, ID: "kept-id", LastSent: lastSent})
 
 	tel.Check(context.Background())
@@ -76,10 +76,10 @@ func TestNoHeartbeatWithinADay(t *testing.T) {
 	}
 }
 
-func TestAHeartbeatOnceLastSentIsADayOld(t *testing.T) {
+func TestAHeartbeatOnceLastSentIsThreeHoursOld(t *testing.T) {
 	c, endpoint := newCapture(t, http.StatusOK)
 	tel, _ := fixture(t, endpoint)
-	saveState(t, tel, State{Enabled: true, ID: "kept-id", LastSent: testNow.Add(-24 * time.Hour)})
+	saveState(t, tel, State{Enabled: true, ID: "kept-id", LastSent: testNow.Add(-3 * time.Hour)})
 
 	tel.Check(context.Background())
 
@@ -166,7 +166,7 @@ func TestASentVersionChangedDeletesUpgradedFrom(t *testing.T) {
 	}
 }
 
-func TestAnUpgradeWithinADaySendsOnlyVersionChanged(t *testing.T) {
+func TestAnUpgradeBetweenHeartbeatsSendsOnlyVersionChanged(t *testing.T) {
 	c, endpoint := newCapture(t, http.StatusOK)
 	tel, root := fixture(t, endpoint)
 	lastSent := testNow.Add(-2 * time.Hour)
@@ -202,10 +202,10 @@ func TestUpgradedFromEqualToTheReleaseIsDeletedUnsent(t *testing.T) {
 	}
 }
 
-func TestLastSentIsTheCheckStartSoTheCadenceStaysDaily(t *testing.T) {
+func TestLastSentIsTheCheckStartSoTheCadenceStaysThreeHours(t *testing.T) {
 	c, endpoint := newCapture(t, http.StatusOK)
 	tel, _ := fixture(t, endpoint)
-	saveState(t, tel, State{Enabled: true, ID: "kept-id", LastSent: testNow.Add(-24 * time.Hour)})
+	saveState(t, tel, State{Enabled: true, ID: "kept-id", LastSent: testNow.Add(-3 * time.Hour)})
 	clock := testNow.Add(700 * time.Millisecond)
 	tel.Now = func() time.Time { // every reading is 2 s later, like a slow send
 		now := clock
@@ -218,21 +218,21 @@ func TestLastSentIsTheCheckStartSoTheCadenceStaysDaily(t *testing.T) {
 	if got := tel.load().LastSent; !got.Equal(testNow) {
 		t.Fatalf("last_sent = %v, want the check start %v", got, testNow)
 	}
-	clock = testNow.Add(24*time.Hour + 700*time.Millisecond) // the hourly tick, a day later
+	clock = testNow.Add(3*time.Hour + 700*time.Millisecond) // the hourly tick, three hours later
 	tel.Check(context.Background())
 	if events := c.events(); !reflect.DeepEqual(events, []string{"heartbeat", "heartbeat"}) {
-		t.Fatalf("sent %v, want a heartbeat each day", events)
+		t.Fatalf("sent %v, want a heartbeat every three hours", events)
 	}
 }
 
-func TestALastSentADayInTheFutureIsDue(t *testing.T) {
+func TestALastSentFarInTheFutureIsDue(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		ahead time.Duration
 		want  []string
 	}{
 		{"a little ahead waits", time.Hour, nil},
-		{"a day ahead is due", 24 * time.Hour, []string{"heartbeat"}},
+		{"three hours ahead is due", 3 * time.Hour, []string{"heartbeat"}},
 		{"years ahead is due", 3 * 365 * 24 * time.Hour, []string{"heartbeat"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,5 +1,5 @@
 // Package telemetry sends ReCasaOS's anonymous usage statistics to PostHog's EU
-// cloud: a heartbeat at most once a day, which counts the boxes, and a
+// cloud: a heartbeat at most every three hours, which counts the boxes, and a
 // version_changed event once per install or upgrade, which measures how fast
 // they update. What is sent, what never is, and the three ways to turn it off:
 // https://github.com/ReCasaOS/CasaOS-Install#anonymous-statistics
