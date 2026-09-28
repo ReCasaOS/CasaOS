@@ -33,7 +33,7 @@ type SharesService interface {
 	GetSharesByName(name string) (shares []model2.SharesDBModel)
 	CreateShare(share model2.SharesDBModel) error
 	GetShareByID(id string) (share model2.SharesDBModel, found bool)
-	UpdateShare(id string, username string, timeMachine bool) error
+	UpdateShare(id string, owner string, members []model2.ShareMember, timeMachine bool) error
 	DeleteShare(id string) error
 	UpdateConfigFile() error
 	InitSambaConfig()
@@ -111,24 +111,27 @@ func (s *sharesStruct) GetShareByID(id string) (share model2.SharesDBModel, foun
 	return share, result.Error == nil
 }
 
-// UpdateShare moves a share between guest access and a named account, in either
-// direction, and sets its Time Machine flag. An empty username makes it a guest
-// share again.
+// UpdateShare sets who may mount a share and its Time Machine flag. owner is
+// the account the directory belongs to and every session runs as; an empty
+// owner, with no members, makes it a guest share again.
 //
 // As with creation, the configuration is written and accepted before the row is
 // changed, so a rejected result leaves the share exactly as it was rather than
 // half converted.
-func (s *sharesStruct) UpdateShare(id string, username string, timeMachine bool) error {
+func (s *sharesStruct) UpdateShare(id string, owner string, members []model2.ShareMember, timeMachine bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	shares := []model2.SharesDBModel{}
 	s.db.Find(&shares)
 
+	column := model2.FormatMembers(members)
+
 	for i := range shares {
 		if strconv.FormatUint(uint64(shares[i].ID), 10) == id {
-			shares[i].Username = username
-			shares[i].Anonymous = username == ""
+			shares[i].Username = owner
+			shares[i].Members = column
+			shares[i].Anonymous = owner == ""
 			shares[i].TimeMachine = timeMachine
 		}
 	}
@@ -139,7 +142,7 @@ func (s *sharesStruct) UpdateShare(id string, username string, timeMachine bool)
 
 	return s.db.Model(&model.SharesDBModel{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{"username": username, "anonymous": username == "", "time_machine": timeMachine}).
+		Updates(map[string]interface{}{"username": owner, "members": column, "anonymous": owner == "", "time_machine": timeMachine}).
 		Error
 }
 

@@ -80,6 +80,7 @@ func TestSambaSectionAuthenticated(t *testing.T) {
 		"guest ok = No",
 		"public = No",
 		"valid users = alice",
+		"write list = alice",
 		"create mask = 0660",
 		"directory mask = 0770",
 		"force user = alice",
@@ -100,6 +101,64 @@ func TestSambaSectionAuthenticated(t *testing.T) {
 		if strings.Contains(section, unwanted) {
 			t.Errorf("authenticated section still contains %q:\n%s", unwanted, section)
 		}
+	}
+}
+
+func TestSambaSectionMembers(t *testing.T) {
+	section := sambaSection(model2.SharesDBModel{
+		Path:     "/DATA/Family",
+		Username: "alice",
+		Members:  "alice:rw bob:ro carol:rw",
+	})
+
+	for _, want := range []string{
+		"read only = Yes",
+		"valid users = alice bob carol",
+		"write list = alice carol",
+		"force user = alice",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("members section is missing %q:\n%s", want, section)
+		}
+	}
+}
+
+func TestSambaSectionReadOnlyMembersOnly(t *testing.T) {
+	section := sambaSection(model2.SharesDBModel{Path: "/DATA/Photos", Username: "alice", Members: "bob:ro"})
+
+	// An empty "write list =" line would be harmless, but no line at all is what
+	// says nobody writes.
+	if strings.Contains(section, "write list") {
+		t.Errorf("a share with read-only members only has a write list:\n%s", section)
+	}
+
+	if !strings.Contains(section, "valid users = bob\n") {
+		t.Errorf("the read-only member is not let in:\n%s", section)
+	}
+}
+
+func TestShareMembersRoundTrip(t *testing.T) {
+	members := []model2.ShareMember{{Username: "alice"}, {Username: "bob", ReadOnly: true}}
+	share := model2.SharesDBModel{Members: model2.FormatMembers(members)}
+
+	if share.Members != "alice:rw bob:ro" {
+		t.Fatalf("unexpected column value %q", share.Members)
+	}
+
+	got := share.MemberList()
+	if len(got) != 2 || got[0] != members[0] || got[1] != members[1] {
+		t.Fatalf("members did not survive the column: %+v", got)
+	}
+}
+
+func TestShareMembersLegacyRow(t *testing.T) {
+	got := (&model2.SharesDBModel{Username: "alice"}).MemberList()
+	if len(got) != 1 || got[0] != (model2.ShareMember{Username: "alice"}) {
+		t.Fatalf("a row from before members should give its account write access, got %+v", got)
+	}
+
+	if got := (&model2.SharesDBModel{}).MemberList(); len(got) != 0 {
+		t.Fatalf("a guest share has no members, got %+v", got)
 	}
 }
 

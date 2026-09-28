@@ -62,6 +62,7 @@ func GetSambaSharesList(ctx echo.Context) error {
 			Path:        v.Path,
 			ID:          v.ID,
 			Username:    v.Username,
+			Members:     v.MemberList(),
 			TimeMachine: v.TimeMachine,
 		})
 	}
@@ -127,6 +128,7 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 	// other entries of this same request, hence the local set.
 	requested := map[string]bool{}
 	resolved := make([]string, len(shares))
+	memberLists := make([][]model2.ShareMember, len(shares))
 
 	for i, v := range shares {
 		if v.Path == "" {
@@ -159,18 +161,15 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.SHARE_NAME_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.SHARE_NAME_ALREADY_EXISTS)})
 		}
 
-		// A share is protected when it names an account, not when a boolean says
+		// A share is protected when it names accounts, not when a boolean says
 		// so. Clients that predate this field omit it and keep getting the guest
 		// share they have always got.
-		if v.Username != "" {
-			if err := service.ValidateSambaUsername(v.Username); err != nil {
-				return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
-			}
-
-			if _, err := user.Lookup(v.Username); err != nil {
-				return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.USER_NOT_EXIST, Message: common_err.GetMsg(common_err.USER_NOT_EXIST)})
-			}
+		members, err := resolveShareMembers(v)
+		if err != nil {
+			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
 		}
+
+		memberLists[i] = members
 
 		// Refuse up front rather than handing back a share that mounts and then
 		// refuses every connection: testparm cannot see a missing VFS module.
@@ -183,20 +182,27 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 
 	for i, v := range shares {
 		path := resolved[i]
+		members := memberLists[i]
+		owner := chooseShareOwner("", members)
 
 		shareDBModel := model2.SharesDBModel{
-			Anonymous:   v.Username == "",
-			Username:    v.Username,
+			Anonymous:   owner == "",
+			Username:    owner,
+			Members:     model2.FormatMembers(members),
 			Path:        path,
 			Name:        filepath.Base(path),
 			TimeMachine: v.TimeMachine,
 		}
 
-		if v.Username == "" {
+		shares[i].Username = owner
+		shares[i].Members = members
+		shares[i].Anonymous = owner == ""
+
+		if owner == "" {
 			// Unchanged from before authenticated shares existed: a guest share has
 			// no owner to speak of, so the directory stays world-writable.
 			os.Chmod(path, 0o777)
-		} else if err := restrictShareToUser(path, v.Username); err != nil {
+		} else if err := restrictShareToUser(path, owner); err != nil {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 		}
 
@@ -208,13 +214,16 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: shares})
 }
 
-// PutSambaShare moves an existing share between guest access and a named
-// account, in either direction, and turns its Time Machine flag on or off. An
-// empty username makes it a guest share again.
+// PutSambaShare sets who may mount an existing share, moving it between guest
+// access and named accounts in either direction, and turns its Time Machine
+// flag on or off. An empty member list makes it a guest share again; a body
+// with a username and no members is what older clients send, and means that
+// one account with write access.
 //
-// The body replaces both fields, so a client that omits time_machine clears it.
+// The body replaces all of it, so a client that omits time_machine clears it.
 //
-// Only the shared directory itself is re-owned, never its contents. A media
+// Moving between guest access and accounts re-owns only the shared directory
+// itself, never its contents. A media
 // share can hold millions of files and walking them inside an HTTP request is
 // not something a NAS should be asked to do. It is not needed either: files
 // created under a guest share are world-readable, and files created under a
@@ -232,23 +241,13 @@ func PutSambaShare(ctx echo.Context) error {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
 	}
 
-	if request.Username == share.Username && request.TimeMachine == share.TimeMachine {
-		return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: share})
-	}
-
-	path, err := service.ValidateSharePath(share.Path)
+	members, err := resolveShareMembers(request)
 	if err != nil {
-		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.DIR_NOT_EXISTS, Message: err.Error()})
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
 	}
 
-	if request.Username != "" {
-		if err := service.ValidateSambaUsername(request.Username); err != nil {
-			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
-		}
-
-		if _, err := user.Lookup(request.Username); err != nil {
-			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.USER_NOT_EXIST, Message: common_err.GetMsg(common_err.USER_NOT_EXIST)})
-		}
+	if model2.FormatMembers(members) == model2.FormatMembers(share.MemberList()) && request.TimeMachine == share.TimeMachine {
+		return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: shareResponse(share)})
 	}
 
 	if request.TimeMachine {
@@ -258,39 +257,27 @@ func PutSambaShare(ctx echo.Context) error {
 	}
 
 	// Ownership moves first. If Samba then refuses the configuration the share
-	// keeps working as it did, and the directory is put back below. A request
-	// that only flips the Time Machine flag must leave the directory alone:
+	// keeps working as it did, and the directory is put back. A request that
+	// only flips the Time Machine flag leaves the directory alone:
 	// releaseShareFromUser would drop a guest folder from 0777 to 0755.
-	usernameChanged := request.Username != share.Username
-	if usernameChanged {
-		if request.Username == "" {
-			err = releaseShareFromUser(path)
-		} else {
-			err = restrictShareToUser(path, request.Username)
-		}
-
-		if err != nil {
-			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
-		}
-	}
-
-	if err := service.MyService.Shares().UpdateShare(id, request.Username, request.TimeMachine); err != nil {
-		if usernameChanged {
-			if share.Username == "" {
-				_ = releaseShareFromUser(path)
-			} else {
-				_ = restrictShareToUser(path, share.Username)
-			}
-		}
-
+	share, err = applyShareMembers(share, members, request.TimeMachine)
+	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 	}
 
-	share.Username = request.Username
-	share.Anonymous = request.Username == ""
-	share.TimeMachine = request.TimeMachine
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: shareResponse(share)})
+}
 
-	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: share})
+// shareResponse is a share as the API returns it.
+func shareResponse(share model2.SharesDBModel) model.Shares {
+	return model.Shares{
+		ID:          share.ID,
+		Anonymous:   share.Anonymous,
+		Path:        share.Path,
+		Username:    share.Username,
+		Members:     share.MemberList(),
+		TimeMachine: share.TimeMachine,
+	}
 }
 
 func DeleteSambaShares(ctx echo.Context) error {

@@ -239,6 +239,7 @@ func InitV1Router() http.Handler {
 				v1SambaUsersGroup.GET("", v1.GetSambaUsersList)
 				v1SambaUsersGroup.POST("", v1.PostSambaUserCreate)
 				v1SambaUsersGroup.PUT("/:username/password", v1.PutSambaUserPassword)
+				v1SambaUsersGroup.PUT("/:username/shares", v1.PutSambaUserShares)
 				v1SambaUsersGroup.DELETE("/:username", v1.DeleteSambaUser)
 			}
 		}

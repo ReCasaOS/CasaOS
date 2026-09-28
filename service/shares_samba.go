@@ -25,6 +25,9 @@ const (
 // field for field and line for line. Every row predating authenticated shares
 // carries an empty Username, so an upgrade regenerates their sections unchanged.
 //
+// A protected share lets in its members only, writing for those allowed to,
+// and runs every session as the account that owns the directory.
+//
 // An authenticated share drops the guest access, the world-writable masks and
 // the root ownership together. Leaving any single one behind would make the
 // authentication decorative: "guest ok" alone re-opens the share, and
@@ -59,14 +62,35 @@ func sambaSection(share model2.SharesDBModel) string {
 			"force user = root\n" + timeMachine + "\n"
 	}
 
+	// Samba decides who may write from the account that connected, before
+	// "force user" swaps in the owner for the file operations themselves. So the
+	// share is read-only by default and "write list" opens it to the members
+	// allowed to write, while every file on disk still belongs to one account and
+	// stays readable and writable for all of them.
+	valid, writers := []string{}, []string{}
+
+	for _, member := range share.MemberList() {
+		valid = append(valid, member.Username)
+
+		if !member.ReadOnly {
+			writers = append(writers, member.Username)
+		}
+	}
+
+	writeList := ""
+	if len(writers) > 0 {
+		writeList = "write list = " + strings.Join(writers, " ") + "\n"
+	}
+
 	return "\n[" + name + "]\n" +
 		"comment = CasaOS share " + name + "\n" +
 		"public = No\n" +
 		"path = " + share.Path + "\n" +
 		"browseable = Yes\n" +
-		"read only = No\n" +
+		"read only = Yes\n" +
+		writeList +
 		"guest ok = No\n" +
-		"valid users = " + share.Username + "\n" +
+		"valid users = " + strings.Join(valid, " ") + "\n" +
 		"create mask = 0660\n" +
 		"directory mask = 0770\n" +
 		"force user = " + share.Username + "\n" + timeMachine + "\n"

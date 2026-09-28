@@ -4,6 +4,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
 	"github.com/ReCasaOS/CasaOS/service"
+	model2 "github.com/ReCasaOS/CasaOS/service/model"
 	"github.com/labstack/echo/v4"
 )
 
@@ -50,24 +51,51 @@ func PutSambaUserPassword(ctx echo.Context) error {
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: username})
 }
 
-// DeleteSambaUser removes a share account, refusing while any share still names
-// it. Removing it anyway would leave those shares listing a "valid users" entry
-// that no longer resolves, which smbd treats as nobody being allowed in — the
-// share would simply stop working with no explanation.
+// DeleteSambaUser removes a share account, taking it out of every share it may
+// mount first. A share it owns passes to another member, files included.
+//
+// It refuses while the account is the only member of a share. Removing it
+// anyway would leave that share with a "valid users" entry that no longer
+// resolves, which smbd treats as nobody being allowed in — the share would
+// simply stop working with no explanation.
 func DeleteSambaUser(ctx echo.Context) error {
 	username := ctx.Param("username")
 
-	for _, share := range service.MyService.Shares().GetSharesList() {
-		if share.Username == username {
-			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{
-				Success: common_err.CLIENT_ERROR,
-				Message: "this account is still used by the share " + share.Path,
-			})
-		}
+	type change struct {
+		share   model2.SharesDBModel
+		members []model2.ShareMember
 	}
 
+	changes := []change{}
+
+	for _, share := range service.MyService.Shares().GetSharesList() {
+		current := share.MemberList()
+		members := withMember(current, username, false, false)
+
+		if len(members) == len(current) && share.Username != username {
+			continue
+		}
+
+		if len(members) == 0 {
+			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{
+				Success: common_err.CLIENT_ERROR,
+				Message: "this account is the only one allowed into the share " + share.Path,
+			})
+		}
+
+		changes = append(changes, change{share: share, members: members})
+	}
+
+	// The account goes first: once it no longer exists, applyShareMembers sees
+	// the owner is gone and hands its shares, files included, to a member.
 	if err := service.DeleteSambaUser(username); err != nil {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
+	}
+
+	for _, c := range changes {
+		if _, err := applyShareMembers(c.share, c.members, c.share.TimeMachine); err != nil {
+			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+		}
 	}
 
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: username})
