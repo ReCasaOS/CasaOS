@@ -36,6 +36,11 @@ func (t *Telemetry) Run(ctx context.Context) {
 	}
 }
 
+// heartbeatEvery is how often a box says it is running. Every three hours rather
+// than once a day: the count of boxes follows the day instead of lagging a day
+// behind it, for eight small events a day per box.
+const heartbeatEvery = 3 * time.Hour
+
 // startDelay is random, from 0 to 60 minutes, unless the install check sets
 // CASAOS_TELEMETRY_START_DELAY (a Go duration).
 func startDelay() time.Duration {
@@ -50,14 +55,15 @@ func startDelay() time.Duration {
 //  2. upgraded-from present: send version_changed, delete the file only once sent
 //     (a value equal to the running release, a repair re-run or an upgrade that
 //     failed before the copy, is deleted unsent: nothing changed);
-//  3. last_sent absent or a day old: send heartbeat, record last_sent only once sent.
+//  3. last_sent absent or heartbeatEvery old: send heartbeat, record last_sent only
+//     once sent.
 //
 // A failure is logged and waits for the next check: nothing is retried sooner
 // or queued.
 func (t *Telemetry) Check(ctx context.Context) {
-	// One clock reading for the whole pass: last_sent then marks when the day
-	// was counted, not when the send returned, so the hourly check 24 hours
-	// later is due and the cadence does not slip to 25 hours.
+	// One clock reading for the whole pass: last_sent then marks when the box
+	// was counted, not when the send returned, so the hourly check three hours
+	// later is due and the cadence does not slip to four hours.
 	now := t.Now()
 	upgradedFrom := t.path(upgradedFromFile)
 	state := t.load()
@@ -70,11 +76,11 @@ func (t *Telemetry) Check(ctx context.Context) {
 
 	_, err := os.Stat(upgradedFrom)
 	changed := err == nil
-	// As the spec says: absent or at least 24 hours old. A last_sent a little
-	// in the future waits for the clock; a day or more ahead (a clock that was
-	// once far off) is due, or the box would drop out of the count until then.
+	// Absent or at least heartbeatEvery old. A last_sent a little in the future
+	// waits for the clock; heartbeatEvery or more ahead (a clock that was once
+	// far off) is due, or the box would drop out of the count until then.
 	age := now.Sub(state.LastSent)
-	due := state.LastSent.IsZero() || age >= 24*time.Hour || age <= -24*time.Hour
+	due := state.LastSent.IsZero() || age >= heartbeatEvery || age <= -heartbeatEvery
 	if !changed && !due {
 		return
 	}
