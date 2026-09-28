@@ -118,6 +118,10 @@ func init() {
 
 	service.MyService = service.NewService(sqliteDB, config.CommonInfo.RuntimePath)
 
+	if err := service.MyService.Shares().MergeDuplicateShares(); err != nil {
+		logger.Error("failed to merge duplicate shares", zap.Error(err))
+	}
+
 	service.Cache = cache.Init()
 
 	service.GetCPUThermalZone()

@@ -38,6 +38,7 @@ type SharesService interface {
 	UpdateConfigFile() error
 	InitSambaConfig()
 	DeleteShareByPath(path string) error
+	MergeDuplicateShares() error
 }
 
 type sharesStruct struct {
@@ -311,6 +312,81 @@ func (s *sharesStruct) initSambaConfig() bool {
 		return true
 	}
 	return false
+}
+
+// MergeDuplicateShares folds rows that share the same folder into the oldest
+// one. A create that was not serialised could insert the same folder several
+// times; smbd then keeps only the first section of each name, while the
+// dashboard lists them all.
+func (s *sharesStruct) MergeDuplicateShares() error {
+	shares := []model2.SharesDBModel{}
+	s.db.Order("id").Find(&shares)
+
+	kept, removed := mergeDuplicateShares(shares)
+	if len(removed) == 0 {
+		return nil
+	}
+	// in external mode a row deleted while smb.conf lacks the include would come back once it is added
+	if err := checkExternalMainConfig(); err != nil {
+		return err
+	}
+
+	for _, share := range kept {
+		s.db.Model(&model2.SharesDBModel{}).Where("id = ?", share.ID).
+			Updates(map[string]interface{}{"username": share.Username, "members": share.Members, "anonymous": share.Anonymous, "time_machine": share.TimeMachine})
+	}
+
+	s.db.Where("id IN ?", removed).Delete(&model2.SharesDBModel{})
+
+	return s.applyConfig(kept, false)
+}
+
+// mergeDuplicateShares returns the shares with one row per folder, and the ids
+// of the rows folded away. The oldest row stays; it gains every member the
+// others had, with write access if any of them gave it, and Time Machine if
+// any of them had it.
+func mergeDuplicateShares(shares []model2.SharesDBModel) ([]model2.SharesDBModel, []uint) {
+	kept := []model2.SharesDBModel{}
+	removed := []uint{}
+	index := map[string]int{}
+
+	for _, share := range shares {
+		i, seen := index[share.Path]
+		if !seen {
+			index[share.Path] = len(kept)
+			kept = append(kept, share)
+			continue
+		}
+
+		first := &kept[i]
+		members := first.MemberList()
+
+		for _, extra := range share.MemberList() {
+			found := false
+
+			for j := range members {
+				if members[j].Username == extra.Username {
+					members[j].ReadOnly = members[j].ReadOnly && extra.ReadOnly
+					found = true
+				}
+			}
+
+			if !found {
+				members = append(members, extra)
+			}
+		}
+
+		if first.Username == "" {
+			first.Username = share.Username
+		}
+
+		first.Members = model2.FormatMembers(members)
+		first.Anonymous = first.Username == ""
+		first.TimeMachine = first.TimeMachine || share.TimeMachine
+		removed = append(removed, share.ID)
+	}
+
+	return kept, removed
 }
 
 func NewSharesService(db *gorm.DB) SharesService {

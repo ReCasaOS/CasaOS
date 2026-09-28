@@ -258,3 +258,32 @@ func TestADeleteRefusedForAMissingIncludeKeepsTheShare(t *testing.T) {
 		t.Errorf("%d shares left, want the refused one kept", count)
 	}
 }
+
+func TestMergeDuplicateShares(t *testing.T) {
+	kept, removed := mergeDuplicateShares([]model2.SharesDBModel{
+		{ID: 1, Path: "/DATA/AppData", Username: "pippo", Members: "pippo:rw"},
+		{ID: 2, Path: "/DATA/Downloads", Username: "pippo", Members: "pippo:ro"},
+		{ID: 3, Path: "/DATA/Downloads", Username: "pippo", Members: "pippo:rw anna:ro"},
+		{ID: 4, Path: "/DATA/Downloads", Username: "pippo", Members: "pippo:ro", TimeMachine: true},
+	})
+
+	if len(removed) != 2 || removed[0] != 3 || removed[1] != 4 {
+		t.Fatalf("the newer duplicates should go, got %v", removed)
+	}
+
+	if len(kept) != 2 {
+		t.Fatalf("one row per folder should stay, got %+v", kept)
+	}
+
+	downloads := kept[1]
+	if downloads.ID != 2 || downloads.Members != "pippo:rw anna:ro" || !downloads.TimeMachine || downloads.Username != "pippo" {
+		t.Errorf("the oldest row should gain what the others gave, got %+v", downloads)
+	}
+}
+
+func TestMergeDuplicateSharesNothingToDo(t *testing.T) {
+	_, removed := mergeDuplicateShares([]model2.SharesDBModel{{ID: 1, Path: "/DATA/A"}, {ID: 2, Path: "/DATA/B"}})
+	if len(removed) != 0 {
+		t.Errorf("distinct folders are left alone, got %v", removed)
+	}
+}
