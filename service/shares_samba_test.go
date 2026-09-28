@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -285,5 +286,17 @@ func TestMergeDuplicateSharesNothingToDo(t *testing.T) {
 	_, removed := mergeDuplicateShares([]model2.SharesDBModel{{ID: 1, Path: "/DATA/A"}, {ID: 2, Path: "/DATA/B"}})
 	if len(removed) != 0 {
 		t.Errorf("distinct folders are left alone, got %v", removed)
+	}
+}
+
+func TestValidateNewSharePathRefusesTheSystemDisk(t *testing.T) {
+	// /mnt and its folders sit on the system disk in any container or CI
+	// runner; only a disk mounted there may be shared.
+	if _, err := os.Stat("/mnt"); err != nil {
+		t.Skip("no /mnt here")
+	}
+
+	if _, err := ValidateNewSharePath("/mnt"); err != ErrSharePathNotOnDisk {
+		t.Errorf("/mnt itself should be refused, got %v", err)
 	}
 }

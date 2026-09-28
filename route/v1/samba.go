@@ -140,7 +140,7 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 
 		// Sharing a folder changes its ownership and permissions as root, so the
 		// path is confined before anything touches it.
-		path, err := service.ValidateSharePath(v.Path)
+		path, err := service.ValidateNewSharePath(v.Path)
 		if err != nil {
 			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.DIR_NOT_EXISTS, Message: err.Error()})
 		}

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
@@ -245,6 +246,37 @@ var shareRoots = []string{
 	"/srv",
 }
 
+// removableRoots hold mounted disks, but on a desktop also the per-user
+// folders udisks mounts USB drives into (/media/<user>), which belong to that
+// user's session and must not be handed to a share account.
+var removableRoots = []string{"/mnt", "/media"}
+
+var ErrSharePathNotOnDisk = errors.New("under /media and /mnt only a folder on a mounted disk can be shared")
+
+// ValidateNewSharePath is ValidateSharePath for a folder about to be shared:
+// under /media and /mnt the folder must be on a disk mounted there, not on the
+// system disk the mount points themselves live on. Existing shares are only
+// checked with ValidateSharePath, so one made before this rule can still be
+// changed or removed.
+func ValidateNewSharePath(path string) (string, error) {
+	resolved, err := ValidateSharePath(path)
+	if err != nil {
+		return "", err
+	}
+
+	for _, root := range removableRoots {
+		if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+			continue
+		}
+
+		if sameFilesystem(resolved, root) {
+			return "", ErrSharePathNotOnDisk
+		}
+	}
+
+	return resolved, nil
+}
+
 var (
 	ErrSharePathNotDirectory = errors.New("only a directory can be shared")
 	ErrSharePathOutsideRoots = errors.New("a share must live under /DATA, /mnt, /media or /srv")
@@ -282,4 +314,16 @@ func ValidateSharePath(path string) (string, error) {
 	}
 
 	return "", ErrSharePathOutsideRoots
+}
+
+// sameFilesystem reports whether a and b live on the same device. When either
+// cannot be read it says yes, which refuses the share rather than risk one.
+func sameFilesystem(a, b string) bool {
+	var sa, sb syscall.Stat_t
+
+	if syscall.Stat(a, &sa) != nil || syscall.Stat(b, &sb) != nil {
+		return true
+	}
+
+	return sa.Dev == sb.Dev
 }
