@@ -3,6 +3,7 @@ package autoupdate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -572,5 +573,35 @@ func TestAPackageUpdateOrDpkgsLockHoldsTheStart(t *testing.T) {
 	a.Check(context.Background())
 	if len(b.started) != 1 {
 		t.Fatalf("started %v once the box was free, want one start", b.started)
+	}
+}
+
+func TestABusyRefusalFromStartIsNotAFailedAttempt(t *testing.T) {
+	a, b := newBox(t)
+	saveState(t, a, on())
+	refuse := true
+	a.Start = func(version string) error {
+		b.started = append(b.started, version)
+		if refuse {
+			return fmt.Errorf("%w: a package update is running", ErrBusy)
+		}
+		return nil
+	}
+	before := stateFile(t, a)
+
+	a.Check(context.Background())
+	a.Check(context.Background())
+
+	if len(b.started) != 2 {
+		t.Fatalf("started %v: each check should have tried again", b.started)
+	}
+	if after := stateFile(t, a); after != before {
+		t.Fatalf("autoupdate.json = %s, want it as it was: a refusal is not an attempt, and two of them must not pause the release", after)
+	}
+
+	refuse = false
+	a.Check(context.Background())
+	if len(b.started) != 3 {
+		t.Fatalf("started %v once the box was free", b.started)
 	}
 }

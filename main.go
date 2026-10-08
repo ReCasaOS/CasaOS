@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -129,7 +130,13 @@ func main() {
 	// Automatic updates start the button's own update, read the button's own
 	// version.json, and settle an update that restarted the core before checking.
 	autoupdate.Default.Releases = service.MyService.Casa()
-	autoupdate.Default.Start = service.MyService.System().UpdateSystemVersion
+	autoupdate.Default.Start = func(release string) error {
+		err := service.MyService.System().UpdateSystemVersion(release)
+		if errors.Is(err, service.ErrSystemMaintenanceBusy) {
+			return fmt.Errorf("%w: %v", autoupdate.ErrBusy, err)
+		}
+		return err
+	}
 	autoupdate.Default.Busy = service.MyService.System().MaintenanceBusy
 	go autoupdate.Default.Run(context.Background())
 	v1Router := route.InitV1Router()

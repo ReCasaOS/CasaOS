@@ -1,17 +1,19 @@
 // Package dockerpkg knows which of a Debian-family box's packages are Docker's, where
 // the installed Docker came from, and what an apt simulation says it would do to them.
 //
-// ReCasaOS updates system packages with one apt upgrade, and an upgrade of docker-ce or
-// containerd.io restarts the Docker daemon, which stops every container until it is back.
-// The System packages update therefore leaves this family out and shows it on a line of
-// its own; this package is what tells the two apart. It runs nothing: callers give it
-// text apt printed, and it gives back what is in it. Nothing here is ever built into a
-// shell command from a version string: the manual commands are constants.
+// ReCasaOS updates system packages with an apt install of a list, and an upgrade of
+// docker-ce or containerd.io restarts the Docker daemon, which stops every container until
+// it is back. The System packages update therefore leaves this family out and shows it on a
+// line of its own; this package is what tells the two apart. It runs nothing: callers give
+// it text apt printed, and it gives back what is in it. Nothing here is ever built into a
+// shell command from a version string, and a package name reaches a command only if it is
+// one of the fixed names below.
 package dockerpkg
 
 import (
 	"bufio"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -31,10 +33,35 @@ var family = map[string]struct{}{
 	"containerd":                {},
 }
 
+// restarts are the packages whose upgrade restarts the daemon (or containerd under it).
+var restarts = map[string]struct{}{
+	"docker-ce":     {},
+	"containerd.io": {},
+	"docker.io":     {},
+	"containerd":    {},
+}
+
+// base is a package name without the architecture apt adds to a foreign one:
+// "containerd.io:armhf" is "containerd.io".
+func base(name string) string {
+	b, _, _ := strings.Cut(name, ":")
+	return b
+}
+
 // IsFamily reports whether name is one of the Docker engine's packages.
 func IsFamily(name string) bool {
-	_, ok := family[name]
+	_, ok := family[base(name)]
 	return ok
+}
+
+// RestartsEngine reports whether upgrading any of names restarts Docker.
+func RestartsEngine(names []string) bool {
+	for _, name := range names {
+		if _, ok := restarts[base(name)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+.\-]*(:[a-z0-9]+)?$`)
@@ -61,6 +88,12 @@ const (
 	OriginUnknown Origin = "unknown"
 )
 
+// CanSeeUpdates reports whether apt can tell of an update for an installation from this
+// origin: of a snap, or of a Docker whose source is not known, it cannot.
+func (o Origin) CanSeeUpdates() bool {
+	return o == OriginDockerRepo || o == OriginDistribution
+}
+
 const dockerRepositoryPrefix = "https://download.docker.com/linux/"
 
 var policySourcePattern = regexp.MustCompile(`^\s+(?:\*\*\*\s+)?\d+\s+(https?://\S+)\s`)
@@ -78,19 +111,42 @@ func OriginFromPolicy(policy string) Origin {
 	return OriginUnknown
 }
 
+// defaultPackages is what to update by hand when apt has not said which packages are
+// behind.
+var defaultPackages = map[Origin][]string{
+	OriginDockerRepo:   {"docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin"},
+	OriginDistribution: {"docker.io"},
+}
+
 // ManualCommand is what an owner types to update Docker themselves, for an origin, or ""
-// when there is no command this can stand behind. They are constants on purpose.
-func ManualCommand(origin Origin) string {
-	switch origin {
-	case OriginDockerRepo:
-		return "sudo apt-get update && sudo apt-get install --only-upgrade docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
-	case OriginDistribution:
-		return "sudo apt-get update && sudo apt-get install --only-upgrade docker.io"
-	case OriginSnap:
+// when there is no command this can stand behind. It names the packages apt says are
+// pending when it said some, so that running it leaves nothing behind, and only names from
+// the fixed family: nothing apt printed reaches it unless it is one of them.
+func ManualCommand(origin Origin, pending []string) string {
+	if origin == OriginSnap {
 		return "sudo snap refresh docker"
-	default:
+	}
+	defaults, ok := defaultPackages[origin]
+	if !ok {
 		return ""
 	}
+	chosen := map[string]struct{}{}
+	for _, name := range pending {
+		if b := base(name); IsFamily(name) {
+			chosen[b] = struct{}{}
+		}
+	}
+	if len(chosen) == 0 {
+		for _, name := range defaults {
+			chosen[name] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(chosen))
+	for name := range chosen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return "sudo apt-get update && sudo apt-get install --only-upgrade " + strings.Join(names, " ")
 }
 
 var engineVersionPattern = regexp.MustCompile(`^(?:\d+:)?(\d+(?:\.\d+)*)`)
@@ -130,4 +186,17 @@ func Touches(simulation string) Touched {
 		}
 	}
 	return touched
+}
+
+// ContractPattern is an extended regular expression (for grep -E) that matches a line of
+// an apt simulation that breaks the contract of the update: an install or upgrade of a
+// package of the Docker family, or any removal. The unit's shell line runs the simulation
+// again just before it installs, and installs nothing if a line matches.
+func ContractPattern() string {
+	names := make([]string, 0, len(family))
+	for name := range family {
+		names = append(names, strings.ReplaceAll(name, ".", `\.`))
+	}
+	sort.Strings(names)
+	return `^(Inst (` + strings.Join(names, "|") + `)[: ]|Remv )`
 }

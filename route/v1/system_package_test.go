@@ -178,6 +178,7 @@ func TestStartSystemPackageUpdateRefusalsAreConflicts(t *testing.T) {
 		"another maintenance":        service.ErrSystemMaintenanceBusy,
 		"nothing but Docker":         service.ErrSystemPackageNothingToUpdate,
 		"a list that touches Docker": service.ErrSystemPackageTouchesDocker,
+		"a list that changed":        service.ErrSystemPackageListChanged,
 	} {
 		fakeSystem := &fakeSystemPackageService{startErr: fmt.Errorf("%w: detail", refusal)}
 		service.MyService = fakeSystemPackageRepository{system: fakeSystem}

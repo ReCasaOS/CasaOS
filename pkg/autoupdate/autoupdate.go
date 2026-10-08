@@ -17,6 +17,7 @@ package autoupdate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -52,6 +53,10 @@ type Releases interface {
 	GetCasaosVersion() model.Version
 	FetchCasaosVersion() model.Version
 }
+
+// ErrBusy is what Start returns, wrapped, when something else is changing the box and the
+// update was not started: that is not a failed attempt, and the next check tries again.
+var ErrBusy = errors.New("the box is being changed by something else")
 
 // AutoUpdate is the automatic updates of one box.
 type AutoUpdate struct {
@@ -163,12 +168,27 @@ func (a *AutoUpdate) Check(ctx context.Context) {
 // that fails is failed at once.
 func (a *AutoUpdate) start(release string, now time.Time) {
 	last := Last{Version: release, StartedAt: now.UTC().Truncate(time.Second), Result: resultRunning}
-	if err := a.modify(func(s *State) bool { s.Last = &last; return true }); err != nil {
+	var before *Last
+	if err := a.modify(func(s *State) bool { before = s.Last; s.Last = &last; return true }); err != nil {
 		logger.Info("automatic update: cannot save autoupdate.json, not starting", zap.String("version", release), zap.Error(err))
 		return
 	}
 	logger.Info("automatic update: starting", zap.String("version", release))
 	if err := a.Start(release); err != nil {
+		if errors.Is(err, ErrBusy) {
+			// nothing was started: the attempt is taken back, not counted
+			logger.Info("automatic update: the box is busy, not starting", zap.String("version", release), zap.Error(err))
+			if err := a.modify(func(s *State) bool {
+				if s.Last == nil || s.Last.Result != resultRunning || s.Last.Version != release {
+					return false
+				}
+				s.Last = before
+				return true
+			}); err != nil {
+				logger.Info("automatic update: cannot save autoupdate.json", zap.Error(err))
+			}
+			return
+		}
 		logger.Info("automatic update: cannot start", zap.String("version", release), zap.Error(err))
 		if err := a.modify(func(s *State) bool {
 			if s.Last == nil || s.Last.Result != resultRunning {

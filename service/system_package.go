@@ -94,6 +94,8 @@ type systemPackageUpdater struct {
 	mkdirAll      func(string, os.FileMode) error
 	stat          func(string) (os.FileInfo, error)
 	now           func() time.Time
+	// dpkgLocked says whether a package manager holds dpkg's lock; nil means never.
+	dpkgLocked func() bool
 }
 
 func newSystemPackageUpdater() *systemPackageUpdater {
@@ -112,6 +114,7 @@ func newSystemPackageUpdater() *systemPackageUpdater {
 		mkdirAll:      os.MkdirAll,
 		stat:          os.Stat,
 		now:           time.Now,
+		dpkgLocked:    dpkgLockHeld,
 	}
 }
 
@@ -209,7 +212,7 @@ func (u *systemPackageUpdater) check() (SystemPackageUpdates, error) {
 	}
 
 	var dockerUpdates []SystemPackageUpdate
-	result.Updates, dockerUpdates = splitDockerUpdates(parseAPTUpgradeSimulation(string(output)))
+	result.Updates, dockerUpdates = splitDockerUpdates(parseAPTUpgradeSimulation(string(output)), u.engineInstalled(ctx))
 	result.Count = len(result.Updates)
 	result.Docker = u.dockerInfo(ctx, dockerUpdates)
 	now := u.now().UTC()
@@ -242,15 +245,33 @@ func (u *systemPackageUpdater) startUpdate() (SystemPackageUpdateStatus, error) 
 		status.Error = reason
 		return status, fmt.Errorf("%w: %s", ErrSystemMaintenanceBusy, reason)
 	}
+
+	// The two simulations take a while on a small box: not with the lock held, so that the
+	// status and the check can still answer, and the box is looked at again afterwards.
+	u.mu.Unlock()
 	listCtx, cancelList := context.WithTimeout(context.Background(), systemPackageCheckTimeout)
 	names, err := u.upgradeNames(listCtx, support)
 	cancelList()
+	u.mu.Lock()
 	if err != nil {
 		status.Error = err.Error()
 		return status, err
 	}
+	if u.isRunning() {
+		status.State = systemPackageUpdateStateRunning
+		return u.statusLocked(support), ErrSystemPackageUpdateRunning
+	}
+	if reason, busy := u.maintenanceBusy(context.Background(), systemPackageUpdateUnit); busy {
+		status.Error = reason
+		return status, fmt.Errorf("%w: %s", ErrSystemMaintenanceBusy, reason)
+	}
 
 	logPath := u.logPath()
+	args, err := systemPackageUpdateArgs(support.aptPath, logPath, names)
+	if err != nil {
+		status.Error = err.Error()
+		return status, err
+	}
 	if err := u.mkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		markSystemPackageUpdateFailed(&status, fmt.Sprintf("prepare package update log: %v", err), u.now)
 		return status, err
@@ -259,12 +280,6 @@ func (u *systemPackageUpdater) startUpdate() (SystemPackageUpdateStatus, error) 
 	queuedLog := fmt.Sprintf("CASAOS_PACKAGE_UPDATE_QUEUED %s\n", queuedAt.Format(time.RFC3339))
 	if err := u.writeFile(logPath, []byte(queuedLog), 0o644); err != nil {
 		markSystemPackageUpdateFailed(&status, fmt.Sprintf("prepare package update log: %v", err), u.now)
-		return status, err
-	}
-
-	args, err := systemPackageUpdateArgs(support.aptPath, logPath, names)
-	if err != nil {
-		markSystemPackageUpdateFailed(&status, err.Error(), u.now)
 		return status, err
 	}
 	if output, err := u.start(support.systemdPath, systemPackageUpdateUnit, args...); err != nil {
@@ -436,7 +451,16 @@ func systemPackageUpdateCommand(aptPath, logPath string, names []string) (string
 	}
 	quotedLogPath := shellQuote(logPath)
 	quotedAPTPath := shellQuote(aptPath)
-	return "set -o pipefail; exec >> " + quotedLogPath + " 2>&1; printf 'CASAOS_PACKAGE_UPDATE_STARTED %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; " + quotedAPTPath + " -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends " + strings.Join(quotedNames, " ") + "; status=$?; if [ -f /var/run/reboot-required ]; then printf 'CASAOS_PACKAGE_UPDATE_REBOOT_REQUIRED\\n'; fi; if [ \"$status\" -eq 0 ]; then printf 'CASAOS_PACKAGE_UPDATE_SUCCESS %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; else printf 'CASAOS_PACKAGE_UPDATE_FAILED %s %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$status\"; fi; exit \"$status\"", nil
+	installArgs := "install --only-upgrade --no-install-recommends " + strings.Join(quotedNames, " ")
+	// The check made when the update was asked for may be minutes old by the time the unit
+	// has the lock (an index refreshed since can make a listed package want a newer Docker):
+	// the same simulation is made again just before the install, and nothing is installed if
+	// it now touches Docker's packages or removes one.
+	guarded := "plan=\"$(" + quotedAPTPath + " -s --no-remove -o Debug::NoLocking=true -o Dpkg::Use-Pty=0 " + installArgs + " 2>&1)\"; " +
+		"if printf '%s\\n' \"$plan\" | grep -Eq " + shellQuote(dockerpkg.ContractPattern()) + "; then " +
+		"printf 'CASAOS_PACKAGE_UPDATE_GUARD the list now changes Docker or removes a package: nothing was installed\\n'; status=1; else " +
+		quotedAPTPath + " -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 " + installArgs + "; status=$?; fi; "
+	return "set -o pipefail; exec >> " + quotedLogPath + " 2>&1; printf 'CASAOS_PACKAGE_UPDATE_STARTED %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; " + guarded + "if [ -f /var/run/reboot-required ]; then printf 'CASAOS_PACKAGE_UPDATE_REBOOT_REQUIRED\\n'; fi; if [ \"$status\" -eq 0 ]; then printf 'CASAOS_PACKAGE_UPDATE_SUCCESS %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; else printf 'CASAOS_PACKAGE_UPDATE_FAILED %s %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$status\"; fi; exit \"$status\"", nil
 }
 
 type parsedSystemPackageUpdateLog struct {

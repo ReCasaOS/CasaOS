@@ -2,20 +2,30 @@ package dockerpkg
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
 
 func TestIsFamily(t *testing.T) {
-	for _, name := range []string{"docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin", "docker-ce-rootless-extras", "docker.io", "containerd"} {
+	for _, name := range []string{"docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin", "docker-ce-rootless-extras", "docker.io", "containerd", "containerd.io:armhf", "docker-ce:i386"} {
 		if !IsFamily(name) {
 			t.Errorf("IsFamily(%q) = false", name)
 		}
 	}
-	for _, name := range []string{"", "docker", "docker-ce-extra", "libc6", "runc", "dockerd", "containerd.io2", "podman", "snapd", "Docker-CE"} {
+	for _, name := range []string{"", "docker", "docker-ce-extra", "libc6", "runc", "dockerd", "containerd.io2", "podman", "snapd", "Docker-CE", ":armhf"} {
 		if IsFamily(name) {
 			t.Errorf("IsFamily(%q) = true", name)
 		}
+	}
+}
+
+func TestRestartsEngine(t *testing.T) {
+	if !RestartsEngine([]string{"docker-buildx-plugin", "containerd.io"}) || !RestartsEngine([]string{"docker.io"}) || !RestartsEngine([]string{"docker-ce:amd64"}) {
+		t.Error("an engine package did not restart Docker")
+	}
+	if RestartsEngine([]string{"docker-buildx-plugin", "docker-compose-plugin", "docker-ce-cli", "docker-ce-rootless-extras"}) || RestartsEngine(nil) {
+		t.Error("a client or plugin restarted Docker")
 	}
 }
 
@@ -25,7 +35,7 @@ func TestValidName(t *testing.T) {
 			t.Errorf("ValidName(%q) = false", name)
 		}
 	}
-	for _, name := range []string{"", "-rf", "x;rm -rf /", "a b", "$(id)", "`id`", "a\nb", "UPPER", "a&&b", ".hidden", "pkg=1.0", strings.Repeat("a", 129), "pkg/../x", "a|b"} {
+	for _, name := range []string{"", "-rf", "-oAPT::Foo", "x;rm -rf /", "a b", "$(id)", "`id`", "a\nb", "UPPER", "a&&b", ".hidden", "pkg=1.0", strings.Repeat("a", 129), "pkg/../x", "a|b"} {
 		if ValidName(name) {
 			t.Errorf("ValidName(%q) = true", name)
 		}
@@ -64,21 +74,43 @@ func TestOriginFromPolicy(t *testing.T) {
 	}
 }
 
-func TestManualCommandsAreConstants(t *testing.T) {
-	if got := ManualCommand(OriginDockerRepo); !strings.Contains(got, "--only-upgrade docker-ce docker-ce-cli containerd.io") || strings.Contains(got, " -y") {
-		t.Errorf("docker repository command = %q", got)
+func TestCanSeeUpdates(t *testing.T) {
+	for origin, want := range map[Origin]bool{OriginDockerRepo: true, OriginDistribution: true, OriginSnap: false, OriginUnknown: false, "": false} {
+		if got := origin.CanSeeUpdates(); got != want {
+			t.Errorf("%q.CanSeeUpdates() = %v, want %v", origin, got, want)
+		}
 	}
-	if got := ManualCommand(OriginDistribution); !strings.Contains(got, "docker.io") {
+}
+
+func TestManualCommandNamesWhatIsPending(t *testing.T) {
+	// nothing said: the usual set
+	if got := ManualCommand(OriginDockerRepo, nil); got != "sudo apt-get update && sudo apt-get install --only-upgrade containerd.io docker-buildx-plugin docker-ce docker-ce-cli docker-compose-plugin" {
+		t.Errorf("default docker repository command = %q", got)
+	}
+	// what apt said is behind, every name of it, sorted, without the architecture
+	got := ManualCommand(OriginDockerRepo, []string{"docker-ce", "docker-ce-rootless-extras", "docker-model-plugin", "containerd.io:amd64"})
+	if got != "sudo apt-get update && sudo apt-get install --only-upgrade containerd.io docker-ce docker-ce-rootless-extras docker-model-plugin" {
+		t.Errorf("pending command = %q", got)
+	}
+	if got := ManualCommand(OriginDistribution, []string{"docker.io", "containerd", "docker-compose-v2"}); got != "sudo apt-get update && sudo apt-get install --only-upgrade containerd docker-compose-v2 docker.io" {
 		t.Errorf("distribution command = %q", got)
 	}
-	if got := ManualCommand(OriginSnap); got != "sudo snap refresh docker" {
+	if got := ManualCommand(OriginDistribution, nil); !strings.HasSuffix(got, "--only-upgrade docker.io") {
+		t.Errorf("default distribution command = %q", got)
+	}
+	if got := ManualCommand(OriginSnap, []string{"docker-ce"}); got != "sudo snap refresh docker" {
 		t.Errorf("snap command = %q", got)
 	}
-	if got := ManualCommand(OriginUnknown); got != "" {
+	if got := ManualCommand(OriginUnknown, []string{"docker-ce"}); got != "" {
 		t.Errorf("unknown origin command = %q, want none", got)
 	}
-	if got := ManualCommand(Origin("x; rm -rf /")); got != "" {
+	if got := ManualCommand(Origin("x; rm -rf /"), nil); got != "" {
 		t.Errorf("a made-up origin gave a command: %q", got)
+	}
+	// nothing apt printed that is not a family name gets into the line
+	got = ManualCommand(OriginDockerRepo, []string{"docker-ce", "x; rm -rf /", "$(id)", "-oAPT::Foo", "libc6"})
+	if strings.ContainsAny(got, ";$()") || strings.Contains(got, "libc6") || strings.Contains(got, "-oAPT") || !strings.Contains(got, "docker-ce") {
+		t.Errorf("a name outside the family reached the command: %q", got)
 	}
 }
 
@@ -102,17 +134,48 @@ func TestTouches(t *testing.T) {
 	simulation := `Reading package lists...
 Inst libc6 [2.35-0ubuntu3.10] (2.35-0ubuntu3.11 Ubuntu:22.04/jammy-updates [amd64])
 Inst docker-ce [5:29.8.1-1~ubuntu.22.04~jammy] (5:29.8.2-1~ubuntu.22.04~jammy Docker CE:jammy [amd64])
-Inst containerd.io [2.3.5-1~ubuntu.22.04~jammy] (2.3.6-1~ubuntu.22.04~jammy Docker CE:jammy [amd64])
+Inst containerd.io:armhf [2.3.5-1~ubuntu.22.04~jammy] (2.3.6-1~ubuntu.22.04~jammy Docker CE:jammy [armhf])
 Remv oldthing [1.0]
 Conf docker-ce (5:29.8.2-1~ubuntu.22.04~jammy Docker CE:jammy [amd64])
 Inst docker-ce-extra-thing [1] (2 x [amd64])
 `
 	got := Touches(simulation)
-	want := Touched{Docker: []string{"docker-ce", "containerd.io"}, Removed: []string{"oldthing"}}
+	want := Touched{Docker: []string{"docker-ce", "containerd.io:armhf"}, Removed: []string{"oldthing"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Touches() = %#v, want %#v", got, want)
 	}
 	if clean := Touches("Inst libc6 [1] (2 x [amd64])\n"); len(clean.Docker) != 0 || len(clean.Removed) != 0 {
 		t.Errorf("Touches(clean) = %#v", clean)
+	}
+}
+
+func TestContractPatternMatchesWhatTouchesFinds(t *testing.T) {
+	pattern := regexp.MustCompile(ContractPattern())
+	for _, line := range []string{
+		"Inst docker-ce [5:29.8.1] (5:29.8.2 Docker CE:jammy [amd64])",
+		"Inst containerd.io [2.3.5] (2.3.6 Docker CE [amd64])",
+		"Inst containerd.io:armhf [2.3.5] (2.3.6 Docker CE [armhf])",
+		"Inst docker.io [26.1.5] (26.1.6 Debian [amd64])",
+		"Inst docker-ce-rootless-extras (5:29.8.2 Docker CE [amd64])",
+		"Remv anything [1.0]",
+	} {
+		if !pattern.MatchString(line) {
+			t.Errorf("the pattern does not match %q", line)
+		}
+	}
+	for _, line := range []string{
+		"Inst libc6 [2.35-0ubuntu3.10] (2.35-0ubuntu3.11 Ubuntu [amd64])",
+		"Inst docker-ce-extra-thing [1] (2 x [amd64])",
+		"Inst containerdxio [1] (2 x [amd64])", // the dot is a dot
+		"Conf docker-ce (5:29.8.2 Docker CE [amd64])",
+		"Reading package lists...",
+	} {
+		if pattern.MatchString(line) {
+			t.Errorf("the pattern matches %q", line)
+		}
+	}
+	// no character of it needs more than single quotes in a shell
+	if strings.Contains(ContractPattern(), "'") {
+		t.Errorf("the pattern holds a single quote: %q", ContractPattern())
 	}
 }

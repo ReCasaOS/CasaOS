@@ -114,7 +114,8 @@ func StartSystemPackageUpdate(ctx echo.Context) error {
 		if errors.Is(err, service.ErrSystemPackageUpdateRunning) ||
 			errors.Is(err, service.ErrSystemMaintenanceBusy) ||
 			errors.Is(err, service.ErrSystemPackageNothingToUpdate) ||
-			errors.Is(err, service.ErrSystemPackageTouchesDocker) {
+			errors.Is(err, service.ErrSystemPackageTouchesDocker) ||
+			errors.Is(err, service.ErrSystemPackageListChanged) {
 			return ctx.JSON(http.StatusConflict, model.Result{
 				Success: http.StatusConflict,
 				Message: err.Error(),
