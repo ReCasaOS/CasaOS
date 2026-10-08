@@ -60,7 +60,7 @@ func TestParseAPTUpgradeSimulationNoUpdates(t *testing.T) {
 }
 
 func TestSystemPackageUpdateCommand(t *testing.T) {
-	command, err := systemPackageUpdateCommand("/usr/bin/apt-get", "/var/log/casaos/package update.log", []string{"libc6", "zlib1g"})
+	command, err := systemPackageUpdateCommand("/usr/bin/apt-get", "/var/log/casaos/package update.log", []string{"libc6", "zlib1g"}, true)
 	if err != nil {
 		t.Fatalf("systemPackageUpdateCommand() error = %v", err)
 	}
@@ -81,7 +81,7 @@ func TestSystemPackageUpdateCommand(t *testing.T) {
 }
 
 func TestSystemPackageUpdateArgsAreDetached(t *testing.T) {
-	args, err := systemPackageUpdateArgs("/usr/bin/apt-get", "/var/log/casaos/package-update.log", []string{"libc6"})
+	args, err := systemPackageUpdateArgs("/usr/bin/apt-get", "/var/log/casaos/package-update.log", []string{"libc6"}, true)
 	if err != nil {
 		t.Fatalf("systemPackageUpdateArgs() error = %v", err)
 	}

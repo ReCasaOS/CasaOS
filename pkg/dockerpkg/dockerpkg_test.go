@@ -150,7 +150,7 @@ Inst docker-ce-extra-thing [1] (2 x [amd64])
 }
 
 func TestContractPatternMatchesWhatTouchesFinds(t *testing.T) {
-	pattern := regexp.MustCompile(ContractPattern())
+	pattern := regexp.MustCompile(ContractPattern(true))
 	for _, line := range []string{
 		"Inst docker-ce [5:29.8.1] (5:29.8.2 Docker CE:jammy [amd64])",
 		"Inst containerd.io [2.3.5] (2.3.6 Docker CE [amd64])",
@@ -175,7 +175,12 @@ func TestContractPatternMatchesWhatTouchesFinds(t *testing.T) {
 		}
 	}
 	// no character of it needs more than single quotes in a shell
-	if strings.Contains(ContractPattern(), "'") {
-		t.Errorf("the pattern holds a single quote: %q", ContractPattern())
+	if strings.Contains(ContractPattern(true), "'") || strings.Contains(ContractPattern(false), "'") {
+		t.Errorf("a pattern holds a single quote: %q", ContractPattern(true))
+	}
+	// on a box with no Docker engine only removals break the contract
+	plain := regexp.MustCompile(ContractPattern(false))
+	if plain.MatchString("Inst containerd.io [1] (2 x [amd64])") || !plain.MatchString("Remv anything [1.0]") {
+		t.Errorf("the pattern without Docker to protect = %q", ContractPattern(false))
 	}
 }

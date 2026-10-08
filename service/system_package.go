@@ -250,7 +250,7 @@ func (u *systemPackageUpdater) startUpdate() (SystemPackageUpdateStatus, error) 
 	// status and the check can still answer, and the box is looked at again afterwards.
 	u.mu.Unlock()
 	listCtx, cancelList := context.WithTimeout(context.Background(), systemPackageCheckTimeout)
-	names, err := u.upgradeNames(listCtx, support)
+	names, protectDocker, err := u.upgradeNames(listCtx, support)
 	cancelList()
 	u.mu.Lock()
 	if err != nil {
@@ -267,7 +267,7 @@ func (u *systemPackageUpdater) startUpdate() (SystemPackageUpdateStatus, error) 
 	}
 
 	logPath := u.logPath()
-	args, err := systemPackageUpdateArgs(support.aptPath, logPath, names)
+	args, err := systemPackageUpdateArgs(support.aptPath, logPath, names, protectDocker)
 	if err != nil {
 		status.Error = err.Error()
 		return status, err
@@ -415,8 +415,8 @@ func parseAPTUpgradeSimulation(output string) []SystemPackageUpdate {
 	return result
 }
 
-func systemPackageUpdateArgs(aptPath, logPath string, names []string) ([]string, error) {
-	command, err := systemPackageUpdateCommand(aptPath, logPath, names)
+func systemPackageUpdateArgs(aptPath, logPath string, names []string, protectDocker bool) ([]string, error) {
+	command, err := systemPackageUpdateCommand(aptPath, logPath, names, protectDocker)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +438,7 @@ func systemPackageUpdateArgs(aptPath, logPath string, names []string) ([]string,
 
 // systemPackageUpdateCommand installs exactly the packages in names, as upgrades: a name
 // that is not a package name is refused, never put into the shell line.
-func systemPackageUpdateCommand(aptPath, logPath string, names []string) (string, error) {
+func systemPackageUpdateCommand(aptPath, logPath string, names []string, protectDocker bool) (string, error) {
 	if len(names) == 0 {
 		return "", ErrSystemPackageNothingToUpdate
 	}
@@ -457,7 +457,7 @@ func systemPackageUpdateCommand(aptPath, logPath string, names []string) (string
 	// the same simulation is made again just before the install, and nothing is installed if
 	// it now touches Docker's packages or removes one.
 	guarded := "plan=\"$(" + quotedAPTPath + " -s --no-remove -o Debug::NoLocking=true -o Dpkg::Use-Pty=0 " + installArgs + " 2>&1)\"; " +
-		"if printf '%s\\n' \"$plan\" | grep -Eq " + shellQuote(dockerpkg.ContractPattern()) + "; then " +
+		"if printf '%s\\n' \"$plan\" | grep -Eq " + shellQuote(dockerpkg.ContractPattern(protectDocker)) + "; then " +
 		"printf 'CASAOS_PACKAGE_UPDATE_GUARD the list now changes Docker or removes a package: nothing was installed\\n'; status=1; else " +
 		quotedAPTPath + " -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 " + installArgs + "; status=$?; fi; "
 	return "set -o pipefail; exec >> " + quotedLogPath + " 2>&1; printf 'CASAOS_PACKAGE_UPDATE_STARTED %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; " + guarded + "if [ -f /var/run/reboot-required ]; then printf 'CASAOS_PACKAGE_UPDATE_REBOOT_REQUIRED\\n'; fi; if [ \"$status\" -eq 0 ]; then printf 'CASAOS_PACKAGE_UPDATE_SUCCESS %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; else printf 'CASAOS_PACKAGE_UPDATE_FAILED %s %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$status\"; fi; exit \"$status\"", nil

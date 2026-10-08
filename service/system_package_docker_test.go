@@ -222,7 +222,7 @@ func TestSystemPackageUpdateInstallsTheListAndLeavesDockerOut(t *testing.T) {
 		}
 	}
 	// Docker's names appear only in the guard's pattern, which is what keeps them out
-	withoutGuard := strings.Replace(started, dockerpkg.ContractPattern(), "", -1)
+	withoutGuard := strings.Replace(started, dockerpkg.ContractPattern(true), "", -1)
 	for _, unwanted := range []string{"docker-ce", "containerd", "brand-new-dependency", " upgrade;"} {
 		if strings.Contains(withoutGuard, unwanted) {
 			t.Errorf("the unit's command has %q: %s", unwanted, withoutGuard)
@@ -326,10 +326,10 @@ func TestSystemPackageUpdateLeavesAFunnyNameOutAndGoesOn(t *testing.T) {
 	if strings.Contains(started, "foo") || !strings.Contains(started, "'libc6'") {
 		t.Fatalf("the command = %s: a name with a semicolon must be left out, the others kept", started)
 	}
-	if _, err := systemPackageUpdateCommand("/usr/bin/apt-get", "/var/log/x.log", []string{"zlib1g", "x; rm -rf /"}); err == nil {
+	if _, err := systemPackageUpdateCommand("/usr/bin/apt-get", "/var/log/x.log", []string{"zlib1g", "x; rm -rf /"}, true); err == nil {
 		t.Fatal("systemPackageUpdateCommand() accepted a name with a semicolon")
 	}
-	if _, err := systemPackageUpdateCommand("/usr/bin/apt-get", "/var/log/x.log", nil); !errors.Is(err, ErrSystemPackageNothingToUpdate) {
+	if _, err := systemPackageUpdateCommand("/usr/bin/apt-get", "/var/log/x.log", nil, true); !errors.Is(err, ErrSystemPackageNothingToUpdate) {
 		t.Fatalf("systemPackageUpdateCommand(nil) error = %v", err)
 	}
 }
@@ -440,7 +440,7 @@ func TestAReCasaOSUpdateWaitsForAPackageUpdate(t *testing.T) {
 }
 
 // The unit's own shell line is run, with a fake apt-get, to see what it does and does not do.
-func runUnitCommand(t *testing.T, plan string) (log string, installed bool) {
+func runUnitCommand(t *testing.T, plan string, protectDocker bool) (log string, installed bool) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("the unit's command is for a Linux shell")
@@ -457,7 +457,7 @@ func runUnitCommand(t *testing.T, plan string) (log string, installed bool) {
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(dir, "package-update.log")
-	command, err := systemPackageUpdateCommand(apt, logPath, []string{"libc6", "zlib1g"})
+	command, err := systemPackageUpdateCommand(apt, logPath, []string{"libc6", "zlib1g"}, protectDocker)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func runUnitCommand(t *testing.T, plan string) (log string, installed bool) {
 }
 
 func TestTheUnitInstallsWhenTheListIsStillClean(t *testing.T) {
-	log, installed := runUnitCommand(t, simLibc+simZlib)
+	log, installed := runUnitCommand(t, simLibc+simZlib, true)
 	if !installed || !strings.Contains(log, "CASAOS_PACKAGE_UPDATE_SUCCESS") || strings.Contains(log, "GUARD") {
 		t.Fatalf("installed = %v, log = %q", installed, log)
 	}
@@ -483,9 +483,22 @@ func TestTheUnitInstallsNothingWhenTheListNowTouchesDockerOrRemoves(t *testing.T
 		"a removal":   simLibc + "Remv oldthing [1.0]\n",
 		"docker-ce:a": "Inst containerd.io:armhf [2.3.5] (2.3.6 Docker CE [armhf])\n",
 	} {
-		log, installed := runUnitCommand(t, plan)
+		log, installed := runUnitCommand(t, plan, true)
 		if installed || !strings.Contains(log, "CASAOS_PACKAGE_UPDATE_GUARD") || !strings.Contains(log, "CASAOS_PACKAGE_UPDATE_FAILED") || strings.Contains(log, "SUCCESS") {
 			t.Errorf("%s: installed = %v, log = %q", name, installed, log)
 		}
+	}
+}
+
+func TestTheUnitOfABoxWithoutDockerStillInstallsContainerd(t *testing.T) {
+	// the guard protects a Docker engine; on a box that has none, containerd.io is an ordinary package
+	log, installed := runUnitCommand(t, simLibc+simContain, false)
+	if !installed || !strings.Contains(log, "CASAOS_PACKAGE_UPDATE_SUCCESS") || strings.Contains(log, "GUARD") {
+		t.Fatalf("installed = %v, log = %q", installed, log)
+	}
+	// ... but a removal still stops it
+	log, installed = runUnitCommand(t, simLibc+"Remv oldthing [1.0]\n", false)
+	if installed || !strings.Contains(log, "CASAOS_PACKAGE_UPDATE_GUARD") {
+		t.Fatalf("installed = %v, log = %q", installed, log)
 	}
 }

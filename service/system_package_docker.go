@@ -179,13 +179,12 @@ var aptRemovalRefused = regexp.MustCompile(`(?i)remove is disabled|packages need
 // second simulation of installing exactly that list must change nothing of Docker's,
 // remove nothing and install nothing that is not an upgrade. The unit's own shell line
 // runs the same simulation again right before it installs.
-func (u *systemPackageUpdater) upgradeNames(ctx context.Context, support systemPackageSupport) ([]string, error) {
+func (u *systemPackageUpdater) upgradeNames(ctx context.Context, support systemPackageSupport) (names []string, protectDocker bool, err error) {
 	output, err := u.command(ctx, support.aptPath, systemPackageSimulateArgs("upgrade")...)
 	if err != nil {
-		return nil, fmt.Errorf("apt package update check failed: %s", trimSystemPackageOutput(output))
+		return nil, false, fmt.Errorf("apt package update check failed: %s", trimSystemPackageOutput(output))
 	}
 	engine := u.engineInstalled(ctx)
-	var names []string
 	var keptDocker int
 	for _, update := range parseAPTUpgradeSimulation(string(output)) {
 		switch {
@@ -201,25 +200,25 @@ func (u *systemPackageUpdater) upgradeNames(ctx context.Context, support systemP
 	}
 	if len(names) == 0 {
 		if keptDocker > 0 {
-			return nil, fmt.Errorf("%w: what is left is Docker's, which is updated on its own", ErrSystemPackageNothingToUpdate)
+			return nil, engine, fmt.Errorf("%w: what is left is Docker's, which is updated on its own", ErrSystemPackageNothingToUpdate)
 		}
-		return nil, ErrSystemPackageNothingToUpdate
+		return nil, engine, ErrSystemPackageNothingToUpdate
 	}
 
 	args := systemPackageSimulateArgs(append([]string{"install", "--only-upgrade", "--no-install-recommends"}, names...)...)
 	output, err = u.command(ctx, support.aptPath, args...)
 	if err != nil {
 		if aptRemovalRefused.Match(output) {
-			return nil, fmt.Errorf("%w: it would have to remove packages, which the System packages update never does", ErrSystemPackageListChanged)
+			return nil, engine, fmt.Errorf("%w: it would have to remove packages, which the System packages update never does", ErrSystemPackageListChanged)
 		}
-		return nil, fmt.Errorf("apt package update check failed: %s", trimSystemPackageOutput(output))
+		return nil, engine, fmt.Errorf("apt package update check failed: %s", trimSystemPackageOutput(output))
 	}
 	touched := dockerpkg.Touches(string(output))
-	if len(touched.Docker) > 0 {
-		return nil, fmt.Errorf("%w: %s", ErrSystemPackageTouchesDocker, strings.Join(touched.Docker, ", "))
+	if engine && len(touched.Docker) > 0 {
+		return nil, engine, fmt.Errorf("%w: %s", ErrSystemPackageTouchesDocker, strings.Join(touched.Docker, ", "))
 	}
 	if len(touched.Removed) > 0 {
-		return nil, fmt.Errorf("%w: it would remove %s, which the System packages update never does", ErrSystemPackageListChanged, strings.Join(touched.Removed, ", "))
+		return nil, engine, fmt.Errorf("%w: it would remove %s, which the System packages update never does", ErrSystemPackageListChanged, strings.Join(touched.Removed, ", "))
 	}
 	var added []string
 	for _, update := range parseAPTUpgradeSimulation(string(output)) {
@@ -228,7 +227,7 @@ func (u *systemPackageUpdater) upgradeNames(ctx context.Context, support systemP
 		}
 	}
 	if len(added) > 0 {
-		return nil, fmt.Errorf("%w: it would install %s, which are not upgrades", ErrSystemPackageListChanged, strings.Join(added, ", "))
+		return nil, engine, fmt.Errorf("%w: it would install %s, which are not upgrades", ErrSystemPackageListChanged, strings.Join(added, ", "))
 	}
-	return names, nil
+	return names, engine, nil
 }

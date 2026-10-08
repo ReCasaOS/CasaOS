@@ -189,10 +189,14 @@ func Touches(simulation string) Touched {
 }
 
 // ContractPattern is an extended regular expression (for grep -E) that matches a line of
-// an apt simulation that breaks the contract of the update: an install or upgrade of a
-// package of the Docker family, or any removal. The unit's shell line runs the simulation
-// again just before it installs, and installs nothing if a line matches.
-func ContractPattern() string {
+// an apt simulation that breaks the contract of the update: any removal, and, when the box
+// has a Docker engine to protect, an install or upgrade of a package of the Docker family.
+// The unit's shell line runs the simulation again just before it installs, and installs
+// nothing if a line matches.
+func ContractPattern(protectDocker bool) string {
+	if !protectDocker {
+		return `^Remv `
+	}
 	names := make([]string, 0, len(family))
 	for name := range family {
 		names = append(names, strings.ReplaceAll(name, ".", `\.`))
