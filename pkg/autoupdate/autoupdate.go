@@ -71,6 +71,10 @@ type AutoUpdate struct {
 	// AppsBusy reports whether AppManagement lists an operation in progress,
 	// or did not answer.
 	AppsBusy func(ctx context.Context) bool
+	// Busy, when set, reports whether something else is changing the box: a
+	// package update, an update of Docker, a package manager holding dpkg's lock.
+	// Nothing starts while it does.
+	Busy func() bool
 	// Notify, when set, hears how an attempt ended: succeeded, failed, or
 	// paused on its second failure. main sets it to the push alerts' hook.
 	Notify func(result, version string)
@@ -148,7 +152,7 @@ func (a *AutoUpdate) Check(ctx context.Context) {
 	if !decide(f).start {
 		return
 	}
-	f.unitActive, f.appsBusy = a.unitActive(), a.AppsBusy(ctx)
+	f.unitActive, f.appsBusy = a.unitActive(), a.AppsBusy(ctx) || (a.Busy != nil && a.Busy())
 	if v := decide(f); v.start {
 		a.start(v.next.Version, now)
 	}

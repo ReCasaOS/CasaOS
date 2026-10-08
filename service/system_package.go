@@ -18,6 +18,7 @@ import (
 
 	commonfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 )
 
 const (
@@ -56,6 +57,8 @@ type SystemPackageUpdates struct {
 	Count          int                   `json:"count"`
 	CheckedAt      *time.Time            `json:"checked_at,omitempty"`
 	RebootRequired bool                  `json:"reboot_required"`
+	// Docker is shown on a line of its own: the update never installs it.
+	Docker *SystemPackageDocker `json:"docker,omitempty"`
 }
 
 type SystemPackageUpdateStatus struct {
@@ -205,8 +208,10 @@ func (u *systemPackageUpdater) check() (SystemPackageUpdates, error) {
 		return result, fmt.Errorf("apt package update check failed: %s", trimSystemPackageOutput(output))
 	}
 
-	result.Updates = parseAPTUpgradeSimulation(string(output))
+	var dockerUpdates []SystemPackageUpdate
+	result.Updates, dockerUpdates = splitDockerUpdates(parseAPTUpgradeSimulation(string(output)))
 	result.Count = len(result.Updates)
+	result.Docker = u.dockerInfo(ctx, dockerUpdates)
 	now := u.now().UTC()
 	result.CheckedAt = &now
 	result.RebootRequired = u.rebootRequired()
@@ -233,6 +238,18 @@ func (u *systemPackageUpdater) startUpdate() (SystemPackageUpdateStatus, error) 
 		return u.statusLocked(support), ErrSystemPackageUpdateRunning
 	}
 
+	if reason, busy := u.maintenanceBusy(context.Background(), systemPackageUpdateUnit); busy {
+		status.Error = reason
+		return status, fmt.Errorf("%w: %s", ErrSystemMaintenanceBusy, reason)
+	}
+	listCtx, cancelList := context.WithTimeout(context.Background(), systemPackageCheckTimeout)
+	names, err := u.upgradeNames(listCtx, support)
+	cancelList()
+	if err != nil {
+		status.Error = err.Error()
+		return status, err
+	}
+
 	logPath := u.logPath()
 	if err := u.mkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		markSystemPackageUpdateFailed(&status, fmt.Sprintf("prepare package update log: %v", err), u.now)
@@ -245,7 +262,11 @@ func (u *systemPackageUpdater) startUpdate() (SystemPackageUpdateStatus, error) 
 		return status, err
 	}
 
-	args := systemPackageUpdateArgs(support.aptPath, logPath)
+	args, err := systemPackageUpdateArgs(support.aptPath, logPath, names)
+	if err != nil {
+		markSystemPackageUpdateFailed(&status, err.Error(), u.now)
+		return status, err
+	}
 	if output, err := u.start(support.systemdPath, systemPackageUpdateUnit, args...); err != nil {
 		failure := fmt.Sprintf("CASAOS_PACKAGE_UPDATE_FAILED %s 1\n%s\n", u.now().UTC().Format(time.RFC3339), trimSystemPackageOutput(output))
 		_ = u.writeFile(logPath, []byte(failure), 0o644)
@@ -379,7 +400,11 @@ func parseAPTUpgradeSimulation(output string) []SystemPackageUpdate {
 	return result
 }
 
-func systemPackageUpdateArgs(aptPath, logPath string) []string {
+func systemPackageUpdateArgs(aptPath, logPath string, names []string) ([]string, error) {
+	command, err := systemPackageUpdateCommand(aptPath, logPath, names)
+	if err != nil {
+		return nil, err
+	}
 	return []string{
 		"--quiet",
 		"--no-block",
@@ -392,14 +417,26 @@ func systemPackageUpdateArgs(aptPath, logPath string) []string {
 		"-o",
 		"pipefail",
 		"-c",
-		systemPackageUpdateCommand(aptPath, logPath),
-	}
+		command,
+	}, nil
 }
 
-func systemPackageUpdateCommand(aptPath, logPath string) string {
+// systemPackageUpdateCommand installs exactly the packages in names, as upgrades: a name
+// that is not a package name is refused, never put into the shell line.
+func systemPackageUpdateCommand(aptPath, logPath string, names []string) (string, error) {
+	if len(names) == 0 {
+		return "", ErrSystemPackageNothingToUpdate
+	}
+	quotedNames := make([]string, 0, len(names))
+	for _, name := range names {
+		if !dockerpkg.ValidName(name) {
+			return "", fmt.Errorf("%q is not a package name", name)
+		}
+		quotedNames = append(quotedNames, shellQuote(name))
+	}
 	quotedLogPath := shellQuote(logPath)
 	quotedAPTPath := shellQuote(aptPath)
-	return "set -o pipefail; exec >> " + quotedLogPath + " 2>&1; printf 'CASAOS_PACKAGE_UPDATE_STARTED %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; " + quotedAPTPath + " -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold upgrade; status=$?; if [ -f /var/run/reboot-required ]; then printf 'CASAOS_PACKAGE_UPDATE_REBOOT_REQUIRED\\n'; fi; if [ \"$status\" -eq 0 ]; then printf 'CASAOS_PACKAGE_UPDATE_SUCCESS %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; else printf 'CASAOS_PACKAGE_UPDATE_FAILED %s %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$status\"; fi; exit \"$status\""
+	return "set -o pipefail; exec >> " + quotedLogPath + " 2>&1; printf 'CASAOS_PACKAGE_UPDATE_STARTED %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; " + quotedAPTPath + " -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends " + strings.Join(quotedNames, " ") + "; status=$?; if [ -f /var/run/reboot-required ]; then printf 'CASAOS_PACKAGE_UPDATE_REBOOT_REQUIRED\\n'; fi; if [ \"$status\" -eq 0 ]; then printf 'CASAOS_PACKAGE_UPDATE_SUCCESS %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\"; else printf 'CASAOS_PACKAGE_UPDATE_FAILED %s %s\\n' \"$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)\" \"$status\"; fi; exit \"$status\"", nil
 }
 
 type parsedSystemPackageUpdateLog struct {

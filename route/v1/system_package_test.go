@@ -3,6 +3,7 @@ package v1
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -165,6 +166,53 @@ func TestGetSystemPackageUpdateStatusResponse(t *testing.T) {
 	}
 	data, ok := response.Data.(map[string]interface{})
 	if !ok || data["state"] != "succeeded" || data["reboot_required"] != true {
+		t.Fatalf("response data = %#v", response.Data)
+	}
+}
+
+func TestStartSystemPackageUpdateRefusalsAreConflicts(t *testing.T) {
+	original := service.MyService
+	t.Cleanup(func() { service.MyService = original })
+
+	for name, refusal := range map[string]error{
+		"another maintenance":        service.ErrSystemMaintenanceBusy,
+		"nothing but Docker":         service.ErrSystemPackageNothingToUpdate,
+		"a list that touches Docker": service.ErrSystemPackageTouchesDocker,
+	} {
+		fakeSystem := &fakeSystemPackageService{startErr: fmt.Errorf("%w: detail", refusal)}
+		service.MyService = fakeSystemPackageRepository{system: fakeSystem}
+
+		recorder := performSystemPackageRequest(t, http.MethodPost, "/v1/sys/packages/update")
+		if recorder.Code != http.StatusConflict {
+			t.Errorf("%s: status = %d, want %d", name, recorder.Code, http.StatusConflict)
+		}
+	}
+}
+
+func TestGetSystemPackageUpdatesCarriesDockerOnItsOwnLine(t *testing.T) {
+	original := service.MyService
+	t.Cleanup(func() { service.MyService = original })
+
+	fakeSystem := &fakeSystemPackageService{updates: service.SystemPackageUpdates{
+		Supported: true,
+		Manager:   "apt",
+		Updates:   []service.SystemPackageUpdate{},
+		Docker: &service.SystemPackageDocker{
+			Installed: true, Origin: "docker-repository", Version: "29.8.1",
+			Updates:       []service.SystemPackageUpdate{{Name: "docker-ce", CurrentVersion: "5:29.8.1", CandidateVersion: "5:29.8.2"}},
+			ManualCommand: "sudo apt-get update && sudo apt-get install --only-upgrade docker-ce",
+		},
+	}}
+	service.MyService = fakeSystemPackageRepository{system: fakeSystem}
+
+	recorder := performSystemPackageRequest(t, http.MethodGet, "/v1/sys/packages")
+	var response model.Result
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, _ := response.Data.(map[string]interface{})
+	docker, _ := data["docker"].(map[string]interface{})
+	if docker["version"] != "29.8.1" || docker["origin"] != "docker-repository" || docker["manual_command"] == "" {
 		t.Fatalf("response data = %#v", response.Data)
 	}
 }

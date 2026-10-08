@@ -130,6 +130,7 @@ func main() {
 	// version.json, and settle an update that restarted the core before checking.
 	autoupdate.Default.Releases = service.MyService.Casa()
 	autoupdate.Default.Start = service.MyService.System().UpdateSystemVersion
+	autoupdate.Default.Busy = service.MyService.System().MaintenanceBusy
 	go autoupdate.Default.Run(context.Background())
 	v1Router := route.InitV1Router()
 

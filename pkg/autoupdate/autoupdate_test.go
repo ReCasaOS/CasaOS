@@ -551,3 +551,26 @@ func TestAppManagementIsAskedAsAnInternalRequest(t *testing.T) {
 		}
 	})
 }
+
+func TestAPackageUpdateOrDpkgsLockHoldsTheStart(t *testing.T) {
+	a, b := newBox(t)
+	saveState(t, a, on())
+	busy := true
+	a.Busy = func() bool { return busy }
+	before := stateFile(t, a)
+
+	a.Check(context.Background())
+
+	if len(b.started) != 0 {
+		t.Fatalf("started %v while the box was being changed", b.started)
+	}
+	if after := stateFile(t, a); after != before {
+		t.Fatalf("autoupdate.json = %s, want it untouched: the next check tries again", after)
+	}
+
+	busy = false
+	a.Check(context.Background())
+	if len(b.started) != 1 {
+		t.Fatalf("started %v once the box was free, want one start", b.started)
+	}
+}
