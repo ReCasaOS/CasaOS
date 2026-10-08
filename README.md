@@ -44,7 +44,7 @@ Architectures: amd64, arm64, armv7.
 
 Tested: Debian 12, Ubuntu Server 20.04 and 26.04, Raspberry Pi OS. Reported working by the community: Elementary 6.1, Armbian 22.04. Not fully tested: Alpine, OpenWrt, Arch.
 
-Docker 24 through 29 are supported. The Docker 29 incompatibility that broke the upstream release is fixed here, without the `DOCKER_MIN_API_VERSION` workaround.
+Docker 28 and 29 are tested on every release, and the installer accepts Docker 20 or later (24.0.5 and 20.10.24 were also tried by hand on v0.5.16). The Docker 29 incompatibility that broke the upstream release is fixed here, without the `DOCKER_MIN_API_VERSION` workaround.
 
 ### Uninstall
 
