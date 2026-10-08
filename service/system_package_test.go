@@ -60,9 +60,12 @@ func TestParseAPTUpgradeSimulationNoUpdates(t *testing.T) {
 }
 
 func TestSystemPackageUpdateCommand(t *testing.T) {
-	command := systemPackageUpdateCommand("/usr/bin/apt-get", "/var/log/casaos/package update.log")
+	command, err := systemPackageUpdateCommand("/usr/bin/apt-get", "/var/log/casaos/package update.log", []string{"libc6", "zlib1g"}, true)
+	if err != nil {
+		t.Fatalf("systemPackageUpdateCommand() error = %v", err)
+	}
 	for _, expected := range []string{
-		"'/usr/bin/apt-get' -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold upgrade",
+		"'/usr/bin/apt-get' -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends 'libc6' 'zlib1g'; status=$?",
 		"CASAOS_PACKAGE_UPDATE_STARTED",
 		"CASAOS_PACKAGE_UPDATE_SUCCESS",
 		"CASAOS_PACKAGE_UPDATE_FAILED",
@@ -78,7 +81,10 @@ func TestSystemPackageUpdateCommand(t *testing.T) {
 }
 
 func TestSystemPackageUpdateArgsAreDetached(t *testing.T) {
-	args := systemPackageUpdateArgs("/usr/bin/apt-get", "/var/log/casaos/package-update.log")
+	args, err := systemPackageUpdateArgs("/usr/bin/apt-get", "/var/log/casaos/package-update.log", []string{"libc6"}, true)
+	if err != nil {
+		t.Fatalf("systemPackageUpdateArgs() error = %v", err)
+	}
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--no-block") || !strings.Contains(joined, "--collect") {
 		t.Fatalf("systemPackageUpdateArgs() = %#v, want detached systemd job", args)
@@ -124,18 +130,8 @@ func TestReadBoundedSystemPackageLog(t *testing.T) {
 
 func TestSystemPackageUpdaterCheck(t *testing.T) {
 	updater := newTestSystemPackageUpdater(t)
-	simulation := "Inst zlib1g [1.2.13.dfsg-1] (1.2.13.dfsg-1+deb12u1 Debian:12/stable [amd64])\n"
-	var calls []string
-	updater.command = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		calls = append(calls, name+" "+strings.Join(args, " "))
-		if name == "systemctl" {
-			return []byte("inactive\n"), nil
-		}
-		if len(args) > 0 && args[0] == "update" {
-			return nil, nil
-		}
-		return []byte(simulation), nil
-	}
+	box := &aptBox{upgradeSimulation: "Inst zlib1g [1.2.13.dfsg-1] (1.2.13.dfsg-1+deb12u1 Debian:12/stable [amd64])\n"}
+	updater.command = box.command
 
 	got, err := updater.check()
 	if err != nil {
@@ -144,8 +140,21 @@ func TestSystemPackageUpdaterCheck(t *testing.T) {
 	if !got.Supported || got.Manager != systemPackageManagerAPT || got.Count != 1 {
 		t.Fatalf("check() = %#v", got)
 	}
-	if len(calls) != 3 || !strings.Contains(calls[1], "apt-get update") || !strings.Contains(calls[2], "upgrade") {
-		t.Fatalf("unexpected command sequence: %#v", calls)
+	// the index is refreshed, then the upgrade is simulated, and nothing is installed
+	var update, simulation int
+	for i, call := range box.calls {
+		if strings.Contains(call, "apt-get update") {
+			update = i
+		}
+		if strings.Contains(call, "apt-get -s") && strings.HasSuffix(call, " upgrade") {
+			simulation = i
+		}
+		if strings.Contains(call, " install ") && !strings.Contains(call, " -s ") {
+			t.Fatalf("check() installed something: %q", call)
+		}
+	}
+	if update == 0 && simulation == 0 || update >= simulation {
+		t.Fatalf("unexpected command sequence: %#v", box.calls)
 	}
 }
 
@@ -209,6 +218,7 @@ func TestSystemPackageUpdaterRejectsDuplicateUpdate(t *testing.T) {
 
 func TestSystemPackageUpdaterStartWritesQueuedState(t *testing.T) {
 	updater := newTestSystemPackageUpdater(t)
+	updater.command = (&aptBox{upgradeSimulation: simLibc, installSimulation: simLibc}).command
 	var startedPath, startedUnit string
 	var startedArgs []string
 	updater.start = func(path, unit string, args ...string) ([]byte, error) {

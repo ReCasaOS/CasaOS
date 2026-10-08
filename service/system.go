@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,9 @@ import (
 
 type SystemService interface {
 	UpdateSystemVersion(version string) error
+	// MaintenanceBusy says whether a package update, an update of Docker or a package
+	// manager is changing the box now.
+	MaintenanceBusy() bool
 	GetSystemPackageUpdates() (SystemPackageUpdates, error)
 	StartSystemPackageUpdate() (SystemPackageUpdateStatus, error)
 	GetSystemPackageUpdateStatus() SystemPackageUpdateStatus
@@ -377,6 +381,9 @@ func (c *systemService) GetNet(physics bool) []string {
 }
 
 func (s *systemService) UpdateSystemVersion(version string) error {
+	if reason, busy := s.systemPackageUpdater().maintenanceBusy(context.Background(), common.UPDATE_UNIT+".service"); busy {
+		return fmt.Errorf("%w: %s", ErrSystemMaintenanceBusy, reason)
+	}
 	keyName := "casa_version:" + resolveUpdateVersionURL()
 	Cache.Delete(keyName)
 

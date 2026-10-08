@@ -17,6 +17,7 @@ package autoupdate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -53,6 +54,10 @@ type Releases interface {
 	FetchCasaosVersion() model.Version
 }
 
+// ErrBusy is what Start returns, wrapped, when something else is changing the box and the
+// update was not started: that is not a failed attempt, and the next check tries again.
+var ErrBusy = errors.New("the box is being changed by something else")
+
 // AutoUpdate is the automatic updates of one box.
 type AutoUpdate struct {
 	// Root is where autoupdate.json is kept: "/" on a box, a temporary
@@ -71,6 +76,10 @@ type AutoUpdate struct {
 	// AppsBusy reports whether AppManagement lists an operation in progress,
 	// or did not answer.
 	AppsBusy func(ctx context.Context) bool
+	// Busy, when set, reports whether something else is changing the box: a
+	// package update, an update of Docker, a package manager holding dpkg's lock.
+	// Nothing starts while it does.
+	Busy func() bool
 	// Notify, when set, hears how an attempt ended: succeeded, failed, or
 	// paused on its second failure. main sets it to the push alerts' hook.
 	Notify func(result, version string)
@@ -148,7 +157,7 @@ func (a *AutoUpdate) Check(ctx context.Context) {
 	if !decide(f).start {
 		return
 	}
-	f.unitActive, f.appsBusy = a.unitActive(), a.AppsBusy(ctx)
+	f.unitActive, f.appsBusy = a.unitActive(), a.AppsBusy(ctx) || (a.Busy != nil && a.Busy())
 	if v := decide(f); v.start {
 		a.start(v.next.Version, now)
 	}
@@ -159,12 +168,27 @@ func (a *AutoUpdate) Check(ctx context.Context) {
 // that fails is failed at once.
 func (a *AutoUpdate) start(release string, now time.Time) {
 	last := Last{Version: release, StartedAt: now.UTC().Truncate(time.Second), Result: resultRunning}
-	if err := a.modify(func(s *State) bool { s.Last = &last; return true }); err != nil {
+	var before *Last
+	if err := a.modify(func(s *State) bool { before = s.Last; s.Last = &last; return true }); err != nil {
 		logger.Info("automatic update: cannot save autoupdate.json, not starting", zap.String("version", release), zap.Error(err))
 		return
 	}
 	logger.Info("automatic update: starting", zap.String("version", release))
 	if err := a.Start(release); err != nil {
+		if errors.Is(err, ErrBusy) {
+			// nothing was started: the attempt is taken back, not counted
+			logger.Info("automatic update: the box is busy, not starting", zap.String("version", release), zap.Error(err))
+			if err := a.modify(func(s *State) bool {
+				if s.Last == nil || s.Last.Result != resultRunning || s.Last.Version != release {
+					return false
+				}
+				s.Last = before
+				return true
+			}); err != nil {
+				logger.Info("automatic update: cannot save autoupdate.json", zap.Error(err))
+			}
+			return
+		}
 		logger.Info("automatic update: cannot start", zap.String("version", release), zap.Error(err))
 		if err := a.modify(func(s *State) bool {
 			if s.Last == nil || s.Last.Result != resultRunning {

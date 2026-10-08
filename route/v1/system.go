@@ -65,6 +65,9 @@ func SystemUpdate(ctx echo.Context) error {
 	need, latestVersion := version.IsNeedUpdate(service.MyService.Casa().GetCasaosVersion())
 	if need {
 		if err := service.MyService.System().UpdateSystemVersion(latestVersion.Version); err != nil {
+			if errors.Is(err, service.ErrSystemMaintenanceBusy) {
+				return ctx.JSON(http.StatusConflict, model.Result{Success: http.StatusConflict, Message: err.Error()})
+			}
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 		}
 	}
@@ -108,7 +111,11 @@ func GetSystemPackageUpdates(ctx echo.Context) error {
 func StartSystemPackageUpdate(ctx echo.Context) error {
 	status, err := service.MyService.System().StartSystemPackageUpdate()
 	if err != nil {
-		if errors.Is(err, service.ErrSystemPackageUpdateRunning) {
+		if errors.Is(err, service.ErrSystemPackageUpdateRunning) ||
+			errors.Is(err, service.ErrSystemMaintenanceBusy) ||
+			errors.Is(err, service.ErrSystemPackageNothingToUpdate) ||
+			errors.Is(err, service.ErrSystemPackageTouchesDocker) ||
+			errors.Is(err, service.ErrSystemPackageListChanged) {
 			return ctx.JSON(http.StatusConflict, model.Result{
 				Success: http.StatusConflict,
 				Message: err.Error(),
