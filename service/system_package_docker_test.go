@@ -284,6 +284,7 @@ func TestSystemPackageUpdateRefusesAListThatWouldChangeDocker(t *testing.T) {
 		upgradeSimulation: simLibc,
 		// something in the list depends on a newer docker-ce
 		installSimulation: simLibc + simDockerC,
+		dockerCE:          dockerCE,
 	}).command
 	var started bool
 	updater.start = func(string, string, ...string) ([]byte, error) { started = true; return nil, nil }
