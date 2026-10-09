@@ -171,6 +171,78 @@ func GetSystemDockerContainers(ctx echo.Context) error {
 	})
 }
 
+// dockerUpdateRequest is the body of the start of an update of Docker: the id of the plan that
+// the owner confirmed (see the check's docker.update.plan_id), and nothing else.
+type dockerUpdateRequest struct {
+	PlanID string `json:"plan_id"`
+}
+
+// @Summary update the Docker engine, to the plan the check offered
+// @Produce application/json
+// @Accept application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Failure 400 {object} model.Result "the body is not a plan_id"
+// @Failure 409 {object} model.Result "refused: data.error_code says why"
+// @Failure 501 {object} model.Result "this host cannot update packages"
+// @Router /sys/docker/update [post]
+func StartDockerUpdate(ctx echo.Context) error {
+	var request dockerUpdateRequest
+	decoder := json.NewDecoder(io.LimitReader(ctx.Request().Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil || decoder.More() {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: http.StatusBadRequest, Message: `the body must be {"plan_id": "<64 hex digits>"} and nothing else`})
+	}
+
+	status, err := service.MyService.System().StartDockerUpdate(request.PlanID)
+	if err != nil {
+		var refusal *service.DockerUpdateRefusal
+		switch {
+		case errors.As(err, &refusal):
+			// the reason is in the data as well as in the message: the page clears its own error
+			// when it asks again
+			if status.Error == "" {
+				status.Error = refusal.Error()
+			}
+			if status.ErrorCode == "" {
+				status.ErrorCode = refusal.Code
+			}
+			return ctx.JSON(http.StatusConflict, model.Result{Success: http.StatusConflict, Message: status.Error, Data: status})
+		case errors.Is(err, service.ErrSystemPackageUpdatesUnsupported):
+			if status.Error == "" {
+				status.Error = err.Error()
+			}
+			if status.ErrorCode == "" {
+				status.ErrorCode = service.DockerRefusalUnsupported
+			}
+			return ctx.JSON(http.StatusNotImplemented, model.Result{Success: http.StatusNotImplemented, Message: status.Error, Data: status})
+		case errors.Is(err, service.ErrDockerUpdateBadPlanID):
+			return ctx.JSON(http.StatusBadRequest, model.Result{Success: http.StatusBadRequest, Message: err.Error()})
+		}
+		return ctx.JSON(http.StatusInternalServerError, model.Result{Success: http.StatusInternalServerError, Message: err.Error(), Data: status})
+	}
+	return ctx.JSON(http.StatusOK, model.Result{
+		Success: common_err.SUCCESS,
+		Message: common_err.GetMsg(common_err.SUCCESS),
+		Data:    status,
+	})
+}
+
+// @Summary how the update of Docker is going, or how it went
+// @Produce application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /sys/docker/update/status [get]
+func GetDockerUpdateStatus(ctx echo.Context) error {
+	return ctx.JSON(http.StatusOK, model.Result{
+		Success: common_err.SUCCESS,
+		Message: common_err.GetMsg(common_err.SUCCESS),
+		Data:    service.MyService.System().DockerUpdateStatus(),
+	})
+}
+
 // @Summary  get logs
 // @Produce  application/json
 // @Accept application/json
