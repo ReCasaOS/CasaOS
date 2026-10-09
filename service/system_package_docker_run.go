@@ -162,8 +162,10 @@ func (u *systemPackageUpdater) dockerLogPath() string {
 // the reason in the data as well as in the message: it clears its own error when it asks again.
 func (u *systemPackageUpdater) dockerRefused(support systemPackageSupport, code string, detail []string, reason string) (SystemDockerUpdateStatus, error) {
 	status := SystemDockerUpdateStatus{Supported: support.supported, State: systemPackageUpdateStateIdle, NotReturned: []dockerpkg.NotReturned{}}
-	if code == DockerRefusalRunning && u.unitActive(systemDockerUpdateUnit) {
-		status = u.dockerStatus()
+	if code == DockerRefusalRunning {
+		if current := u.dockerStatus(); current.State == systemPackageUpdateStateRunning || current.State == systemPackageUpdateStateFinalizing || u.unitActive(systemDockerUpdateUnit) {
+			status = current
+		}
 	}
 	if reason == "" {
 		reason = dockerRefusalReasons[code]
@@ -177,9 +179,11 @@ func (u *systemPackageUpdater) dockerRefused(support systemPackageSupport, code 
 
 // dockerBlocked is the refusal, when something else is running that the update must not start
 // beside: itself or a System packages update, then the ReCasaOS update and dpkg's lock. It is
-// nil when nothing is.
+// nil when nothing is. Itself is the unit, and the log of a run that has not ended: systemd
+// queues the start of a unit, which reads inactive until it takes it up, and a start in that
+// moment would write the log of a second run over the first's.
 func (u *systemPackageUpdater) dockerBlocked(support systemPackageSupport) (SystemDockerUpdateStatus, error) {
-	if u.unitActive(systemDockerUpdateUnit) || u.isRunning() {
+	if state := u.dockerStatus().State; state == systemPackageUpdateStateRunning || state == systemPackageUpdateStateFinalizing || u.unitActive(systemDockerUpdateUnit) || u.isRunning() {
 		return u.dockerRefused(support, DockerRefusalRunning, nil, "")
 	}
 	if reason, busy := u.maintenanceBusy(context.Background(), systemDockerUpdateUnit); busy {

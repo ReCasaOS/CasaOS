@@ -694,6 +694,67 @@ func TestStartDockerUpdateTwiceStartsOnce(t *testing.T) {
 	}
 }
 
+// systemd queues the start of a unit, and the unit reads inactive until it takes it up: a second
+// start in that moment would rewrite the log, whose first line holds the nonce of the first run,
+// and the run that is going on would be read as one that failed. The log of a run that has not
+// ended says there is one.
+func TestStartDockerUpdateTwiceBeforeSystemdHasTheUnitStartsOnce(t *testing.T) {
+	s := newStartBox(t, nil)
+	if _, err := s.updater.startDockerUpdate(s.planID); err != nil {
+		t.Fatal(err)
+	}
+	if s.box.activeUnits[systemDockerUpdateUnit] {
+		t.Fatal("the unit is active: this test is about the moment it is not")
+	}
+	first, err := os.ReadFile(s.updater.dockerLogPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logAgeOf(s.updater, time.Second)
+
+	status, err := s.updater.startDockerUpdate(s.planID)
+	var refusal *DockerUpdateRefusal
+	if !errors.As(err, &refusal) || refusal.Code != "running" || status.ErrorCode != "running" || s.started.count != 1 {
+		t.Fatalf("error = %v, status = %#v, started %d", err, status, s.started.count)
+	}
+	// the run that goes on is the first one's, and the answer says how it goes
+	if after, _ := os.ReadFile(s.updater.dockerLogPath()); string(after) != string(first) {
+		t.Errorf("the log was rewritten:\n%q\nwas\n%q", after, first)
+	}
+	if status.State != "running" && status.State != "finalizing" || status.StartedAt != "2026-08-13T01:02:03Z" {
+		t.Errorf("status = %#v", status)
+	}
+	if again := s.updater.dockerStatus(); again.State != "finalizing" || again.ErrorCode != "" {
+		t.Errorf("the status that follows = %#v", again)
+	}
+}
+
+// A log that says a run ended, or that is too old for the last line to be on its way, is no run.
+func TestStartDockerUpdateStartsAfterARunThatIsOver(t *testing.T) {
+	for name, c := range map[string]struct {
+		lines []string
+		age   time.Duration
+	}{
+		"succeeded a moment ago":      {ownersRun(mark("DAEMON", "29.8.0"), mark("SUCCESS", "2026-08-13T01:05:00Z")), time.Second},
+		"restart pending":             {ownersRun(mark("DAEMON", "28.0.4"), mark("RESTART_PENDING", "2026-08-13T01:05:00Z")), time.Second},
+		"failed a moment ago":         {ownersRun(mark("FAILED", "2026-08-13T01:03:00Z", "install")), time.Second},
+		"a unit that was not started": {[]string{logQueued, "Failed to start transient service unit", mark("FAILED", "2026-08-13T01:03:00Z", "start")}, time.Second},
+		"lost, long ago":              {ownersRun(), time.Hour},
+		"not a run":                   {[]string{"Reading package lists..."}, time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newStartBox(t, nil)
+			if err := os.WriteFile(s.updater.dockerLogPath(), []byte(strings.Join(c.lines, "\n")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			logAgeOf(s.updater, c.age)
+			if _, err := s.updater.startDockerUpdate(s.planID); err != nil || s.started.count != 1 {
+				t.Fatalf("error = %v, started %d", err, s.started.count)
+			}
+		})
+	}
+}
+
 func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 	nonce := "0123456789abcdef0123456789abcdef"
 	pins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
