@@ -31,6 +31,29 @@ const (
 	FailDownload = "download"
 	FailInstall  = "install"
 	FailDaemon   = "daemon"
+	// FailStart is a unit that systemd could not start: the core writes it, in the last line of
+	// the log, since the unit never wrote anything. Nothing was changed.
+	FailStart = "start"
+)
+
+// ReturnWaitSeconds is how long the unit waits, after the daemon is back, for the containers that
+// start again by themselves. A container with a restart policy that is still not running after
+// it is reported all the same, with its policy.
+const ReturnWaitSeconds = 90
+
+// Where a run is (Run.Phase). The page tells the owner what the apps are going through from it.
+const (
+	// PhasePreparing is the start of the unit, up to the snapshot of what is installed.
+	PhasePreparing = "preparing"
+	// PhaseDownloading is the check of the plan and the download of the packages: nothing is
+	// changed, and the apps run.
+	PhaseDownloading = "downloading"
+	// PhaseInstalling is the install, which restarts the daemon and stops the containers.
+	PhaseInstalling = "installing"
+	// PhaseWaitingDocker is the wait for the daemon to answer after the install.
+	PhaseWaitingDocker = "waiting_docker"
+	// PhaseWaitingContainers is the wait for the containers to come back.
+	PhaseWaitingContainers = "waiting_containers"
 )
 
 // NewNonce is 16 random bytes from the system's source, in lower case hex.
@@ -71,14 +94,18 @@ type NotReturned struct {
 // first line. Previous and NotReturned are nil when the log has none.
 type Run struct {
 	Nonce string
-	// QueuedAt is the time on the first line; StartedAt the unit's first word; InstalledAt
-	// the end of the install, zero if it never got there; CompletedAt the terminal marker's.
-	QueuedAt, StartedAt, InstalledAt, CompletedAt time.Time
+	// QueuedAt is the time on the first line; StartedAt the unit's first word; DownloadedAt the
+	// end of the download and InstalledAt the end of the install, zero if it never got there;
+	// CompletedAt the terminal marker's.
+	QueuedAt, StartedAt, DownloadedAt, InstalledAt, CompletedAt time.Time
+	// PreviousSeen is whether the unit wrote its snapshot of the installed packages, which
+	// Previous may be empty of.
+	PreviousSeen bool
 	// Terminal is TerminalSuccess, TerminalRestartPending, TerminalFailed, or "" while the
 	// log has no valid terminal marker. The last valid one counts.
 	Terminal string
-	// FailReason is FailGuard, FailDownload, FailInstall or FailDaemon, when Terminal is
-	// TerminalFailed.
+	// FailReason is FailGuard, FailDownload, FailInstall, FailDaemon or FailStart, when Terminal
+	// is TerminalFailed.
 	FailReason string
 	// Previous are the engine's packages as they were installed before the update, as
 	// "name=version", each validated: what a rollback would install.
@@ -152,11 +179,16 @@ func ParseRun(log string) Run {
 			if t, ok := oneTime(fields); ok && run.StartedAt.IsZero() {
 				run.StartedAt = t
 			}
+		case "DOWNLOADED":
+			if t, ok := oneTime(fields); ok && run.DownloadedAt.IsZero() {
+				run.DownloadedAt = t
+			}
 		case "INSTALLED":
 			if t, ok := oneTime(fields); ok && run.InstalledAt.IsZero() {
 				run.InstalledAt = t
 			}
 		case "PREVIOUS":
+			run.PreviousSeen = true
 			if run.Previous == nil {
 				run.Previous = validPins(fields)
 			}
@@ -186,6 +218,27 @@ func ParseRun(log string) Run {
 	return run
 }
 
+// Phase is the step a run is at, from the markers it has written so far: PhasePreparing until the
+// snapshot of what is installed, then PhaseDownloading until DOWNLOADED, PhaseInstalling until
+// INSTALLED, PhaseWaitingDocker until DAEMON, and PhaseWaitingContainers until the terminal
+// marker. It is "" for no run and for a run that has ended. The guard writes nothing when it
+// passes, so it is part of the downloading: it is a few seconds, and the apps run through it.
+func (r Run) Phase() string {
+	switch {
+	case r.Nonce == "" || r.Terminal != "":
+		return ""
+	case r.DaemonVersion != "":
+		return PhaseWaitingContainers
+	case !r.InstalledAt.IsZero():
+		return PhaseWaitingDocker
+	case !r.DownloadedAt.IsZero():
+		return PhaseInstalling
+	case r.PreviousSeen:
+		return PhaseDownloading
+	}
+	return PhasePreparing
+}
+
 // oneTime is the fields of a marker that holds a time and nothing else.
 func oneTime(fields []string) (time.Time, bool) {
 	if len(fields) != 1 {
@@ -196,7 +249,7 @@ func oneTime(fields []string) (time.Time, bool) {
 
 func validFailReason(reason string) bool {
 	switch reason {
-	case FailGuard, FailDownload, FailInstall, FailDaemon:
+	case FailGuard, FailDownload, FailInstall, FailDaemon, FailStart:
 		return true
 	}
 	return false

@@ -87,6 +87,10 @@ func TestStartDockerUpdateOwnersCase(t *testing.T) {
 	if status.State != "running" || !status.Supported || status.StartedAt != "2026-08-13T01:02:03Z" || status.Error != "" || status.NotReturned == nil {
 		t.Fatalf("status = %#v", status)
 	}
+	// the unit has not written anything yet: it is getting ready, as the status says of it
+	if status.Phase != "preparing" {
+		t.Errorf("phase = %q", status.Phase)
+	}
 
 	// the log's first line is the core's, with a nonce that only that line and the unit have
 	log, err := os.ReadFile(s.updater.dockerLogPath())
@@ -510,19 +514,25 @@ func TestStartDockerUpdateWritesAWholeRunWhenSystemdRunFails(t *testing.T) {
 	// the log has the core's first line, what systemd said, and a last line with the same nonce
 	log, _ := os.ReadFile(s.updater.dockerLogPath())
 	run := dockerpkg.ParseRun(string(log))
-	if run.Nonce == "" || run.Terminal != dockerpkg.TerminalFailed || run.FailReason != dockerpkg.FailGuard {
+	if run.Nonce == "" || run.Terminal != dockerpkg.TerminalFailed || run.FailReason != dockerpkg.FailStart {
 		t.Fatalf("run = %#v, log = %q", run, log)
 	}
 	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[0], "CASAOS_DOCKER_UPDATE_QUEUED "+run.Nonce) || !strings.Contains(lines[1], "Access denied") || !strings.HasPrefix(lines[2], "CASAOS_DOCKER_UPDATE_FAILED "+run.Nonce+" 2026-08-13T01:02:03Z guard") {
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "CASAOS_DOCKER_UPDATE_QUEUED "+run.Nonce) || !strings.Contains(lines[1], "Access denied") || !strings.HasPrefix(lines[2], "CASAOS_DOCKER_UPDATE_FAILED "+run.Nonce+" 2026-08-13T01:02:03Z start") {
 		t.Errorf("log = %q", log)
 	}
-	if status.State != "failed" || status.Outcome != "failed" || !strings.Contains(status.Error, "Access denied") || status.CompletedAt == "" {
+	// a unit that systemd did not start is not a plan that changed: the code says so, and what
+	// systemd said is the error
+	if status.State != "failed" || status.Outcome != "failed" || status.ErrorCode != "start" || !strings.Contains(status.Error, "Access denied") || status.CompletedAt == "" || status.Phase != "" {
 		t.Errorf("status = %#v", status)
 	}
 	// and the status that follows says the same
-	if again := s.updater.dockerStatus(); again.State != "failed" || again.ErrorCode != "guard" {
+	again := s.updater.dockerStatus()
+	if again.State != "failed" || again.ErrorCode != "start" || strings.Contains(again.Error, "confirmed") || again.Error == "" {
 		t.Errorf("the status that follows = %#v", again)
+	}
+	if again.RollbackCommand != "" {
+		t.Errorf("a rollback is offered for an update that never started: %q", again.RollbackCommand)
 	}
 }
 

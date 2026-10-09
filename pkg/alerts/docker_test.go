@@ -166,6 +166,10 @@ func TestTheDockerUpdateEndsWithOneMessage(t *testing.T) {
 			DockerRun{Outcome: "failed", ErrorCode: "daemon"},
 			"The Docker update failed: Docker did not come back after the update. Details are in the dashboard.",
 		},
+		"failed, start": {
+			DockerRun{Outcome: "failed", ErrorCode: "start"},
+			"The Docker update failed: the update could not be started, nothing was changed. Details are in the dashboard.",
+		},
 		"failed, no result": {
 			DockerRun{Outcome: "failed", ErrorCode: "no_result"},
 			"The Docker update failed: it stopped before it reported a result. Details are in the dashboard.",

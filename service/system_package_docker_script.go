@@ -26,7 +26,7 @@ const (
 	systemDockerDaemonTimeout = 300
 	// systemDockerReturnTimeout is how long it waits for the containers that start again by
 	// themselves.
-	systemDockerReturnTimeout = 90
+	systemDockerReturnTimeout = dockerpkg.ReturnWaitSeconds
 	// systemDockerPoll is the seconds between two looks.
 	systemDockerPoll = 2
 )

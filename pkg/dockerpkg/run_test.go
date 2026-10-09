@@ -84,8 +84,8 @@ func TestParseRunSuccess(t *testing.T) {
 		marker("SUCCESS", ts(100)),
 	)
 	want := Run{
-		Nonce: testNonce, QueuedAt: t0, StartedAt: t0.Add(1 * time.Second), InstalledAt: t0.Add(90 * time.Second), CompletedAt: t0.Add(100 * time.Second),
-		Terminal: TerminalSuccess, DaemonVersion: "29.8.0",
+		Nonce: testNonce, QueuedAt: t0, StartedAt: t0.Add(1 * time.Second), DownloadedAt: t0.Add(60 * time.Second), InstalledAt: t0.Add(90 * time.Second), CompletedAt: t0.Add(100 * time.Second),
+		Terminal: TerminalSuccess, DaemonVersion: "29.8.0", PreviousSeen: true,
 		Previous:    []string{"containerd.io=1.7.27-1", "docker-ce=5:28.0.4-1~debian.11~bullseye", "docker-ce-cli=5:28.0.4-1~debian.11~bullseye"},
 		NotReturned: []NotReturned{{Name: "cache", RestartPolicy: "no"}},
 	}
@@ -111,6 +111,7 @@ func TestParseRunTerminalMarkers(t *testing.T) {
 		{"failed download", []string{marker("FAILED", ts(13)+" download")}, TerminalFailed, FailDownload, 13},
 		{"failed install", []string{marker("FAILED", ts(14)+" install")}, TerminalFailed, FailInstall, 14},
 		{"failed daemon", []string{marker("FAILED", ts(15)+" daemon")}, TerminalFailed, FailDaemon, 15},
+		{"failed start (the core's word, for a unit systemd did not start)", []string{marker("FAILED", ts(16)+" start")}, TerminalFailed, FailStart, 16},
 		{"the last terminal marker wins (failed after success)", []string{marker("SUCCESS", ts(10)), marker("FAILED", ts(20)+" daemon")}, TerminalFailed, FailDaemon, 20},
 		{"the last terminal marker wins (success after failed)", []string{marker("FAILED", ts(10)+" install"), marker("SUCCESS", ts(21))}, TerminalSuccess, "", 21},
 		{"a failure with no reason is not a marker", []string{marker("FAILED", ts(10))}, "", "", 0},
@@ -383,6 +384,58 @@ func TestParseRunRunningAndSkippedSteps(t *testing.T) {
 	got = ParseRun(logOf(first, marker("STARTED", ts(1)), marker("STARTED", ts(9))))
 	if !got.StartedAt.Equal(t0.Add(time.Second)) {
 		t.Errorf("StartedAt = %v", got.StartedAt)
+	}
+}
+
+// The page tells the owner what the apps are going through from the phase: the markers the unit
+// has written say where it is.
+func TestRunPhase(t *testing.T) {
+	first := QueuedMarker(testNonce, t0)[:len(QueuedMarker(testNonce, t0))-1]
+	started := marker("STARTED", ts(1))
+	previous := marker("PREVIOUS", "docker-ce=5:28.0.4-1")
+	downloaded := marker("DOWNLOADED", ts(60))
+	installed := marker("INSTALLED", ts(90))
+	daemon := marker("DAEMON", "29.8.0")
+	forged := func(kind, fields string) string {
+		return "CASAOS_DOCKER_UPDATE_" + kind + " " + otherNonce + " " + fields
+	}
+	for _, c := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"queued, the unit has not written", []string{first}, PhasePreparing},
+		{"started", []string{first, started}, PhasePreparing},
+		{"the snapshot is taken", []string{first, started, previous}, PhaseDownloading},
+		{"a snapshot of nothing is a snapshot", []string{first, started, marker("PREVIOUS", "")}, PhaseDownloading},
+		{"the containers are listed, the guard is on", []string{first, started, previous, "container: web always", "Inst docker-ce [5:28.0.4-1] (5:29.8.0-1 Docker CE:bullseye [amd64])"}, PhaseDownloading},
+		{"downloaded", []string{first, started, previous, downloaded}, PhaseInstalling},
+		{"installed", []string{first, started, previous, downloaded, installed}, PhaseWaitingDocker},
+		{"the daemon is back", []string{first, started, previous, downloaded, installed, daemon}, PhaseWaitingContainers},
+		{"and some containers are not", []string{first, started, previous, downloaded, installed, daemon, marker("NOTRETURNED", "db always")}, PhaseWaitingContainers},
+		{"success", []string{first, started, previous, downloaded, installed, daemon, marker("SUCCESS", ts(100))}, ""},
+		{"restart pending", []string{first, started, previous, downloaded, installed, marker("DAEMON", "28.0.4"), marker("RESTART_PENDING", ts(100))}, ""},
+		{"failed in the guard", []string{first, started, previous, marker("GUARD", "plan"), marker("FAILED", ts(5)+" guard")}, ""},
+		{"failed in the install", []string{first, started, previous, downloaded, marker("FAILED", ts(70)+" install")}, ""},
+		{"the unit could not be started", []string{first, marker("FAILED", ts(1)+" start")}, ""},
+		// the unit brings Docker back after a failed install, before it says so: still the install
+		{"the install is failing", []string{first, started, previous, downloaded, "E: Sub-process /usr/bin/dpkg returned an error code (1)"}, PhaseInstalling},
+		// a marker that is not the unit's moves nothing
+		{"another nonce", []string{first, started, previous, forged("DOWNLOADED", ts(60)), forged("INSTALLED", ts(90)), forged("DAEMON", "29.8.0")}, PhaseDownloading},
+		{"in the middle of a line", []string{first, started, previous, "dpkg: " + downloaded}, PhaseDownloading},
+		{"a daemon that is not a version", []string{first, started, previous, downloaded, installed, marker("DAEMON", "29.8.0;reboot")}, PhaseWaitingDocker},
+		{"a time that is not one", []string{first, started, previous, marker("DOWNLOADED", "soon")}, PhaseDownloading},
+	} {
+		if got := ParseRun(logOf(c.lines...)).Phase(); got != c.want {
+			t.Errorf("%s: Phase() = %q, want %q", c.name, got, c.want)
+		}
+	}
+	// no run is no phase
+	if got := (Run{}).Phase(); got != "" {
+		t.Errorf("the zero Run is in phase %q", got)
+	}
+	if got := ParseRun(logOf("Reading package lists...", started, previous)).Phase(); got != "" {
+		t.Errorf("a log that is not a run is in phase %q", got)
 	}
 }
 

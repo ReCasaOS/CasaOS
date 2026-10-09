@@ -100,7 +100,7 @@ func TestDockerStatusWithoutARun(t *testing.T) {
 	}
 	// ... and what the page reads
 	encoded, _ := json.Marshal(status)
-	if got := string(encoded); got != `{"supported":true,"state":"idle","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"","completed_at":"","from":"","to":"","not_returned":[],"rollback_command":"","log":""}` {
+	if got := string(encoded); got != `{"supported":true,"state":"idle","phase":"","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"","completed_at":"","from":"","to":"","not_returned":[],"rollback_command":"","log":""}` {
 		t.Errorf("JSON = %s", got)
 	}
 }
@@ -128,6 +128,64 @@ func TestDockerStatusRunning(t *testing.T) {
 	}
 	if !strings.Contains(status.Log, "container: web always") {
 		t.Errorf("log = %q", status.Log)
+	}
+}
+
+// The page says "your apps keep running" while the packages are downloaded, and "Docker is
+// restarting" once they are installed: the phase is where the markers the unit has written say it
+// is, and nothing once the run is over.
+func TestDockerStatusSaysWhichStepTheRunIsAt(t *testing.T) {
+	s := newStatusBox(t)
+	s.box.activeUnits[systemDockerUpdateUnit] = true
+	for _, step := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"queued", []string{logQueued}, "preparing"},
+		{"started", []string{logQueued, logStarted}, "preparing"},
+		{"the snapshot is taken, the guard is on", []string{logQueued, logStarted, logPrevious, "container: web always"}, "downloading"},
+		{"downloaded", []string{logQueued, logStarted, logPrevious, "container: web always", mark("DOWNLOADED", "2026-08-13T01:00:30Z")}, "installing"},
+		{"installed", ownersRun(), "waiting_docker"},
+		{"the daemon is back", ownersRun(mark("DAEMON", "29.8.0")), "waiting_containers"},
+		{"some containers are not", ownersRun(mark("DAEMON", "29.8.0"), mark("NOTRETURNED", "db", "always")), "waiting_containers"},
+	} {
+		s.write(t, step.lines...)
+		status := s.status(t)
+		if status.State != "running" || status.Phase != step.want {
+			t.Errorf("%s: state %q, phase %q, want running in %q", step.name, status.State, status.Phase, step.want)
+		}
+	}
+
+	// the unit is gone and its last line may be on its way: still in the step it was in
+	s.box.activeUnits[systemDockerUpdateUnit] = false
+	s.write(t, ownersRun(mark("DAEMON", "29.8.0"))...)
+	s.logAge(5 * time.Second)
+	if status := s.status(t); status.State != "finalizing" || status.Phase != "waiting_containers" {
+		t.Errorf("finalizing: state %q, phase %q", status.State, status.Phase)
+	}
+
+	// over, one way or another: no step
+	s.logAge(time.Hour)
+	for name, lines := range map[string][]string{
+		"succeeded":       ownersRun(mark("DAEMON", "29.8.0"), mark("SUCCESS", "2026-08-13T01:05:00Z")),
+		"restart pending": ownersRun(mark("DAEMON", "28.0.4"), mark("RESTART_PENDING", "2026-08-13T01:05:00Z")),
+		"failed":          ownersRun(mark("FAILED", "2026-08-13T01:03:00Z", "install")),
+		"lost":            ownersRun(mark("DAEMON", "29.8.0")),
+	} {
+		s.write(t, lines...)
+		if status := s.status(t); status.Phase != "" {
+			t.Errorf("%s: phase %q (state %q)", name, status.Phase, status.State)
+		}
+	}
+
+	// a unit of that name that the core did not start has no step to tell
+	if err := os.Remove(s.updater.dockerLogPath()); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	s.box.activeUnits[systemDockerUpdateUnit] = true
+	if status := s.status(t); status.State != "running" || status.Phase != "" {
+		t.Errorf("a unit that is not ours: state %q, phase %q", status.State, status.Phase)
 	}
 }
 
@@ -206,6 +264,7 @@ func TestDockerStatusFailed(t *testing.T) {
 		"download": "Nothing was changed",
 		"install":  "could not be installed",
 		"daemon":   "did not come back",
+		"start":    "could not be started",
 	} {
 		s := newStatusBox(t)
 		s.write(t, ownersRun(mark("FAILED", "2026-08-13T01:03:00Z", reason))...)

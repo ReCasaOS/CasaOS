@@ -36,7 +36,7 @@ type DockerRun struct {
 	// Outcome is "success", "restart_pending" or "failed" once the run has ended, and "" while it
 	// has not.
 	Outcome string
-	// ErrorCode is why a run failed: guard, download, install, daemon or no_result.
+	// ErrorCode is why a run failed: guard, download, install, daemon, start or no_result.
 	ErrorCode string
 	// To is the version of the engine that runs after a run that succeeded.
 	To string
@@ -138,6 +138,8 @@ func dockerFailure(code string) string {
 		return "the packages could not be installed"
 	case "daemon":
 		return "Docker did not come back after the update"
+	case "start":
+		return "the update could not be started, nothing was changed"
 	}
 	return "it stopped before it reported a result"
 }

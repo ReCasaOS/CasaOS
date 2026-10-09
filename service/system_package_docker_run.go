@@ -92,6 +92,7 @@ var dockerFailMessages = map[string]string{
 	dockerpkg.FailDownload: "The packages could not be downloaded. Nothing was changed.",
 	dockerpkg.FailInstall:  "The packages could not be installed.",
 	dockerpkg.FailDaemon:   "Docker did not come back after the update.",
+	dockerpkg.FailStart:    "The update could not be started. Nothing was changed.",
 }
 
 // SystemDockerUpdateStatus is how the update of Docker is going, or how it went: the same
@@ -100,11 +101,15 @@ type SystemDockerUpdateStatus struct {
 	Supported bool `json:"supported"`
 	// State is idle, running, finalizing, succeeded or failed.
 	State string `json:"state"`
+	// Phase is the step a run that is going on is at: preparing, downloading (the apps run),
+	// installing (Docker restarts), waiting_docker (for the daemon), waiting_containers (for the
+	// apps). It is "" for a run that has ended and when nothing runs: see dockerpkg.Run.Phase.
+	Phase string `json:"phase"`
 	// Outcome is success or restart_pending (State succeeded), failed (State failed), or "".
 	Outcome string `json:"outcome"`
 	Error   string `json:"error"`
-	// ErrorCode is guard, download, install, daemon or no_result for a run that failed, and
-	// the code of the refusal for a start that was refused.
+	// ErrorCode is guard, download, install, daemon, start or no_result for a run that failed,
+	// and the code of the refusal for a start that was refused.
 	ErrorCode string `json:"error_code"`
 	// RefusalDetail goes with a refusal: the names of the packages or of the apps it is about.
 	RefusalDetail []string `json:"refusal_detail,omitempty"`
@@ -258,7 +263,7 @@ func (u *systemPackageUpdater) startDockerUpdate(planID string) (SystemDockerUpd
 	}
 	if output, err := u.start(support.systemdPath, systemDockerUpdateUnit, args...); err != nil {
 		// The log is a whole run all the same: the first line, what systemd said, a last line.
-		failure := queued + trimSystemPackageOutput(output) + "\n" + dockerpkg.FailedMarker(nonce, u.now(), dockerpkg.FailGuard)
+		failure := queued + trimSystemPackageOutput(output) + "\n" + dockerpkg.FailedMarker(nonce, u.now(), dockerpkg.FailStart)
 		_ = u.writeFile(logPath, []byte(failure), 0o644)
 		return u.dockerFailedToStart(support, nonce, fmt.Sprintf("start Docker update: %s", trimSystemPackageOutput(output)), fmt.Errorf("start Docker update: %w", err))
 	}
@@ -266,6 +271,7 @@ func (u *systemPackageUpdater) startDockerUpdate(planID string) (SystemDockerUpd
 	return SystemDockerUpdateStatus{
 		Supported:   true,
 		State:       systemPackageUpdateStateRunning,
+		Phase:       dockerpkg.PhasePreparing,
 		StartedAt:   queuedAt.Format(time.RFC3339),
 		NotReturned: []dockerpkg.NotReturned{},
 		Log:         queued,
@@ -397,10 +403,10 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 	case "":
 		switch {
 		case active:
-			status.State = systemPackageUpdateStateRunning
+			status.State, status.Phase = systemPackageUpdateStateRunning, run.Phase()
 		case u.isWithinResultGrace(logPath):
 			// systemd can say the unit is gone just before the last line reached the log
-			status.State = systemPackageUpdateStateFinalizing
+			status.State, status.Phase = systemPackageUpdateStateFinalizing, run.Phase()
 		default:
 			status.State, status.Outcome = systemPackageUpdateStateFailed, systemDockerOutcomeFailed
 			status.ErrorCode = systemDockerErrorNoResult
