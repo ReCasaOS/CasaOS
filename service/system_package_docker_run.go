@@ -79,6 +79,10 @@ const (
 	systemDockerStartTimeout = time.Minute
 	// systemDockerUnitTimeout bounds a question to systemd.
 	systemDockerUnitTimeout = 10 * time.Second
+	// systemDockerSilenceLimit is how long a log may be quiet while systemd does not answer
+	// before the run is called lost: more than the wait for the daemon and for the containers
+	// together, and as much as a download on a slow line.
+	systemDockerSilenceLimit = 30 * time.Minute
 	// systemDockerHeadBytes is read from the start of a log that was cut: its first line is the
 	// run's nonce.
 	systemDockerHeadBytes = 256
@@ -324,17 +328,35 @@ func (u *systemPackageUpdater) dockerAppOperations(ctx context.Context) ([]strin
 // unitActive says whether a systemd unit is running, starting or stopping. Systemd not
 // answering is not running: the log has the last word then.
 func (u *systemPackageUpdater) unitActive(unit string) bool {
+	active, _ := u.unitState(unit)
+	return active
+}
+
+// unitState is unitActive and whether systemd answered at all: a failed question (PID 1 busy,
+// the ten seconds that are all it is given) says nothing of the unit.
+func (u *systemPackageUpdater) unitState(unit string) (active, answered bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), systemDockerUnitTimeout)
 	defer cancel()
 	output, err := u.command(ctx, "systemctl", "show", unit, "--property=ActiveState", "--value")
 	if err != nil {
-		return false
+		return false, false
 	}
 	switch strings.TrimSpace(string(output)) {
 	case "active", "activating", "deactivating":
-		return true
+		return true, true
 	}
-	return false
+	return false, true
+}
+
+// logWrittenWithin says whether the log was written within that long ago (or, for a clock that
+// was put right, a little in the future), by the updater's clock.
+func (u *systemPackageUpdater) logWrittenWithin(logPath string, window time.Duration) bool {
+	info, err := u.stat(logPath)
+	if err != nil {
+		return false
+	}
+	age := u.now().UTC().Sub(info.ModTime().UTC())
+	return age >= -systemPackageResultGracePeriod && age <= window
 }
 
 // dockerStatus says how the update of Docker is going. It takes no lock and asks Docker nothing:
@@ -365,7 +387,7 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 		}
 	}
 	run := dockerpkg.ParseRun(parsed)
-	active := u.unitActive(systemDockerUpdateUnit)
+	active, answered := u.unitState(systemDockerUpdateUnit)
 
 	if run.Nonce == "" {
 		// no run of ours in the log: the unit, if there is one, is not ours to describe
@@ -407,6 +429,12 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 	case "":
 		switch {
 		case active:
+			status.State, status.Phase = systemPackageUpdateStateRunning, run.Phase()
+		case !answered && u.logWrittenWithin(logPath, systemDockerSilenceLimit):
+			// Systemd did not say that the unit is gone, and the unit is quiet for minutes at a time
+			// (the wait for the daemon, the wait for the containers): not a verdict, and the page
+			// and the push stop at the first end they read. A log that has been quiet for this
+			// long is another matter.
 			status.State, status.Phase = systemPackageUpdateStateRunning, run.Phase()
 		case u.isWithinResultGrace(logPath):
 			// systemd can say the unit is gone just before the last line reached the log

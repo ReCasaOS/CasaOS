@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -211,6 +212,55 @@ func TestDockerStatusFinalizesBeforeItReportsNoResult(t *testing.T) {
 	s.box.activeUnits[systemDockerUpdateUnit] = true
 	if status := s.status(t); status.State != "running" {
 		t.Errorf("a unit that runs: status = %#v", status)
+	}
+}
+
+// A systemctl that fails (PID 1 busy, a fork that failed, ten seconds of nothing) says nothing about
+// the unit. The unit is quiet in the log for minutes (the wait for the daemon, the wait for the
+// containers), so a status that took the failure for "the unit is gone" would report a run that is
+// going on as lost, and the page and the push stop at the first end they read.
+func TestDockerStatusDoesNotCallARunLostBecauseSystemdDidNotAnswer(t *testing.T) {
+	s := newStatusBox(t)
+	s.write(t, ownersRun(mark("DAEMON", "29.8.0"))...)
+	deaf := true
+	answer := s.updater.command
+	s.updater.command = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemctl" && deaf {
+			return nil, errors.New("Failed to connect to bus: Resource temporarily unavailable")
+		}
+		return answer(ctx, name, args...)
+	}
+
+	// the log has been quiet for 45 seconds, past the grace for a last line, and systemd does not say
+	s.logAge(45 * time.Second)
+	status := s.status(t)
+	if status.State != "running" || status.Phase != "waiting_containers" || status.Outcome != "" || status.ErrorCode != "" || status.Error != "" || status.RollbackCommand != "" {
+		t.Errorf("systemd does not answer, the log is 45 seconds old: status = %#v", status)
+	}
+	if !dockerRunMutes(status, s.updater.now()) {
+		t.Error("the alerts about the apps' containers are not kept quiet for a run that goes on")
+	}
+	s.logAge(systemDockerSilenceLimit - time.Minute)
+	if status := s.status(t); status.State != "running" {
+		t.Errorf("systemd does not answer, the log is %v old: status = %#v", systemDockerSilenceLimit-time.Minute, status)
+	}
+
+	// systemd does not answer for ever, and the log has been quiet for as long: the run is lost
+	s.logAge(systemDockerSilenceLimit + time.Minute)
+	if status := s.status(t); status.State != "failed" || status.ErrorCode != "no_result" {
+		t.Errorf("systemd does not answer, the log is old: status = %#v", status)
+	}
+
+	// systemd answers that the unit is gone, and the log has been quiet: the run is lost, as ever
+	deaf = false
+	s.logAge(45 * time.Second)
+	if status := s.status(t); status.State != "failed" || status.ErrorCode != "no_result" {
+		t.Errorf("the unit is gone: status = %#v", status)
+	}
+	// ... and one that answers that it runs is running, as ever
+	s.box.activeUnits[systemDockerUpdateUnit] = true
+	if status := s.status(t); status.State != "running" {
+		t.Errorf("the unit runs: status = %#v", status)
 	}
 }
 
