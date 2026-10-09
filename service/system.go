@@ -46,6 +46,14 @@ type SystemService interface {
 	GetSystemPackageUpdateStatus() SystemPackageUpdateStatus
 	// GetSystemDockerContainers lists the running containers, which an update of Docker stops.
 	GetSystemDockerContainers() SystemDockerContainers
+	// StartDockerUpdate updates the Docker engine to the plan the owner confirmed (its id). A
+	// *DockerUpdateRefusal says why it did not start; the status comes with the error.
+	StartDockerUpdate(planID string) (SystemDockerUpdateStatus, error)
+	// DockerUpdateStatus says how the update of Docker is going, or how it went.
+	DockerUpdateStatus() SystemDockerUpdateStatus
+	// SetAppOperations tells how to ask which apps have an operation in progress; the update of
+	// Docker is refused while it cannot be asked.
+	SetAppOperations(list AppOperationsFunc)
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()

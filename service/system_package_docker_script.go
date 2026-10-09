@@ -194,14 +194,21 @@ func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to s
 	case len(pins) == 0 || len(pins) != len(names):
 		return nil, errors.New("the Docker update has no packages to install")
 	}
-	for i, pin := range pins {
+	// the pins and the names are the same packages, in whatever order each is sorted
+	pinned := map[string]bool{}
+	for _, pin := range pins {
 		name, version, found := strings.Cut(pin, "=")
-		if !found || !dockerpkg.ValidName(name) || !dockerpkg.IsEngineName(name) || !dockerpkg.ValidVersion(version) {
+		if !found || !dockerpkg.ValidName(name) || !dockerpkg.IsEngineName(name) || !dockerpkg.ValidVersion(version) || pinned[name] {
 			return nil, fmt.Errorf("%q is not a pin of the engine's packages", pin)
 		}
-		if !dockerpkg.ValidName(names[i]) || !dockerpkg.IsEngineName(names[i]) || names[i] != name {
-			return nil, fmt.Errorf("%q is not the name of the pin %q", names[i], pin)
+		pinned[name] = true
+	}
+	seen := map[string]bool{}
+	for _, name := range names {
+		if !pinned[name] || seen[name] {
+			return nil, fmt.Errorf("%q has no pin of its own", name)
 		}
+		seen[name] = true
 	}
 	return []string{
 		"--quiet",

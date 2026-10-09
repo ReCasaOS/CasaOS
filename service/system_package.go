@@ -98,6 +98,8 @@ type systemPackageUpdater struct {
 	dpkgLocked func() bool
 	// freeBytes is the room left on the filesystem of a path; nil means it cannot be read.
 	freeBytes func(path string) (uint64, error)
+	// appOperations says which apps have an operation in progress; nil means it cannot be asked.
+	appOperations AppOperationsFunc
 }
 
 // untranslatedCommand runs a package tool with its output in English. apt translates its
