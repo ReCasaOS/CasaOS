@@ -135,6 +135,11 @@ func markerOf(line, nonce string) (kind string, fields []string, ok bool) {
 	return kind, strings.Fields(rest), true
 }
 
+// IsMarkerLine reports whether a line of the log starts like a marker. It is what a caller that
+// reads a long log keeps of it for ParseRun, besides the first line: a line that does not start like
+// a marker is never one.
+func IsMarkerLine(line string) bool { return strings.HasPrefix(line, markerPrefix) }
+
 func parseMarkerTime(s string) (time.Time, bool) {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {

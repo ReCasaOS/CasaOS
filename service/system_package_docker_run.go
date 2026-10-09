@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -83,13 +84,16 @@ const (
 	// before the run is called lost: more than the wait for the daemon and for the containers
 	// together, and as much as a download on a slow line.
 	systemDockerSilenceLimit = 30 * time.Minute
-	// systemDockerHeadBytes is read from the start of a log that was cut: its first line is the
-	// run's nonce.
-	systemDockerHeadBytes = 256
-
-	// dockerLogOmitted is what readBoundedSystemPackageLog puts in front of a log it cut.
-	dockerLogOmitted = "[Earlier log output omitted]\n"
+	// systemDockerMarkerLineBytes is the longest line of the log that can be a marker, and how much
+	// of any other is looked at: a marker is a kind, a nonce and a few fields.
+	systemDockerMarkerLineBytes = 4096
 )
+
+// systemDockerMarkerScanBytes is how much of the log the markers are looked for in: the whole of it
+// up to 16 MiB, and the first and the last half of that beyond, since the unit writes its markers
+// at the start (before the install) and at the end, and what apt prints is in between. A var, for
+// the tests.
+var systemDockerMarkerScanBytes int64 = 16 << 20
 
 var dockerFailMessages = map[string]string{
 	dockerpkg.FailGuard:    "The update was no longer what you confirmed, so nothing was installed.",
@@ -379,14 +383,10 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 	if err == nil {
 		status.Log = log
 	}
-	// A log that was cut has lost its first line, and with it the nonce: it is put back.
-	parsed := log
-	if strings.HasPrefix(log, dockerLogOmitted) {
-		if head, err := readDockerLogHead(logPath); err == nil {
-			parsed = head + "\n" + log
-		}
-	}
-	run := dockerpkg.ParseRun(parsed)
+	// The log that is shown is its end. The markers are read from all of it: the ones the rollback
+	// and the phase rest on are written before the install, and the install's output comes after.
+	markers, _ := readDockerMarkers(logPath)
+	run := dockerpkg.ParseRun(markers)
 	active, answered := u.unitState(systemDockerUpdateUnit)
 
 	if run.Nonce == "" {
@@ -462,18 +462,69 @@ func formatDockerTime(times ...time.Time) string {
 	return ""
 }
 
-// readDockerLogHead is the first line of the log.
-func readDockerLogHead(path string) (string, error) {
+// readDockerMarkers is the log reduced to what dockerpkg.ParseRun reads of it: the first line, which
+// holds the run's nonce, whatever it is, and then the lines that start like a marker. The log is read
+// as a stream, systemDockerMarkerScanBytes of it at most, and no more of a line than
+// systemDockerMarkerLineBytes is held at a time.
+func readDockerMarkers(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
-	buf := make([]byte, systemDockerHeadBytes)
-	n, err := io.ReadFull(file, buf)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+	info, err := file.Stat()
+	if err != nil {
 		return "", err
 	}
-	head, _, _ := strings.Cut(string(buf[:n]), "\n")
-	return head, nil
+	var markers strings.Builder
+	size, limit := info.Size(), systemDockerMarkerScanBytes
+	if size <= limit {
+		// what was there when it was looked at, not what an update that goes on adds meanwhile
+		err = collectDockerMarkers(&markers, io.LimitReader(file, size), true, false, false)
+		return markers.String(), err
+	}
+	// The first half of the bound, whose last line is cut unless it ends the window, and the last half,
+	// which is read from one byte before: that byte is a new line if the window starts on a line, and
+	// if it is not the line it ends is cut.
+	half := limit / 2
+	if err := collectDockerMarkers(&markers, io.LimitReader(file, half), true, false, true); err != nil {
+		return "", err
+	}
+	if _, err := file.Seek(size-half-1, io.SeekStart); err != nil {
+		return "", err
+	}
+	err = collectDockerMarkers(&markers, file, false, true, false)
+	return markers.String(), err
+}
+
+// collectDockerMarkers adds to out the lines of r that ParseRun may read, each ended by a new line:
+// the first line of the log (first), and the lines that are no longer than systemDockerMarkerLineBytes
+// and start with the markers' prefix. startsInLine says r begins inside a line, whose end is skipped;
+// endsInLine that r ends where its reader was stopped, not where the log ends, so that a last line
+// that has no new line is cut and left out.
+func collectDockerMarkers(out *strings.Builder, r io.Reader, first, startsInLine, endsInLine bool) error {
+	reader := bufio.NewReaderSize(r, systemDockerMarkerLineBytes)
+	atStart := !startsInLine
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if err != nil && err != bufio.ErrBufferFull && err != io.EOF {
+			return err
+		}
+		ended := err == nil
+		if atStart {
+			// a fragment that fills the buffer is the start of a line that is too long to be a marker
+			whole := ended || (err == io.EOF && !endsInLine)
+			line := strings.TrimRight(string(fragment), "\r\n")
+			if (first && (len(fragment) > 0 || err != io.EOF)) || (whole && dockerpkg.IsMarkerLine(line)) {
+				out.WriteString(line)
+				out.WriteByte('\n')
+			}
+			first = false
+		}
+		// after a fragment that did not end the line, the next ones are the rest of the same line
+		atStart = ended
+		if err == io.EOF {
+			return nil
+		}
+	}
 }

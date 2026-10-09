@@ -477,3 +477,23 @@ func TestRollbackCommandFromARun(t *testing.T) {
 		t.Errorf("RollbackCommand() = %q, want %q", got, want)
 	}
 }
+
+func TestIsMarkerLineIsTheShapeParseRunLooksFor(t *testing.T) {
+	for line, want := range map[string]bool{
+		"CASAOS_DOCKER_UPDATE_SUCCESS " + testNonce + " 2026-08-13T01:05:00Z": true,
+		"CASAOS_DOCKER_UPDATE_":             true,
+		"casaos_docker_update_x":            false,
+		" CASAOS_DOCKER_UPDATE_":            false,
+		"zz CASAOS_DOCKER_UPDATE_SUCCESS x": false,
+		"container: web always":             false,
+		"":                                  false,
+	} {
+		if got := IsMarkerLine(line); got != want {
+			t.Errorf("IsMarkerLine(%q) = %v, want %v", line, got, want)
+		}
+	}
+	// ... and the lines the core and the unit write are all of that shape
+	if !IsMarkerLine(strings.TrimSuffix(QueuedMarker(testNonce, time.Now()), "\n")) || !IsMarkerLine(FailedMarker(testNonce, time.Now(), FailStart)) {
+		t.Error("a marker the core writes is not a marker line")
+	}
+}

@@ -504,40 +504,229 @@ func TestDockerStatusReadsTheEndOfALongLogAndKeepsTheRunsFirstLine(t *testing.T)
 	}
 }
 
-func TestDockerStatusMatchesTheReaderOfTheGenericLog(t *testing.T) {
-	// the marker for a log that was cut is the generic reader's, which this reads
-	dir := t.TempDir()
-	path := dir + "/long.log"
-	if err := os.WriteFile(path, []byte(strings.Repeat("x\n", systemPackageLogMaxBytes)), 0o644); err != nil {
+// writeRaw puts text in the log as it is.
+func (s *statusBox) writeRaw(t *testing.T, text string) {
+	t.Helper()
+	if err := os.WriteFile(s.updater.dockerLogPath(), []byte(text), 0o644); err != nil {
 		t.Fatal(err)
-	}
-	log, err := readBoundedSystemPackageLog(path, systemPackageLogMaxBytes)
-	if err != nil || !strings.HasPrefix(log, dockerLogOmitted) {
-		t.Fatalf("the generic reader's prefix is no longer %q: %q, %v", dockerLogOmitted, log[:40], err)
 	}
 }
 
-func TestDockerStatusReadsTheFirstLineOfALogOnlyAsFarAsItGoes(t *testing.T) {
-	path := t.TempDir() + "/first.log"
-	if err := os.WriteFile(path, []byte(strings.Repeat("a", 10000)), 0o644); err != nil {
+// lines is the lines, each ended by a new line, as the log holds them.
+func lines(list ...string) string { return strings.Join(list, "\n") + "\n" }
+
+// aptNoise is what apt and dpkg print while they unpack and configure: about 3.4 MiB of it, far more
+// than the 128 KiB of the log that the page is shown.
+var aptNoise = strings.Repeat("Setting up docker-ce (5:29.8.0-1~debian.11~bullseye) ...\n", 60000)
+
+// The markers the page and the rollback rest on (the snapshot of what was installed, the end of the
+// download) are written before the install, and what apt prints comes after them: a noisy install
+// must not lose them, or a failed install would have no command to put the packages back, no version
+// to come from, and a run that is installing would be called preparing.
+func TestDockerStatusKeepsTheMarkersOfANoisyInstall(t *testing.T) {
+	if len(aptNoise) < 3<<20 {
+		t.Fatalf("the noise is %d bytes", len(aptNoise))
+	}
+	beforeInstall := lines(logQueued, logStarted, logPrevious, "container: web always", mark("DOWNLOADED", "2026-08-13T01:00:30Z"))
+	rollback := "sudo apt-get install --allow-downgrades " + pinContainer + " docker-ce=" + debian28 + " docker-ce-cli=" + debian28
+
+	for _, c := range []struct {
+		name   string
+		active bool
+		log    string
+		check  func(SystemDockerUpdateStatus) string
+	}{
+		{"an install that failed", false, beforeInstall + aptNoise + lines(mark("FAILED", "2026-08-13T01:03:00Z", "install")), func(st SystemDockerUpdateStatus) string {
+			if st.State != "failed" || st.ErrorCode != "install" || st.From != "28.0.4" || st.RollbackCommand != rollback || st.Phase != "" {
+				return "want failed at install, from 28.0.4, with the rollback command"
+			}
+			return ""
+		}},
+		{"an install that was lost", false, beforeInstall + aptNoise, func(st SystemDockerUpdateStatus) string {
+			if st.State != "failed" || st.ErrorCode != "no_result" || st.From != "28.0.4" || st.RollbackCommand != rollback {
+				return "want failed with no result, from 28.0.4, with the rollback command"
+			}
+			return ""
+		}},
+		{"an install that goes on", true, beforeInstall + aptNoise, func(st SystemDockerUpdateStatus) string {
+			if st.State != "running" || st.Phase != "installing" || st.From != "28.0.4" || st.RollbackCommand != "" {
+				return "want running, installing, from 28.0.4"
+			}
+			return ""
+		}},
+		{"a wait for the daemon", true, beforeInstall + aptNoise + lines(mark("INSTALLED", "2026-08-13T01:02:00Z")) + aptNoise, func(st SystemDockerUpdateStatus) string {
+			if st.State != "running" || st.Phase != "waiting_docker" || st.From != "28.0.4" {
+				return "want running, waiting_docker, from 28.0.4"
+			}
+			return ""
+		}},
+		{"a run that succeeded, with noise everywhere", false, beforeInstall + aptNoise + lines(mark("INSTALLED", "2026-08-13T01:02:00Z")) + aptNoise +
+			lines(mark("DAEMON", "29.8.0"), mark("NOTRETURNED", "db", "always")) + aptNoise + lines(mark("SUCCESS", "2026-08-13T01:05:00Z")), func(st SystemDockerUpdateStatus) string {
+			if st.State != "succeeded" || st.Outcome != "success" || st.From != "28.0.4" || st.To != "29.8.0" || st.RollbackCommand != "" ||
+				!reflect.DeepEqual(st.NotReturned, []dockerpkg.NotReturned{{Name: "db", RestartPolicy: "always"}}) {
+				return "want succeeded, from 28.0.4 to 29.8.0, with db not returned"
+			}
+			return ""
+		}},
+	} {
+		s := newStatusBox(t)
+		s.box.activeUnits[systemDockerUpdateUnit] = c.active
+		s.writeRaw(t, c.log)
+		status := s.status(t)
+		if why := c.check(status); why != "" {
+			t.Errorf("%s: %s: status = %#v", c.name, why, status)
+		}
+		// the log that is shown is still the end of it
+		if len(status.Log) > systemPackageLogMaxBytes {
+			t.Errorf("%s: the log is %d bytes", c.name, len(status.Log))
+		}
+	}
+}
+
+// The scan has a bound (16 MiB). A log that goes beyond it is read by its start and by its end, the
+// two places the unit writes its markers.
+func TestDockerStatusReadsAHugeLogByItsStartAndItsEnd(t *testing.T) {
+	s := newStatusBox(t)
+	noise := strings.Repeat(strings.Repeat("x", 1023)+"\n", 20<<10) // 20 MiB
+	log := lines(logQueued, logStarted, logPrevious, "container: web always", mark("DOWNLOADED", "2026-08-13T01:00:30Z")) + noise +
+		lines(mark("INSTALLED", "2026-08-13T01:02:00Z"), mark("FAILED", "2026-08-13T01:03:00Z", "daemon"))
+	if int64(len(log)) <= systemDockerMarkerScanBytes {
+		t.Fatalf("the log is %d bytes, not beyond the bound of %d", len(log), systemDockerMarkerScanBytes)
+	}
+	s.writeRaw(t, log)
+	status := s.status(t)
+	want := "sudo apt-get install --allow-downgrades " + pinContainer + " docker-ce=" + debian28 + " docker-ce-cli=" + debian28
+	if status.State != "failed" || status.ErrorCode != "daemon" || status.From != "28.0.4" || status.RollbackCommand != want {
+		t.Errorf("status = %#v", status)
+	}
+}
+
+// A marker is a short line. A line that goes on for kilobytes is apt's, or worse, and is neither read
+// whole nor allowed to hide what comes after it.
+func TestDockerStatusDoesNotReadALineLongerThanAMarkerCanBe(t *testing.T) {
+	s := newStatusBox(t)
+	end := lines(mark("DAEMON", "29.8.0"))
+
+	// a marker with room for a lot of nothing after it is not one
+	s.writeRaw(t, lines(ownersRun()...)+end+mark("SUCCESS", "2026-08-13T01:05:00Z")+strings.Repeat(" ", 3*systemDockerMarkerLineBytes)+"\n")
+	if status := s.status(t); status.State == "succeeded" {
+		t.Errorf("a marker longer than a marker can be was read: %#v", status)
+	}
+
+	// megabytes with no new line, then what the unit wrote
+	s.writeRaw(t, lines(ownersRun()...)+strings.Repeat("y", 3<<20)+"\n"+end+lines(mark("SUCCESS", "2026-08-13T01:05:00Z")))
+	if status := s.status(t); status.State != "succeeded" || status.To != "29.8.0" {
+		t.Errorf("a long line hid the end of the run: %#v", status)
+	}
+
+	// ... and the end of one that is the last thing in the log
+	s.writeRaw(t, lines(ownersRun()...)+end+lines(mark("SUCCESS", "2026-08-13T01:05:00Z"))+strings.Repeat("z", 3<<20))
+	if status := s.status(t); status.State != "succeeded" {
+		t.Errorf("a long last line hid the end of the run: %#v", status)
+	}
+
+	// what a long line goes on with is the line's, even if it looks like a marker where it starts
+	s.writeRaw(t, lines(ownersRun()...)+end+strings.Repeat("a", systemDockerMarkerLineBytes)+lines(mark("SUCCESS", "2026-08-13T01:05:00Z")))
+	if status := s.status(t); status.State == "succeeded" {
+		t.Errorf("the rest of a long line was read as a line: %#v", status)
+	}
+}
+
+// The nonce is the first line's, and the first line is the log's, whatever it says: a QUEUED line
+// further down does not become the first by skipping over the lines that are not markers.
+func TestDockerStatusTakesTheFirstLineOfTheLogAndNotTheFirstMarker(t *testing.T) {
+	s := newStatusBox(t)
+	s.write(t, append([]string{"not the core's line"}, ownersRun(mark("DAEMON", "29.8.0"), mark("SUCCESS", "2026-08-13T01:05:00Z"))...)...)
+	if status := s.status(t); status.State != "idle" {
+		t.Errorf("a log whose first line is something else: status = %#v", status)
+	}
+}
+
+func TestReadDockerMarkersReadsWholeLinesOnly(t *testing.T) {
+	old := systemDockerMarkerScanBytes
+	systemDockerMarkerScanBytes = 2048
+	t.Cleanup(func() { systemDockerMarkerScanBytes = old })
+	half := int(systemDockerMarkerScanBytes / 2)
+
+	// exactly n bytes of lines that are not markers
+	filler := func(n int) string { return strings.Repeat("\n", n%2) + strings.Repeat("n\n", n/2) }
+	final := lines(mark("SUCCESS", "2026-08-13T01:05:00Z"))
+	daemon := lines(mark("DAEMON", "29.8.0"))
+	previous := lines(mark("PREVIOUS", pinContainer))
+	start := lines(logQueued, logStarted)
+
+	// The window of the start ends in the middle of PREVIOUS, after "containerd.io=1.7": a pin that
+	// would pass for one, with a version that is not the package's.
+	cut := len(previous) - len(".27-1\n")
+	head := start + filler(half-cut-len(start)) + previous
+	if !strings.HasSuffix(head[:half], "containerd.io=1.7") {
+		t.Fatalf("the window of the start ends in %q", head[:half][half-40:])
+	}
+	middle := filler(1500)
+
+	for _, c := range []struct {
+		name string
+		tail func() string
+		// kept and dropped are what the markers read must and must not hold
+		kept, dropped []string
+	}{
+		{"the window of the end starts on a line", func() string {
+			// the window starts on the first byte of DAEMON, the byte before it being a new line
+			return daemon + filler(half-len(daemon)-len(final)) + final
+		}, []string{logQueued, logStarted, mark("DAEMON", "29.8.0"), mark("SUCCESS", "2026-08-13T01:05:00Z")}, []string{"PREVIOUS"}},
+		{"the window of the end starts in a line", func() string {
+			// the window starts one byte into a line that holds what would be a marker from its
+			// second byte on... and the first byte it is read from is the marker's own
+			return "zz" + daemon + filler(half+1-len(daemon)-len(final)) + final
+		}, []string{logQueued, logStarted, mark("SUCCESS", "2026-08-13T01:05:00Z")}, []string{"PREVIOUS", "DAEMON"}},
+	} {
+		path := t.TempDir() + "/docker-update.log"
+		text := head + middle + c.tail()
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if int64(len(text)) <= systemDockerMarkerScanBytes {
+			t.Fatalf("%s: the log is %d bytes", c.name, len(text))
+		}
+		read, err := readDockerMarkers(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range c.kept {
+			if !strings.Contains(read, want) {
+				t.Errorf("%s: %q is not in what was read:\n%s", c.name, want, read)
+			}
+		}
+		for _, bad := range c.dropped {
+			if strings.Contains(read, bad) {
+				t.Errorf("%s: %q is in what was read:\n%s", c.name, bad, read)
+			}
+		}
+	}
+
+	// a log that fits is read to its end, with or without the last new line
+	path := t.TempDir() + "/small.log"
+	if err := os.WriteFile(path, []byte(start+strings.TrimSuffix(final, "\n")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if head, err := readDockerLogHead(path); err != nil || len(head) != systemDockerHeadBytes {
-		t.Errorf("head = %d bytes, %v", len(head), err)
+	if read, err := readDockerMarkers(path); err != nil || !strings.Contains(read, "SUCCESS") || !strings.HasPrefix(read, logQueued+"\n") {
+		t.Errorf("read = %q, %v", read, err)
 	}
-	if err := os.WriteFile(path, []byte("one\ntwo\n"), 0o644); err != nil {
+
+	// the first line is kept whatever it is, and a log with nothing in it, or none, is no run
+	if err := os.WriteFile(path, []byte("hello\r\n"+start), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if head, err := readDockerLogHead(path); err != nil || head != "one" {
-		t.Errorf("head = %q, %v", head, err)
+	if read, err := readDockerMarkers(path); err != nil || !strings.HasPrefix(read, "hello\n"+logQueued) {
+		t.Errorf("read = %q, %v", read, err)
 	}
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if head, err := readDockerLogHead(path); err != nil || head != "" {
-		t.Errorf("head = %q, %v", head, err)
+	if read, err := readDockerMarkers(path); err != nil || dockerpkg.ParseRun(read).Nonce != "" {
+		t.Errorf("read = %q, %v", read, err)
 	}
-	if _, err := readDockerLogHead(path + ".none"); err == nil {
-		t.Error("a missing file has a first line")
+	if _, err := readDockerMarkers(path + ".none"); err == nil {
+		t.Error("a log that is not there was read")
 	}
 }
