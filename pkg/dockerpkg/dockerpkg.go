@@ -149,6 +149,34 @@ func ManualCommand(origin Origin, pending []string) string {
 	return "sudo apt-get update && sudo apt-get install --only-upgrade " + strings.Join(names, " ")
 }
 
+// ManualCommandHeld is ManualCommand for a package that is on hold: apt refuses to upgrade
+// a held package that is named on the command line unless it is told it may.
+func ManualCommandHeld(origin Origin, pending []string, held bool) string {
+	command := ManualCommand(origin, pending)
+	if held && strings.Contains(command, "--only-upgrade ") {
+		return strings.Replace(command, "--only-upgrade ", "--only-upgrade --allow-change-held-packages ", 1)
+	}
+	return command
+}
+
+var (
+	policyInstalledPattern = regexp.MustCompile(`(?m)^\s*Installed:\s*(\S+)\s*$`)
+	policyCandidatePattern = regexp.MustCompile(`(?m)^\s*Candidate:\s*(\S+)\s*$`)
+)
+
+// PolicyVersions reads the installed and the candidate version from the output of
+// `apt-cache policy <package>`: the candidate is the newest version apt would install. Each
+// is "" when apt says "(none)" or says nothing.
+func PolicyVersions(policy string) (installed, candidate string) {
+	read := func(pattern *regexp.Regexp) string {
+		if m := pattern.FindStringSubmatch(policy); m != nil && m[1] != "(none)" {
+			return m[1]
+		}
+		return ""
+	}
+	return read(policyInstalledPattern), read(policyCandidatePattern)
+}
+
 var engineVersionPattern = regexp.MustCompile(`^(?:\d+:)?(\d+(?:\.\d+)*)`)
 
 // EngineVersion is the upstream version in a dpkg version: "5:29.8.1-1~ubuntu.22.04~jammy"

@@ -51,6 +51,12 @@ func (b *aptBox) command(_ context.Context, name string, args ...string) ([]byte
 			return []byte("ii \t" + b.dockerIO + "\n"), nil
 		}
 		return nil, errors.New("dpkg-query: no packages found matching " + pkg)
+	case "dpkg":
+		// dpkg --compare-versions <candidate> gt <installed>: true when the candidate is later
+		if len(args) == 4 && args[0] == "--compare-versions" && args[2] == "gt" && args[1] > args[3] {
+			return nil, nil
+		}
+		return nil, errors.New("exit status 1")
 	case "apt-cache":
 		return []byte(b.policy), nil
 	case "snap":
@@ -92,6 +98,9 @@ const (
 
 const dockerCE = "5:29.8.1-1~ubuntu.22.04~jammy"
 
+// the engine is at the newest version its source offers: only a plugin is behind
+const currentPolicy = "docker-ce:\n  Installed: 5:29.8.1-1~ubuntu.22.04~jammy\n  Candidate: 5:29.8.1-1~ubuntu.22.04~jammy\n  Version table:\n *** 5:29.8.1-1~ubuntu.22.04~jammy 500\n        500 https://download.docker.com/linux/ubuntu jammy/stable amd64 Packages\n"
+
 func TestSystemPackageCheckListsDockerOnALineOfItsOwn(t *testing.T) {
 	updater := newTestSystemPackageUpdater(t)
 	box := &aptBox{
@@ -124,7 +133,7 @@ func TestSystemPackageCheckListsDockerOnALineOfItsOwn(t *testing.T) {
 
 func TestSystemPackageCheckSaysWhenDockerRestartsAndWhenItDoesNot(t *testing.T) {
 	updater := newTestSystemPackageUpdater(t)
-	updater.command = (&aptBox{upgradeSimulation: simPlugin, dockerCE: dockerCE, policy: dockerRepo}).command
+	updater.command = (&aptBox{upgradeSimulation: simPlugin, dockerCE: dockerCE, policy: currentPolicy}).command
 
 	got, err := updater.check()
 	if err != nil || got.Docker == nil || len(got.Docker.Updates) != 1 || got.Docker.RestartsDocker {
@@ -501,5 +510,37 @@ func TestTheUnitOfABoxWithoutDockerStillInstallsContainerd(t *testing.T) {
 	log, installed = runUnitCommand(t, simLibc+"Remv oldthing [1.0]\n", false)
 	if installed || !strings.Contains(log, "CASAOS_PACKAGE_UPDATE_GUARD") {
 		t.Fatalf("installed = %v, log = %q", installed, log)
+	}
+}
+
+const behindPolicy = "docker-ce:\n  Installed: 5:28.0.4-1~ubuntu.22.04~jammy\n  Candidate: 5:29.8.2-1~ubuntu.22.04~jammy\n  Version table:\n     5:29.8.2-1~ubuntu.22.04~jammy 500\n        500 https://download.docker.com/linux/ubuntu jammy/stable amd64 Packages\n *** 5:28.0.4-1~ubuntu.22.04~jammy 100\n        100 /var/lib/dpkg/status\n"
+
+func TestSystemPackageCheckDoesNotCallABehindDockerUpToDate(t *testing.T) {
+	// a Docker that is on hold, or that apt keeps back: no Inst line, and yet a newer version exists
+	for name, status := range map[string]string{"on hold": "hi", "kept back": "ii"} {
+		updater := newTestSystemPackageUpdater(t)
+		updater.command = (&aptBox{upgradeSimulation: simLibc, dockerCE: "5:28.0.4-1~ubuntu.22.04~jammy", dockerCEStatus: status, policy: behindPolicy}).command
+
+		got, err := updater.check()
+		if err != nil || got.Docker == nil || len(got.Docker.Updates) != 0 {
+			t.Fatalf("%s: check() = %#v, %v", name, got.Docker, err)
+		}
+		if got.Docker.Candidate != "29.8.2" || got.Docker.Held != (status == "hi") || !got.Docker.RestartsDocker {
+			t.Errorf("%s: Docker = %#v, want candidate 29.8.2, held %v", name, got.Docker, status == "hi")
+		}
+		if !strings.Contains(got.Docker.ManualCommand, "docker-ce") || (status == "hi") != strings.Contains(got.Docker.ManualCommand, "--allow-change-held-packages") {
+			t.Errorf("%s: manual command = %q", name, got.Docker.ManualCommand)
+		}
+	}
+}
+
+func TestSystemPackageCheckSaysNothingIsBehindWhenTheCandidateIsTheInstalledVersion(t *testing.T) {
+	updater := newTestSystemPackageUpdater(t)
+	policy := "docker-ce:\n  Installed: 5:29.8.2-1~u\n  Candidate: 5:29.8.2-1~u\n  Version table:\n *** 5:29.8.2-1~u 500\n        500 https://download.docker.com/linux/ubuntu jammy/stable amd64 Packages\n"
+	updater.command = (&aptBox{upgradeSimulation: simLibc, dockerCE: "5:29.8.2-1~u", policy: policy}).command
+
+	got, err := updater.check()
+	if err != nil || got.Docker == nil || got.Docker.Candidate != "" || got.Docker.Held {
+		t.Fatalf("check() = %#v, %v: nothing is behind", got.Docker, err)
 	}
 }
