@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,21 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 )
+
+func TestPackageToolsAreAskedForEnglishOutput(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh to ask for the environment")
+	}
+
+	// a host in French: apt-cache policy would print "Installé :" and "Candidat :"
+	t.Setenv("LC_ALL", "fr_FR.UTF-8")
+	t.Setenv("LANG", "fr_FR.UTF-8")
+	got, err := newSystemPackageUpdater().command(context.Background(), sh, "-c", "printf %s \"$LC_ALL\"")
+	if err != nil || string(got) != "C" {
+		t.Fatalf("a package tool ran with LC_ALL=%q (%v), want C", got, err)
+	}
+}
 
 func TestIsDebianFamily(t *testing.T) {
 	tests := []struct {

@@ -98,11 +98,19 @@ type systemPackageUpdater struct {
 	dpkgLocked func() bool
 }
 
+// untranslatedCommand runs a package tool with its output in English. apt translates its
+// text ("Installé :" and "Candidat :" where `apt-cache policy` says "Installed:" and
+// "Candidate:"), and this code reads that text: on a host that is not in English it would
+// find nothing, and say so as if nothing were there.
+func untranslatedCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return cmd.CombinedOutput()
+}
+
 func newSystemPackageUpdater() *systemPackageUpdater {
 	return &systemPackageUpdater{
-		command: func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			return exec.CommandContext(ctx, name, args...).CombinedOutput()
-		},
+		command: untranslatedCommand,
 		start: func(path string, _ string, args ...string) ([]byte, error) {
 			return exec.Command(path, args...).CombinedOutput()
 		},
