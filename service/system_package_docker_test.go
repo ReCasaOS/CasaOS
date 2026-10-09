@@ -49,6 +49,8 @@ type aptBox struct {
 	runningIDs     []string
 	inspected      string
 	inspectFailure bool
+	// dpkgAudit is what `dpkg --audit` prints: nothing, for a box whose packages are all right.
+	dpkgAudit string
 	// strict, when set, reports a command that nothing here answers (a real install, a
 	// systemctl start, a df...) as a test failure and as a failed command, instead of letting it
 	// succeed with no output, which would hide a check the code forgot to make.
@@ -136,6 +138,9 @@ func (b *aptBox) command(ctx context.Context, name string, args ...string) ([]by
 		}
 		return nil, errors.New("dpkg-query: no packages found matching " + pkg)
 	case "dpkg":
+		if len(args) == 1 && args[0] == "--audit" {
+			return []byte(b.dpkgAudit), nil
+		}
 		// dpkg --compare-versions <candidate> gt <installed>: true when the candidate is later
 		if len(args) == 4 && args[0] == "--compare-versions" && args[2] == "gt" && compareDpkgVersions(args[1], args[3]) > 0 {
 			return nil, nil

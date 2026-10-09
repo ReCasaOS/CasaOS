@@ -288,6 +288,60 @@ func TestStartDockerUpdateReasonsAreEnglishAndHaveNoDataInThem(t *testing.T) {
 	}
 }
 
+func TestStartDockerUpdateRefusesAnUnfinishedPackageOperationUntilItIsFinished(t *testing.T) {
+	const reason = "A previous package operation was left unfinished."
+	for name, c := range map[string]struct {
+		change func(*aptBox)
+		tweak  func(*systemPackageUpdater)
+	}{
+		"dpkg --audit has something to say": {change: func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured }},
+		"dpkg's journal holds a number":     {tweak: dpkgJournal("0001")},
+	} {
+		// the page's check saw a clean box, and the box was interrupted since
+		s := newStartBox(t, nil)
+		if c.change != nil {
+			c.change(s.box)
+		}
+		if c.tweak != nil {
+			c.tweak(s.updater)
+		}
+		status, err := s.updater.startDockerUpdate(s.planID)
+		var refusal *DockerUpdateRefusal
+		if !errors.As(err, &refusal) || refusal.Code != "dpkg" || refusal.Reason != reason || len(refusal.Detail) != 0 {
+			t.Errorf("%s: error = %v, want the refusal dpkg with its reason", name, err)
+			continue
+		}
+		// the reason travels in the data too, and there is no detail to show
+		if status.ErrorCode != "dpkg" || status.Error != reason || len(status.RefusalDetail) != 0 || status.State != "idle" {
+			t.Errorf("%s: status = %#v", name, status)
+		}
+		if s.started.count != 0 {
+			t.Errorf("%s: a unit was started", name)
+		}
+		s.noLog(t)
+
+		// finished (dpkg --configure -a): the same plan starts, with no other change
+		s.box.dpkgAudit = ""
+		s.updater.readDir = nil
+		if _, err := s.updater.startDockerUpdate(s.planID); err != nil || s.started.count != 1 {
+			t.Errorf("%s: after the repair: error = %v, started %d", name, err, s.started.count)
+		}
+	}
+}
+
+func TestStartDockerUpdateSaysMaintenanceAndNotDpkgWhileAPackageManagerWorks(t *testing.T) {
+	// what a running apt shows to dpkg --audit is not an interrupted operation
+	s := newStartBox(t, nil)
+	s.box.dpkgAudit = dpkgAuditHalfConfigured
+	s.updater.dpkgLocked = func() bool { return true }
+	_, err := s.updater.startDockerUpdate(s.planID)
+	var refusal *DockerUpdateRefusal
+	if !errors.As(err, &refusal) || refusal.Code != "maintenance" || s.started.count != 0 {
+		t.Fatalf("error = %v, started %d, want the refusal maintenance", err, s.started.count)
+	}
+	s.noLog(t)
+}
+
 func TestStartDockerUpdateRefusesABadPlanID(t *testing.T) {
 	good := strings.Repeat("a", 64)
 	for name, id := range map[string]string{

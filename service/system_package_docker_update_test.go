@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -418,6 +419,37 @@ const (
 	gib         = uint64(1 << 30)
 )
 
+// journalEntry is a name in dpkg's journal directory.
+type journalEntry string
+
+func (e journalEntry) Name() string             { return string(e) }
+func (journalEntry) IsDir() bool                { return false }
+func (journalEntry) Type() os.FileMode          { return 0 }
+func (journalEntry) Info() (os.FileInfo, error) { return nil, errors.New("not needed") }
+
+// dpkgJournal makes dpkg's journal directory, /var/lib/dpkg/updates, hold files of those names.
+// Any other directory is not there.
+func dpkgJournal(names ...string) func(*systemPackageUpdater) {
+	return func(u *systemPackageUpdater) {
+		u.readDir = func(path string) ([]os.DirEntry, error) {
+			if path != "/var/lib/dpkg/updates" {
+				return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+			}
+			entries := make([]os.DirEntry, 0, len(names))
+			for _, name := range names {
+				entries = append(entries, journalEntry(name))
+			}
+			return entries, nil
+		}
+	}
+}
+
+// what dpkg --audit prints of a package that an interrupted install left half done
+const dpkgAuditHalfConfigured = "The following packages are only half configured, probably due to problems\n" +
+	"configuring them the first time.  The configuration should be retried using\n" +
+	"dpkg --configure <package> or the configure menu option in dselect:\n" +
+	" docker-ce            Docker: the open-source application container engine\n"
+
 func refusalCases() []refusalCase {
 	remove := func(line string) func(*aptBox) {
 		return func(b *aptBox) { b.enginePlans["docker-ce-cli"] += line }
@@ -435,6 +467,10 @@ func refusalCases() []refusalCase {
 			b.packages["docker-buildx-plugin"] = "0.21.1-1~debian.11~bullseye"
 			b.statuses = map[string]string{"docker-buildx-plugin": "hi"}
 		}, code: "held"},
+		// the simulation passes on a box like these (it takes no lock) and the first real apt call does not
+		{name: "dpkg --audit reports a package left half configured", change: func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured }, code: "dpkg"},
+		{name: "dpkg's journal holds an interrupted operation", tweak: dpkgJournal("0001"), code: "dpkg"},
+		{name: "dpkg's journal holds a number among other files", tweak: dpkgJournal("tmp.ci", "0027", "lock"), code: "dpkg"},
 		{name: "there is no docker command", tweak: func(u *systemPackageUpdater) {
 			u.lookPath = func(name string) (string, error) {
 				if name == "docker" {
@@ -568,6 +604,18 @@ func TestDockerUpdateRefusalOrder(t *testing.T) {
 			b.dockerCEStatus = "hi"
 			b.daemonInfo = `{"ServerVersion":"28.0.4","SwarmState":"active"}`
 		}, nil, "held"},
+		{"origin over dpkg", supported, func(b *aptBox) { b.policy = mirrorPolicy; b.dpkgAudit = dpkgAuditHalfConfigured }, nil, "origin"},
+		{"held over dpkg", supported, func(b *aptBox) { b.dockerCEStatus = "hi"; b.dpkgAudit = dpkgAuditHalfConfigured }, nil, "held"},
+		{"held over dpkg's journal", supported, func(b *aptBox) { b.dockerCEStatus = "hi" }, dpkgJournal("0001"), "held"},
+		{"dpkg over daemon", supported, func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured; b.noDaemon = true }, nil, "dpkg"},
+		{"dpkg's journal over daemon", supported, func(b *aptBox) { b.noDaemon = true }, dpkgJournal("0001"), "dpkg"},
+		{"dpkg over swarm", supported, func(b *aptBox) {
+			b.dpkgAudit = dpkgAuditHalfConfigured
+			b.daemonInfo = `{"ServerVersion":"28.0.4","SwarmState":"active"}`
+		}, nil, "dpkg"},
+		{"dpkg over plan", supported, func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured; b.installFailure = "E: no" }, nil, "dpkg"},
+		{"dpkg's journal over plan", supported, func(b *aptBox) { b.installFailure = "E: no" }, dpkgJournal("0001"), "dpkg"},
+		{"dpkg over disk", supported, func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured }, lowDisk(nil), "dpkg"},
 		{"daemon over plan", supported, func(b *aptBox) { b.noDaemon = true; b.installFailure = "E: no" }, nil, "daemon"},
 		{"swarm over plan", supported, func(b *aptBox) {
 			b.daemonInfo = `{"ServerVersion":"28.0.4","SwarmState":"active"}`
@@ -590,6 +638,81 @@ func TestDockerUpdateRefusalOrder(t *testing.T) {
 		if len(plan.Packages) != 0 {
 			t.Errorf("%s: a plan is returned with a refusal for the plan: %#v", c.name, plan)
 		}
+	}
+}
+
+// An interrupted dpkg passes every simulation the check makes (they take no lock, and so do not look
+// at the journal) and fails the first real apt call as a failed download, which tells the owner to
+// look at the network. The two things apt itself would stop at are what the check looks for: what
+// dpkg --audit reports, and a number in the journal.
+func TestDockerUpdateRefusesAnUnfinishedPackageOperationAndNothingElse(t *testing.T) {
+	supported := systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get", systemdPath: "/usr/bin/systemd-run"}
+	notThere := func(u *systemPackageUpdater) {
+		u.readDir = func(string) ([]os.DirEntry, error) { return nil, os.ErrNotExist }
+	}
+	cases := []struct {
+		name   string
+		change func(*aptBox)
+		tweak  func(*systemPackageUpdater)
+		want   string
+		// notAsked: dpkg --audit is not even run
+		notAsked bool
+	}{
+		{"a clean box", nil, nil, "", false},
+		{"dpkg --audit prints a new line and nothing else", func(b *aptBox) { b.dpkgAudit = "\n" }, nil, "", false},
+		{"an empty journal", nil, dpkgJournal(), "", false},
+		{"files that are not only digits", nil, dpkgJournal("tmp.ci", "0001.bak", "a1", "1a", "-1", "1 2", "0x1f", ".", ".."), "", false},
+		{"a journal that is not there", nil, notThere, "", false},
+		{"no way to read the journal", nil, func(u *systemPackageUpdater) { u.readDir = nil }, "", false},
+		{"a number in the journal", nil, dpkgJournal("0001"), "dpkg", false},
+		{"a long number in the journal", nil, dpkgJournal("20261009"), "dpkg", false},
+		{"a number among files that are not", nil, dpkgJournal("tmp.ci", "0002", "lock"), "dpkg", false},
+		{"dpkg --audit has something to say", func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured }, nil, "dpkg", false},
+		{"both", func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured }, dpkgJournal("0001"), "dpkg", false},
+		// a package manager at work shows half done packages and a journal: it is not an interrupted one
+		{"a package manager holds dpkg's lock", func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured }, func(u *systemPackageUpdater) {
+			dpkgJournal("0001")(u)
+			u.dpkgLocked = func() bool { return true }
+		}, "", true},
+		{"a package manager holds no lock", func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured }, func(u *systemPackageUpdater) {
+			u.dpkgLocked = func() bool { return false }
+		}, "dpkg", false},
+	}
+	for _, c := range cases {
+		box := ownerBox(t)
+		if c.change != nil {
+			c.change(box)
+		}
+		updater := newTestSystemPackageUpdater(t)
+		updater.command = box.command
+		if c.tweak != nil {
+			c.tweak(updater)
+		}
+		update, _ := updater.dockerUpdatePreflight(context.Background(), supported)
+		if update.Refusal != c.want || update.Available != (c.want == "") {
+			t.Errorf("%s: refusal = %q, available = %v, want refusal %q", c.name, update.Refusal, update.Available, c.want)
+		}
+		if len(update.RefusalDetail) != 0 {
+			t.Errorf("%s: detail = %v: the refusal names no package", c.name, update.RefusalDetail)
+		}
+		if asked := indexOf(box.calls, "dpkg --audit") >= 0; asked == c.notAsked {
+			t.Errorf("%s: dpkg --audit was asked = %v: %v", c.name, asked, box.calls)
+		}
+	}
+}
+
+func TestTheUpdaterTheCoreRunsReadsDpkgsJournalForReal(t *testing.T) {
+	// a seam that is nil means "never dirty": it must not be nil where it matters
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/0001", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updater := newSystemPackageUpdater()
+	if updater.readDir == nil {
+		t.Fatal("the updater has no way to read dpkg's journal: the check is off")
+	}
+	if entries, err := updater.readDir(dir); err != nil || len(entries) != 1 || entries[0].Name() != "0001" {
+		t.Errorf("entries = %v, %v", entries, err)
 	}
 }
 
@@ -795,6 +918,7 @@ func TestAStrictAptBoxFailsOnACommandNobodyAnswers(t *testing.T) {
 		{"/usr/bin/docker", "info"},
 		{"/usr/bin/docker", "ps", "-q"},
 		{"/usr/bin/docker", "inspect", "abc"},
+		{"dpkg", "--audit"},
 	} {
 		strict.command(context.Background(), call[0], call[1:]...)
 	}

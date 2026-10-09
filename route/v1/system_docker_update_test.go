@@ -112,7 +112,7 @@ func TestStartDockerUpdateTakesOnlyThePlanID(t *testing.T) {
 
 func TestStartDockerUpdateRefusalsAreConflictsThatCarryTheirReason(t *testing.T) {
 	for _, code := range []string{
-		service.DockerRefusalOrigin, service.DockerRefusalHeld, service.DockerRefusalDaemon, service.DockerRefusalSwarm,
+		service.DockerRefusalOrigin, service.DockerRefusalHeld, service.DockerRefusalDpkg, service.DockerRefusalDaemon, service.DockerRefusalSwarm,
 		service.DockerRefusalPlan, service.DockerRefusalDisk,
 		service.DockerRefusalRunning, service.DockerRefusalMaintenance, service.DockerRefusalApps,
 		service.DockerRefusalChanged, service.DockerRefusalNothing,

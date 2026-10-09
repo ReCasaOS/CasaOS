@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
@@ -17,7 +18,8 @@ import (
 // update starts.
 
 // The reasons the button is refused for, in the order they are looked at: the first that
-// applies is the one given. The page maps these codes to its own words.
+// applies is the one given (unsupported, origin, held, dpkg, daemon, swarm, plan, disk). The page
+// maps these codes to its own words.
 const (
 	// DockerRefusalUnsupported is a host that is not Debian-family root with apt-get and
 	// systemd-run.
@@ -27,6 +29,10 @@ const (
 	// DockerRefusalHeld is docker-ce, or another package of the engine, on hold: the owner
 	// put it there, and the button does not undo it.
 	DockerRefusalHeld = "held"
+	// DockerRefusalDpkg is a package operation that was interrupted and left unfinished (a power
+	// cut in the middle of an install): the simulations take no lock, so they pass, and the first
+	// real apt call refuses, which the run would report as a failed download.
+	DockerRefusalDpkg = "dpkg"
 	// DockerRefusalDaemon is a Docker that does not answer: no docker command, or the daemon
 	// does not tell its version in time.
 	DockerRefusalDaemon = "daemon"
@@ -48,6 +54,9 @@ const (
 	// ponytail: flat floor, size-based check if it ever refuses a box that had room
 	systemDockerMinFreeBytes = 1 << 30
 )
+
+// systemDpkgJournal is where dpkg keeps the updates it has started and not finished.
+const systemDpkgJournal = "/var/lib/dpkg/updates"
 
 // systemDockerDiskPaths are the places that need the room: where apt keeps what it downloads,
 // and where the engine is installed.
@@ -109,6 +118,9 @@ func (u *systemPackageUpdater) dockerUpdatePreflight(ctx context.Context, suppor
 	installed, held := u.enginePackages(ctx)
 	if held {
 		return refuse(DockerRefusalHeld)
+	}
+	if u.dpkgUnfinished(ctx) {
+		return refuse(DockerRefusalDpkg)
 	}
 	_, daemon, err := u.dockerDaemon(ctx)
 	if err != nil {
@@ -181,6 +193,37 @@ func (u *systemPackageUpdater) enginePackages(ctx context.Context) (installed []
 		}
 	}
 	return installed, held
+}
+
+// dpkgUnfinished says whether a package operation was left half done, by the two things apt itself
+// stops at when it takes its lock: dpkg --audit has something to say of the packages (run with the
+// text in English like the other package tools, and any word it prints counts), or dpkg's journal
+// holds an update that was started and not finished, a file whose name is only digits. The
+// simulations take no lock and do not look at either.
+//
+// A package manager at work is not an interrupted one: it has packages half done and a journal
+// that is not empty, and says so to dpkg --audit. While one holds dpkg's lock nothing is said
+// here, and the start says "maintenance" for as long as it lasts.
+func (u *systemPackageUpdater) dpkgUnfinished(ctx context.Context) bool {
+	if u.dpkgLocked != nil && u.dpkgLocked() {
+		return false
+	}
+	if output, _ := u.command(ctx, "dpkg", "--audit"); strings.TrimSpace(string(output)) != "" {
+		return true
+	}
+	if u.readDir == nil {
+		return false
+	}
+	entries, err := u.readDir(systemDpkgJournal)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if name := entry.Name(); strings.Trim(name, "0123456789") == "" && name != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // dockerDaemon asks the docker command, within systemDockerInfoTimeout, what the daemon says

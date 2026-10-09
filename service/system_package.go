@@ -110,6 +110,9 @@ type systemPackageUpdater struct {
 	// onDockerQueued is told, with mu held, that the log of a new Docker update was written; nil
 	// means no one is waiting for the end of one.
 	onDockerQueued func()
+	// readDir lists a directory: dpkg's journal is looked at with it. nil means it cannot be read,
+	// and there is nothing in it.
+	readDir func(string) ([]os.DirEntry, error)
 	// mute is the last answer of dockerMuted.
 	mute dockerMute
 }
@@ -137,6 +140,7 @@ func newSystemPackageUpdater() *systemPackageUpdater {
 		writeFile:     os.WriteFile,
 		mkdirAll:      os.MkdirAll,
 		stat:          os.Stat,
+		readDir:       os.ReadDir,
 		now:           time.Now,
 		dpkgLocked:    dpkgLockHeld,
 		freeBytes:     freeDiskBytes,

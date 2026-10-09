@@ -64,6 +64,7 @@ var dockerRefusalReasons = map[string]string{
 	DockerRefusalChanged:     "A newer version appeared: confirm the update again.",
 	DockerRefusalNothing:     "There is nothing to update.",
 	DockerRefusalMaintenance: "Another update or package operation is running on this box.",
+	DockerRefusalDpkg:        "A previous package operation was left unfinished.",
 }
 
 // The states and outcomes of a run, as the status says them. The states are the System packages
