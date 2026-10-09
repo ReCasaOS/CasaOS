@@ -122,7 +122,7 @@ func TestStartDockerUpdateOwnersCase(t *testing.T) {
 		"--setenv=CASAOS_DU_DAEMON_TIMEOUT=300",
 		"--setenv=CASAOS_DU_RETURN_TIMEOUT=90",
 		"--setenv=CASAOS_DU_POLL=2",
-		"/bin/sh", "-c", dockerUpdateScript,
+		"/bin/sh", "-c", dockerUpdateScriptArg(),
 	}
 	if !reflect.DeepEqual(s.started.args, wantArgs) {
 		t.Errorf("systemd-run arguments:\n%s\nwant:\n%s", strings.Join(s.started.args, "\n"), strings.Join(wantArgs, "\n"))
@@ -181,8 +181,8 @@ func TestStartDockerUpdateWithTheNewDependencies(t *testing.T) {
 	if got := s.env("CASAOS_DU_TO"); got != "29.8.0" {
 		t.Errorf("CASAOS_DU_TO = %q", got)
 	}
-	// the script is still the constant one
-	if script := s.started.args[len(s.started.args)-1]; script != dockerUpdateScript {
+	// the script is still the constant one, as systemd is to be given it
+	if script := s.started.args[len(s.started.args)-1]; script != dockerUpdateScriptArg() {
 		t.Error("the script is not the constant")
 	}
 }

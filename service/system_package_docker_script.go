@@ -33,7 +33,8 @@ const (
 
 // dockerUpdateScript is run as `/bin/sh -c <this>`. It is POSIX sh, for dash as well as busybox
 // ash: no arrays, no [[ ]], no <<<, no local, no pipefail. It is a raw string, which Go
-// reads without the carriage returns of a CRLF checkout.
+// reads without the carriage returns of a CRLF checkout. It is not handed to systemd as it is:
+// see dockerUpdateScriptArg.
 //
 // Every line it writes in the log that is the unit's word is "CASAOS_DOCKER_UPDATE_<KIND>
 // <nonce> ...", one KIND of dockerpkg.ParseRun, and the last line is the one terminal marker.
@@ -183,6 +184,17 @@ mark "$outcome" "$(ts)"
 exit 0
 `
 
+// dockerUpdateScriptArg is the script as the argument of `sh -c`. systemd expands the words of a
+// unit's command line before it runs it: a ${NAME} becomes the value of NAME in the unit's
+// environment, or nothing at all when there is none, and only a doubled $$ is left as a $. The
+// script is full of dollars (${Package}, ${previous# }, ${pin%%=*}, ...), so every one of them is
+// doubled, and the shell is given the script as it was written. `systemd-run
+// --expand-environment=no` would do, but it only exists from systemd 254, and the boxes run 247,
+// 249 and 252. systemd_env_test.go holds a port of what systemd does, and checks the round trip.
+func dockerUpdateScriptArg() string {
+	return strings.ReplaceAll(dockerUpdateScript, "$", "$$")
+}
+
 var (
 	// dockerUpdateToPattern is the engine version the unit expects the daemon to report.
 	dockerUpdateToPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*$`)
@@ -258,6 +270,6 @@ func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to s
 		"--setenv=CASAOS_DU_POLL=" + strconv.Itoa(systemDockerPoll),
 		"/bin/sh",
 		"-c",
-		dockerUpdateScript,
+		dockerUpdateScriptArg(),
 	}, nil
 }
