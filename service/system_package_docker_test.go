@@ -98,6 +98,9 @@ const (
 
 const dockerCE = "5:29.8.1-1~ubuntu.22.04~jammy"
 
+// the engine is at the newest version its source offers: only a plugin is behind
+const currentPolicy = "docker-ce:\n  Installed: 5:29.8.1-1~ubuntu.22.04~jammy\n  Candidate: 5:29.8.1-1~ubuntu.22.04~jammy\n  Version table:\n *** 5:29.8.1-1~ubuntu.22.04~jammy 500\n        500 https://download.docker.com/linux/ubuntu jammy/stable amd64 Packages\n"
+
 func TestSystemPackageCheckListsDockerOnALineOfItsOwn(t *testing.T) {
 	updater := newTestSystemPackageUpdater(t)
 	box := &aptBox{
@@ -130,7 +133,7 @@ func TestSystemPackageCheckListsDockerOnALineOfItsOwn(t *testing.T) {
 
 func TestSystemPackageCheckSaysWhenDockerRestartsAndWhenItDoesNot(t *testing.T) {
 	updater := newTestSystemPackageUpdater(t)
-	updater.command = (&aptBox{upgradeSimulation: simPlugin, dockerCE: dockerCE, policy: dockerRepo}).command
+	updater.command = (&aptBox{upgradeSimulation: simPlugin, dockerCE: dockerCE, policy: currentPolicy}).command
 
 	got, err := updater.check()
 	if err != nil || got.Docker == nil || len(got.Docker.Updates) != 1 || got.Docker.RestartsDocker {
