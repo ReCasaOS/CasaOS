@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"go.uber.org/zap"
 )
@@ -40,9 +41,18 @@ type DockerRun struct {
 	ErrorCode string
 	// To is the version of the engine that runs after a run that succeeded.
 	To string
-	// NotReturned are the names of the containers that were running before the update and were
-	// not after, already validated by whoever read the log.
-	NotReturned []string
+	// NotReturned are the containers that were running before the update and were not after,
+	// already validated by whoever read the log.
+	NotReturned []DockerNotReturned
+}
+
+// DockerNotReturned is a container that was running before the update and was not running when the
+// unit stopped waiting for it.
+type DockerNotReturned struct {
+	Name string
+	// RestartPolicy is Docker's. A container whose policy is "" or "no" does not start again by
+	// itself; one that has another was still starting when the unit stopped waiting.
+	RestartPolicy string
 }
 
 // WatchDockerUpdate is the update button's hook: a run was just started, tell the owner when it
@@ -114,17 +124,35 @@ func dockerSentence(run DockerRun) string {
 	default:
 		sentence = "The Docker update failed: " + dockerFailure(run.ErrorCode) + "."
 	}
-	if names := run.NotReturned; len(names) > 0 {
-		list := strings.Join(names[:min(len(names), maxNotReturned)], ", ")
-		if len(names) > maxNotReturned {
-			list += " and " + strconv.Itoa(len(names)-maxNotReturned) + " more"
+	// Only a container with no restart policy is left to the owner: the others were still starting
+	// when the unit stopped waiting, and Docker is starting them.
+	var stay, late []string
+	for _, container := range run.NotReturned {
+		if container.RestartPolicy == "" || container.RestartPolicy == "no" {
+			stay = append(stay, container.Name)
+		} else {
+			late = append(late, container.Name)
 		}
-		sentence += " Not running again: " + list + " (they do not start by themselves)."
+	}
+	if len(stay) > 0 {
+		sentence += " Not running again: " + nameList(stay) + " (they do not start by themselves)."
+	}
+	if len(late) > 0 {
+		sentence += " Still starting after " + strconv.Itoa(dockerpkg.ReturnWaitSeconds) + " seconds: " + nameList(late) + " (they have a restart policy and should start by themselves)."
 	}
 	if run.Outcome == "failed" {
 		sentence += " Details are in the dashboard."
 	}
 	return sentence
+}
+
+// nameList is the names, the first maxNotReturned of them, and how many more there are.
+func nameList(names []string) string {
+	list := strings.Join(names[:min(len(names), maxNotReturned)], ", ")
+	if len(names) > maxNotReturned {
+		list += " and " + strconv.Itoa(len(names)-maxNotReturned) + " more"
+	}
+	return list
 }
 
 // dockerFailure is why a run failed, in words: the code is the unit's and nothing else is said.

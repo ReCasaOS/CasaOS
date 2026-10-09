@@ -299,7 +299,7 @@ func lastDockerRun() alerts.DockerRun {
 	status, nonce := service.MyService.System().DockerUpdateRun()
 	run := alerts.DockerRun{Nonce: nonce, Outcome: status.Outcome, ErrorCode: status.ErrorCode, To: status.To}
 	for _, container := range status.NotReturned {
-		run.NotReturned = append(run.NotReturned, container.Name)
+		run.NotReturned = append(run.NotReturned, alerts.DockerNotReturned{Name: container.Name, RestartPolicy: container.RestartPolicy})
 	}
 	return run
 }
