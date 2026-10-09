@@ -63,7 +63,7 @@ func decodeResult(t *testing.T, recorder *httptest.ResponseRecorder) (model.Resu
 
 func TestStartDockerUpdatePassesThePlanIDAndAnswersWithTheStatus(t *testing.T) {
 	fake := &fakeDockerUpdateService{status: service.SystemDockerUpdateStatus{
-		Supported: true, State: "running", StartedAt: "2026-10-09T10:00:00Z", NotReturned: []dockerpkg.NotReturned{},
+		Supported: true, State: "running", Phase: "downloading", StartedAt: "2026-10-09T10:00:00Z", NotReturned: []dockerpkg.NotReturned{},
 	}}
 	withDockerUpdateService(t, fake)
 
@@ -71,7 +71,7 @@ func TestStartDockerUpdatePassesThePlanIDAndAnswersWithTheStatus(t *testing.T) {
 	if recorder.Code != http.StatusOK || len(fake.asked) != 1 || fake.asked[0] != planID {
 		t.Fatalf("status = %d, asked = %v, body = %s", recorder.Code, fake.asked, recorder.Body)
 	}
-	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"running","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"","from":"","to":"","not_returned":[],"rollback_command":"","log":""}}`
+	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"running","phase":"downloading","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"","from":"","to":"","not_returned":[],"rollback_command":"","log":""}}`
 	if got := strings.TrimSpace(recorder.Body.String()); got != want {
 		t.Errorf("body = %s\nwant   %s", got, want)
 	}
@@ -167,12 +167,13 @@ func TestStartDockerUpdateOnAHostThatCannotIsNotImplemented(t *testing.T) {
 func TestStartDockerUpdateFailuresOnTheBoxAreServerErrors(t *testing.T) {
 	fake := &fakeDockerUpdateService{
 		err:    errors.New("start Docker update: Access denied"),
-		status: service.SystemDockerUpdateStatus{Supported: true, State: "failed", Outcome: "failed", ErrorCode: "guard", NotReturned: []dockerpkg.NotReturned{}},
+		status: service.SystemDockerUpdateStatus{Supported: true, State: "failed", Outcome: "failed", ErrorCode: "start", NotReturned: []dockerpkg.NotReturned{}},
 	}
 	withDockerUpdateService(t, fake)
 	recorder := postDockerUpdate(t, `{"plan_id":"`+planID+`"}`)
 	result, data := decodeResult(t, recorder)
-	if recorder.Code != http.StatusInternalServerError || !strings.Contains(result.Message, "Access denied") || data["state"] != "failed" {
+	// systemd that would not start the unit is its own code: not a plan that changed
+	if recorder.Code != http.StatusInternalServerError || !strings.Contains(result.Message, "Access denied") || data["state"] != "failed" || data["error_code"] != "start" {
 		t.Errorf("status = %d, result = %#v", recorder.Code, result)
 	}
 }
@@ -192,7 +193,7 @@ func TestGetDockerUpdateStatusAnswersWithTheStatus(t *testing.T) {
 	if err := GetDockerUpdateStatus(echo.New().NewContext(request, recorder)); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"failed","outcome":"failed","error":"Docker did not come back after the update.","error_code":"daemon","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"2026-10-09T10:07:00Z","from":"28.0.4","to":"","not_returned":[{"name":"job","restart_policy":"no"}],"rollback_command":"sudo apt-get install --allow-downgrades docker-ce=5:28.0.4-1","log":"CASAOS_DOCKER_UPDATE_QUEUED x\n"}}`
+	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"failed","phase":"","outcome":"failed","error":"Docker did not come back after the update.","error_code":"daemon","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"2026-10-09T10:07:00Z","from":"28.0.4","to":"","not_returned":[{"name":"job","restart_policy":"no"}],"rollback_command":"sudo apt-get install --allow-downgrades docker-ce=5:28.0.4-1","log":"CASAOS_DOCKER_UPDATE_QUEUED x\n"}}`
 	if got := strings.TrimSpace(recorder.Body.String()); recorder.Code != http.StatusOK || got != want {
 		t.Errorf("status = %d\nbody = %s\nwant   %s", recorder.Code, got, want)
 	}
