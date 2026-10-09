@@ -22,6 +22,8 @@ const (
 	inspectedShell    = `{"name":"/x;rm -rf /","image":"x","restart":"no","network":"bridge","ports":null}`
 	inspectedPolicy   = `{"name":"/odd","image":"x","restart":"always; reboot","network":"bridge","ports":null}`
 	inspectedImage    = "{\"name\":\"/imagebox\",\"image\":\"<img src=x onerror=alert(1)>\\u0000\\u001b[31m\",\"restart\":\"\",\"network\":\"bridge\",\"ports\":null}"
+	// a container with Docker's socket mounted, as the format prints its mounts
+	inspectedTraefik = `{"name":"/traefik","image":"traefik:v3","restart":"unless-stopped","network":"bridge","mounts":[{"Type":"bind","Source":"/srv/traefik","Destination":"/etc/traefik","Mode":"","RW":true,"Propagation":"rprivate"},{"Type":"bind","Source":"/var/run/docker.sock","Destination":"/var/run/docker.sock","Mode":"ro","RW":false,"Propagation":"rprivate"}],"ports":{}}`
 )
 
 func containersOf(t *testing.T, box *aptBox, tweak func(*systemPackageUpdater)) SystemDockerContainers {
@@ -86,7 +88,7 @@ func TestDockerContainersAreListedAndValidated(t *testing.T) {
 		// what `docker ps -q` printed, and what a hostile or broken command might add to it
 		runningIDs: []string{"0123456789ab", "--format={{.}}", "a1b2c3d4e5f6a1b2c3d4e5f6", "$(reboot)", "NOTHEX123456", "fedcba987654", " ", "-a1b2c3d4e5f6"},
 		inspected: strings.Join([]string{
-			inspectedWeb, inspectedPihole, inspectedBatch, inspectedHTMLName, inspectedShell, inspectedPolicy, inspectedImage,
+			inspectedWeb, inspectedPihole, inspectedBatch, inspectedHTMLName, inspectedShell, inspectedPolicy, inspectedImage, inspectedTraefik,
 			"Error: No such object: gone", "{not json",
 		}, "\n") + "\n",
 	}
@@ -96,8 +98,12 @@ func TestDockerContainersAreListedAndValidated(t *testing.T) {
 	for _, c := range got.Containers {
 		names = append(names, c.Name)
 	}
-	if !got.Running || !reflect.DeepEqual(names, []string{"batch-1", "imagebox", "pihole", "web"}) {
+	if !got.Running || !reflect.DeepEqual(names, []string{"batch-1", "imagebox", "pihole", "traefik", "web"}) {
 		t.Fatalf("running = %v, containers = %s", got.Running, marshalled(t, got.Containers))
+	}
+	// the containers that talk to Docker are said to, and only they: the key is not there for the others
+	if all := marshalled(t, got.Containers); strings.Count(all, "docker_socket") != 1 || !strings.Contains(all, `"name":"traefik","image":"traefik:v3","restart_policy":"unless-stopped","host_network":false,"docker_socket":true`) {
+		t.Errorf("containers = %s", all)
 	}
 	byName := map[string]dockerpkg.Container{}
 	for _, c := range got.Containers {
