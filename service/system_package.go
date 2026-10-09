@@ -87,6 +87,9 @@ type systemPackageSupport struct {
 
 type systemPackageUpdater struct {
 	mu sync.Mutex
+	// checkMu makes the checks take turns, and nothing else wait for one: mu is never held across
+	// a check's apt-get update.
+	checkMu sync.Mutex
 
 	command       func(context.Context, string, ...string) ([]byte, error)
 	start         func(string, string, ...string) ([]byte, error)
@@ -209,9 +212,16 @@ func (u *systemPackageUpdater) check() (SystemPackageUpdates, error) {
 		return result, nil
 	}
 
+	// The check takes turns with other checks, and the lock only to ask whether an update runs:
+	// apt-get update, the simulations and the questions to Docker take minutes on a small box,
+	// and an update that starts, a status that is asked for or the other update must not wait
+	// for them. The page gives a request a minute.
+	u.checkMu.Lock()
+	defer u.checkMu.Unlock()
 	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.isRunning() {
+	running := u.isRunning()
+	u.mu.Unlock()
+	if running {
 		return result, ErrSystemPackageUpdateRunning
 	}
 

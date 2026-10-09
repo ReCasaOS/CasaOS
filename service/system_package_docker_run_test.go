@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -570,6 +571,96 @@ func TestStartDockerUpdateHoldsTheLockOnlyWhereItMust(t *testing.T) {
 		t.Fatal("the lock is still held after the start")
 	}
 	s.updater.mu.Unlock()
+}
+
+// A check can sit in apt-get update for minutes (a small box, a slow mirror). The start must not
+// wait behind it: the page gives a request a minute, then says the update could not be started,
+// and a start that waited would still happen afterwards, with nobody watching.
+func TestStartDockerUpdateDoesNotWaitForACheck(t *testing.T) {
+	s := newStartBox(t, nil)
+	inCheck, release := make(chan struct{}), make(chan struct{})
+	var boxMu sync.Mutex
+	base := s.updater.command
+	s.updater.command = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(name, "apt-get") && len(args) > 0 && args[0] == "update" {
+			close(inCheck)
+			<-release
+			return nil, nil
+		}
+		boxMu.Lock()
+		defer boxMu.Unlock()
+		return base(ctx, name, args...)
+	}
+	checked := make(chan error, 1)
+	go func() { _, err := s.updater.check(); checked <- err }()
+	<-inCheck
+
+	// the check holds nothing that the start, the status or the other update need
+	if s.updater.mu.TryLock() {
+		s.updater.mu.Unlock()
+	} else {
+		t.Error("the check holds the updater's lock while it waits for apt-get update")
+	}
+
+	started := make(chan error, 1)
+	begin := time.Now()
+	go func() { _, err := s.updater.startDockerUpdate(s.planID); started <- err }()
+	var err error
+	timedOut := false
+	select {
+	case err = <-started:
+	case <-time.After(time.Second):
+		timedOut = true
+	}
+	took := time.Since(begin)
+	close(release)
+	if timedOut {
+		t.Error("the start waits for the check")
+		err = <-started
+	}
+	if err != nil || s.started.count != 1 {
+		t.Errorf("startDockerUpdate() error = %v, started %d (after %v)", err, s.started.count, took)
+	}
+	if err := <-checked; err != nil {
+		t.Errorf("the check: %v", err)
+	}
+}
+
+// Two checks do not run side by side: they would both run apt-get update.
+func TestChecksTakeTurns(t *testing.T) {
+	box := ownerBox(t)
+	updater := newTestSystemPackageUpdater(t)
+	var boxMu sync.Mutex
+	var updates, running, most int
+	updater.command = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		boxMu.Lock()
+		defer boxMu.Unlock()
+		if strings.HasSuffix(name, "apt-get") && len(args) > 0 && args[0] == "update" {
+			updates++
+			running++
+			most = max(most, running)
+			boxMu.Unlock()
+			time.Sleep(50 * time.Millisecond)
+			boxMu.Lock()
+			running--
+			return nil, nil
+		}
+		return box.command(ctx, name, args...)
+	}
+	var all sync.WaitGroup
+	for range 4 {
+		all.Add(1)
+		go func() {
+			defer all.Done()
+			if _, err := updater.check(); err != nil {
+				t.Errorf("check() error = %v", err)
+			}
+		}()
+	}
+	all.Wait()
+	if updates != 4 || most != 1 {
+		t.Errorf("%d updates of the index, at most %d at once; want 4, one at a time", updates, most)
+	}
 }
 
 func TestStartDockerUpdateTwiceStartsOnce(t *testing.T) {
