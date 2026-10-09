@@ -380,5 +380,7 @@ func newTestSystemPackageUpdater(t *testing.T) *systemPackageUpdater {
 			return os.Stat(path)
 		},
 		now: func() time.Time { return time.Date(2026, time.August, 13, 1, 2, 3, 0, time.UTC) },
+		// plenty of room, unless a test says otherwise
+		freeBytes: func(string) (uint64, error) { return 50 << 30, nil },
 	}
 }

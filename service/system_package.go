@@ -96,6 +96,8 @@ type systemPackageUpdater struct {
 	now           func() time.Time
 	// dpkgLocked says whether a package manager holds dpkg's lock; nil means never.
 	dpkgLocked func() bool
+	// freeBytes is the room left on the filesystem of a path; nil means it cannot be read.
+	freeBytes func(path string) (uint64, error)
 }
 
 // untranslatedCommand runs a package tool with its output in English. apt translates its
@@ -123,6 +125,7 @@ func newSystemPackageUpdater() *systemPackageUpdater {
 		stat:          os.Stat,
 		now:           time.Now,
 		dpkgLocked:    dpkgLockHeld,
+		freeBytes:     freeDiskBytes,
 	}
 }
 
@@ -223,6 +226,13 @@ func (u *systemPackageUpdater) check() (SystemPackageUpdates, error) {
 	result.Updates, dockerUpdates = splitDockerUpdates(parseAPTUpgradeSimulation(string(output)), u.engineInstalled(ctx))
 	result.Count = len(result.Updates)
 	result.Docker = u.dockerInfo(ctx, dockerUpdates)
+	// The simulation of the engine's update is the expensive part: only for an engine that has
+	// something to update.
+	if docker := result.Docker; docker != nil && (len(docker.Updates) > 0 || docker.Candidate != "") {
+		if update, _ := u.dockerUpdatePreflight(ctx, support); update.Refusal != "" || len(update.Packages) > 0 {
+			docker.Update = &update
+		}
+	}
 	now := u.now().UTC()
 	result.CheckedAt = &now
 	result.RebootRequired = u.rebootRequired()

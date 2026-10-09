@@ -47,6 +47,9 @@ type SystemPackageDocker struct {
 	// ManualCommand is what to type to update Docker oneself; empty when this does not
 	// know a command to stand behind.
 	ManualCommand string `json:"manual_command,omitempty"`
+	// Update is whether the page may update the engine itself, and with what; absent when
+	// there is nothing to update.
+	Update *SystemPackageDockerUpdate `json:"update,omitempty"`
 }
 
 const systemDockerUpdateUnit = "casaos-docker-update.service" // reserved for an update of Docker on its own
