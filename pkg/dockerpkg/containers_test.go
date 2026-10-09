@@ -42,7 +42,23 @@ func inspected(name, image, policy, network string, ports map[string]any) map[st
 		"Config":          map[string]any{"Image": image},
 		"HostConfig":      map[string]any{"RestartPolicy": map[string]any{"Name": policy}, "NetworkMode": network},
 		"NetworkSettings": map[string]any{"Ports": ports},
+		"Mounts":          []any{},
 	}
+}
+
+// mount is a MountPoint of docker inspect, with the fields it has besides the two that are read.
+func mount(kind, source string) map[string]any {
+	return map[string]any{"Type": kind, "Source": source, "Destination": "/data", "Mode": "", "RW": true, "Propagation": "rprivate"}
+}
+
+// withMounts is the container with those mounts.
+func withMounts(c map[string]any, mounts ...map[string]any) map[string]any {
+	list := []any{}
+	for _, m := range mounts {
+		list = append(list, m)
+	}
+	c["Mounts"] = list
+	return c
 }
 
 func binding(hostIP, hostPort string) map[string]any {
@@ -64,18 +80,22 @@ func TestContainerInspectFormatRoundTrip(t *testing.T) {
 		inspected("/pihole", "pihole/pihole", "no", "host", map[string]any{}),
 		// third-party text: quotes, backslashes, HTML, a new line, a line separator
 		inspected("/hostile", "a\"b\\c<img src=x onerror=alert(1)>\nd\u2028e", "always", "bridge", nil),
+		// a container that talks to Docker, beside others that mount other things
+		withMounts(inspected("/traefik", "traefik:v3", "unless-stopped", "bridge", map[string]any{}),
+			mount("bind", "/srv/traefik"), mount("bind", "/var/run/docker.sock"), mount("volume", "/var/lib/docker/volumes/x/_data")),
 	} {
 		out.WriteString(dockerTemplate(t, ContainerInspectFormat, c))
 		out.WriteString("\n") // docker inspect puts the new line itself
 	}
-	if n := strings.Count(out.String(), "\n"); n != 4 {
-		t.Fatalf("four containers made %d lines:\n%s", n, out.String())
+	if n := strings.Count(out.String(), "\n"); n != 5 {
+		t.Fatalf("five containers made %d lines:\n%s", n, out.String())
 	}
 	got := ParseContainers(out.String())
 	want := []Container{
 		{Name: "db", Image: "mariadb:11", RestartPolicy: "unless-stopped", Ports: []Port{}},
 		{Name: "hostile", Image: "a\"b\\c<img src=x onerror=alert(1)>de", RestartPolicy: "always", Ports: []Port{}},
 		{Name: "pihole", Image: "pihole/pihole", RestartPolicy: "no", HostNetwork: true, Ports: []Port{}},
+		{Name: "traefik", Image: "traefik:v3", RestartPolicy: "unless-stopped", DockerSocket: true, Ports: []Port{}},
 		{Name: "web", Image: "nginx:1.27", RestartPolicy: "always", Ports: []Port{{Port: 53, Protocol: "udp", HostPort: 53}, {Port: 80, Protocol: "tcp", HostPort: 8080}}},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -93,6 +113,8 @@ func TestContainerInspectFormatEscapesEveryFreeTextField(t *testing.T) {
 		inspected("/x", "x", hostile, "bridge", nil),
 		inspected("/x", "x", "no", hostile, nil),
 		inspected("/x", "x", "no", "bridge", map[string]any{hostile: []any{binding(hostile, hostile)}}),
+		withMounts(inspected("/x", "x", "no", "bridge", nil), mount(hostile, hostile)),
+		withMounts(inspected("/x", "x", "no", "bridge", nil), mount("bind", hostile), mount(hostile, "/var/run/docker.sock")),
 	} {
 		out := dockerTemplate(t, ContainerInspectFormat, c)
 		if strings.ContainsAny(out, "\n\r") || !json.Valid([]byte(out)) {
@@ -126,6 +148,71 @@ func TestParseContainers(t *testing.T) {
 	encoded, err := json.Marshal(got[2])
 	if err != nil || string(encoded) != `{"name":"web","image":"nginx:1.27","restart_policy":"always","host_network":false,"ports":[{"port":53,"protocol":"udp","host_port":53},{"port":80,"protocol":"tcp","host_port":8080}]}` {
 		t.Errorf("Container as JSON = %s (%v)", encoded, err)
+	}
+}
+
+func TestParseContainersFindsTheDockerSocket(t *testing.T) {
+	line := func(mounts string) string {
+		return `{"name":"/app","image":"x","restart":"always","network":"bridge","mounts":` + mounts + `,"ports":{}}`
+	}
+	bind := func(source string) string {
+		return `{"Type":"bind","Source":` + source + `,"Destination":"/var/run/docker.sock","Mode":"","RW":true,"Propagation":"rprivate"}`
+	}
+	for name, c := range map[string]struct {
+		mounts string
+		want   bool
+	}{
+		"no mounts":                   {`[]`, false},
+		"null":                        {`null`, false},
+		"the socket":                  {`[` + bind(`"/var/run/docker.sock"`) + `]`, true},
+		"the socket under /run":       {`[` + bind(`"/run/docker.sock"`) + `]`, true},
+		"the socket, read only":       {`[{"Type":"bind","Source":"/var/run/docker.sock","Destination":"/var/run/docker.sock","Mode":"ro","RW":false}]`, true},
+		"the socket somewhere else":   {`[{"Type":"bind","Source":"/var/run/docker.sock","Destination":"/tmp/d.sock"}]`, true},
+		"the socket among others":     {`[` + bind(`"/srv/app"`) + `,` + bind(`"/var/run/docker.sock"`) + `,{"Type":"volume","Name":"data","Source":"/var/lib/docker/volumes/data/_data"}]`, true},
+		"written with a //":           {`[` + bind(`"/var/run//docker.sock"`) + `]`, true},
+		"written with a / at the end": {`[` + bind(`"/var/run/docker.sock/"`) + `]`, true},
+		"written with a ..":           {`[` + bind(`"/var/run/../run/docker.sock"`) + `]`, true},
+		"written with a .":            {`[` + bind(`"/run/./docker.sock"`) + `]`, true},
+		"the directory that holds it": {`[` + bind(`"/var/run"`) + `,` + bind(`"/run"`) + `]`, false},
+		"another socket":              {`[` + bind(`"/var/run/docker.sock.bak"`) + `,` + bind(`"/var/run/containerd/containerd.sock"`) + `,` + bind(`"/var/run/podman/podman.sock"`) + `]`, false},
+		"under another path":          {`[` + bind(`"/data/var/run/docker.sock"`) + `,` + bind(`"/docker.sock"`) + `,` + bind(`"/var/run/docker.sock/x"`) + `]`, false},
+		"a relative path":             {`[` + bind(`"var/run/docker.sock"`) + `]`, false},
+		"another case":                {`[` + bind(`"/VAR/RUN/DOCKER.SOCK"`) + `]`, false},
+		"a new line after it":         {`[` + bind(`"/var/run/docker.sock\n"`) + `]`, false},
+		"a space after it":            {`[` + bind(`"/var/run/docker.sock "`) + `]`, false},
+		"a named pipe":                {`[` + bind(`"//./pipe/docker_engine"`) + `]`, false},
+		"an empty source":             {`[` + bind(`""`) + `]`, false},
+		"a volume of that name":       {`[{"Type":"volume","Name":"x","Source":"/var/run/docker.sock"}]`, false},
+		"a tmpfs":                     {`[{"Type":"tmpfs","Source":"/var/run/docker.sock"}]`, false},
+		"no type":                     {`[{"Source":"/var/run/docker.sock"}]`, false},
+	} {
+		got := ParseContainers(line(c.mounts))
+		if len(got) != 1 || got[0].DockerSocket != c.want {
+			t.Errorf("%s: ParseContainers() = %#v, want DockerSocket %v", name, got, c.want)
+		}
+	}
+	// a mount that is not shaped like one is a line that is not shaped like a container
+	if got := ParseContainers(line(`[{"Type":"bind","Source":7}]`)); len(got) != 0 {
+		t.Errorf("a source that is a number: %#v, want the line skipped", got)
+	}
+
+	// a line that has no mounts at all (a format from before) is a container without the socket
+	if got := ParseContainers(`{"name":"/old","image":"x","restart":"no","network":"bridge","ports":{}}`); len(got) != 1 || got[0].DockerSocket {
+		t.Errorf("a line without mounts: %#v", got)
+	}
+	// ... and mounts that are not a list are a line that is not shaped like a container
+	if got := ParseContainers(line(`"/var/run/docker.sock"`)); len(got) != 0 {
+		t.Errorf("mounts that are a string: %#v", got)
+	}
+
+	// what the API sends: only there when it is true, after host_network
+	encoded, _ := json.Marshal(Container{Name: "a", Image: "x", RestartPolicy: "no", DockerSocket: true, Ports: []Port{}})
+	if string(encoded) != `{"name":"a","image":"x","restart_policy":"no","host_network":false,"docker_socket":true,"ports":[]}` {
+		t.Errorf("Container as JSON = %s", encoded)
+	}
+	encoded, _ = json.Marshal(Container{Name: "a", Image: "x", RestartPolicy: "no", Ports: []Port{}})
+	if strings.Contains(string(encoded), "docker_socket") {
+		t.Errorf("Container as JSON = %s: docker_socket is only there when true", encoded)
 	}
 }
 

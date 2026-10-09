@@ -3,6 +3,7 @@ package dockerpkg
 import (
 	"encoding/json"
 	"errors"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -26,6 +27,10 @@ type Container struct {
 	RestartPolicy string `json:"restart_policy"`
 	// HostNetwork is a container that shares the box's network: its ports are the box's ports.
 	HostNetwork bool `json:"host_network"`
+	// DockerSocket is a container with Docker's socket bind-mounted into it: it talks to the
+	// daemon directly, with a client of its own that a new Docker may no longer understand.
+	// Only there when it is true.
+	DockerSocket bool `json:"docker_socket,omitempty"`
 	// Ports are the ports it publishes, never nil.
 	Ports []Port `json:"ports"`
 }
@@ -34,7 +39,12 @@ type Container struct {
 // object per container, on one line: `docker inspect --format <this> $(docker ps -q)`.
 // Every free-text field goes through {{json}}, so that no name or image, whatever it holds,
 // can break the line or the object. ParseContainers reads it.
-const ContainerInspectFormat = `{"name":{{json .Name}},"image":{{json .Config.Image}},"restart":{{json .HostConfig.RestartPolicy.Name}},"network":{{json .HostConfig.NetworkMode}},"ports":{{json .NetworkSettings.Ports}}}`
+const ContainerInspectFormat = `{"name":{{json .Name}},"image":{{json .Config.Image}},"restart":{{json .HostConfig.RestartPolicy.Name}},"network":{{json .HostConfig.NetworkMode}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}}}`
+
+// dockerSocketSources are the host paths of Docker's socket that a container may have bind-mounted:
+// /var/run is /run on every box this runs on. A bind of the directory that holds the socket is
+// not looked for.
+var dockerSocketSources = map[string]bool{"/var/run/docker.sock": true, "/run/docker.sock": true}
 
 var (
 	containerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
@@ -65,9 +75,25 @@ type inspectedContainer struct {
 	Image   string `json:"image"`
 	Restart string `json:"restart"`
 	Network string `json:"network"`
-	Ports   map[string][]struct {
+	// Mounts are docker inspect's own (Type, Source, Destination, ...): only the first two are read.
+	Mounts []struct {
+		Type   string `json:"Type"`
+		Source string `json:"Source"`
+	} `json:"mounts"`
+	Ports map[string][]struct {
 		HostPort string `json:"HostPort"`
 	} `json:"ports"`
+}
+
+// mountsDockerSocket says whether one of the mounts is a bind of Docker's socket. The source is
+// third-party text, compared and never kept: a path with a // or a trailing / is the same path.
+func (c inspectedContainer) mountsDockerSocket() bool {
+	for _, mount := range c.Mounts {
+		if mount.Type == "bind" && dockerSocketSources[path.Clean(mount.Source)] {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseContainers reads the output of `docker inspect --format ContainerInspectFormat`. It
@@ -96,6 +122,7 @@ func ParseContainers(output string) []Container {
 			Image:         boundedText(raw.Image, maxImageLen),
 			RestartPolicy: raw.Restart,
 			HostNetwork:   raw.Network == "host",
+			DockerSocket:  raw.mountsDockerSocket(),
 			Ports:         publishedPorts(raw.Ports),
 		})
 	}
