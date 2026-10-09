@@ -51,7 +51,7 @@ type DockerRun struct {
 type DockerNotReturned struct {
 	Name string
 	// RestartPolicy is Docker's. A container whose policy is "" or "no" does not start again by
-	// itself; one that has another was still starting when the unit stopped waiting.
+	// itself; one that has another may, and was not running when the unit stopped waiting.
 	RestartPolicy string
 }
 
@@ -124,8 +124,9 @@ func dockerSentence(run DockerRun) string {
 	default:
 		sentence = "The Docker update failed: " + dockerFailure(run.ErrorCode) + "."
 	}
-	// Only a container with no restart policy is left to the owner: the others were still starting
-	// when the unit stopped waiting, and Docker is starting them.
+	// A container with no restart policy is said never to come back. One with a policy is only said
+	// to be down after the wait, and not promised to come back: a policy such as on-failure does
+	// not bring a container up after the daemon stopped it cleanly.
 	var stay, late []string
 	for _, container := range run.NotReturned {
 		if container.RestartPolicy == "" || container.RestartPolicy == "no" {
@@ -138,7 +139,7 @@ func dockerSentence(run DockerRun) string {
 		sentence += " Not running again: " + nameList(stay) + " (they do not start by themselves)."
 	}
 	if len(late) > 0 {
-		sentence += " Still starting after " + strconv.Itoa(dockerpkg.ReturnWaitSeconds) + " seconds: " + nameList(late) + " (they have a restart policy and should start by themselves)."
+		sentence += " Still not running after " + strconv.Itoa(dockerpkg.ReturnWaitSeconds) + " seconds: " + nameList(late) + " (they have a restart policy; if they stay stopped, start them from the dashboard)."
 	}
 	if run.Outcome == "failed" {
 		sentence += " Details are in the dashboard."

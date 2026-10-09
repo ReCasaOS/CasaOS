@@ -156,19 +156,20 @@ func TestTheDockerUpdateEndsWithOneMessage(t *testing.T) {
 			DockerRun{Outcome: "success", To: "29.8.0", NotReturned: []DockerNotReturned{{"job", "no"}, {"scratch", ""}}},
 			"Docker was updated to 29.8.0. Not running again: job, scratch (they do not start by themselves).",
 		},
-		// a container with a restart policy was only late: Docker is still starting it, and
-		// "they do not start by themselves" would be false of it
+		// a container with a restart policy is not said never to start (it may), and not promised
+		// to either: on-failure, say, does not bring a container back after a daemon restart
+		// that stopped it with exit code 0
 		"updated, containers late": {
 			DockerRun{Outcome: "success", To: "29.8.0", NotReturned: []DockerNotReturned{{"db", "always"}, {"web", "unless-stopped"}, {"worker", "on-failure"}}},
-			"Docker was updated to 29.8.0. Still starting after 90 seconds: db, web, worker (they have a restart policy and should start by themselves).",
+			"Docker was updated to 29.8.0. Still not running after 90 seconds: db, web, worker (they have a restart policy; if they stay stopped, start them from the dashboard).",
 		},
 		"updated, containers missing and late": {
 			DockerRun{Outcome: "success", To: "29.8.0", NotReturned: []DockerNotReturned{{"db", "always"}, {"job", "no"}, {"web", "unless-stopped"}, {"scratch", ""}}},
-			"Docker was updated to 29.8.0. Not running again: job, scratch (they do not start by themselves). Still starting after 90 seconds: db, web (they have a restart policy and should start by themselves).",
+			"Docker was updated to 29.8.0. Not running again: job, scratch (they do not start by themselves). Still not running after 90 seconds: db, web (they have a restart policy; if they stay stopped, start them from the dashboard).",
 		},
 		"failed, containers late": {
 			DockerRun{Outcome: "failed", ErrorCode: "daemon", NotReturned: []DockerNotReturned{{"db", "always"}}},
-			"The Docker update failed: Docker did not come back after the update. Still starting after 90 seconds: db (they have a restart policy and should start by themselves). Details are in the dashboard.",
+			"The Docker update failed: Docker did not come back after the update. Still not running after 90 seconds: db (they have a restart policy; if they stay stopped, start them from the dashboard). Details are in the dashboard.",
 		},
 		"restart pending": {
 			DockerRun{Outcome: "restart_pending"},
@@ -212,12 +213,12 @@ func TestTheDockerUpdateEndsWithOneMessage(t *testing.T) {
 		},
 		"many containers late": {
 			DockerRun{Outcome: "success", To: "29.8.0", NotReturned: manyContainers("always", "c", 11)},
-			"Docker was updated to 29.8.0. Still starting after 90 seconds: c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 and 1 more (they have a restart policy and should start by themselves).",
+			"Docker was updated to 29.8.0. Still not running after 90 seconds: c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 and 1 more (they have a restart policy; if they stay stopped, start them from the dashboard).",
 		},
 		// each list is cut on its own
 		"many of both": {
 			DockerRun{Outcome: "success", To: "29.8.0", NotReturned: append(manyContainers("no", "n", 11), manyContainers("always", "l", 12)...)},
-			"Docker was updated to 29.8.0. Not running again: n1, n2, n3, n4, n5, n6, n7, n8, n9, n10 and 1 more (they do not start by themselves). Still starting after 90 seconds: l1, l2, l3, l4, l5, l6, l7, l8, l9, l10 and 2 more (they have a restart policy and should start by themselves).",
+			"Docker was updated to 29.8.0. Not running again: n1, n2, n3, n4, n5, n6, n7, n8, n9, n10 and 1 more (they do not start by themselves). Still not running after 90 seconds: l1, l2, l3, l4, l5, l6, l7, l8, l9, l10 and 2 more (they have a restart policy; if they stay stopped, start them from the dashboard).",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
