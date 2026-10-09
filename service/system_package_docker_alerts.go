@@ -13,6 +13,10 @@ const (
 	// dockerMuteAfter is how long the alerts stay quiet after a run ends: the apps' watch is slow
 	// to say that a container is back, and some are late.
 	dockerMuteAfter = 10 * time.Minute
+	// dockerMuteAhead is how far ahead of the clock the end of a run may be and still count: a
+	// clock a little behind the one that dated the last line. A date that is further on is not an
+	// end that happened, and would keep the alerts quiet until it comes.
+	dockerMuteAhead = time.Minute
 	// dockerMuteCache is how long the answer to "quiet?" is reused. It is asked for each event of
 	// a container, and a Docker restart sends one per container; the answer costs a look at
 	// systemd and the log.
@@ -71,5 +75,6 @@ func dockerRunMutes(status SystemDockerUpdateStatus, now time.Time) bool {
 		return true
 	}
 	completed, err := time.Parse(time.RFC3339, status.CompletedAt)
-	return err == nil && now.Sub(completed) < dockerMuteAfter
+	age := now.Sub(completed)
+	return err == nil && age < dockerMuteAfter && age >= -dockerMuteAhead
 }

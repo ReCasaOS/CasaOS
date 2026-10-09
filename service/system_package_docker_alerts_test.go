@@ -63,6 +63,11 @@ func TestDockerAlertsAreQuietWhileTheUnitRunsAndForTenMinutesAfter(t *testing.T)
 		"failed 5 minutes ago":               {func(t *testing.T, s *statusBox) { s.endedAgo(t, 5*time.Minute, "FAILED", "daemon") }, true},
 		"failed 11 minutes ago":              {func(t *testing.T, s *statusBox) { s.endedAgo(t, 11*time.Minute, "FAILED", "daemon") }, false},
 		"a last line a minute ahead of time": {func(t *testing.T, s *statusBox) { s.endedAgo(t, -time.Minute, "SUCCESS") }, true},
+		// whoever can write the log can date its last line: a date that has not come must not keep
+		// the apps' alerts quiet until it does
+		"a last line two minutes ahead of time": {func(t *testing.T, s *statusBox) { s.endedAgo(t, -2*time.Minute, "SUCCESS") }, false},
+		"a failed line a day ahead of time":     {func(t *testing.T, s *statusBox) { s.endedAgo(t, -24*time.Hour, "FAILED", "daemon") }, false},
+		"a last line fifty years ahead":         {func(t *testing.T, s *statusBox) { s.endedAgo(t, -50*365*24*time.Hour, "SUCCESS") }, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newStatusBox(t)
