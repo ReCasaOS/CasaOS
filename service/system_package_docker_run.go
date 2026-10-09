@@ -56,7 +56,7 @@ var dockerRefusalReasons = map[string]string{
 	DockerRefusalHeld:        "Docker's packages are on hold. The hold is yours to release; this will not override it.",
 	DockerRefusalDaemon:      "Docker does not answer, so there is nothing to check the update against.",
 	DockerRefusalSwarm:       "This node is part of a Docker swarm, which this update does not handle.",
-	DockerRefusalPlan:        "The update would change more than Docker's own packages.",
+	DockerRefusalPlan:        "The update would do more than upgrade Docker's own packages and install what they need.",
 	DockerRefusalDisk:        "There is not enough free disk space for the update.",
 	DockerRefusalRunning:     "An update is already running.",
 	DockerRefusalApps:        "An app is being installed, updated, backed up or restored.",

@@ -8,11 +8,13 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 )
 
-// The "Update Docker" button upgrades the engine's own packages (dockerpkg.EngineNames) and
-// nothing else. This file is what decides, before the button is offered and again before it
-// does anything, whether it may: the answer is a refusal code that the page turns into text,
-// never a sentence it has to read, and the plan, the transaction apt itself says it would
-// make, which the owner confirms and which is checked again when the update starts.
+// The "Update Docker" button upgrades the engine's own packages (dockerpkg.EngineNames), and
+// installs the packages the new engine depends on that the box does not have yet (Docker 29
+// needs nftables), and nothing else. This file is what decides, before the button is offered
+// and again before it does anything, whether it may: the answer is a refusal code that the
+// page turns into text, never a sentence it has to read, and the plan, the transaction apt
+// itself says it would make, which the owner confirms and which is checked again when the
+// update starts.
 
 // The reasons the button is refused for, in the order they are looked at: the first that
 // applies is the one given. The page maps these codes to its own words.
@@ -30,8 +32,9 @@ const (
 	DockerRefusalDaemon = "daemon"
 	// DockerRefusalSwarm is a node that is part of a swarm.
 	DockerRefusalSwarm = "swarm"
-	// DockerRefusalPlan is a transaction that is not exactly an upgrade of the engine's own
-	// packages: it failed, or it removes a package, or touches another, or installs a new one.
+	// DockerRefusalPlan is a transaction that is not an upgrade of the engine's own packages
+	// and the packages they need: it failed, or it removes a package, or upgrades another, or
+	// installs a distribution's Docker package or more than dockerpkg.MaxNewPackages new ones.
 	DockerRefusalPlan = "plan"
 	// DockerRefusalDisk is too little room for the packages.
 	DockerRefusalDisk = "disk"
@@ -59,7 +62,8 @@ type SystemPackageDockerUpdate struct {
 	// Refusal is "" or one of the DockerRefusal codes.
 	Refusal string `json:"refusal"`
 	// RefusalDetail is the names of the packages that make the plan unacceptable (valid
-	// package names, or dockerpkg.InvalidName), for DockerRefusalPlan; otherwise empty, never null.
+	// package names, or dockerpkg.InvalidName, or dockerpkg.TooManyNew), for DockerRefusalPlan;
+	// otherwise empty, never null.
 	RefusalDetail []string `json:"refusal_detail"`
 	// From and To are the engine's version before and after, digits and dots: 28.0.4, 29.8.0.
 	// They are the same when only a package other than docker-ce moves.
@@ -70,9 +74,9 @@ type SystemPackageDockerUpdate struct {
 	// PlanID names the plan, see dockerpkg.Plan.ID: the page sends it back to say which plan
 	// the owner confirmed.
 	PlanID string `json:"plan_id"`
-	// Packages are what the plan installs, with the whole dpkg versions, sorted by name; never
-	// null. A refusal for a reason that comes before the plan has none; neither does one for
-	// DockerRefusalPlan.
+	// Packages are what the plan installs, upgrades and new packages, with the whole dpkg
+	// versions, sorted by name; never null. A refusal for a reason that comes before the plan
+	// has none; neither does one for DockerRefusalPlan.
 	Packages []SystemPackageUpdate `json:"packages"`
 }
 
@@ -84,8 +88,10 @@ type SystemPackageDockerUpdate struct {
 // empty (Packages is) and PlanID is the one the owner confirmed.
 //
 // The plan is returned only when it is within bounds, whether or not a later reason (the
-// disk) refuses: it is the zero Plan otherwise. Plan.Pins and Plan.Names are what to put on
-// the command line, and nothing else may be.
+// disk) refuses: it is the zero Plan otherwise, and for a plan with nothing to upgrade (new
+// packages alone: apt installs nothing of its own with --only-upgrade). Plan.Pins are what to
+// put on the command line, Plan.Names what the unit's guard may let apt install, and nothing
+// else may be.
 func (u *systemPackageUpdater) dockerUpdatePreflight(ctx context.Context, support systemPackageSupport) (SystemPackageDockerUpdate, dockerpkg.Plan) {
 	update := SystemPackageDockerUpdate{RefusalDetail: []string{}, Packages: []SystemPackageUpdate{}}
 	refuse := func(code string, detail ...string) (SystemPackageDockerUpdate, dockerpkg.Plan) {
@@ -121,13 +127,14 @@ func (u *systemPackageUpdater) dockerUpdatePreflight(ctx context.Context, suppor
 		return refuse(DockerRefusalPlan, offending...)
 	}
 
+	if len(plan.Pins()) == 0 {
+		// nothing is upgraded, and so nothing is installed: the update is of what is on the box
+		return update, dockerpkg.Plan{}
+	}
 	for _, pkg := range plan.Packages {
-		update.Packages = append(update.Packages, SystemPackageUpdate{Name: pkg.Name, CurrentVersion: pkg.Current, CandidateVersion: pkg.Candidate})
+		update.Packages = append(update.Packages, SystemPackageUpdate{Name: pkg.Name, CurrentVersion: pkg.Current, CandidateVersion: pkg.Candidate, New: pkg.New})
 	}
 	sort.Slice(update.Packages, func(i, j int) bool { return update.Packages[i].Name < update.Packages[j].Name })
-	if len(update.Packages) == 0 {
-		return update, plan
-	}
 	update.PlanID = plan.ID()
 	update.From, update.To = plan.Engine()
 	if update.From == "" {

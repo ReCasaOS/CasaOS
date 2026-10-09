@@ -35,6 +35,22 @@ var (
 	ownerContaind = instEngine("containerd.io", "1.7.27-1", "2.1.4-1")
 )
 
+// ownerNewDependencies are the packages Docker 29 needs and the owner's Debian 11 does not have
+// (Docker 28 did not need nftables), as apt prints them: before the packages that need them.
+const ownerNewDependencies = "Inst libjansson4 (2.13.1-1 Debian:11.11/oldstable [amd64])\n" +
+	"Inst libedit2 (3.1-20191231-2+b1 Debian:11.11/oldstable [amd64])\n" +
+	"Inst libnftables1 (0.9.8-3.1+deb11u2 Debian-Security:11/oldstable-security [amd64])\n" +
+	"Inst nftables (0.9.8-3.1+deb11u2 Debian-Security:11/oldstable-security [amd64])\n"
+
+// ownerBoxWithDependencies is the owner's box as it really is: apt's own upgrade leaves docker-ce
+// out (it would need new packages), and installing it by name brings nftables and its libraries.
+func ownerBoxWithDependencies(t *testing.T) *aptBox {
+	box := ownerBox(t)
+	box.upgradeSimulation = simLibc
+	box.enginePlans["containerd.io"] = ownerNewDependencies + ownerContaind
+	return box
+}
+
 // ownerBox is the box the button is built for, with every answer the check needs given: any
 // command it does not answer fails the test.
 func ownerBox(t *testing.T) *aptBox {
@@ -140,6 +156,156 @@ func TestDockerUpdateOwnersCase(t *testing.T) {
 	}
 	if got.Count != 1 || len(got.Updates) != 1 || got.Updates[0].Name != "libc6" {
 		t.Errorf("the update list = %#v: Docker's packages are not in it", got.Updates)
+	}
+}
+
+func TestDockerUpdateOwnersCaseWithTheNewDependencies(t *testing.T) {
+	box := ownerBoxWithDependencies(t)
+	got := checkBox(t, box, nil)
+
+	// apt's own upgrade keeps docker-ce back: the line says a candidate exists, as it does for the owner
+	if got.Docker == nil || got.Docker.Candidate != "29.8.0" || len(got.Docker.Updates) != 0 {
+		t.Fatalf("Docker = %#v, want a candidate and no update listed", got.Docker)
+	}
+	update := got.Docker.Update
+	if update == nil || !update.Available || update.Refusal != "" || len(update.RefusalDetail) != 0 {
+		t.Fatalf("update = %#v, want available: new packages are acceptable", update)
+	}
+	if update.From != "28.0.4" || update.To != "29.8.0" || !update.MajorJump {
+		t.Errorf("from %q to %q, major jump %v", update.From, update.To, update.MajorJump)
+	}
+	// sorted by name, the new packages flagged and with no current version, the others as they were
+	wantPackages := []SystemPackageUpdate{
+		{Name: "containerd.io", CurrentVersion: "1.7.27-1", CandidateVersion: "2.1.4-1"},
+		{Name: "docker-ce", CurrentVersion: debian28, CandidateVersion: debian29},
+		{Name: "docker-ce-cli", CurrentVersion: debian28, CandidateVersion: debian29},
+		{Name: "libedit2", CandidateVersion: "3.1-20191231-2+b1", New: true},
+		{Name: "libjansson4", CandidateVersion: "2.13.1-1", New: true},
+		{Name: "libnftables1", CandidateVersion: "0.9.8-3.1+deb11u2", New: true},
+		{Name: "nftables", CandidateVersion: "0.9.8-3.1+deb11u2", New: true},
+	}
+	if !reflect.DeepEqual(update.Packages, wantPackages) {
+		t.Errorf("packages = %#v\nwant %#v", update.Packages, wantPackages)
+	}
+
+	// the id covers the new packages, so that another set of dependencies is another plan to confirm
+	var lines []string
+	for _, pkg := range wantPackages {
+		lines = append(lines, pkg.Name+" "+pkg.CurrentVersion+">"+pkg.CandidateVersion)
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	if update.PlanID != hex.EncodeToString(sum[:]) {
+		t.Errorf("plan_id = %q, want %x", update.PlanID, sum)
+	}
+	if update.PlanID == ownerPlanID(t) {
+		t.Error("the plan with the dependencies has the id of the plan without them")
+	}
+	changed := ownerBoxWithDependencies(t)
+	changed.enginePlans["containerd.io"] = strings.Replace(ownerNewDependencies, "Inst nftables (0.9.8-3.1+deb11u2", "Inst nftables (0.9.8-3.1+deb11u3", 1) + ownerContaind
+	if again := checkBox(t, changed, nil).Docker.Update; again.PlanID == update.PlanID {
+		t.Error("the plan id did not change with the version of a dependency")
+	}
+	fewer := ownerBoxWithDependencies(t)
+	fewer.enginePlans["containerd.io"] = strings.Replace(ownerNewDependencies, "Inst libedit2 (3.1-20191231-2+b1 Debian:11.11/oldstable [amd64])\n", "", 1) + ownerContaind
+	if again := checkBox(t, fewer, nil).Docker.Update; again.PlanID == update.PlanID {
+		t.Error("the plan id did not change with a dependency that is gone")
+	}
+
+	// one simulation, as before: the installed packages of the engine by name, nothing pinned or added
+	want := "/usr/bin/apt-get -s --no-remove -o Debug::NoLocking=true -o Dpkg::Use-Pty=0 install --only-upgrade --no-install-recommends containerd.io docker-ce docker-ce-cli"
+	if calls := engineSimulations(box); len(calls) != 1 || calls[0] != want {
+		t.Errorf("simulations = %#v, want exactly %q", calls, want)
+	}
+}
+
+func TestDockerUpdateTellsWhichPackagesAreNewAndLeavesTheGenericListsAlone(t *testing.T) {
+	data, err := json.Marshal(checkBox(t, ownerBoxWithDependencies(t), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Updates []map[string]any `json:"updates"`
+		Docker  struct {
+			Updates []map[string]any `json:"updates"`
+			Update  struct {
+				Packages []map[string]any `json:"packages"`
+			} `json:"update"`
+		} `json:"docker"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	packages := decoded.Docker.Update.Packages
+	if len(packages) != 7 {
+		t.Fatalf("packages = %v", packages)
+	}
+	for _, pkg := range packages {
+		fresh := strings.HasPrefix(pkg["name"].(string), "lib") || pkg["name"] == "nftables"
+		if fresh {
+			// "new": true, and no version it replaces
+			if pkg["new"] != true || pkg["current_version"] != "" || len(pkg) != 4 {
+				t.Errorf("a new package = %#v, want name, current_version \"\", candidate_version and new: true", pkg)
+			}
+		} else if _, there := pkg["new"]; there || len(pkg) != 3 {
+			// an upgrade does not carry the key at all
+			t.Errorf("an upgrade = %#v, want name, current_version and candidate_version only", pkg)
+		}
+	}
+	// the generic lists are what they were: three keys, no flag, byte for byte
+	if len(decoded.Updates) != 1 || len(decoded.Updates[0]) != 3 {
+		t.Errorf("updates = %v", decoded.Updates)
+	}
+	plain, err := json.Marshal(SystemPackageUpdate{Name: "libc6", CurrentVersion: "2.31-1", CandidateVersion: "2.31-2"})
+	if err != nil || string(plain) != `{"name":"libc6","current_version":"2.31-1","candidate_version":"2.31-2"}` {
+		t.Errorf("a generic update encodes as %s, %v", plain, err)
+	}
+	// apt's own upgrade lists a package that is new as well: it is no update, and no list of updates has it
+	generic := ownerBox(t)
+	generic.upgradeSimulation += simNew
+	ownerData, err := json.Marshal(checkBox(t, generic, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owner struct {
+		Updates []map[string]any `json:"updates"`
+		Docker  struct {
+			Updates []map[string]any `json:"updates"`
+		} `json:"docker"`
+	}
+	if err := json.Unmarshal(ownerData, &owner); err != nil {
+		t.Fatal(err)
+	}
+	for _, list := range [][]map[string]any{owner.Updates, owner.Docker.Updates} {
+		if len(list) == 0 {
+			t.Fatal("a generic list is empty")
+		}
+		for _, entry := range list {
+			if _, there := entry["new"]; there || len(entry) != 3 {
+				t.Errorf("a generic entry = %#v", entry)
+			}
+		}
+	}
+	if strings.Contains(string(ownerData), `"new"`) {
+		t.Errorf("the flag is in a check with no new package: %s", ownerData)
+	}
+}
+
+func TestDockerUpdateOfNewPackagesAloneIsNothingToUpdate(t *testing.T) {
+	// --only-upgrade brings in nothing of its own: new packages and no upgrade is not an update
+	box := ownerBox(t)
+	box.upgradeSimulation = simLibc
+	box.enginePlans = map[string]string{"docker-ce": ownerNewDependencies}
+	got := checkBox(t, box, nil)
+	if got.Docker == nil || got.Docker.Update != nil {
+		t.Errorf("Docker = %#v, want a line without an update", got.Docker)
+	}
+
+	updater := newTestSystemPackageUpdater(t)
+	updater.command = box.command
+	update, plan := updater.dockerUpdatePreflight(context.Background(), systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get"})
+	if update.Refusal != "" || update.Available || len(update.Packages) != 0 || update.PlanID != "" || len(plan.Packages) != 0 {
+		t.Errorf("update = %#v, plan = %#v", update, plan)
 	}
 }
 
@@ -289,8 +455,20 @@ func refusalCases() []refusalCase {
 		}, code: "plan", detail: []string{}},
 		{name: "a removal", change: remove("Remv docker-compose-v2 [2.1.0]\n"), code: "plan", detail: []string{"docker-compose-v2"}},
 		{name: "a package that is not the engine's", change: remove(simLibc), code: "plan", detail: []string{"libc6"}},
-		{name: "a new dependency", change: remove("Inst libnewdep (1.0 Debian:11/stable [amd64])\n"), code: "plan", detail: []string{"libnewdep"}},
-		{name: "a new package of the engine", change: remove("Inst docker-model-plugin (1.0.0-1~debian.11~bullseye Docker CE:bullseye [amd64])\n"), code: "plan", detail: []string{"docker-model-plugin"}},
+		// a new package is acceptable (see TestDockerUpdateOwnersCaseWithTheNewDependencies), unless it is one of these
+		{name: "a new docker.io", change: remove("Inst docker.io (26.1.5+dfsg1-9 Debian:11/stable [amd64])\n"), code: "plan", detail: []string{"docker.io"}},
+		{name: "a new containerd", change: remove("Inst containerd (1.4.13~ds1-1~deb11u4 Debian:11/stable [amd64])\n"), code: "plan", detail: []string{"containerd"}},
+		{name: "a new docker-compose-v2", change: remove("Inst docker-compose-v2 (2.2.3-2 Debian:11/stable [amd64])\n"), code: "plan", detail: []string{"docker-compose-v2"}},
+		{name: "a new docker-buildx", change: remove("Inst docker-buildx (0.8.2-1 Debian:11/stable [amd64])\n"), code: "plan", detail: []string{"docker-buildx"}},
+		{name: "a new package with a version that is not a version", change: remove("Inst nftables (0.9.8;touch${IFS}x Debian:11/stable [amd64])\n"), code: "plan", detail: []string{"nftables"}},
+		{name: "an upgrade of a library the new packages need", change: remove("Inst libnftables1 [0.9.7-1] (0.9.8-3.1 Debian:11/stable [amd64])\n"), code: "plan", detail: []string{"libnftables1"}},
+		{name: "more than ten new packages", change: func(b *aptBox) {
+			var many strings.Builder
+			for i := 1; i <= dockerpkg.MaxNewPackages+1; i++ {
+				fmt.Fprintf(&many, "Inst libdep%d (1.%d Debian:11/stable [amd64])\n", i, i)
+			}
+			b.enginePlans["docker-ce-cli"] += many.String()
+		}, code: "plan", detail: []string{dockerpkg.TooManyNew}},
 		{name: "a version that is not a version", change: func(b *aptBox) {
 			b.enginePlans["docker-ce"] = instEngine("docker-ce", debian28, "5:29.8.0-1;touch${IFS}x")
 		}, code: "plan", detail: []string{"docker-ce"}},
@@ -439,6 +617,20 @@ func TestDockerUpdatePreflightHandsTheStartThePlanItWillInstall(t *testing.T) {
 	wantPins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
 	if !reflect.DeepEqual(plan.Pins(), wantPins) || !reflect.DeepEqual(plan.Names(), []string{"containerd.io", "docker-ce", "docker-ce-cli"}) {
 		t.Errorf("pins = %#v, names = %#v", plan.Pins(), plan.Names())
+	}
+
+	// with the new packages: the pins are still the upgrades, the names are all that may be installed
+	updater.command = ownerBoxWithDependencies(t).command
+	update, plan = updater.dockerUpdatePreflight(context.Background(), systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get"})
+	if !update.Available || plan.ID() != update.PlanID {
+		t.Fatalf("update = %#v, plan = %#v", update, plan)
+	}
+	if !reflect.DeepEqual(plan.Pins(), wantPins) {
+		t.Errorf("pins = %#v, want the upgrades alone: %#v", plan.Pins(), wantPins)
+	}
+	wantNames := []string{"containerd.io", "docker-ce", "docker-ce-cli", "libedit2", "libjansson4", "libnftables1", "nftables"}
+	if !reflect.DeepEqual(plan.Names(), wantNames) {
+		t.Errorf("names = %#v, want %#v", plan.Names(), wantNames)
 	}
 }
 

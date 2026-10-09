@@ -47,6 +47,10 @@ type SystemPackageUpdate struct {
 	Name             string `json:"name"`
 	CurrentVersion   string `json:"current_version"`
 	CandidateVersion string `json:"candidate_version"`
+	// New is only ever set in the plan of the Docker update (docker.update.packages): a package
+	// that is not installed yet, a dependency of the new engine, whose CurrentVersion is "". It
+	// is absent from the JSON of an upgrade, and so from every list of updates the check makes.
+	New bool `json:"new,omitempty"`
 }
 
 type SystemPackageUpdates struct {

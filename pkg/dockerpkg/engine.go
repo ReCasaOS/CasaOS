@@ -5,14 +5,18 @@ import (
 	"strings"
 )
 
-// The "Update Docker" button upgrades the engine's own packages and nothing else. This file
-// is what says which packages those are, what a version string may look like before it is
-// allowed near a command line, a log or a page, and when an upgrade changes the major version.
+// The "Update Docker" button upgrades the engine's own packages, and installs the packages
+// the new engine depends on that the box does not have yet (Docker 29 needs nftables). This
+// file is what says which packages are the engine's, what a version string may look like
+// before it is allowed near a command line, a log or a page, and when an upgrade changes the
+// major version.
 
-// EngineNames are the only packages the button may touch, sorted. Any other package in the
-// transaction apt would run (an upgrade, a new package, a removal) makes it refuse. The
-// distribution's own docker.io, containerd, docker-compose-v2 and docker-buildx are of the
-// family (see IsFamily) and are not in this list on purpose: they are not Docker's repository.
+// EngineNames are the only packages the button may upgrade, sorted. An upgrade of any other
+// package in the transaction apt would run, or a removal, makes it refuse; so does a new
+// package that is not a dependency (see Plan.Offending). The distribution's own docker.io,
+// containerd, docker-compose-v2 and docker-buildx are of the family (see IsFamily) and are
+// not in this list on purpose: they are not Docker's repository, and they conflict with it,
+// so they are refused as new packages too.
 //
 // It is a variable so that it can be listed and shown; IsEngineName does not read it, so
 // changing it at run time does not widen what the button may touch.
