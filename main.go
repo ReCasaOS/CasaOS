@@ -138,6 +138,19 @@ func main() {
 		return err
 	}
 	autoupdate.Default.Busy = service.MyService.System().MaintenanceBusy
+	// The update of Docker stops every container: it waits for the apps that AppManagement says
+	// are being installed, updated, backed up or restored, and does not start when it cannot ask.
+	service.MyService.System().SetAppOperations(func(ctx context.Context) ([]string, error) {
+		operations, err := autoupdate.AppOperations(ctx, config.CommonInfo.RuntimePath)
+		if err != nil {
+			return nil, err
+		}
+		apps := make([]string, 0, len(operations))
+		for _, operation := range operations {
+			apps = append(apps, operation.App)
+		}
+		return apps, nil
+	})
 	go autoupdate.Default.Run(context.Background())
 	v1Router := route.InitV1Router()
 
