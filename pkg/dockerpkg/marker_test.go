@@ -10,7 +10,7 @@ func TestFailedMarkerIsTheLineParseRunReads(t *testing.T) {
 	const nonce = "0123456789abcdef0123456789abcdef"
 	at := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	queued := QueuedMarker(nonce, at.Add(-time.Minute))
-	for _, reason := range []string{FailGuard, FailDownload, FailInstall, FailDaemon} {
+	for _, reason := range []string{FailGuard, FailDownload, FailInstall, FailDaemon, FailStart} {
 		line := FailedMarker(nonce, at, reason)
 		if !strings.HasSuffix(line, "\n") || strings.Count(line, "\n") != 1 {
 			t.Fatalf("FailedMarker() = %q, want one line", line)
