@@ -44,6 +44,8 @@ rc=$(cat "$d/install.rc" 2>/dev/null || echo 0)
 if [ "$rc" -eq 0 ]; then
 	: > "$d/installed"
 	cp "$d/down.after.install" "$d/down.left" 2>/dev/null
+	# the packages apt brings in with the ones it was asked for: installed by the transaction
+	for n in $(cat "$d/install.adds" 2>/dev/null); do echo "$n=1.0.0-1" > "$d/dpkg/$n"; done
 fi
 exit "$rc"
 `
@@ -507,16 +509,16 @@ func TestTheUnitInstallsNothingWhenTheGuardRefuses(t *testing.T) {
 		plan string
 		rc   string
 	}{
-		"another package":                 {ownerContaind + ownerDockerCE + ownerCLI + simLibc, ""},
-		"another package alone":           {simLibc, ""},
-		"a removal":                       {ownerContaind + ownerDockerCE + ownerCLI + "Remv docker-compose-v2 [2.1.0]\n", ""},
-		"a purge":                         {ownerContaind + ownerDockerCE + ownerCLI + "Purg docker-compose-v2 [2.1.0]\n", ""},
-		"a new package":                   {ownerContaind + ownerDockerCE + ownerCLI + "Inst libnewdep (1.0 Debian:11/stable [amd64])\n", ""},
-		"a new package of the engine":     {ownerContaind + ownerCLI + "Inst docker-ce (5:29.8.0-1~debian.11~bullseye Docker CE:bullseye [amd64])\n", ""},
-		"a package of another arch":       {ownerContaind + ownerDockerCE + ownerCLI + "Inst containerd.io:armhf [1.7.27-1] (2.1.4-1 Docker CE [armhf])\n", ""},
-		"a simulation that fails":         {ownerContaind + ownerDockerCE + ownerCLI, "100"},
-		"a simulation that fails, bare":   {"E: Unable to correct problems, you have held broken packages.\n", "100"},
-		"a name that only looks like one": {ownerContaind + ownerDockerCE + ownerCLI + "Inst docker-ce-cli-extra [1] (2 x [amd64])\n", ""},
+		"another package":                  {ownerContaind + ownerDockerCE + ownerCLI + simLibc, ""},
+		"another package alone":            {simLibc, ""},
+		"a removal":                        {ownerContaind + ownerDockerCE + ownerCLI + "Remv docker-compose-v2 [2.1.0]\n", ""},
+		"a purge":                          {ownerContaind + ownerDockerCE + ownerCLI + "Purg docker-compose-v2 [2.1.0]\n", ""},
+		"a new package that is not a name": {ownerContaind + ownerDockerCE + ownerCLI + "Inst libnewdep (1.0 Debian:11/stable [amd64])\n", ""},
+		"a new docker.io":                  {ownerContaind + ownerDockerCE + ownerCLI + "Inst docker.io (26.1.5 Debian:11/stable [amd64])\n", ""},
+		"a package of another arch":        {ownerContaind + ownerDockerCE + ownerCLI + "Inst containerd.io:armhf [1.7.27-1] (2.1.4-1 Docker CE [armhf])\n", ""},
+		"a simulation that fails":          {ownerContaind + ownerDockerCE + ownerCLI, "100"},
+		"a simulation that fails, bare":    {"E: Unable to correct problems, you have held broken packages.\n", "100"},
+		"a name that only looks like one":  {ownerContaind + ownerDockerCE + ownerCLI + "Inst docker-ce-cli-extra [1] (2 x [amd64])\n", ""},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -547,14 +549,136 @@ func TestTheUnitInstallsNothingWhenTheGuardRefuses(t *testing.T) {
 	}
 }
 
+// The owner's Docker 29 needs nftables and its libraries, which the box does not have: they are
+// among the names the core approved, and not among the pins.
+const (
+	depsNames = "containerd.io docker-ce docker-ce-cli libedit2 libjansson4 libnftables1 nftables"
+	depsAdds  = "libedit2\nlibjansson4\nlibnftables1\nnftables\n"
+)
+
+func newDependenciesBox(t *testing.T) *scriptBox {
+	b := newScriptBox(t)
+	b.set("plan.txt", ownerNewDependencies+ownerContaind+ownerDockerCE+ownerCLI)
+	b.set("install.adds", depsAdds)
+	b.env["CASAOS_DU_NAMES"] = depsNames
+	return b
+}
+
+func TestTheUnitInstallsTheNewDependenciesOfTheNewEngine(t *testing.T) {
+	b := newDependenciesBox(t)
+	r := b.run()
+	checkLogShape(t, r.log)
+	if r.exit != 0 || r.run.Terminal != dockerpkg.TerminalSuccess || r.run.FailReason != "" {
+		t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+	}
+	// apt is told to upgrade the pins and nothing is named beside them: the new packages come
+	// with them as dependencies, which only the simulation of the guard has seen
+	pins := "containerd.io=2.1.4-1 docker-ce=" + debian29 + " docker-ce-cli=" + debian29
+	var aptCalls []string
+	for _, call := range r.calls {
+		if strings.HasPrefix(call, "apt-get ") {
+			aptCalls = append(aptCalls, call)
+		}
+	}
+	wantApt := []string{
+		"apt-get -s --no-remove -o Debug::NoLocking=true -o Dpkg::Use-Pty=0 install --only-upgrade --no-install-recommends " + pins,
+		"apt-get -y --no-remove --download-only -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends " + pins,
+		"apt-get -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends " + pins,
+	}
+	if !reflect.DeepEqual(aptCalls, wantApt) {
+		t.Errorf("apt-get calls:\n%s\nwant:\n%s", strings.Join(aptCalls, "\n"), strings.Join(wantApt, "\n"))
+	}
+	// the transaction installed them (the fake apt does when the real install runs)
+	for _, name := range []string{"nftables", "libnftables1", "libjansson4", "libedit2"} {
+		if _, err := os.Stat(filepath.Join(b.dir, "dpkg", name)); err != nil {
+			t.Errorf("%s was not installed by the transaction: %v", name, err)
+		}
+	}
+	// ... and what the rollback puts back is what was there: they were not
+	wantPrevious := []string{"containerd.io=1.7.27-1", "docker-ce=" + debian28, "docker-ce-cli=" + debian28}
+	if !reflect.DeepEqual(r.run.Previous, wantPrevious) {
+		t.Errorf("previous = %#v, want %#v", r.run.Previous, wantPrevious)
+	}
+	if rollback := dockerpkg.RollbackCommand(r.run.Previous); strings.Contains(rollback, "nftables") {
+		t.Errorf("rollback = %q: a package that was not there cannot be put back", rollback)
+	}
+	if got, want := strings.Join(markerKinds(r.log), " "), "STARTED PREVIOUS DOWNLOADED INSTALLED DAEMON NOTRETURNED SUCCESS"; got != want {
+		t.Errorf("markers = %s, want %s", got, want)
+	}
+}
+
+func TestTheUnitInstallsNothingWhenTheGuardRefusesBesideTheDependencies(t *testing.T) {
+	deps := ownerNewDependencies + ownerContaind + ownerDockerCE + ownerCLI
+	cases := map[string]struct {
+		plan  string
+		names string
+		rc    string
+	}{
+		"a dependency that is not among the names":            {deps, "containerd.io docker-ce docker-ce-cli libedit2 libjansson4 libnftables1", ""},
+		"no dependency among the names":                       {deps, "containerd.io docker-ce docker-ce-cli", ""},
+		"a dependency that was not there when it was planned": {deps + "Inst libnewdep (1.0 Debian:11/stable [amd64])\n", depsNames, ""},
+		// installed since the plan was made, so that apt would upgrade it: not what was confirmed
+		"a dependency that is installed now":              {strings.Replace(deps, "Inst nftables (0.9.8-3.1+deb11u2", "Inst nftables [0.9.7-1] (0.9.8-3.1+deb11u2", 1), depsNames, ""},
+		"an upgrade of a library the plan installs":       {deps + "Inst libedit2 [3.1-1] (3.1-20191231-2+b1 Debian:11/stable [amd64])\n", depsNames, ""},
+		"a dependency of another architecture":            {deps + "Inst nftables:armhf (0.9.8 Debian:11/stable [armhf])\n", depsNames, ""},
+		"a name that is the start of a dependency's":      {deps + "Inst libnftables (0.9.8 Debian:11/stable [amd64])\n", depsNames, ""},
+		"a name that holds a dependency's":                {deps + "Inst xnftables (0.9.8 Debian:11/stable [amd64])\n", depsNames, ""},
+		"an upgrade of another package":                   {deps + simLibc, depsNames, ""},
+		"a removal":                                       {deps + "Remv iptables-persistent [1.0]\n", depsNames, ""},
+		"a purge":                                         {deps + "Purg iptables-persistent [1.0]\n", depsNames, ""},
+		"a docker.io":                                     {deps + "Inst docker.io (26.1.5 Debian:11/stable [amd64])\n", depsNames, ""},
+		"a simulation that fails":                         {deps, depsNames, "100"},
+		"a simulation that fails, with a plan of its own": {deps + "E: Unable to correct problems, you have held broken packages.\n", depsNames, "100"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newDependenciesBox(t)
+			b.set("plan.txt", c.plan)
+			b.env["CASAOS_DU_NAMES"] = c.names
+			if c.rc != "" {
+				b.set("sim.rc", c.rc)
+			}
+			r := b.run()
+			checkLogShape(t, r.log)
+			if r.exit != 1 || r.run.Terminal != dockerpkg.TerminalFailed || r.run.FailReason != dockerpkg.FailGuard {
+				t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+			}
+			if !strings.Contains(r.log, "\nCASAOS_DOCKER_UPDATE_GUARD "+scriptNonce+" plan\n") {
+				t.Errorf("no GUARD marker:\n%s", r.log)
+			}
+			if changes := r.aptChanges(); len(changes) != 0 {
+				t.Errorf("apt-get changed the box after the guard refused: %v", changes)
+			}
+			for _, path := range []string{"installed", "dpkg/nftables"} {
+				if _, err := os.Stat(filepath.Join(b.dir, path)); err == nil {
+					t.Errorf("%s: something was installed", path)
+				}
+			}
+		})
+	}
+}
+
+func TestTheGuardGoesByTheNamesForAnInstThatAptPrintsAsNew(t *testing.T) {
+	// the rule is the names': an Inst of one of them goes through with or without the version it
+	// replaces (and an upgrade has to be of a package that was pinned, which the names alone do not say)
+	b := newDependenciesBox(t)
+	b.set("plan.txt", ownerNewDependencies+ownerContaind+ownerCLI+"Inst docker-ce (5:29.8.0-1~debian.11~bullseye Docker CE:bullseye [amd64])\n")
+	if r := b.run(); r.exit != 0 || r.run.Terminal != dockerpkg.TerminalSuccess {
+		t.Fatalf("a pinned package that is new: exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+	}
+}
+
 func TestTheUnitRefusesAListItCannotTrust(t *testing.T) {
 	cases := map[string]map[string]string{
-		"a pin with a command in it": {"CASAOS_DU_PINS": "docker-ce=5:29.8.0;touch${IFS}x"},
-		"a pin with a quote":         {"CASAOS_DU_PINS": "docker-ce=5:29.8.0'x"},
-		"a name with a glob":         {"CASAOS_DU_NAMES": "docker-*"},
-		"a new line in the pins":     {"CASAOS_DU_PINS": "docker-ce=1\ndocker-ce-cli=2"},
-		"no pins":                    {"CASAOS_DU_PINS": ""},
-		"no names":                   {"CASAOS_DU_NAMES": "", "CASAOS_DU_PINS": ""},
+		"a pin with a command in it":      {"CASAOS_DU_PINS": "docker-ce=5:29.8.0;touch${IFS}x"},
+		"a pin with a quote":              {"CASAOS_DU_PINS": "docker-ce=5:29.8.0'x"},
+		"a name with a glob":              {"CASAOS_DU_NAMES": "docker-*"},
+		"a new package with a glob":       {"CASAOS_DU_NAMES": depsNames + " lib*"},
+		"a new package that is a command": {"CASAOS_DU_NAMES": depsNames + " nft;touch${IFS}x"},
+		"a new package with a quote":      {"CASAOS_DU_NAMES": depsNames + " nft'x"},
+		"a new line in the pins":          {"CASAOS_DU_PINS": "docker-ce=1\ndocker-ce-cli=2"},
+		"no pins":                         {"CASAOS_DU_PINS": ""},
+		"no names":                        {"CASAOS_DU_NAMES": "", "CASAOS_DU_PINS": ""},
 	}
 	for name, env := range cases {
 		t.Run(name, func(t *testing.T) {

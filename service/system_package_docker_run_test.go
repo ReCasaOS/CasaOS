@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -142,6 +143,81 @@ func TestStartDockerUpdateOwnersCase(t *testing.T) {
 		if strings.Contains(call, "apt-get") && !strings.Contains(call, " -s ") && !strings.HasSuffix(call, "apt-get update") {
 			t.Errorf("the start ran %q", call)
 		}
+	}
+}
+
+// newStartBoxWithDependencies is the owner's box as it really is, where Docker 29 brings nftables
+// and its libraries, with the plan the page confirmed.
+func newStartBoxWithDependencies(t *testing.T) *startedBox {
+	t.Helper()
+	s := newStartBox(t, func(b *aptBox) {
+		b.upgradeSimulation = simLibc
+		b.enginePlans["containerd.io"] = ownerNewDependencies + ownerContaind
+	})
+	update := checkBox(t, ownerBoxWithDependencies(t), nil).Docker.Update
+	if update == nil || update.PlanID == "" || update.PlanID == s.planID {
+		t.Fatalf("update = %#v: want a plan of its own", update)
+	}
+	s.planID = update.PlanID
+	return s
+}
+
+func TestStartDockerUpdateWithTheNewDependencies(t *testing.T) {
+	s := newStartBoxWithDependencies(t)
+	if _, err := s.updater.startDockerUpdate(s.planID); err != nil {
+		t.Fatalf("startDockerUpdate() error = %v", err)
+	}
+	if s.started.count != 1 {
+		t.Fatalf("started %d units", s.started.count)
+	}
+	// the pins are the upgrades: apt is never told to install a package that is not on the box
+	if got, want := s.env("CASAOS_DU_PINS"), "containerd.io=2.1.4-1 docker-ce-cli="+debian29+" docker-ce="+debian29; got != want {
+		t.Errorf("CASAOS_DU_PINS = %q, want %q", got, want)
+	}
+	// the names are every package that may be installed, the new ones too, sorted
+	if got, want := s.env("CASAOS_DU_NAMES"), "containerd.io docker-ce docker-ce-cli libedit2 libjansson4 libnftables1 nftables"; got != want {
+		t.Errorf("CASAOS_DU_NAMES = %q, want %q", got, want)
+	}
+	if got := s.env("CASAOS_DU_TO"); got != "29.8.0" {
+		t.Errorf("CASAOS_DU_TO = %q", got)
+	}
+	// the script is still the constant one
+	if script := s.started.args[len(s.started.args)-1]; script != dockerUpdateScript {
+		t.Error("the script is not the constant")
+	}
+}
+
+func TestStartDockerUpdateSaysChangedWhenTheDependenciesAreNotTheConfirmedOnes(t *testing.T) {
+	var refusal *DockerUpdateRefusal
+
+	// confirmed without nftables, and Docker now needs it: the owner reconfirms
+	s := newStartBoxWithDependencies(t)
+	s.planID = ownerPlanID(t)
+	status, err := s.updater.startDockerUpdate(s.planID)
+	if !errors.As(err, &refusal) || refusal.Code != "changed" || status.ErrorCode != "changed" || s.started.count != 0 {
+		t.Fatalf("a dependency appeared: error = %v, status = %#v, started %d", err, status, s.started.count)
+	}
+	s.noLog(t)
+
+	// confirmed with the dependencies, and one is gone
+	s = newStartBoxWithDependencies(t)
+	s.box.enginePlans["containerd.io"] = strings.Replace(ownerNewDependencies, "Inst libedit2 (3.1-20191231-2+b1 Debian:11.11/oldstable [amd64])\n", "", 1) + ownerContaind
+	if _, err := s.updater.startDockerUpdate(s.planID); !errors.As(err, &refusal) || refusal.Code != "changed" || s.started.count != 0 {
+		t.Fatalf("a dependency went: error = %v, started %d", err, s.started.count)
+	}
+
+	// ... and one has a newer version
+	s = newStartBoxWithDependencies(t)
+	s.box.enginePlans["containerd.io"] = strings.Replace(ownerNewDependencies, "Inst nftables (0.9.8-3.1+deb11u2", "Inst nftables (0.9.8-3.1+deb11u3", 1) + ownerContaind
+	if _, err := s.updater.startDockerUpdate(s.planID); !errors.As(err, &refusal) || refusal.Code != "changed" || s.started.count != 0 {
+		t.Fatalf("a dependency moved: error = %v, started %d", err, s.started.count)
+	}
+
+	// and a dependency that Docker's update must not bring is a refusal of the plan, not a change
+	s = newStartBoxWithDependencies(t)
+	s.box.enginePlans["containerd.io"] += "Inst docker.io (26.1.5 Debian:11/stable [amd64])\n"
+	if _, err := s.updater.startDockerUpdate(s.planID); !errors.As(err, &refusal) || refusal.Code != "plan" || !reflect.DeepEqual(refusal.Detail, []string{"docker.io"}) || s.started.count != 0 {
+		t.Fatalf("a docker.io: error = %v, started %d", err, s.started.count)
 	}
 }
 
@@ -527,6 +603,37 @@ func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins[:1], names[:1], ""); err != nil {
 		t.Fatalf("no docker-ce in the plan: %v", err)
 	}
+	// the new packages are names and no pins
+	withNew := append(append([]string{}, names...), "libedit2", "libjansson4", "libnftables1", "nftables")
+	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, withNew, "29.8.0")
+	if err != nil {
+		t.Fatalf("new packages: %v", err)
+	}
+	var gotPins, gotNames string
+	for _, arg := range args {
+		if value, ok := strings.CutPrefix(arg, "--setenv=CASAOS_DU_PINS="); ok {
+			gotPins = value
+		}
+		if value, ok := strings.CutPrefix(arg, "--setenv=CASAOS_DU_NAMES="); ok {
+			gotNames = value
+		}
+	}
+	if gotPins != strings.Join(pins, " ") || gotNames != strings.Join(withNew, " ") {
+		t.Errorf("pins = %q, names = %q", gotPins, gotNames)
+	}
+	// ten new packages is the most
+	ten := append([]string{}, names...)
+	for i := 1; i <= dockerpkg.MaxNewPackages; i++ {
+		ten = append(ten, fmt.Sprintf("libdep%d", i))
+	}
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, ten, "29.8.0"); err != nil {
+		t.Fatalf("ten new packages: %v", err)
+	}
+	allSeven := []string{"containerd.io=2.1.4-1", "docker-buildx-plugin=0.30.1-1", "docker-ce-cli=" + debian29, "docker-ce-rootless-extras=" + debian29, "docker-ce=" + debian29, "docker-compose-plugin=5.0.0-1", "docker-model-plugin=1.0.0-1"}
+	sevenNames := []string{"containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-ce-rootless-extras", "docker-compose-plugin", "docker-model-plugin"}
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", allSeven, append(append([]string{}, sevenNames...), ten[len(names):]...), "29.8.0"); err != nil {
+		t.Fatalf("seven upgrades and ten new packages: %v", err)
+	}
 	for name, c := range map[string]struct {
 		nonce, log, apt, to string
 		pins, names         []string
@@ -548,6 +655,25 @@ func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 		"a pin with a space":             {nonce, "/var/log/x.log", "/usr/bin/apt-get", "", []string{"docker-ce=5:29 docker-ce-cli=5:29"}, []string{"docker-ce"}},
 		"a pin twice":                    {nonce, "/var/log/x.log", "/usr/bin/apt-get", "", []string{"docker-ce=5:29", "docker-ce=5:30"}, []string{"docker-ce", "docker-ce"}},
 		"a name with a glob":             {nonce, "/var/log/x.log", "/usr/bin/apt-get", "", []string{"docker-ce=5:29"}, []string{"docker-*"}},
+		// the names of the new packages are checked too: this is the last stop before a root shell
+		"a new package with a glob":                  {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "lib*")},
+		"a new package that is a command":            {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "nftables;reboot")},
+		"a new package that is a flag":               {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "-oAPT::Foo=1")},
+		"a new package with a space":                 {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "nftables libedit2")},
+		"a new package with an upper case name":      {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "NFTables")},
+		"an empty name":                              {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "")},
+		"a new package twice":                        {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "nftables", "nftables")},
+		"a new docker.io":                            {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "docker.io")},
+		"a new containerd":                           {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "containerd")},
+		"a new docker-compose-v2":                    {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "docker-compose-v2")},
+		"a new docker-buildx":                        {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "docker-buildx")},
+		"more than ten new packages":                 {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11")},
+		"more names than seven upgrades and ten new": {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, append(append([]string{}, names...), "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15")},
+		// seven upgrades and ten new packages are the most there can be: an eighth upgrade (the same
+		// package of another architecture) is a plan that is not one of Docker's
+		"eight upgrades and ten new packages": {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", append(append([]string{}, allSeven...), "containerd.io:armhf=2.1.4-1"), append(append(append([]string{}, sevenNames...), "containerd.io:armhf"), ten[len(names):]...)},
+		"a pin that is not among the names":   {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, []string{"containerd.io", "docker-ce", "nftables"}},
+		"names and no pin":                    {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", nil, []string{"nftables"}},
 	} {
 		if args, err := dockerUpdateArgs(c.nonce, c.log, c.apt, c.pins, c.names, c.to); err == nil {
 			t.Errorf("%s: dockerUpdateArgs() = %v, want an error", name, args)

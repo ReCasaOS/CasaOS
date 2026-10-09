@@ -15,6 +15,11 @@ import (
 // page, from apt or from Docker is ever put into its text. What varies travels in the unit's
 // environment (systemd-run --setenv), after the core validated it, and the script treats it as
 // data: it is quoted, or split into the words it was validated to be made of, and never eval'd.
+//
+// Two lists travel: the pins (name=version) of the packages to upgrade, which are all the
+// script names to apt, and the names of every package apt may install, which are the pins' and
+// those of the dependencies of the new engine that the box does not have yet (nftables, for
+// Docker 29). The pins bound what is upgraded, the names bound what is installed.
 
 const (
 	// systemDockerDaemonTimeout is how long the unit waits for the daemon after the install.
@@ -95,15 +100,24 @@ $containers
 EOF
 
 # The guard: what apt would do now, with the pins the owner confirmed, must be an upgrade of
-# these packages and nothing else. A simulation that fails says nothing, and refuses.
+# the pinned packages, and the installation of the new packages the owner was told of (the names
+# the core approved), and nothing else. A simulation that fails says nothing, and refuses.
 ok=1
 sim=$("$CASAOS_DU_APT" -s --no-remove -o Debug::NoLocking=true -o Dpkg::Use-Pty=0 install --only-upgrade --no-install-recommends $CASAOS_DU_PINS 2>&1) || ok=0
+upgrades=
+for pin in $CASAOS_DU_PINS; do
+	upgrades="$upgrades ${pin%%=*}"
+done
 while read -r kind pkg rest; do
 	case $kind in
 	Inst)
 		case " $CASAOS_DU_NAMES " in *" $pkg "*) ;; *) ok=0 ;; esac
-		# an upgrade names the version it replaces; a package that is new does not
-		case $rest in '['*) ;; *) ok=0 ;; esac
+		# an upgrade names the version it replaces, and is of a package that was pinned; a
+		# package that is new does not, and is any of the names (a package that was new when the
+		# plan was made and is installed now is a plan that changed)
+		case $rest in
+		'['*) case "$upgrades " in *" $pkg "*) ;; *) ok=0 ;; esac ;;
+		esac
 		;;
 	Remv | Purg) ok=0 ;;
 	esac
@@ -178,9 +192,10 @@ var (
 )
 
 // dockerUpdateArgs are the arguments of systemd-run that start the unit. Everything the script
-// needs goes in as --setenv, and is checked here first: the nonce, the paths, the pins and the
-// names (the plan's, which dockerpkg already vetted: this asks again, since it is the last
-// stop before a root shell), and the engine version expected.
+// needs goes in as --setenv, and is checked here first: the nonce, the paths, the pins (the
+// upgrades, of the engine's packages) and the names (the pins' and the new packages', which
+// dockerpkg already vetted: this asks again, since it is the last stop before a root shell),
+// and the engine version expected.
 func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to string) ([]string, error) {
 	switch {
 	case !dockerpkg.ValidNonce(nonce):
@@ -191,10 +206,11 @@ func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to s
 		return nil, fmt.Errorf("%q is not a path for apt-get", aptPath)
 	case to != "" && !dockerUpdateToPattern.MatchString(to):
 		return nil, fmt.Errorf("%q is not an engine version", to)
-	case len(pins) == 0 || len(pins) != len(names):
-		return nil, errors.New("the Docker update has no packages to install")
+	case len(pins) == 0:
+		return nil, errors.New("the Docker update has no packages to upgrade")
+	case len(names) > len(dockerpkg.EngineNames)+dockerpkg.MaxNewPackages:
+		return nil, errors.New("the Docker update has more packages than it allows")
 	}
-	// the pins and the names are the same packages, in whatever order each is sorted
 	pinned := map[string]bool{}
 	for _, pin := range pins {
 		name, version, found := strings.Cut(pin, "=")
@@ -203,12 +219,25 @@ func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to s
 		}
 		pinned[name] = true
 	}
+	// every pinned package is a name, and the names that are not are the new packages: valid, at
+	// most dockerpkg.MaxNewPackages of them, none of them a distribution's Docker
 	seen := map[string]bool{}
+	var fresh int
 	for _, name := range names {
-		if !pinned[name] || seen[name] {
-			return nil, fmt.Errorf("%q has no pin of its own", name)
+		if seen[name] || !dockerpkg.ValidName(name) {
+			return nil, fmt.Errorf("%q is not a package the Docker update may install", name)
 		}
 		seen[name] = true
+		if !pinned[name] {
+			if fresh++; fresh > dockerpkg.MaxNewPackages || dockerpkg.IsDistributionDocker(name) {
+				return nil, fmt.Errorf("%q is not a package the Docker update may install", name)
+			}
+		}
+	}
+	for name := range pinned {
+		if !seen[name] {
+			return nil, fmt.Errorf("%q is pinned and is not among the names", name)
+		}
 	}
 	return []string{
 		"--quiet",
