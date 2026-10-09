@@ -36,6 +36,11 @@ type SystemPackageDocker struct {
 	// Updates is what apt offers for Docker's packages; none of it is installed by the
 	// System packages update.
 	Updates []SystemPackageUpdate `json:"updates"`
+	// Candidate is a newer engine version that apt knows of and does not offer for an
+	// update, with Held saying whether the package is on hold: said, rather than "up to
+	// date", of a Docker that is behind and that this update cannot move.
+	Candidate string `json:"candidate,omitempty"`
+	Held      bool   `json:"held,omitempty"`
 	// RestartsDocker is whether installing those updates restarts the daemon: the engine's
 	// own packages do, a plugin or the client do not.
 	RestartsDocker bool `json:"restarts_docker"`
@@ -118,15 +123,21 @@ func (u *systemPackageUpdater) dockerInfo(ctx context.Context, pending []SystemP
 	if info.Updates == nil {
 		info.Updates = []SystemPackageUpdate{}
 	}
+	var enginePackage, policyText string
 	switch {
 	case u.installedVersion(ctx, "docker-ce") != "":
 		info.Installed = true
+		enginePackage = "docker-ce"
 		info.Version = dockerpkg.EngineVersion(u.installedVersion(ctx, "docker-ce"))
 		policy, _ := u.command(ctx, "apt-cache", "policy", "docker-ce")
-		info.Origin = string(dockerpkg.OriginFromPolicy(string(policy)))
+		policyText = string(policy)
+		info.Origin = string(dockerpkg.OriginFromPolicy(policyText))
 	case u.installedVersion(ctx, "docker.io") != "":
 		info.Installed = true
+		enginePackage = "docker.io"
 		info.Version = dockerpkg.EngineVersion(u.installedVersion(ctx, "docker.io"))
+		policy, _ := u.command(ctx, "apt-cache", "policy", "docker.io")
+		policyText = string(policy)
 		info.Origin = string(dockerpkg.OriginDistribution)
 	default:
 		if _, err := u.command(ctx, "snap", "list", "docker"); err == nil {
@@ -141,9 +152,45 @@ func (u *systemPackageUpdater) dockerInfo(ctx context.Context, pending []SystemP
 	for _, update := range info.Updates {
 		names = append(names, update.Name)
 	}
+	// an engine behind a version apt knows of, with no update listed for it: held, or kept
+	// back by apt's own rules. "Up to date" would be false of it.
+	if enginePackage != "" && !containsName(names, enginePackage) {
+		installed, candidate := dockerpkg.PolicyVersions(policyText)
+		if candidate != "" && installed != "" && candidate != installed && u.isNewer(ctx, candidate, installed) {
+			info.Candidate = dockerpkg.EngineVersion(candidate)
+			info.Held = u.packageHeld(ctx, enginePackage)
+			names = append(names, enginePackage)
+		}
+	}
 	info.RestartsDocker = dockerpkg.RestartsEngine(names)
-	info.ManualCommand = dockerpkg.ManualCommand(dockerpkg.Origin(info.Origin), names)
+	info.ManualCommand = dockerpkg.ManualCommandHeld(dockerpkg.Origin(info.Origin), names, info.Held)
 	return info
+}
+
+func containsName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
+// isNewer says whether dpkg orders candidate after installed.
+func (u *systemPackageUpdater) isNewer(ctx context.Context, candidate, installed string) bool {
+	_, err := u.command(ctx, "dpkg", "--compare-versions", candidate, "gt", installed)
+	return err == nil
+}
+
+// packageHeld says whether the package is on hold (apt-mark hold): dpkg's abbreviation
+// starts with "h".
+func (u *systemPackageUpdater) packageHeld(ctx context.Context, name string) bool {
+	output, err := u.command(ctx, "dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${Version}\n", name)
+	if err != nil {
+		return false
+	}
+	status, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\t")
+	return strings.HasPrefix(strings.TrimSpace(status), "h")
 }
 
 // installedVersion is the dpkg version of a package that is on the box (installed, or held,

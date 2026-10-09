@@ -184,3 +184,31 @@ func TestContractPatternMatchesWhatTouchesFinds(t *testing.T) {
 		t.Errorf("the pattern without Docker to protect = %q", ContractPattern(false))
 	}
 }
+
+func TestPolicyVersions(t *testing.T) {
+	installed, candidate := PolicyVersions(dockerRepoPolicy)
+	if installed != "5:29.8.1-1~ubuntu.22.04~jammy" || candidate != "5:29.8.2-1~ubuntu.22.04~jammy" {
+		t.Errorf("PolicyVersions() = %q, %q", installed, candidate)
+	}
+	for _, policy := range []string{"", "docker-ce:\n  Installed: (none)\n  Candidate: (none)\n"} {
+		if installed, candidate := PolicyVersions(policy); installed != "" || candidate != "" {
+			t.Errorf("PolicyVersions(%q) = %q, %q, want none", policy, installed, candidate)
+		}
+	}
+}
+
+func TestManualCommandHeldAllowsTheChange(t *testing.T) {
+	got := ManualCommandHeld(OriginDockerRepo, []string{"docker-ce"}, true)
+	if got != "sudo apt-get update && sudo apt-get install --only-upgrade --allow-change-held-packages docker-ce" {
+		t.Errorf("held command = %q", got)
+	}
+	if got := ManualCommandHeld(OriginDockerRepo, []string{"docker-ce"}, false); strings.Contains(got, "held") {
+		t.Errorf("a package that is not held got the held flag: %q", got)
+	}
+	if got := ManualCommandHeld(OriginSnap, nil, true); got != "sudo snap refresh docker" {
+		t.Errorf("a snap's command = %q", got)
+	}
+	if got := ManualCommandHeld(OriginUnknown, nil, true); got != "" {
+		t.Errorf("an unknown origin's command = %q", got)
+	}
+}
