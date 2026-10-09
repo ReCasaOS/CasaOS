@@ -44,6 +44,8 @@ type SystemService interface {
 	GetSystemPackageUpdates() (SystemPackageUpdates, error)
 	StartSystemPackageUpdate() (SystemPackageUpdateStatus, error)
 	GetSystemPackageUpdateStatus() SystemPackageUpdateStatus
+	// GetSystemDockerContainers lists the running containers, which an update of Docker stops.
+	GetSystemDockerContainers() SystemDockerContainers
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()
