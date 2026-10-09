@@ -100,6 +100,11 @@ type systemPackageUpdater struct {
 	freeBytes func(path string) (uint64, error)
 	// appOperations says which apps have an operation in progress; nil means it cannot be asked.
 	appOperations AppOperationsFunc
+	// onDockerQueued is told, with mu held, that the log of a new Docker update was written; nil
+	// means no one is waiting for the end of one.
+	onDockerQueued func()
+	// mute is the last answer of dockerMuted.
+	mute dockerMute
 }
 
 // untranslatedCommand runs a package tool with its output in English. apt translates its

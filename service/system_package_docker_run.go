@@ -252,6 +252,10 @@ func (u *systemPackageUpdater) startDockerUpdate(planID string) (SystemDockerUpd
 	if err := u.writeFile(logPath, []byte(queued), 0o644); err != nil {
 		return u.dockerFailedToStart(support, "", fmt.Sprintf("prepare Docker update log: %v", err), err)
 	}
+	// From here the log is a run's, whatever systemd says next: whoever waits for the end is told.
+	if u.onDockerQueued != nil {
+		u.onDockerQueued()
+	}
 	if output, err := u.start(support.systemdPath, systemDockerUpdateUnit, args...); err != nil {
 		// The log is a whole run all the same: the first line, what systemd said, a last line.
 		failure := queued + trimSystemPackageOutput(output) + "\n" + dockerpkg.FailedMarker(nonce, u.now(), dockerpkg.FailGuard)
@@ -326,10 +330,16 @@ func (u *systemPackageUpdater) unitActive(unit string) bool {
 // dockerStatus says how the update of Docker is going. It takes no lock and asks Docker nothing:
 // the log, whose first line holds the run's nonce, and systemd are all it reads.
 func (u *systemPackageUpdater) dockerStatus() SystemDockerUpdateStatus {
+	status, _ := u.dockerRun()
+	return status
+}
+
+// dockerRun is dockerStatus and the nonce of the run it describes, "" when the log holds none.
+func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 	support := u.support()
 	status := SystemDockerUpdateStatus{Supported: support.supported, State: systemPackageUpdateStateIdle, NotReturned: []dockerpkg.NotReturned{}}
 	if !support.supported {
-		return status
+		return status, ""
 	}
 
 	logPath := u.dockerLogPath()
@@ -355,7 +365,7 @@ func (u *systemPackageUpdater) dockerStatus() SystemDockerUpdateStatus {
 				status.StartedAt = info.ModTime().UTC().Format(time.RFC3339)
 			}
 		}
-		return status
+		return status, ""
 	}
 
 	status.StartedAt = formatDockerTime(run.StartedAt, run.QueuedAt)
@@ -402,7 +412,7 @@ func (u *systemPackageUpdater) dockerStatus() SystemDockerUpdateStatus {
 	if !run.CompletedAt.IsZero() {
 		status.CompletedAt = run.CompletedAt.Format(time.RFC3339)
 	}
-	return status
+	return status, run.Nonce
 }
 
 func formatDockerTime(times ...time.Time) string {

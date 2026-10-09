@@ -54,6 +54,14 @@ type SystemService interface {
 	// SetAppOperations tells how to ask which apps have an operation in progress; the update of
 	// Docker is refused while it cannot be asked.
 	SetAppOperations(list AppOperationsFunc)
+	// DockerUpdateRun is DockerUpdateStatus and the nonce of the run it is about ("" with none).
+	DockerUpdateRun() (SystemDockerUpdateStatus, string)
+	// DockerUpdateMuted says whether the alerts about the apps' containers are to be kept quiet:
+	// the update of Docker runs, or ended less than ten minutes ago. It takes no lock and is cheap.
+	DockerUpdateMuted() bool
+	// OnDockerUpdateQueued sets what is called when a run of the Docker update has its log: it
+	// must return at once.
+	OnDockerUpdateQueued(queued func())
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()
