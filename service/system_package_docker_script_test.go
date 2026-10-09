@@ -195,7 +195,8 @@ func (b *scriptBox) env0() map[string]string {
 	}
 }
 
-// run writes the first line the core writes, then runs the script as systemd-run would.
+// run writes the first line the core writes, then runs the script as systemd-run would: with the
+// argument the core gives it, after what systemd does to the words of a command.
 func (b *scriptBox) run() scriptRun {
 	b.t.Helper()
 	writeFile(b.t, b.logPath(), dockerpkg.QueuedMarker(scriptNonce, time.Date(2026, 10, 9, 9, 59, 0, 0, time.UTC)), 0o644)
@@ -213,7 +214,10 @@ func (b *scriptBox) run() scriptRun {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", dockerUpdateScript)
+	// the shell is given what systemd makes of the argument, as the unit's environment holds it
+	// (see systemd_env_test.go): the script as it is written, if the argument is the right one
+	argv := systemdExpandArgv([]string{"/bin/sh", "-c", dockerUpdateScriptArg()}, env)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = environ
 	cmd.Dir = b.dir
 	out, err := cmd.CombinedOutput()
