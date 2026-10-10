@@ -3,6 +3,7 @@ package dockerpkg
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -84,6 +85,59 @@ func QueuedMarker(nonce string, at time.Time) string {
 	return markerPrefix + "QUEUED " + nonce + " " + at.UTC().Format(time.RFC3339) + "\n"
 }
 
+// PlanMarker is the second line of the log, which the core writes in the same write as the first:
+// "CASAOS_DOCKER_UPDATE_PLAN <nonce> <from> <to> <0|1>", the engine versions the plan goes from and
+// to (digits and dots, "-" for one that is not known) and whether the plan changes the engine's
+// major version. A version that is not digits and dots is written as unknown, so that the line
+// holds nothing else. The unit never writes one: the core tells the page of a major jump from it.
+func PlanMarker(nonce, from, to string, majorJump bool) string {
+	jump := "0"
+	if majorJump {
+		jump = "1"
+	}
+	return markerPrefix + "PLAN " + nonce + " " + planVersion(from) + " " + planVersion(to) + " " + jump + "\n"
+}
+
+var planVersionPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)*$`)
+
+func validPlanVersion(v string) bool {
+	return len(v) <= maxVersionLen && planVersionPattern.MatchString(v)
+}
+
+// planVersion is how a version is written on the PLAN line.
+func planVersion(v string) string {
+	if validPlanVersion(v) {
+		return v
+	}
+	return "-"
+}
+
+// planFields reads the fields of a PLAN marker: two versions, each digits and dots or "-" (unknown,
+// which is ""), and 0 or 1.
+func planFields(fields []string) (from, to string, majorJump, ok bool) {
+	if len(fields) != 3 {
+		return "", "", false, false
+	}
+	versions := [2]string{}
+	for i, field := range fields[:2] {
+		switch {
+		case field == "-":
+		case validPlanVersion(field):
+			versions[i] = field
+		default:
+			return "", "", false, false
+		}
+	}
+	switch fields[2] {
+	case "0":
+	case "1":
+		majorJump = true
+	default:
+		return "", "", false, false
+	}
+	return versions[0], versions[1], majorJump, true
+}
+
 // NotReturned is a container that was running before the update and is not running after it.
 type NotReturned struct {
 	Name          string `json:"name"`
@@ -114,6 +168,11 @@ type Run struct {
 	DaemonVersion string
 	// NotReturned are the containers that were running before and were not after.
 	NotReturned []NotReturned
+	// From and To are the engine versions the plan goes from and to (digits and dots), "" when the
+	// plan did not know one or the log has no valid PLAN line; MajorJump is the plan's own word on
+	// whether it changes the major version, and is false with no PLAN line.
+	From, To  string
+	MajorJump bool
 }
 
 // markerOf splits a line that is a marker of this run: "CASAOS_DOCKER_UPDATE_<KIND> <nonce>"
@@ -160,7 +219,8 @@ func validPin(pin string) bool {
 // is read only if it is "CASAOS_DOCKER_UPDATE_<KIND> <that nonce>" with the fields its KIND
 // takes; every field is validated again; and what is not a marker is ignored, whatever it
 // looks like: apt's output, a container named like a marker, a forged nonce. The last
-// terminal marker wins, the first STARTED, INSTALLED and PREVIOUS, the last DAEMON.
+// terminal marker wins, the first STARTED, INSTALLED, PREVIOUS and PLAN, the last DAEMON. A PLAN
+// is the core's, written on line 2, so the first valid one is the plan and no later one changes it.
 //
 // A caller that reads only the end of a long log must put line 1 back in front of it.
 func ParseRun(log string) Run {
@@ -174,6 +234,7 @@ func ParseRun(log string) Run {
 		return Run{}
 	}
 	run := Run{Nonce: first[1], QueuedAt: queued}
+	planSeen := false
 	for _, line := range strings.Split(tail, "\n") {
 		kind, fields, ok := markerOf(strings.TrimRight(line, "\r"), run.Nonce)
 		if !ok {
@@ -196,6 +257,11 @@ func ParseRun(log string) Run {
 			run.PreviousSeen = true
 			if run.Previous == nil {
 				run.Previous = validPins(fields)
+			}
+		case "PLAN":
+			if from, to, majorJump, ok := planFields(fields); ok && !planSeen {
+				planSeen = true
+				run.From, run.To, run.MajorJump = from, to, majorJump
 			}
 		case "DAEMON":
 			if len(fields) == 1 && validDaemonVersion(fields[0]) {

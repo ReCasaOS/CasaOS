@@ -497,3 +497,151 @@ func TestIsMarkerLineIsTheShapeParseRunLooksFor(t *testing.T) {
 		t.Error("a marker the core writes is not a marker line")
 	}
 }
+
+// The core writes the plan on the second line, in the same write as the first. What the page says of a
+// major jump (and what it does not offer after one) rests on this line, so it is checked from both ends.
+func TestPlanMarker(t *testing.T) {
+	line := func(fields string) string { return "CASAOS_DOCKER_UPDATE_PLAN " + testNonce + " " + fields + "\n" }
+	for _, c := range []struct {
+		from, to string
+		jump     bool
+		want     string
+	}{
+		{"28.0.4", "29.8.0", true, line("28.0.4 29.8.0 1")},
+		{"28.0.4", "28.1.0", false, line("28.0.4 28.1.0 0")},
+		{"29.8.0", "29.8.0", false, line("29.8.0 29.8.0 0")},
+		{"", "", false, line("- - 0")},
+		{"", "29.8.0", false, line("- 29.8.0 0")},
+		{"28.0.4", "", false, line("28.0.4 - 0")},
+		// anything that is not digits and dots is written as unknown: the line holds no other text
+		{"5:28.0.4-1~debian.11~bullseye", "29.8.0;reboot", true, line("- - 1")},
+		{"28.0.4\n", " 29.8.0", false, line("- - 0")},
+		{"28 0", "$(id)", false, line("- - 0")},
+		{"28.", ".29", false, line("- - 0")},
+		{"28..0", "-", false, line("- - 0")},
+		{"v28", "29.8.0-rc1", false, line("- - 0")},
+		{strings.Repeat("1", 100), strings.Repeat("1", 101), false, line(strings.Repeat("1", 100) + " - 0")},
+	} {
+		got := PlanMarker(testNonce, c.from, c.to, c.jump)
+		if got != c.want {
+			t.Errorf("PlanMarker(%q, %q, %v) = %q, want %q", c.from, c.to, c.jump, got, c.want)
+		}
+		if !strings.HasSuffix(got, "\n") || strings.Count(got, "\n") != 1 || !IsMarkerLine(strings.TrimSuffix(got, "\n")) {
+			t.Errorf("PlanMarker(%q, %q, %v) = %q, want one marker line", c.from, c.to, c.jump, got)
+		}
+	}
+}
+
+func TestParseRunReadsThePlanTheCoreWrote(t *testing.T) {
+	for _, c := range []struct {
+		from, to string
+		jump     bool
+	}{
+		{"28.0.4", "29.8.0", true},
+		{"28.0.4", "28.1.0", false},
+		{"28.0.4", "28.0.4", false},
+		{"", "", false},
+		{"", "29.8.0", false},
+	} {
+		got := ParseRun(QueuedMarker(testNonce, t0) + PlanMarker(testNonce, c.from, c.to, c.jump))
+		want := Run{Nonce: testNonce, QueuedAt: t0, From: c.from, To: c.to, MajorJump: c.jump}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("ParseRun(plan %q %q %v) =\n%#v\nwant\n%#v", c.from, c.to, c.jump, got, want)
+		}
+	}
+	// the plan is no step of the run: the phase and the rest are the unit's
+	got := ParseRun(QueuedMarker(testNonce, t0) + PlanMarker(testNonce, "28.0.4", "29.8.0", true) + marker("STARTED", ts(1)) + "\n")
+	if got.Phase() != PhasePreparing || got.Terminal != "" || !got.StartedAt.Equal(t0.Add(time.Second)) {
+		t.Errorf("a run with a plan = %#v", got)
+	}
+	// a log with no plan (an older core, or a forged one) is no major jump and knows no versions
+	got = ParseRun(QueuedMarker(testNonce, t0))
+	if got.MajorJump || got.From != "" || got.To != "" {
+		t.Errorf("a run with no plan = %#v", got)
+	}
+}
+
+func TestParseRunValidatesPlan(t *testing.T) {
+	first := strings.TrimSuffix(QueuedMarker(testNonce, t0), "\n")
+	for fields, want := range map[string]Run{
+		"28.0.4 29.8.0 1":                 {From: "28.0.4", To: "29.8.0", MajorJump: true},
+		"28.0.4 28.1.0 0":                 {From: "28.0.4", To: "28.1.0"},
+		"29 30 1":                         {From: "29", To: "30", MajorJump: true},
+		"- - 0":                           {},
+		"- 29.8.0 0":                      {To: "29.8.0"},
+		"28.0.4 - 0":                      {From: "28.0.4"},
+		"28.0.4 29.8.0 1\r":               {From: "28.0.4", To: "29.8.0", MajorJump: true},
+		strings.Repeat("1", 100) + " - 0": {From: strings.Repeat("1", 100)},
+	} {
+		want.Nonce, want.QueuedAt = testNonce, t0
+		if got := ParseRun(logOf(first, marker("PLAN", fields))); !reflect.DeepEqual(got, want) {
+			t.Errorf("PLAN %q: ParseRun() =\n%#v\nwant\n%#v", fields, got, want)
+		}
+	}
+	for _, fields := range []string{
+		"", "28.0.4", "28.0.4 29.8.0", "28.0.4 29.8.0 1 extra", "- - ", "-",
+		// the flag is 0 or 1 and nothing else
+		"28.0.4 29.8.0 2", "28.0.4 29.8.0 true", "28.0.4 29.8.0 yes", "28.0.4 29.8.0 -1", "28.0.4 29.8.0 01", "28.0.4 29.8.0 1;reboot", "28.0.4 29.8.0 \u0661", "28.0.4 29.8.0 -",
+		// a version is digits and dots, or "-"
+		"5:28.0.4-1 29.8.0 1", "28.0.4 29.8.0-1~debian.11~bullseye 1", "28.0.4;reboot 29.8.0 1", "28.0.4 `id` 1", "$(id) 29.8.0 1",
+		"28..4 29.8.0 1", ".4 29.8.0 1", "28. 29.8.0 1", "v28 29 1", "28.0.4-rc1 29.8.0 1", "\u0662\u0668 29.8.0 1",
+		strings.Repeat("1", 101) + " 29 1", "28 " + strings.Repeat("1", 101) + " 1",
+	} {
+		want := Run{Nonce: testNonce, QueuedAt: t0}
+		if got := ParseRun(logOf(first, marker("PLAN", fields))); !reflect.DeepEqual(got, want) {
+			t.Errorf("PLAN %q: ParseRun() =\n%#v\nwant no plan", fields, got)
+		}
+	}
+	// a PLAN line that has no nonce at all
+	for _, line := range []string{"CASAOS_DOCKER_UPDATE_PLAN", "CASAOS_DOCKER_UPDATE_PLAN 28.0.4 29.8.0 1", "CASAOS_DOCKER_UPDATE_PLAN " + testNonce} {
+		if got := ParseRun(logOf(first, line)); !reflect.DeepEqual(got, Run{Nonce: testNonce, QueuedAt: t0}) {
+			t.Errorf("%q gave %#v", line, got)
+		}
+	}
+}
+
+func TestParseRunTakesThePlanOfTheCoreAndNoOther(t *testing.T) {
+	first := strings.TrimSuffix(QueuedMarker(testNonce, t0), "\n")
+	plan := strings.TrimSuffix(PlanMarker(testNonce, "28.0.4", "29.8.0", true), "\n")
+	forged := "CASAOS_DOCKER_UPDATE_PLAN " + otherNonce + " 28.0.4 28.1.0 0"
+	elsewhere := "28.0.4 28.1.0 0"
+	for name, c := range map[string]struct {
+		lines []string
+		want  Run
+	}{
+		"a wrong nonce is not the plan":                   {[]string{first, forged}, Run{}},
+		"a wrong nonce leaves the plan":                   {[]string{first, plan, forged}, Run{From: "28.0.4", To: "29.8.0", MajorJump: true}},
+		"a wrong nonce first leaves it too":               {[]string{first, forged, plan}, Run{From: "28.0.4", To: "29.8.0", MajorJump: true}},
+		"the first valid plan wins":                       {[]string{first, plan, marker("PLAN", elsewhere)}, Run{From: "28.0.4", To: "29.8.0", MajorJump: true}},
+		"the first, if it says no jump":                   {[]string{first, marker("PLAN", elsewhere), plan}, Run{From: "28.0.4", To: "28.1.0"}},
+		"a malformed one is no plan, and the next one is": {[]string{first, marker("PLAN", "28.0.4 29.8.0 maybe"), marker("PLAN", "29.8.0;reboot 29.8.0 0"), plan}, Run{From: "28.0.4", To: "29.8.0", MajorJump: true}},
+		"a malformed one after does not undo":             {[]string{first, plan, marker("PLAN", "- - 0"), marker("PLAN", "28.0.4 29.8.0 2")}, Run{From: "28.0.4", To: "29.8.0", MajorJump: true}},
+		// what apt, dpkg or Docker print is not a line that starts a marker, whatever it holds
+		"in the middle of apt output":                   {[]string{first, "Setting up docker-ce (5:29.8.0-1) ... " + marker("PLAN", elsewhere)}, Run{}},
+		"after a prefix":                                {[]string{first, "container: " + marker("PLAN", elsewhere), "x" + marker("PLAN", elsewhere), " " + marker("PLAN", elsewhere), "\t" + marker("PLAN", elsewhere), "> " + marker("PLAN", elsewhere)}, Run{}},
+		"in the log that apt wrote, after the real one": {[]string{first, plan, "Get:1 https://download.docker.com bullseye/stable docker-ce 5:29.8.0-1", marker("PLAN", elsewhere), marker("DAEMON", "29.8.0"), marker("SUCCESS", ts(9))}, Run{From: "28.0.4", To: "29.8.0", MajorJump: true, DaemonVersion: "29.8.0", Terminal: TerminalSuccess, CompletedAt: t0.Add(9 * time.Second)}},
+		"the wrong case, kind or spacing":               {[]string{first, strings.ToLower(marker("PLAN", elsewhere)), "CASAOS_DOCKER_UPDATE_PLANX " + testNonce + " " + elsewhere, "CASAOS_DOCKER_UPDATE_PLA " + testNonce + " " + elsewhere, "CASAOS_DOCKER_UPDATE_PLAN\t" + testNonce + " " + elsewhere, "CASAOS_DOCKER_UPDATE_PLAN" + testNonce + " " + elsewhere, "CASAOS_PACKAGE_UPDATE_PLAN " + testNonce + " " + elsewhere}, Run{}},
+	} {
+		want := c.want
+		want.Nonce, want.QueuedAt = testNonce, t0
+		if got := ParseRun(logOf(c.lines...)); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: ParseRun() =\n%#v\nwant\n%#v", name, got, want)
+		}
+	}
+}
+
+// A plan that comes before the first line is not the run's: line 1 is the run, and the core writes it first.
+func TestParseRunIgnoresAPlanBeforeTheFirstLine(t *testing.T) {
+	first := strings.TrimSuffix(QueuedMarker(testNonce, t0), "\n")
+	plan := marker("PLAN", "28.0.4 29.8.0 1")
+	for name, lines := range map[string][]string{
+		"the plan alone":                             {plan},
+		"the plan, then the first line":              {plan, first, marker("SUCCESS", ts(5))},
+		"apt output, the plan, the first":            {"Reading package lists...", plan, first},
+		"the plan with a first line that is not one": {plan, "CASAOS_DOCKER_UPDATE_QUEUED " + testNonce},
+	} {
+		if got := ParseRun(logOf(lines...)); !reflect.DeepEqual(got, Run{}) {
+			t.Errorf("%s: ParseRun() = %#v, want the zero Run", name, got)
+		}
+	}
+}
