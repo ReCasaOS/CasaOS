@@ -39,7 +39,8 @@ type DockerRun struct {
 	Outcome string
 	// ErrorCode is why a run failed: guard, download, install, daemon, start or no_result.
 	ErrorCode string
-	// To is the version of the engine that runs after a run that succeeded.
+	// To is the engine version the status says: the one that runs after a run that succeeded, the
+	// plan's for a run that did not. Only a success tells it.
 	To string
 	// NotReturned are the containers that were running before the update and were not after,
 	// already validated by whoever read the log.

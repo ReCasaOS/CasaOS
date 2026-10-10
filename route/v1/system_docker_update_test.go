@@ -71,7 +71,7 @@ func TestStartDockerUpdatePassesThePlanIDAndAnswersWithTheStatus(t *testing.T) {
 	if recorder.Code != http.StatusOK || len(fake.asked) != 1 || fake.asked[0] != planID {
 		t.Fatalf("status = %d, asked = %v, body = %s", recorder.Code, fake.asked, recorder.Body)
 	}
-	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"running","phase":"downloading","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"","from":"","to":"","not_returned":[],"rollback_command":"","log":""}}`
+	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"running","phase":"downloading","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"","from":"","to":"","major_jump":false,"not_returned":[],"rollback_command":"","log":""}}`
 	if got := strings.TrimSpace(recorder.Body.String()); got != want {
 		t.Errorf("body = %s\nwant   %s", got, want)
 	}
@@ -193,8 +193,46 @@ func TestGetDockerUpdateStatusAnswersWithTheStatus(t *testing.T) {
 	if err := GetDockerUpdateStatus(echo.New().NewContext(request, recorder)); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"failed","phase":"","outcome":"failed","error":"Docker did not come back after the update.","error_code":"daemon","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"2026-10-09T10:07:00Z","from":"28.0.4","to":"","not_returned":[{"name":"job","restart_policy":"no"}],"rollback_command":"sudo apt-get install --allow-downgrades docker-ce=5:28.0.4-1","log":"CASAOS_DOCKER_UPDATE_QUEUED x\n"}}`
+	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"failed","phase":"","outcome":"failed","error":"Docker did not come back after the update.","error_code":"daemon","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"2026-10-09T10:07:00Z","from":"28.0.4","to":"","major_jump":false,"not_returned":[{"name":"job","restart_policy":"no"}],"rollback_command":"sudo apt-get install --allow-downgrades docker-ce=5:28.0.4-1","log":"CASAOS_DOCKER_UPDATE_QUEUED x\n"}}`
 	if got := strings.TrimSpace(recorder.Body.String()); recorder.Code != http.StatusOK || got != want {
 		t.Errorf("status = %d\nbody = %s\nwant   %s", recorder.Code, got, want)
+	}
+}
+
+// After a major jump the status says so and gives no command to go back: the page reads major_jump,
+// from and to, and an empty rollback_command, whatever the state.
+func TestDockerUpdateStatusOfAMajorJumpCarriesTheJumpAndNoRollback(t *testing.T) {
+	failed := service.SystemDockerUpdateStatus{
+		Supported: true, State: "failed", Outcome: "failed", Error: "Docker did not come back after the update.", ErrorCode: "daemon",
+		StartedAt: "2026-10-09T10:00:00Z", CompletedAt: "2026-10-09T10:07:00Z", From: "28.0.4", To: "29.8.0", MajorJump: true,
+		NotReturned: []dockerpkg.NotReturned{{Name: "job", RestartPolicy: "no"}},
+		Log:         "CASAOS_DOCKER_UPDATE_QUEUED x\n",
+	}
+	running := service.SystemDockerUpdateStatus{
+		Supported: true, State: "running", Phase: "downloading", StartedAt: "2026-10-09T10:00:00Z", From: "28.0.4", To: "29.8.0", MajorJump: true,
+		NotReturned: []dockerpkg.NotReturned{},
+	}
+	for name, c := range map[string]struct {
+		status service.SystemDockerUpdateStatus
+		want   string
+	}{
+		"failed":  {failed, `{"success":200,"message":"ok","data":{"supported":true,"state":"failed","phase":"","outcome":"failed","error":"Docker did not come back after the update.","error_code":"daemon","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"2026-10-09T10:07:00Z","from":"28.0.4","to":"29.8.0","major_jump":true,"not_returned":[{"name":"job","restart_policy":"no"}],"rollback_command":"","log":"CASAOS_DOCKER_UPDATE_QUEUED x\n"}}`},
+		"running": {running, `{"success":200,"message":"ok","data":{"supported":true,"state":"running","phase":"downloading","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"","from":"28.0.4","to":"29.8.0","major_jump":true,"not_returned":[],"rollback_command":"","log":""}}`},
+	} {
+		withDockerUpdateService(t, &fakeDockerUpdateService{status: c.status})
+		request := httptest.NewRequest(http.MethodGet, "/v1/sys/docker/update/status", nil)
+		recorder := httptest.NewRecorder()
+		if err := GetDockerUpdateStatus(echo.New().NewContext(request, recorder)); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.TrimSpace(recorder.Body.String()); recorder.Code != http.StatusOK || got != c.want {
+			t.Errorf("%s: status = %d\nbody = %s\nwant   %s", name, recorder.Code, got, c.want)
+		}
+		// ... and the start of the update answers with the same object
+		fake := &fakeDockerUpdateService{status: c.status}
+		withDockerUpdateService(t, fake)
+		if got := strings.TrimSpace(postDockerUpdate(t, `{"plan_id":"`+planID+`"}`).Body.String()); got != c.want {
+			t.Errorf("%s: the start answered\n%s\nwant\n%s", name, got, c.want)
+		}
 	}
 }

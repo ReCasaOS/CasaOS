@@ -101,7 +101,7 @@ func TestDockerStatusWithoutARun(t *testing.T) {
 	}
 	// ... and what the page reads
 	encoded, _ := json.Marshal(status)
-	if got := string(encoded); got != `{"supported":true,"state":"idle","phase":"","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"","completed_at":"","from":"","to":"","not_returned":[],"rollback_command":"","log":""}` {
+	if got := string(encoded); got != `{"supported":true,"state":"idle","phase":"","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"","completed_at":"","from":"","to":"","major_jump":false,"not_returned":[],"rollback_command":"","log":""}` {
 		t.Errorf("JSON = %s", got)
 	}
 }
@@ -728,5 +728,210 @@ func TestReadDockerMarkersReadsWholeLinesOnly(t *testing.T) {
 	}
 	if _, err := readDockerMarkers(path + ".none"); err == nil {
 		t.Error("a log that is not there was read")
+	}
+}
+
+// withPlan is a run's lines with the core's second line, the plan, put in after the first.
+func withPlan(plan string, run []string) []string {
+	return append([]string{run[0], plan}, run[1:]...)
+}
+
+var (
+	planMajor = mark("PLAN", "28.0.4", "29.8.0", "1")
+	planMinor = mark("PLAN", "28.0.4", "28.1.0", "0")
+)
+
+// After a major jump the packages go back and Docker starts, and the containers do not: no run of one
+// is told of a command that does not bring the apps back. The plan the core wrote says it was one.
+func TestDockerStatusOfAMajorJumpOffersNoRollbackAndSaysWhereItGoes(t *testing.T) {
+	failed := func(reason string) string { return mark("FAILED", "2026-08-13T01:03:00Z", reason) }
+	for _, c := range []struct {
+		name   string
+		active bool
+		lines  []string
+		state  string
+		code   string
+		to     string
+	}{
+		{"queued", true, []string{logQueued, planMajor}, "running", "", "29.8.0"},
+		{"started, before the snapshot", true, []string{logQueued, planMajor, logStarted}, "running", "", "29.8.0"},
+		{"running", true, withPlan(planMajor, ownersRun()), "running", "", "29.8.0"},
+		{"failed in the guard", false, withPlan(planMajor, ownersRun(failed("guard"))), "failed", "guard", "29.8.0"},
+		{"failed in the download", false, withPlan(planMajor, ownersRun(failed("download"))), "failed", "download", "29.8.0"},
+		{"failed in the install", false, withPlan(planMajor, ownersRun(failed("install"))), "failed", "install", "29.8.0"},
+		{"failed, Docker did not come back", false, withPlan(planMajor, ownersRun(failed("daemon"))), "failed", "daemon", "29.8.0"},
+		{"failed to start", false, []string{logQueued, planMajor, "Failed to start transient service unit: Access denied", failed("start")}, "failed", "start", "29.8.0"},
+		{"no result", false, withPlan(planMajor, ownersRun()), "failed", "no_result", "29.8.0"},
+		{"restart pending", false, withPlan(planMajor, ownersRun(mark("DAEMON", "28.0.4"), mark("RESTART_PENDING", "2026-08-13T01:05:00Z"))), "succeeded", "", "29.8.0"},
+		{"success", false, withPlan(planMajor, ownersRun(mark("DAEMON", "29.8.0"), mark("SUCCESS", "2026-08-13T01:05:00Z"))), "succeeded", "", "29.8.0"},
+	} {
+		s := newStatusBox(t)
+		s.box.activeUnits[systemDockerUpdateUnit] = c.active
+		s.write(t, c.lines...)
+		status := s.status(t)
+		if status.State != c.state || status.ErrorCode != c.code {
+			t.Errorf("%s: status = %#v, want %s %q", c.name, status, c.state, c.code)
+		}
+		if !status.MajorJump || status.From != "28.0.4" || status.To != c.to || status.RollbackCommand != "" {
+			t.Errorf("%s: major_jump = %v, from %q, to %q, rollback %q: want true, 28.0.4, %s and none", c.name, status.MajorJump, status.From, status.To, status.RollbackCommand, c.to)
+		}
+	}
+}
+
+// The command stays for a run that is not a major jump, and for a log that has no plan (an older
+// core's run, which did not know it).
+func TestDockerStatusOfAMinorUpdateStillOffersItsRollback(t *testing.T) {
+	want := "sudo apt-get install --allow-downgrades " + pinContainer + " docker-ce=" + debian28 + " docker-ce-cli=" + debian28
+	for _, c := range []struct {
+		name  string
+		lines []string
+		from  string
+		to    string
+	}{
+		{"a plan that is not a jump, failed", withPlan(planMinor, ownersRun(mark("FAILED", "2026-08-13T01:03:00Z", "daemon"))), "28.0.4", "28.1.0"},
+		{"a plan that is not a jump, no result", withPlan(planMinor, ownersRun()), "28.0.4", "28.1.0"},
+		{"no plan, failed", ownersRun(mark("FAILED", "2026-08-13T01:03:00Z", "daemon")), "28.0.4", ""},
+		{"no plan, no result", ownersRun(), "28.0.4", ""},
+		{"a plan that knows no version, failed", withPlan(mark("PLAN", "-", "-", "0"), ownersRun(mark("FAILED", "2026-08-13T01:03:00Z", "install"))), "28.0.4", ""},
+	} {
+		s := newStatusBox(t)
+		s.write(t, c.lines...)
+		status := s.status(t)
+		if status.State != "failed" || status.MajorJump || status.From != c.from || status.To != c.to || status.RollbackCommand != want {
+			t.Errorf("%s: status = %#v, want the rollback, no major jump, from %q to %q", c.name, status, c.from, c.to)
+		}
+	}
+}
+
+// from and to are the plan's until a later marker of the unit has them: the snapshot of what was
+// installed says where the engine came from, the daemon where it is once the run went well.
+func TestDockerStatusTakesFromAndToFromThePlanAndThenFromTheUnit(t *testing.T) {
+	s := newStatusBox(t)
+	s.box.activeUnits[systemDockerUpdateUnit] = true
+
+	s.write(t, logQueued, planMajor)
+	if status := s.status(t); status.From != "28.0.4" || status.To != "29.8.0" || !status.MajorJump || status.Phase != "preparing" {
+		t.Errorf("queued: status = %#v", status)
+	}
+	// the snapshot of the unit is what was installed, and is believed over the plan
+	s.write(t, logQueued, mark("PLAN", "27.0.0", "28.0.0", "1"), logStarted, logPrevious)
+	if status := s.status(t); status.From != "28.0.4" || status.To != "28.0.0" || !status.MajorJump {
+		t.Errorf("a snapshot: status = %#v, want from 28.0.4 (the snapshot) to 28.0.0 (the plan)", status)
+	}
+	// the daemon that runs once it went well is what the engine is now
+	s.box.activeUnits[systemDockerUpdateUnit] = false
+	s.write(t, withPlan(planMajor, ownersRun(mark("DAEMON", "29.8.1"), mark("SUCCESS", "2026-08-13T01:05:00Z")))...)
+	if status := s.status(t); status.State != "succeeded" || status.From != "28.0.4" || status.To != "29.8.1" || !status.MajorJump {
+		t.Errorf("a success: status = %#v, want to 29.8.1 (the daemon's)", status)
+	}
+	// ... but not when it still is the old one: the packages are the new ones
+	s.write(t, withPlan(planMajor, ownersRun(mark("DAEMON", "28.0.4"), mark("RESTART_PENDING", "2026-08-13T01:05:00Z")))...)
+	if status := s.status(t); status.Outcome != "restart_pending" || status.From != "28.0.4" || status.To != "29.8.0" || !status.MajorJump {
+		t.Errorf("a restart pending: status = %#v", status)
+	}
+	// a plan that does not know the versions leaves them to the unit, as an older core's run did
+	s.write(t, withPlan(mark("PLAN", "-", "-", "0"), ownersRun(mark("DAEMON", "29.8.0"), mark("SUCCESS", "2026-08-13T01:05:00Z")))...)
+	if status := s.status(t); status.From != "28.0.4" || status.To != "29.8.0" || status.MajorJump {
+		t.Errorf("an unknown plan: status = %#v", status)
+	}
+	// the engine did not move (only containerd.io did): the plan says the one that is installed
+	s.write(t, logQueued, mark("PLAN", "28.0.4", "28.0.4", "0"), logStarted, mark("PREVIOUS", pinContainer), mark("DAEMON", "28.0.4"), mark("SUCCESS", "2026-08-13T01:05:00Z"))
+	if status := s.status(t); status.From != "28.0.4" || status.To != "28.0.4" || status.MajorJump {
+		t.Errorf("a plan without docker-ce: status = %#v", status)
+	}
+}
+
+// Only the core's line is the plan. What apt prints, a line with another run's nonce, a second line, a
+// line that is not shaped like one, and a plan that comes before the first line are not.
+func TestDockerStatusKeepsTheCoresPlanAgainstHostileLines(t *testing.T) {
+	failed := mark("FAILED", "2026-08-13T01:03:00Z", "daemon")
+	forgedNonce := "CASAOS_DOCKER_UPDATE_PLAN 0000000000000000000000000000000f 28.0.4 29.8.0 1"
+	rollback := "sudo apt-get install --allow-downgrades " + pinContainer + " docker-ce=" + debian28 + " docker-ce-cli=" + debian28
+	for _, c := range []struct {
+		name     string
+		lines    []string
+		major    bool
+		rollback string
+		to       string
+	}{
+		{"a plan of another nonce does not make a jump", withPlan(planMinor, ownersRun(forgedNonce, failed)), false, rollback, "28.1.0"},
+		{"a plan of another nonce does not undo one", withPlan(planMajor, ownersRun(strings.Replace(forgedNonce, " 1", " 0", 1), failed)), true, "", "29.8.0"},
+		{"a plan of another nonce alone is no plan", ownersRun(forgedNonce, failed), false, rollback, ""},
+		{"a second plan does not undo the first", withPlan(planMajor, ownersRun(planMinor, failed)), true, "", "29.8.0"},
+		{"a second plan does not make a jump", withPlan(planMinor, ownersRun(planMajor, failed)), false, rollback, "28.1.0"},
+		{"a malformed plan is none", withPlan(mark("PLAN", "28.0.4", "29.8.0", "maybe"), ownersRun(failed)), false, rollback, ""},
+		{"a plan with a version that is not one is none", withPlan(mark("PLAN", "28.0.4;reboot", "29.8.0", "1"), ownersRun(failed)), false, rollback, ""},
+		{"a plan with a field too many is none", withPlan(mark("PLAN", "28.0.4", "29.8.0", "1", "x"), ownersRun(failed)), false, rollback, ""},
+		{"a malformed plan leaves the next one", withPlan(mark("PLAN", "28.0.4", "29.8.0", "2"), withPlan(planMajor, ownersRun(failed))), true, "", "29.8.0"},
+		{"a plan in apt's output does not make a jump", withPlan(planMinor, ownersRun("Setting up docker-ce (5:29.8.0-1) ... "+planMajor, " "+planMajor, "container: "+planMajor, failed)), false, rollback, "28.1.0"},
+		{"a plan in apt's output is no plan", ownersRun("Setting up docker-ce (5:29.8.0-1) ... "+planMajor, "container: "+planMajor, failed), false, rollback, ""},
+		{"a plan with a nonce and nothing else", withPlan(mark("PLAN"), ownersRun(failed)), false, rollback, ""},
+	} {
+		s := newStatusBox(t)
+		s.write(t, c.lines...)
+		status := s.status(t)
+		if status.State != "failed" || status.MajorJump != c.major || status.RollbackCommand != c.rollback || status.To != c.to {
+			t.Errorf("%s: status = %#v, want major %v, to %q, rollback %q", c.name, status, c.major, c.to, c.rollback)
+		}
+	}
+
+	// a plan before the core's first line: line 1 is the run, and there is none
+	s := newStatusBox(t)
+	s.write(t, append([]string{planMajor}, ownersRun(failed)...)...)
+	if status := s.status(t); status.State != "idle" || status.MajorJump || status.From != "" || status.To != "" {
+		t.Errorf("a plan before the first line: status = %#v", status)
+	}
+	s.write(t, append([]string{"Reading package lists...", planMajor}, ownersRun(failed)...)...)
+	if status := s.status(t); status.State != "idle" || status.MajorJump {
+		t.Errorf("a plan after something else: status = %#v", status)
+	}
+}
+
+// The scan has a bound: the plan is on line 2, in the part that is read whatever comes after it.
+func TestDockerStatusReadsThePlanOfAHugeLog(t *testing.T) {
+	s := newStatusBox(t)
+	noise := strings.Repeat(strings.Repeat("x", 1023)+"\n", 20<<10) // 20 MiB
+	log := lines(logQueued, planMajor, logStarted, logPrevious, "container: web always", mark("DOWNLOADED", "2026-08-13T01:00:30Z")) + noise +
+		lines(mark("INSTALLED", "2026-08-13T01:02:00Z"), mark("FAILED", "2026-08-13T01:03:00Z", "daemon"))
+	if int64(len(log)) <= systemDockerMarkerScanBytes {
+		t.Fatalf("the log is %d bytes, not beyond the bound of %d", len(log), systemDockerMarkerScanBytes)
+	}
+	s.writeRaw(t, log)
+	status := s.status(t)
+	if status.State != "failed" || status.ErrorCode != "daemon" || !status.MajorJump || status.From != "28.0.4" || status.To != "29.8.0" || status.RollbackCommand != "" {
+		t.Errorf("status = %#v", status)
+	}
+	// a plan that is a line of apt's, in the middle of what is not read, is not one
+	log = lines(logQueued, planMinor, logStarted, logPrevious) + noise + lines(planMajor, mark("FAILED", "2026-08-13T01:03:00Z", "daemon"))
+	s.writeRaw(t, log)
+	if status := s.status(t); status.MajorJump || status.To != "28.1.0" || status.RollbackCommand == "" {
+		t.Errorf("a second plan at the end of a huge log: status = %#v", status)
+	}
+}
+
+// What readDockerMarkers keeps for ParseRun when the log is longer than the bound: the plan is a
+// marker line, and is kept with the first line and the ones after it.
+func TestReadDockerMarkersKeepsThePlanLine(t *testing.T) {
+	old := systemDockerMarkerScanBytes
+	systemDockerMarkerScanBytes = 2048
+	t.Cleanup(func() { systemDockerMarkerScanBytes = old })
+
+	path := t.TempDir() + "/docker-update.log"
+	text := lines(logQueued, planMajor, logStarted) + strings.Repeat("noise noise noise\n", 400) + lines(mark("FAILED", "2026-08-13T01:03:00Z", "daemon"))
+	if int64(len(text)) <= systemDockerMarkerScanBytes {
+		t.Fatalf("the log is %d bytes", len(text))
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read, err := readDockerMarkers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(read, logQueued+"\n"+planMajor+"\n") || strings.Contains(read, "noise") {
+		t.Errorf("read = %q", read)
+	}
+	if run := dockerpkg.ParseRun(read); !run.MajorJump || run.From != "28.0.4" || run.To != "29.8.0" || run.Terminal != dockerpkg.TerminalFailed {
+		t.Errorf("run = %#v", run)
 	}
 }

@@ -126,13 +126,19 @@ type SystemDockerUpdateStatus struct {
 	ExitCode    *int   `json:"exit_code"`
 	StartedAt   string `json:"started_at"`
 	CompletedAt string `json:"completed_at"`
-	// From and To are the engine's versions before and after, from the log. To is there when
-	// the new engine runs.
+	// From and To are the engine's versions before and after, from the log: the plan's until the
+	// unit says better (what it saw installed, which daemon runs), "" when none is known yet.
 	From string `json:"from"`
 	To   string `json:"to"`
+	// MajorJump is the plan's own word that the update changes the engine's first number (28 to
+	// 29), from the PLAN line the core wrote; false for a log that has none. After one the
+	// packages can be put back and Docker starts, and the containers do not start again by
+	// themselves: no RollbackCommand is given.
+	MajorJump bool `json:"major_jump"`
 	// NotReturned are the containers that were running before and were not after.
 	NotReturned []dockerpkg.NotReturned `json:"not_returned"`
-	// RollbackCommand is what to type to put the packages back, for a run that failed.
+	// RollbackCommand is what to type to put the packages back, for a run that failed and was not
+	// a major jump; "" otherwise.
 	RollbackCommand string `json:"rollback_command"`
 	// Log is the end of the unit's log, at most 128 KiB.
 	Log string `json:"log"`
@@ -266,7 +272,10 @@ func (u *systemPackageUpdater) startDockerUpdate(planID string) (SystemDockerUpd
 		return u.dockerFailedToStart(support, "", fmt.Sprintf("prepare Docker update log: %v", err), err)
 	}
 	queuedAt := u.now().UTC()
-	queued := dockerpkg.QueuedMarker(nonce, queuedAt)
+	// The first line is the run's, the second its plan: what the status says of the run before the
+	// unit has written a word, and after a failure that is the unit's own. Both in one write, before
+	// the unit starts.
+	queued := dockerpkg.QueuedMarker(nonce, queuedAt) + dockerpkg.PlanMarker(nonce, update.From, update.To, update.MajorJump)
 	if err := u.writeFile(logPath, []byte(queued), 0o644); err != nil {
 		return u.dockerFailedToStart(support, "", fmt.Sprintf("prepare Docker update log: %v", err), err)
 	}
@@ -286,6 +295,9 @@ func (u *systemPackageUpdater) startDockerUpdate(planID string) (SystemDockerUpd
 		State:       systemPackageUpdateStateRunning,
 		Phase:       dockerpkg.PhasePreparing,
 		StartedAt:   queuedAt.Format(time.RFC3339),
+		From:        update.From,
+		To:          update.To,
+		MajorJump:   update.MajorJump,
 		NotReturned: []dockerpkg.NotReturned{},
 		Log:         queued,
 	}, nil
@@ -403,18 +415,21 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 
 	status.StartedAt = formatDockerTime(run.StartedAt, run.QueuedAt)
 	status.NotReturned = append(status.NotReturned, run.NotReturned...)
-	from := ""
+	// The plan's versions, until the unit's own say otherwise: what it saw installed is where the
+	// engine came from, and the daemon that runs after a run that went well is where it is.
+	status.From, status.To, status.MajorJump = run.From, run.To, run.MajorJump
 	for _, pin := range run.Previous {
 		if name, version, _ := strings.Cut(pin, "="); name == "docker-ce" {
-			from = dockerpkg.EngineVersion(version)
+			status.From = dockerpkg.EngineVersion(version)
 		}
 	}
-	status.From = from
 
 	switch run.Terminal {
 	case dockerpkg.TerminalSuccess:
 		status.State, status.Outcome = systemPackageUpdateStateSuccess, systemDockerOutcomeSuccess
-		status.To = dockerpkg.EngineVersion(run.DaemonVersion)
+		if running := dockerpkg.EngineVersion(run.DaemonVersion); running != "" {
+			status.To = running
+		}
 		if status.From == "" {
 			// docker-ce was not in the plan: the engine is the one that runs
 			status.From = status.To
@@ -447,6 +462,11 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 			// it stopped somewhere: what was there before is in the log
 			status.RollbackCommand = dockerpkg.RollbackCommand(run.Previous)
 		}
+	}
+	if status.MajorJump {
+		// After a major jump the packages go back and Docker starts, and the containers do not: what
+		// is not known to work is not offered, whatever the state.
+		status.RollbackCommand = ""
 	}
 	if !run.CompletedAt.IsZero() {
 		status.CompletedAt = run.CompletedAt.Format(time.RFC3339)
