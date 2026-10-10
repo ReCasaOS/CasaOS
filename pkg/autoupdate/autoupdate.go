@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -266,29 +267,53 @@ func (a *AutoUpdate) unitActive() bool {
 	return true
 }
 
-// appsBusy asks AppManagement whether an app operation runs, the way the core
-// reaches the other services: at the address it leaves in the runtime path,
-// with this boot's secret. No answer, or any operation listed, is busy.
-func appsBusy(ctx context.Context, runtimePath string) bool {
+// Operation is an app operation in progress, as AppManagement lists it. Both fields are
+// AppManagement's text: for the caller to validate before it shows or logs them.
+type Operation struct {
+	App  string `json:"app"`
+	Kind string `json:"kind"`
+}
+
+// AppOperations asks AppManagement which app operations are in progress, the way the core
+// reaches the other services: at the address it leaves in the runtime path, with this boot's
+// secret. The list is empty (not nil) when nothing runs. An error is no answer: it could not
+// be asked, or what it said is not the list, and a caller that must not act on a guess treats
+// it as an operation in progress.
+func AppOperations(ctx context.Context, runtimePath string) ([]Operation, error) {
 	address, err := os.ReadFile(filepath.Join(runtimePath, external.AppManageURLFilename))
 	if err != nil {
-		return true
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(strings.TrimSpace(string(address)), "/")+operationsPath, nil)
 	if err != nil {
-		return true
+		return nil, err
 	}
 	_ = external.InternalRequestEditor(runtimePath)(ctx, request) // never fails
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return true
+		return nil, err
 	}
 	defer response.Body.Close()
-	var body struct {
-		Operations *[]json.RawMessage `json:"operations"`
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("AppManagement answered %d", response.StatusCode)
 	}
-	return response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&body) != nil ||
-		body.Operations == nil || len(*body.Operations) > 0
+	var body struct {
+		Operations *[]Operation `json:"operations"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	if body.Operations == nil {
+		return nil, errors.New("AppManagement's answer has no list of operations")
+	}
+	return *body.Operations, nil
+}
+
+// appsBusy is AppOperations for a caller that only needs to know whether to wait. No answer,
+// or any operation listed, is busy.
+func appsBusy(ctx context.Context, runtimePath string) bool {
+	operations, err := AppOperations(ctx, runtimePath)
+	return err != nil || len(operations) > 0
 }

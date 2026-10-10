@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS/model"
+	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/labstack/echo/v4"
 )
@@ -19,6 +21,7 @@ type fakeSystemPackageService struct {
 	updateStatus service.SystemPackageUpdateStatus
 	checkErr     error
 	startErr     error
+	containers   service.SystemDockerContainers
 }
 
 func (f *fakeSystemPackageService) GetSystemPackageUpdates() (service.SystemPackageUpdates, error) {
@@ -31,6 +34,10 @@ func (f *fakeSystemPackageService) StartSystemPackageUpdate() (service.SystemPac
 
 func (f *fakeSystemPackageService) GetSystemPackageUpdateStatus() service.SystemPackageUpdateStatus {
 	return f.updateStatus
+}
+
+func (f *fakeSystemPackageService) GetSystemDockerContainers() service.SystemDockerContainers {
+	return f.containers
 }
 
 type fakeSystemPackageRepository struct {
@@ -61,6 +68,10 @@ func performSystemPackageRequest(t *testing.T, method, path string) *httptest.Re
 	case method == http.MethodGet && path == "/v1/sys/packages/update/status":
 		if err := GetSystemPackageUpdateStatus(context); err != nil {
 			t.Fatalf("GetSystemPackageUpdateStatus() error = %v", err)
+		}
+	case method == http.MethodGet && path == "/v1/sys/docker/containers":
+		if err := GetSystemDockerContainers(context); err != nil {
+			t.Fatalf("GetSystemDockerContainers() error = %v", err)
 		}
 	default:
 		t.Fatalf("unsupported test request %s %s", method, path)
@@ -215,5 +226,77 @@ func TestGetSystemPackageUpdatesCarriesDockerOnItsOwnLine(t *testing.T) {
 	docker, _ := data["docker"].(map[string]interface{})
 	if docker["version"] != "29.8.1" || docker["origin"] != "docker-repository" || docker["manual_command"] == "" {
 		t.Fatalf("response data = %#v", response.Data)
+	}
+}
+
+func TestGetSystemPackageUpdatesCarriesTheDockerUpdate(t *testing.T) {
+	original := service.MyService
+	t.Cleanup(func() { service.MyService = original })
+
+	fakeSystem := &fakeSystemPackageService{updates: service.SystemPackageUpdates{
+		Supported: true,
+		Manager:   "apt",
+		Updates:   []service.SystemPackageUpdate{},
+		Docker: &service.SystemPackageDocker{
+			Installed: true, Origin: "docker-repository", Version: "28.0.4",
+			Updates: []service.SystemPackageUpdate{},
+			Update: &service.SystemPackageDockerUpdate{
+				Available: true, RefusalDetail: []string{}, From: "28.0.4", To: "29.8.0", MajorJump: true, PlanID: "ab",
+				Packages: []service.SystemPackageUpdate{{Name: "docker-ce", CurrentVersion: "5:28.0.4-1", CandidateVersion: "5:29.8.0-1"}},
+			},
+		},
+	}}
+	service.MyService = fakeSystemPackageRepository{system: fakeSystem}
+
+	recorder := performSystemPackageRequest(t, http.MethodGet, "/v1/sys/packages")
+	var response model.Result
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	data, _ := response.Data.(map[string]interface{})
+	docker, _ := data["docker"].(map[string]interface{})
+	update, _ := docker["update"].(map[string]interface{})
+	packages, _ := update["packages"].([]interface{})
+	if update["available"] != true || update["refusal"] != "" || update["from"] != "28.0.4" || update["to"] != "29.8.0" || update["major_jump"] != true || update["plan_id"] != "ab" || len(packages) != 1 {
+		t.Fatalf("docker.update = %#v", update)
+	}
+	if detail, ok := update["refusal_detail"].([]interface{}); !ok || len(detail) != 0 {
+		t.Fatalf("refusal_detail = %#v, want []", update["refusal_detail"])
+	}
+}
+
+func TestGetSystemDockerContainersResponse(t *testing.T) {
+	original := service.MyService
+	t.Cleanup(func() { service.MyService = original })
+
+	fakeSystem := &fakeSystemPackageService{containers: service.SystemDockerContainers{
+		Running: true,
+		Containers: []dockerpkg.Container{{
+			Name: "x", Image: "nginx", RestartPolicy: "always", HostNetwork: false,
+			Ports: []dockerpkg.Port{{Port: 80, Protocol: "tcp", HostPort: 8080}},
+		}},
+	}}
+	service.MyService = fakeSystemPackageRepository{system: fakeSystem}
+
+	recorder := performSystemPackageRequest(t, http.MethodGet, "/v1/sys/docker/containers")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	want := `{"success":200,"message":"ok","data":{"running":true,"containers":[{"name":"x","image":"nginx","restart_policy":"always","host_network":false,"ports":[{"port":80,"protocol":"tcp","host_port":8080}]}]}}`
+	if got := strings.TrimSpace(recorder.Body.String()); got != want {
+		t.Fatalf("body = %s, want %s", got, want)
+	}
+}
+
+func TestGetSystemDockerContainersWithoutADaemon(t *testing.T) {
+	original := service.MyService
+	t.Cleanup(func() { service.MyService = original })
+
+	service.MyService = fakeSystemPackageRepository{system: &fakeSystemPackageService{containers: service.SystemDockerContainers{Containers: []dockerpkg.Container{}}}}
+
+	recorder := performSystemPackageRequest(t, http.MethodGet, "/v1/sys/docker/containers")
+	want := `{"success":200,"message":"ok","data":{"running":false,"containers":[]}}`
+	if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != want {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }

@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
@@ -28,12 +30,89 @@ type aptBox struct {
 	// onInstallSimulation runs when the list is simulated: something else may start meanwhile.
 	onInstallSimulation func()
 	calls               []string
+
+	// packages are the other packages on the box, with their dpkg version, and statuses their
+	// dpkg abbreviation ("ii" unless set; "hi" is on hold).
+	packages map[string]string
+	statuses map[string]string
+	// enginePlans, when set, makes the simulation of an install answer from the names it was
+	// asked for: the lines of each of them, in the order they were asked, and nothing for a name
+	// that is not in it. Without it that simulation answers installSimulation whatever it is asked.
+	enginePlans map[string]string
+	// The docker command. daemonInfo is what `docker info` prints (a healthy daemon, not in a
+	// swarm, when empty); noDaemon makes it fail as with a stopped daemon; daemonHangs makes it
+	// wait for its deadline. runningIDs are what `docker ps -q` prints, inspected what
+	// `docker inspect` prints and inspectFailure that it exits non-zero.
+	daemonInfo     string
+	noDaemon       bool
+	daemonHangs    bool
+	runningIDs     []string
+	inspected      string
+	inspectFailure bool
+	// dpkgAudit is what `dpkg --audit` prints: nothing, for a box whose packages are all right.
+	dpkgAudit string
+	// strict, when set, reports a command that nothing here answers (a real install, a
+	// systemctl start, a df...) as a test failure and as a failed command, instead of letting it
+	// succeed with no output, which would hide a check the code forgot to make.
+	strict interface{ Errorf(string, ...any) }
 }
 
-func (b *aptBox) command(_ context.Context, name string, args ...string) ([]byte, error) {
+const healthyDaemon = `{"ServerVersion":"28.0.4","SwarmState":"inactive"}` + "\n"
+
+// unexpected is the answer to a command that nothing here answers.
+func (b *aptBox) unexpected(name string, args []string) ([]byte, error) {
+	if b.strict == nil {
+		return nil, nil
+	}
+	b.strict.Errorf("unexpected command: %s %s", name, strings.Join(args, " "))
+	return nil, errors.New("unexpected command " + name)
+}
+
+var versionParts = regexp.MustCompile(`\d+|\D+`)
+
+func compareNumbers(a, b string) int {
+	a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	if len(a) != len(b) {
+		return len(a) - len(b)
+	}
+	return strings.Compare(a, b)
+}
+
+// compareDpkgVersions orders two dpkg versions the way dpkg does for the versions of these
+// tests: the epoch first, then the number runs as numbers (29.10 is after 29.9) and the rest as
+// text. It does not know that "~" sorts before everything.
+func compareDpkgVersions(a, b string) int {
+	epoch := func(v string) (string, string) {
+		if e, rest, found := strings.Cut(v, ":"); found && regexp.MustCompile(`^\d+$`).MatchString(e) {
+			return e, rest
+		}
+		return "0", v
+	}
+	ea, ra := epoch(a)
+	eb, rb := epoch(b)
+	if c := compareNumbers(ea, eb); c != 0 {
+		return c
+	}
+	pa, pb := versionParts.FindAllString(ra, -1), versionParts.FindAllString(rb, -1)
+	for i := 0; i < len(pa) && i < len(pb); i++ {
+		c := strings.Compare(pa[i], pb[i])
+		if pa[i][0] >= '0' && pa[i][0] <= '9' && pb[i][0] >= '0' && pb[i][0] <= '9' {
+			c = compareNumbers(pa[i], pb[i])
+		}
+		if c != 0 {
+			return c
+		}
+	}
+	return len(pa) - len(pb)
+}
+
+func (b *aptBox) command(ctx context.Context, name string, args ...string) ([]byte, error) {
 	b.calls = append(b.calls, name+" "+strings.Join(args, " "))
 	switch name {
 	case "systemctl":
+		if len(args) == 0 || args[0] != "show" {
+			return b.unexpected(name, args)
+		}
 		if len(args) > 1 && b.activeUnits[args[1]] {
 			return []byte("active\n"), nil
 		}
@@ -50,10 +129,20 @@ func (b *aptBox) command(_ context.Context, name string, args ...string) ([]byte
 		if pkg == "docker.io" && b.dockerIO != "" {
 			return []byte("ii \t" + b.dockerIO + "\n"), nil
 		}
+		if version, ok := b.packages[pkg]; ok {
+			status := b.statuses[pkg]
+			if status == "" {
+				status = "ii"
+			}
+			return []byte(status + " \t" + version + "\n"), nil
+		}
 		return nil, errors.New("dpkg-query: no packages found matching " + pkg)
 	case "dpkg":
+		if len(args) == 1 && args[0] == "--audit" {
+			return []byte(b.dpkgAudit), nil
+		}
 		// dpkg --compare-versions <candidate> gt <installed>: true when the candidate is later
-		if len(args) == 4 && args[0] == "--compare-versions" && args[2] == "gt" && args[1] > args[3] {
+		if len(args) == 4 && args[0] == "--compare-versions" && args[2] == "gt" && compareDpkgVersions(args[1], args[3]) > 0 {
 			return nil, nil
 		}
 		return nil, errors.New("exit status 1")
@@ -77,12 +166,56 @@ func (b *aptBox) command(_ context.Context, name string, args ...string) ([]byte
 			if b.installFailure != "" {
 				return []byte(b.installFailure), errors.New("exit status 100")
 			}
+			if b.enginePlans != nil {
+				var plan strings.Builder
+				for _, asked := range args[indexOf(args, "install")+1:] {
+					if !strings.HasPrefix(asked, "-") {
+						plan.WriteString(b.enginePlans[asked])
+					}
+				}
+				return []byte(plan.String()), nil
+			}
 			return []byte(b.installSimulation), nil
 		case strings.Contains(joined, " -s "):
 			return []byte(b.upgradeSimulation), nil
 		}
+		return b.unexpected(name, args)
 	}
-	return nil, nil
+	if strings.HasSuffix(name, "docker") && len(args) > 0 {
+		switch args[0] {
+		case "info":
+			switch {
+			case b.daemonHangs:
+				// the command is run with a deadline, and ends when it does
+				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 5*time.Second {
+					return b.unexpected(name, args)
+				}
+				return nil, context.DeadlineExceeded
+			case b.noDaemon:
+				return []byte("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n"), errors.New("exit status 1")
+			case b.daemonInfo != "":
+				return []byte(b.daemonInfo), nil
+			}
+			return []byte(healthyDaemon), nil
+		case "ps":
+			return []byte(strings.Join(b.runningIDs, "\n") + "\n"), nil
+		case "inspect":
+			if b.inspectFailure {
+				return []byte(b.inspected), errors.New("exit status 1")
+			}
+			return []byte(b.inspected), nil
+		}
+	}
+	return b.unexpected(name, args)
+}
+
+func indexOf(list []string, want string) int {
+	for i, item := range list {
+		if item == want {
+			return i
+		}
+	}
+	return -1
 }
 
 const (
@@ -454,6 +587,9 @@ func runUnitCommand(t *testing.T, plan string, protectDocker bool) (log string, 
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("the unit's command is for a Linux shell")
+	}
+	if _, err := os.Stat("/bin/bash"); err != nil {
+		t.Skip("the unit's command is run by bash, which this host does not have")
 	}
 	dir := t.TempDir()
 	plans := filepath.Join(dir, "plan.txt")

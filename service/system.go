@@ -44,6 +44,24 @@ type SystemService interface {
 	GetSystemPackageUpdates() (SystemPackageUpdates, error)
 	StartSystemPackageUpdate() (SystemPackageUpdateStatus, error)
 	GetSystemPackageUpdateStatus() SystemPackageUpdateStatus
+	// GetSystemDockerContainers lists the running containers, which an update of Docker stops.
+	GetSystemDockerContainers() SystemDockerContainers
+	// StartDockerUpdate updates the Docker engine to the plan the owner confirmed (its id). A
+	// *DockerUpdateRefusal says why it did not start; the status comes with the error.
+	StartDockerUpdate(planID string) (SystemDockerUpdateStatus, error)
+	// DockerUpdateStatus says how the update of Docker is going, or how it went.
+	DockerUpdateStatus() SystemDockerUpdateStatus
+	// SetAppOperations tells how to ask which apps have an operation in progress; the update of
+	// Docker is refused while it cannot be asked.
+	SetAppOperations(list AppOperationsFunc)
+	// DockerUpdateRun is DockerUpdateStatus and the nonce of the run it is about ("" with none).
+	DockerUpdateRun() (SystemDockerUpdateStatus, string)
+	// DockerUpdateMuted says whether the alerts about the apps' containers are to be kept quiet:
+	// the update of Docker runs, or ended less than ten minutes ago. It takes no lock and is cheap.
+	DockerUpdateMuted() bool
+	// OnDockerUpdateQueued sets what is called when a run of the Docker update has its log: it
+	// must return at once.
+	OnDockerUpdateQueued(queued func())
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()

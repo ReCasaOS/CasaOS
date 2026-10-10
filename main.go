@@ -126,6 +126,14 @@ func main() {
 	alerts.Default.Latest = func() string { return service.MyService.Casa().GetCasaosVersion().Version }
 	alerts.Default.AutoUpdates = func() bool { return autoupdate.Default.Status().Enabled }
 	autoupdate.Default.Notify = alerts.Default.AutoUpdate
+	// The update of Docker stops every container, and each app's watch says so: those events are
+	// dropped while it runs and for ten minutes after. When a run ends the owner is told once, from
+	// the run's own log and systemd, so with the dashboard closed and across a restart of the core:
+	// the alerts look when the core starts (a run that ended or goes on) and when the button
+	// starts a run. Set before Run, which starts the first look.
+	alerts.Default.Muted = service.MyService.System().DockerUpdateMuted
+	alerts.Default.LastDockerRun = lastDockerRun
+	service.MyService.System().OnDockerUpdateQueued(alerts.Default.WatchDockerUpdate)
 	go alerts.Default.Run(context.Background())
 	// Automatic updates start the button's own update, read the button's own
 	// version.json, and settle an update that restarted the core before checking.
@@ -138,6 +146,19 @@ func main() {
 		return err
 	}
 	autoupdate.Default.Busy = service.MyService.System().MaintenanceBusy
+	// The update of Docker stops every container: it waits for the apps that AppManagement says
+	// are being installed, updated, backed up or restored, and does not start when it cannot ask.
+	service.MyService.System().SetAppOperations(func(ctx context.Context) ([]string, error) {
+		operations, err := autoupdate.AppOperations(ctx, config.CommonInfo.RuntimePath)
+		if err != nil {
+			return nil, err
+		}
+		apps := make([]string, 0, len(operations))
+		for _, operation := range operations {
+			apps = append(apps, operation.App)
+		}
+		return apps, nil
+	})
 	go autoupdate.Default.Run(context.Background())
 	v1Router := route.InitV1Router()
 
@@ -270,6 +291,17 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+// lastDockerRun is the last run of the Docker update as the alerts tell it, read from the run's
+// log and from systemd: it asks Docker nothing and takes no lock of the update.
+func lastDockerRun() alerts.DockerRun {
+	status, nonce := service.MyService.System().DockerUpdateRun()
+	run := alerts.DockerRun{Nonce: nonce, Outcome: status.Outcome, ErrorCode: status.ErrorCode, To: status.To}
+	for _, container := range status.NotReturned {
+		run.NotReturned = append(run.NotReturned, alerts.DockerNotReturned{Name: container.Name, RestartPolicy: container.RestartPolicy})
+	}
+	return run
 }
 
 // dashboardAddress is the dashboard's address on the box's first network, or

@@ -47,6 +47,10 @@ type SystemPackageUpdate struct {
 	Name             string `json:"name"`
 	CurrentVersion   string `json:"current_version"`
 	CandidateVersion string `json:"candidate_version"`
+	// New is only ever set in the plan of the Docker update (docker.update.packages): a package
+	// that is not installed yet, a dependency of the new engine, whose CurrentVersion is "". It
+	// is absent from the JSON of an upgrade, and so from every list of updates the check makes.
+	New bool `json:"new,omitempty"`
 }
 
 type SystemPackageUpdates struct {
@@ -83,6 +87,9 @@ type systemPackageSupport struct {
 
 type systemPackageUpdater struct {
 	mu sync.Mutex
+	// checkMu makes the checks take turns, and nothing else wait for one: mu is never held across
+	// a check's apt-get update.
+	checkMu sync.Mutex
 
 	command       func(context.Context, string, ...string) ([]byte, error)
 	start         func(string, string, ...string) ([]byte, error)
@@ -96,13 +103,33 @@ type systemPackageUpdater struct {
 	now           func() time.Time
 	// dpkgLocked says whether a package manager holds dpkg's lock; nil means never.
 	dpkgLocked func() bool
+	// freeBytes is the room left on the filesystem of a path; nil means it cannot be read.
+	freeBytes func(path string) (uint64, error)
+	// appOperations says which apps have an operation in progress; nil means it cannot be asked.
+	appOperations AppOperationsFunc
+	// onDockerQueued is told, with mu held, that the log of a new Docker update was written; nil
+	// means no one is waiting for the end of one.
+	onDockerQueued func()
+	// readDir lists a directory: dpkg's journal is looked at with it. nil means it cannot be read,
+	// and there is nothing in it.
+	readDir func(string) ([]os.DirEntry, error)
+	// mute is the last answer of dockerMuted.
+	mute dockerMute
+}
+
+// untranslatedCommand runs a package tool with its output in English. apt translates its
+// text ("Installé :" and "Candidat :" where `apt-cache policy` says "Installed:" and
+// "Candidate:"), and this code reads that text: on a host that is not in English it would
+// find nothing, and say so as if nothing were there.
+func untranslatedCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return cmd.CombinedOutput()
 }
 
 func newSystemPackageUpdater() *systemPackageUpdater {
 	return &systemPackageUpdater{
-		command: func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			return exec.CommandContext(ctx, name, args...).CombinedOutput()
-		},
+		command: untranslatedCommand,
 		start: func(path string, _ string, args ...string) ([]byte, error) {
 			return exec.Command(path, args...).CombinedOutput()
 		},
@@ -113,8 +140,10 @@ func newSystemPackageUpdater() *systemPackageUpdater {
 		writeFile:     os.WriteFile,
 		mkdirAll:      os.MkdirAll,
 		stat:          os.Stat,
+		readDir:       os.ReadDir,
 		now:           time.Now,
 		dpkgLocked:    dpkgLockHeld,
+		freeBytes:     freeDiskBytes,
 	}
 }
 
@@ -187,9 +216,16 @@ func (u *systemPackageUpdater) check() (SystemPackageUpdates, error) {
 		return result, nil
 	}
 
+	// The check takes turns with other checks, and the lock only to ask whether an update runs:
+	// apt-get update, the simulations and the questions to Docker take minutes on a small box,
+	// and an update that starts, a status that is asked for or the other update must not wait
+	// for them. The page gives a request a minute.
+	u.checkMu.Lock()
+	defer u.checkMu.Unlock()
 	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.isRunning() {
+	running := u.isRunning()
+	u.mu.Unlock()
+	if running {
 		return result, ErrSystemPackageUpdateRunning
 	}
 
@@ -215,6 +251,13 @@ func (u *systemPackageUpdater) check() (SystemPackageUpdates, error) {
 	result.Updates, dockerUpdates = splitDockerUpdates(parseAPTUpgradeSimulation(string(output)), u.engineInstalled(ctx))
 	result.Count = len(result.Updates)
 	result.Docker = u.dockerInfo(ctx, dockerUpdates)
+	// The simulation of the engine's update is the expensive part: only for an engine that has
+	// something to update.
+	if docker := result.Docker; docker != nil && (len(docker.Updates) > 0 || docker.Candidate != "") {
+		if update, _ := u.dockerUpdatePreflight(ctx, support); update.Refusal != "" || len(update.Packages) > 0 {
+			docker.Update = &update
+		}
+	}
 	now := u.now().UTC()
 	result.CheckedAt = &now
 	result.RebootRequired = u.rebootRequired()

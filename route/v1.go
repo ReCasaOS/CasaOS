@@ -112,6 +112,11 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/packages", v1.GetSystemPackageUpdates)
 			v1SysGroup.POST("/packages/update", v1.StartSystemPackageUpdate)
 			v1SysGroup.GET("/packages/update/status", v1.GetSystemPackageUpdateStatus)
+			v1SysGroup.GET("/docker/containers", v1.GetSystemDockerContainers)
+			// Updating Docker stops every container: the token goes in the header, and is not the
+			// refresh token. The status is read-only and takes what the group takes.
+			v1SysGroup.POST("/docker/update", v1.StartDockerUpdate, headerTokenOnly)
+			v1SysGroup.GET("/docker/update/status", v1.GetDockerUpdateStatus)
 
 			v1SysGroup.GET("/hardware", v1.GetSystemHardwareInfo) // hardware/info
 

@@ -553,6 +553,58 @@ func TestAppManagementIsAskedAsAnInternalRequest(t *testing.T) {
 	})
 }
 
+// AppOperations is the list appsBusy only counts: the Docker update says which apps hold it.
+func TestAppOperationsListsWhatAppManagementDoes(t *testing.T) {
+	runtimePath := t.TempDir()
+	if err := external.WriteInternalSecret(runtimePath); err != nil {
+		t.Fatal(err)
+	}
+	serve := func(status int, body string) {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(server.Close)
+		if err := os.WriteFile(filepath.Join(runtimePath, external.AppManageURLFilename), []byte(server.URL), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	serve(http.StatusOK, `{"operations":[{"app":"immich","kind":"backup"},{"app":"casaos-system","kind":"backup"}]}`)
+	got, err := AppOperations(context.Background(), runtimePath)
+	if err != nil || len(got) != 2 || got[0] != (Operation{App: "immich", Kind: "backup"}) || got[1].App != "casaos-system" {
+		t.Fatalf("AppOperations() = %#v, %v", got, err)
+	}
+
+	serve(http.StatusOK, `{"operations":[]}`)
+	got, err = AppOperations(context.Background(), runtimePath)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("AppOperations() = %#v, %v: nothing runs, and that is an answer", got, err)
+	}
+
+	// what is not the list is no answer, never "nothing runs"
+	for name, c := range map[string]struct {
+		status int
+		body   string
+	}{
+		"no list":                      {http.StatusOK, `{}`},
+		"a null list":                  {http.StatusOK, `{"operations":null}`},
+		"not JSON":                     {http.StatusOK, `ok`},
+		"an operation that is not one": {http.StatusOK, `{"operations":[7]}`},
+		"no such route":                {http.StatusNotFound, `{"operations":[]}`},
+		"an error":                     {http.StatusInternalServerError, `{"operations":[]}`},
+	} {
+		serve(c.status, c.body)
+		if got, err := AppOperations(context.Background(), runtimePath); err == nil {
+			t.Errorf("%s: AppOperations() = %#v, nil: want an error", name, got)
+		}
+	}
+	if _, err := AppOperations(context.Background(), t.TempDir()); err == nil {
+		t.Error("no app-management.url: want an error")
+	}
+}
+
 func TestAPackageUpdateOrDpkgsLockHoldsTheStart(t *testing.T) {
 	a, b := newBox(t)
 	saveState(t, a, on())

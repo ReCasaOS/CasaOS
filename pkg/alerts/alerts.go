@@ -11,6 +11,12 @@
 // one "resolved" message, only if its alert was sent and once per alert sent.
 // That memory is the core's: a restart forgets it, and at worst a reminder
 // comes early.
+//
+// Two things are about the update of Docker, which stops every container. While
+// it runs and just after, the apps' container events are dropped (Hub.Muted),
+// raise and resolve alike. And when it ends the owner is told once, whether or
+// not the dashboard is open, even across a restart of the core: the nonce of
+// the last run told is kept in docker-update.notified.
 package alerts
 
 import (
@@ -87,11 +93,20 @@ type Hub struct {
 	Latest      func() string
 	Current     func() string
 	AutoUpdates func() bool
+	// Muted says whether the apps' container events are to be ignored now: a Docker update stops
+	// every container, and each app's watch says so. It is asked for each of those events, so it
+	// must be cheap.
+	Muted func() bool
+	// LastDockerRun is the last run of the Docker update, from the run's log and systemd.
+	LastDockerRun func() DockerRun
 
 	modifying   sync.Mutex // serialises Update's read-modify-writes of alerts.json
 	mu          sync.Mutex // guards sent and lastFailure
 	sent        map[string]*record
 	lastFailure *Failure
+
+	dockerMu       sync.Mutex // serialises dockerEnded
+	dockerNotified string     // the nonce of the last Docker update told, guarded by dockerMu
 
 	// Read and written by Run's goroutine only.
 	seen           []disk    // the disks of the previous poll, nil before the first
@@ -105,26 +120,30 @@ type Hub struct {
 var Default = New("/")
 
 // New keeps alerts.json under root and sends through Shoutrrr. Address,
-// Latest and AutoUpdates are left to the caller.
+// Latest, AutoUpdates, Muted and LastDockerRun are left to the caller.
 func New(root string) *Hub {
 	return &Hub{
-		Root:        root,
-		RuntimePath: func() string { return config.CommonInfo.RuntimePath },
-		Now:         time.Now,
-		Hostname:    os.Hostname,
-		Address:     func() string { return "" },
-		Send:        send,
-		Latest:      func() string { return "" },
-		Current:     version.CurrentVersion,
-		AutoUpdates: func() bool { return true },
-		sent:        map[string]*record{},
+		Root:          root,
+		RuntimePath:   func() string { return config.CommonInfo.RuntimePath },
+		Now:           time.Now,
+		Hostname:      os.Hostname,
+		Address:       func() string { return "" },
+		Send:          send,
+		Latest:        func() string { return "" },
+		Current:       version.CurrentVersion,
+		AutoUpdates:   func() bool { return true },
+		Muted:         func() bool { return false },
+		LastDockerRun: func() DockerRun { return DockerRun{} },
+		sent:          map[string]*record{},
 	}
 }
 
-// Run follows the message bus until ctx is done, and looks at the disks and
-// for a newer release five minutes after the start, then every hour.
+// Run follows the message bus until ctx is done, tells a Docker update that ended
+// or is going on, and looks at the disks and for a newer release five minutes
+// after the start, then every hour.
 func (h *Hub) Run(ctx context.Context) {
 	go h.followBus(ctx)
+	go h.watchDocker(ctx)
 	timer := time.NewTimer(5 * time.Minute)
 	defer timer.Stop()
 	for {
