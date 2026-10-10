@@ -92,14 +92,18 @@ func TestStartDockerUpdateOwnersCase(t *testing.T) {
 		t.Errorf("phase = %q", status.Phase)
 	}
 
-	// the log's first line is the core's, with a nonce that only that line and the unit have
+	// the log's first line is the core's, with a nonce that only that line and the unit have; the
+	// second is the plan: Docker 28 to 29 is a major jump
 	log, err := os.ReadFile(s.updater.dockerLogPath())
 	if err != nil {
 		t.Fatal(err)
 	}
 	run := dockerpkg.ParseRun(string(log))
-	if run.Nonce == "" || !dockerpkg.ValidNonce(run.Nonce) || string(log) != dockerpkg.QueuedMarker(run.Nonce, s.updater.now()) {
+	if run.Nonce == "" || !dockerpkg.ValidNonce(run.Nonce) || string(log) != dockerpkg.QueuedMarker(run.Nonce, s.updater.now())+dockerpkg.PlanMarker(run.Nonce, "28.0.4", "29.8.0", true) {
 		t.Fatalf("log = %q", log)
+	}
+	if status.Log != string(log) || !status.MajorJump || status.From != "28.0.4" || status.To != "29.8.0" || status.RollbackCommand != "" {
+		t.Errorf("the status of the start = %#v: want the log as it is, a major jump, 28.0.4 to 29.8.0", status)
 	}
 	if info, err := os.Stat(s.updater.dockerLogPath()); err != nil || info.Mode().Perm() != 0o644 {
 		t.Errorf("the log's mode = %v, %v: the System packages update's log has 0644", info, err)
@@ -572,8 +576,12 @@ func TestStartDockerUpdateWritesAWholeRunWhenSystemdRunFails(t *testing.T) {
 		t.Fatalf("run = %#v, log = %q", run, log)
 	}
 	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[0], "CASAOS_DOCKER_UPDATE_QUEUED "+run.Nonce) || !strings.Contains(lines[1], "Access denied") || !strings.HasPrefix(lines[2], "CASAOS_DOCKER_UPDATE_FAILED "+run.Nonce+" 2026-08-13T01:02:03Z start") {
+	if len(lines) != 4 || !strings.HasPrefix(lines[0], "CASAOS_DOCKER_UPDATE_QUEUED "+run.Nonce) || lines[1] != "CASAOS_DOCKER_UPDATE_PLAN "+run.Nonce+" 28.0.4 29.8.0 1" || !strings.Contains(lines[2], "Access denied") || !strings.HasPrefix(lines[3], "CASAOS_DOCKER_UPDATE_FAILED "+run.Nonce+" 2026-08-13T01:02:03Z start") {
 		t.Errorf("log = %q", log)
+	}
+	// the plan is still the run's: the page is told what the update was to be, and no way back
+	if !status.MajorJump || status.From != "28.0.4" || status.To != "29.8.0" || status.RollbackCommand != "" {
+		t.Errorf("major_jump = %v, from %q, to %q, rollback %q", status.MajorJump, status.From, status.To, status.RollbackCommand)
 	}
 	// a unit that systemd did not start is not a plan that changed: the code says so, and what
 	// systemd said is the error
@@ -893,6 +901,98 @@ func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 	} {
 		if args, err := dockerUpdateArgs(c.nonce, c.log, c.apt, c.pins, c.names, c.to); err == nil {
 			t.Errorf("%s: dockerUpdateArgs() = %v, want an error", name, args)
+		}
+	}
+}
+
+// The plan is the second line, and it is there before the unit is: the status of a unit that has
+// not written a word yet already says where it goes, and a start that systemd then refuses leaves a
+// log that still says it.
+func TestStartDockerUpdateWritesTheQueuedLineAndThePlanInOneWrite(t *testing.T) {
+	s := newStartBox(t, nil)
+	var writes []string
+	write := s.updater.writeFile
+	s.updater.writeFile = func(path string, data []byte, mode os.FileMode) error {
+		if path == s.updater.dockerLogPath() {
+			writes = append(writes, string(data))
+		}
+		return write(path, data, mode)
+	}
+	var seenByTheUnit string
+	start := s.updater.start
+	s.updater.start = func(path, unit string, args ...string) ([]byte, error) {
+		log, _ := os.ReadFile(s.updater.dockerLogPath())
+		seenByTheUnit = string(log)
+		return start(path, unit, args...)
+	}
+	if _, err := s.updater.startDockerUpdate(s.planID); err != nil {
+		t.Fatalf("startDockerUpdate() error = %v", err)
+	}
+	if len(writes) != 1 || strings.Count(writes[0], "\n") != 2 || seenByTheUnit != writes[0] {
+		t.Fatalf("writes = %q, the log when the unit was started = %q: want the two lines in one write, before the start", writes, seenByTheUnit)
+	}
+	first, second, _ := strings.Cut(writes[0], "\n")
+	if !strings.HasPrefix(first, "CASAOS_DOCKER_UPDATE_QUEUED ") || !strings.HasPrefix(second, "CASAOS_DOCKER_UPDATE_PLAN ") {
+		t.Errorf("log = %q", writes[0])
+	}
+}
+
+func TestStartDockerUpdateWritesThePlanOfWhatItStarts(t *testing.T) {
+	patch := func(b *aptBox) {
+		const current, candidate = "5:29.8.1-1~debian.11~bullseye", "5:29.8.2-1~debian.11~bullseye"
+		engine, client := instEngine("docker-ce", current, candidate), instEngine("docker-ce-cli", current, candidate)
+		b.upgradeSimulation = engine + client
+		b.dockerCE = current
+		b.packages = map[string]string{"docker-ce-cli": current}
+		b.policy = strings.NewReplacer(debian28, current, debian29, candidate).Replace(ownerPolicy)
+		b.enginePlans = map[string]string{"docker-ce": engine, "docker-ce-cli": client}
+	}
+	pluginAlone := func(b *aptBox) {
+		const plugin, newer = "2.40.0-1~debian.11~bullseye", "2.40.1-1~debian.11~bullseye"
+		b.upgradeSimulation = instEngine("docker-compose-plugin", plugin, newer)
+		b.packages["docker-compose-plugin"] = plugin
+		b.policy = strings.NewReplacer(debian29, debian28).Replace(ownerPolicy) // the engine is current
+		b.enginePlans = map[string]string{"docker-compose-plugin": instEngine("docker-compose-plugin", plugin, newer)}
+	}
+	withDependencies := func(b *aptBox) {
+		b.upgradeSimulation = simLibc
+		b.enginePlans["containerd.io"] = ownerNewDependencies + ownerContaind
+	}
+	for _, c := range []struct {
+		name     string
+		tweak    func(*aptBox)
+		from, to string
+		jump     bool
+	}{
+		{"the owner's box", nil, "28.0.4", "29.8.0", true},
+		{"the owner's box, with the packages Docker 29 needs", withDependencies, "28.0.4", "29.8.0", true},
+		{"a patch of the same major", patch, "29.8.1", "29.8.2", false},
+		{"a plugin alone, the engine does not move", pluginAlone, "28.0.4", "28.0.4", false},
+	} {
+		s := newStartBox(t, c.tweak)
+		fresh := ownerBox(t)
+		if c.tweak != nil {
+			c.tweak(fresh)
+		}
+		s.planID = checkBox(t, fresh, nil).Docker.Update.PlanID
+		status, err := s.updater.startDockerUpdate(s.planID)
+		if err != nil {
+			t.Fatalf("%s: startDockerUpdate() error = %v", c.name, err)
+		}
+		log, _ := os.ReadFile(s.updater.dockerLogPath())
+		run := dockerpkg.ParseRun(string(log))
+		if want := dockerpkg.QueuedMarker(run.Nonce, s.updater.now()) + dockerpkg.PlanMarker(run.Nonce, c.from, c.to, c.jump); run.Nonce == "" || string(log) != want {
+			t.Errorf("%s: log = %q, want %q", c.name, log, want)
+		}
+		if run.From != c.from || run.To != c.to || run.MajorJump != c.jump {
+			t.Errorf("%s: the run says %q to %q, major jump %v", c.name, run.From, run.To, run.MajorJump)
+		}
+		// the status of the start and the status that follows say the same of it
+		again := s.updater.dockerStatus()
+		for _, got := range []SystemDockerUpdateStatus{status, again} {
+			if got.From != c.from || got.To != c.to || got.MajorJump != c.jump {
+				t.Errorf("%s: status = %#v, want %q to %q, major jump %v", c.name, got, c.from, c.to, c.jump)
+			}
 		}
 	}
 }

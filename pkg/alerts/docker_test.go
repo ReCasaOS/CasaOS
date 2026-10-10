@@ -191,6 +191,16 @@ func TestTheDockerUpdateEndsWithOneMessage(t *testing.T) {
 			DockerRun{Outcome: "failed", ErrorCode: "daemon"},
 			"The Docker update failed: Docker did not come back after the update. Details are in the dashboard.",
 		},
+		// the status gives the version the plan goes to for a run that did not succeed: it is not told,
+		// and nor is a way back (there is none after a major jump)
+		"failed, with the version the plan went to": {
+			DockerRun{Outcome: "failed", ErrorCode: "daemon", To: "29.8.0"},
+			"The Docker update failed: Docker did not come back after the update. Details are in the dashboard.",
+		},
+		"restart pending, with the version the plan went to": {
+			DockerRun{Outcome: "restart_pending", To: "29.8.0"},
+			"Docker's new version is installed, but the old one still runs: restart Docker to switch (sudo systemctl restart docker, which stops every container).",
+		},
 		"failed, start": {
 			DockerRun{Outcome: "failed", ErrorCode: "start"},
 			"The Docker update failed: the update could not be started, nothing was changed. Details are in the dashboard.",

@@ -893,3 +893,11 @@ func TestTheUnitsDefaultsAreTheWaitsOfTheSpec(t *testing.T) {
 		t.Errorf("the unit waited %q virtual seconds, want two waits of 300 s (a poll of 2 s)", clock)
 	}
 }
+
+// The plan line is the core's word, written before the unit exists: whether the update is a major
+// jump is decided by the core and not by what the unit prints.
+func TestTheScriptNeverWritesAPlanLine(t *testing.T) {
+	if strings.Contains(dockerUpdateScript, "PLAN") {
+		t.Error("the script mentions a PLAN marker, which only the core writes")
+	}
+}
