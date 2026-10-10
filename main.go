@@ -134,6 +134,10 @@ func main() {
 	alerts.Default.Muted = service.MyService.System().DockerUpdateMuted
 	alerts.Default.LastDockerRun = lastDockerRun
 	service.MyService.System().OnDockerUpdateQueued(alerts.Default.WatchDockerUpdate)
+	// An operating system whose security updates are about to end, or have ended, is told once for
+	// each state: the alerts look at what the dashboard's badge reads, five minutes after the start
+	// and every day.
+	alerts.Default.OSSupport = service.MyService.System().GetSystemOS
 	go alerts.Default.Run(context.Background())
 	// Automatic updates start the button's own update, read the button's own
 	// version.json, and settle an update that restarted the core before checking.

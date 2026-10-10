@@ -17,6 +17,10 @@
 // raise and resolve alike. And when it ends the owner is told once, whether or
 // not the dashboard is open, even across a restart of the core: the nonce of
 // the last run told is kept in docker-update.notified.
+//
+// And when the operating system's security updates are about to end, or have ended,
+// the owner is told once for each state of each release, from a look every day: the
+// last one told is kept in os-support.notified.
 package alerts
 
 import (
@@ -32,6 +36,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 	"github.com/nicholas-fedor/shoutrrr/pkg/router"
 	"github.com/nicholas-fedor/shoutrrr/pkg/types"
@@ -99,6 +104,9 @@ type Hub struct {
 	Muted func() bool
 	// LastDockerRun is the last run of the Docker update, from the run's log and systemd.
 	LastDockerRun func() DockerRun
+	// OSSupport is the operating system and how long its security updates last, as the service says
+	// it: only the last two states that end it are told.
+	OSSupport func() ossupport.Report
 
 	modifying   sync.Mutex // serialises Update's read-modify-writes of alerts.json
 	mu          sync.Mutex // guards sent and lastFailure
@@ -107,6 +115,9 @@ type Hub struct {
 
 	dockerMu       sync.Mutex // serialises dockerEnded
 	dockerNotified string     // the nonce of the last Docker update told, guarded by dockerMu
+
+	osMu       sync.Mutex // serialises checkOSSupport
+	osNotified string     // the last state of the OS's support told, guarded by osMu
 
 	// Read and written by Run's goroutine only.
 	seen           []disk    // the disks of the previous poll, nil before the first
@@ -120,7 +131,7 @@ type Hub struct {
 var Default = New("/")
 
 // New keeps alerts.json under root and sends through Shoutrrr. Address,
-// Latest, AutoUpdates, Muted and LastDockerRun are left to the caller.
+// Latest, AutoUpdates, Muted, LastDockerRun and OSSupport are left to the caller.
 func New(root string) *Hub {
 	return &Hub{
 		Root:          root,
@@ -134,16 +145,19 @@ func New(root string) *Hub {
 		AutoUpdates:   func() bool { return true },
 		Muted:         func() bool { return false },
 		LastDockerRun: func() DockerRun { return DockerRun{} },
+		OSSupport:     func() ossupport.Report { return ossupport.Report{} },
 		sent:          map[string]*record{},
 	}
 }
 
 // Run follows the message bus until ctx is done, tells a Docker update that ended
-// or is going on, and looks at the disks and for a newer release five minutes
-// after the start, then every hour.
+// or is going on, tells the operating system's support when it is ending or ended
+// (five minutes after the start, then every day), and looks at the disks and for a
+// newer release five minutes after the start, then every hour.
 func (h *Hub) Run(ctx context.Context) {
 	go h.followBus(ctx)
 	go h.watchDocker(ctx)
+	go h.watchOSSupport(ctx)
 	timer := time.NewTimer(5 * time.Minute)
 	defer timer.Stop()
 	for {
