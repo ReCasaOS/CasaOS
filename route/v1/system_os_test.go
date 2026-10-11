@@ -43,7 +43,7 @@ func TestGetSystemOSAnswersWithTheEnvelopeAndTheExactData(t *testing.T) {
 				arch:    "amd64", now: time.Date(2026, 10, 10, 9, 30, 0, 0, time.UTC),
 			},
 			`{"id":"debian","version_id":"11","codename":"bullseye","pretty_name":"Debian GNU/Linux 11 (bullseye)","arch":"amd64","known":true,` +
-				`"support":{"state":"security_ended","ends":"2026-08-31","precision":"day","extended":{"name":"Debian ELTS (Freexian)","ends":"2031-06-30"},"source":"https://www.debian.org/News/2026/20260831"},` +
+				`"support":{"state":"security_ended","ends":"2026-08-31","precision":"day","extended":{"name":"Debian ELTS (Freexian)","ends":"2031-06-30","precision":"day"},"source":"https://www.debian.org/News/2026/20260831"},` +
 				`"next":{"id":"debian","version_id":"12","codename":"bookworm","pretty_name":"Debian 12 (bookworm)","state":"report"}}`,
 		},
 		{
@@ -53,7 +53,7 @@ func TestGetSystemOSAnswersWithTheEnvelopeAndTheExactData(t *testing.T) {
 				arch:    "amd64", now: time.Date(2027, 1, 15, 9, 30, 0, 0, time.UTC),
 			},
 			`{"id":"ubuntu","version_id":"22.04","codename":"jammy","pretty_name":"Ubuntu 22.04.5 LTS","arch":"amd64","known":true,` +
-				`"support":{"state":"ending_soon","ends":"2027-06-01","precision":"month","extended":{"name":"Ubuntu Pro (ESM)","ends":"2032-04-21"},"source":"https://ubuntu.com/about/release-cycle"},` +
+				`"support":{"state":"ending_soon","ends":"2027-05-31","precision":"month","extended":{"name":"Ubuntu Pro (ESM)","ends":"2032-04-21","precision":"month"},"source":"https://ubuntu.com/about/release-cycle"},` +
 				`"next":{"id":"ubuntu","version_id":"24.04","codename":"noble","pretty_name":"Ubuntu 24.04 LTS (noble)","state":"report"}}`,
 		},
 		{

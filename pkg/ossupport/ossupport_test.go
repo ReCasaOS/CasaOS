@@ -165,13 +165,15 @@ func TestTheTableHoldsExactlyTheseEntries(t *testing.T) {
 		source                                 string
 	}
 	want := []row{
-		{"debian", "11", "bullseye", "2026-08-31", "day", &Extended{"Debian ELTS (Freexian)", "2031-06-30"}, "debian 12", "https://www.debian.org/News/2026/20260831"},
+		{"debian", "11", "bullseye", "2026-08-31", "day", &Extended{"Debian ELTS (Freexian)", "2031-06-30", "day"}, "debian 12", "https://www.debian.org/News/2026/20260831"},
 		{"debian", "12", "bookworm", "2028-06-30", "day", nil, "debian 13", "https://www.debian.org/News/2026/20260712"},
 		{"debian", "13", "trixie", "2030-06-30", "day", nil, "", "https://www.debian.org/releases/"},
-		{"ubuntu", "20.04", "focal", "2025-05-29", "day", &Extended{"Ubuntu Pro (ESM)", "2030-04-23"}, "", "https://ubuntu.com/about/release-cycle"},
-		{"ubuntu", "22.04", "jammy", "2027-06-01", "month", &Extended{"Ubuntu Pro (ESM)", "2032-04-21"}, "ubuntu 24.04", "https://ubuntu.com/about/release-cycle"},
-		{"ubuntu", "24.04", "noble", "2029-05-31", "day", &Extended{"Ubuntu Pro (ESM)", "2034-04-25"}, "ubuntu 26.04", "https://ubuntu.com/about/release-cycle"},
-		{"ubuntu", "26.04", "resolute", "2031-05-29", "day", &Extended{"Ubuntu Pro (ESM)", "2036-04-23"}, "", "https://ubuntu.com/about/release-cycle"},
+		// Ubuntu says the month, for every end (see the table): the month shown is the earlier of
+		// the months Canonical's pages give
+		{"ubuntu", "20.04", "focal", "2025-05-29", "month", &Extended{"Ubuntu Pro (ESM)", "2030-04-23", "month"}, "", "https://ubuntu.com/about/release-cycle"},
+		{"ubuntu", "22.04", "jammy", "2027-05-31", "month", &Extended{"Ubuntu Pro (ESM)", "2032-04-21", "month"}, "ubuntu 24.04", "https://ubuntu.com/about/release-cycle"},
+		{"ubuntu", "24.04", "noble", "2029-05-31", "month", &Extended{"Ubuntu Pro (ESM)", "2034-04-25", "month"}, "ubuntu 26.04", "https://ubuntu.com/about/release-cycle"},
+		{"ubuntu", "26.04", "resolute", "2031-05-29", "month", &Extended{"Ubuntu Pro (ESM)", "2036-04-23", "month"}, "", "https://ubuntu.com/about/release-cycle"},
 	}
 	if len(table) != len(want) {
 		t.Fatalf("the table has %d entries, want %d", len(table), len(want))
@@ -285,10 +287,10 @@ func TestTheAnswersOfTheTableOn20261010(t *testing.T) {
 		{"debian", "11", "bullseye", SecurityEnded, "2026-08-31", "day"},
 		{"debian", "12", "bookworm", Supported, "2028-06-30", "day"},
 		{"debian", "13", "trixie", Supported, "2030-06-30", "day"},
-		{"ubuntu", "20.04", "focal", SecurityEnded, "2025-05-29", "day"},
-		{"ubuntu", "22.04", "jammy", Supported, "2027-06-01", "month"},
-		{"ubuntu", "24.04", "noble", Supported, "2029-05-31", "day"},
-		{"ubuntu", "26.04", "resolute", Supported, "2031-05-29", "day"},
+		{"ubuntu", "20.04", "focal", SecurityEnded, "2025-05-29", "month"},
+		{"ubuntu", "22.04", "jammy", Supported, "2027-05-31", "month"},
+		{"ubuntu", "24.04", "noble", Supported, "2029-05-31", "month"},
+		{"ubuntu", "26.04", "resolute", Supported, "2031-05-29", "month"},
 		// a codename left out is not a reason to doubt the version
 		{"debian", "11", "", SecurityEnded, "2026-08-31", "day"},
 	} {
@@ -297,13 +299,41 @@ func TestTheAnswersOfTheTableOn20261010(t *testing.T) {
 			t.Errorf("%s %s: %+v, want %s ending %s (%s)", c.id, c.version, got, c.want, c.ends, c.precision)
 		}
 	}
-	// Ubuntu 22.04 turns to "ending soon" 180 days before 2027-06-01
+	// Ubuntu 22.04 turns to "ending soon" 180 days before 2027-05-31, and to "ended" on 2027-06-01
 	jammy := Parse(release("ubuntu", "22.04", "jammy", ""), "amd64")
-	if got := Evaluate(jammy, day(t, "2026-12-02")).State; got != Supported {
-		t.Errorf("22.04 on 2026-12-02: %s", got)
+	for _, c := range []struct{ day, want string }{
+		{"2026-12-01", Supported},
+		{"2026-12-02", EndingSoon},
+		{"2027-05-31", EndingSoon},
+		{"2027-06-01", SecurityEnded},
+	} {
+		if got := Evaluate(jammy, day(t, c.day)).State; got != c.want {
+			t.Errorf("22.04 on %s: %s, want %s", c.day, got, c.want)
+		}
 	}
-	if got := Evaluate(jammy, day(t, "2026-12-03")).State; got != EndingSoon {
-		t.Errorf("22.04 on 2026-12-03: %s", got)
+}
+
+// Every Ubuntu date is a month and every Debian date a day, the extended ones as the end they extend:
+// the page Ubuntu's rows cite gives no day, and Debian's give one. A month-precision date is never
+// shown as a day: its Extended says so too.
+func TestEveryUbuntuDateIsAMonthAndEveryDebianDateADay(t *testing.T) {
+	asOf(t, "2020-01-01")
+	for _, e := range table {
+		want := PrecisionDay
+		if e.id == "ubuntu" {
+			want = PrecisionMonth
+		}
+		if e.precision != want {
+			t.Errorf("%s %s: precision %q, want %q", e.id, e.versionID, e.precision, want)
+		}
+		if e.extended != nil && e.extended.Precision != want {
+			t.Errorf("%s %s: extended precision %q, want %q", e.id, e.versionID, e.extended.Precision, want)
+		}
+		// the answer carries them
+		got := Evaluate(Parse(release(e.id, e.versionID, e.codename, ""), "amd64"), day(t, "2020-01-02"))
+		if got.Precision != want || (got.Extended != nil && got.Extended.Precision != want) {
+			t.Errorf("%s %s: answered %+v, want precision %s all through", e.id, e.versionID, got, want)
+		}
 	}
 }
 
@@ -403,10 +433,10 @@ func TestTheTableGoesStaleAfterEighteenMonths(t *testing.T) {
 func TestAnAnswerIsACopyOfTheTable(t *testing.T) {
 	id := Parse(release("debian", "11", "bullseye", ""), "amd64")
 	first := Evaluate(id, day(t, "2026-10-10"))
-	first.Extended.Name, first.Extended.Ends = "changed", "1999-01-01"
+	first.Extended.Name, first.Extended.Ends, first.Extended.Precision = "changed", "1999-01-01", "month"
 	first.Next.PrettyName = "changed"
 	second := Evaluate(id, day(t, "2026-10-10"))
-	if second.Extended.Name != "Debian ELTS (Freexian)" || second.Extended.Ends != "2031-06-30" || second.Next.PrettyName != "Debian 12 (bookworm)" {
+	if second.Extended.Name != "Debian ELTS (Freexian)" || second.Extended.Ends != "2031-06-30" || second.Extended.Precision != "day" || second.Next.PrettyName != "Debian 12 (bookworm)" {
 		t.Fatalf("a caller changed the table: %+v %+v", second.Extended, second.Next)
 	}
 }
@@ -426,15 +456,22 @@ func TestTheReportsAsJSON(t *testing.T) {
 			map[string]string{"ID": "debian", "VERSION_ID": "11", "VERSION_CODENAME": "bullseye", "PRETTY_NAME": "Debian GNU/Linux 11 (bullseye)"},
 			"amd64", "2026-10-10",
 			`{"id":"debian","version_id":"11","codename":"bullseye","pretty_name":"Debian GNU/Linux 11 (bullseye)","arch":"amd64","known":true,` +
-				`"support":{"state":"security_ended","ends":"2026-08-31","precision":"day","extended":{"name":"Debian ELTS (Freexian)","ends":"2031-06-30"},"source":"https://www.debian.org/News/2026/20260831"},` +
+				`"support":{"state":"security_ended","ends":"2026-08-31","precision":"day","extended":{"name":"Debian ELTS (Freexian)","ends":"2031-06-30","precision":"day"},"source":"https://www.debian.org/News/2026/20260831"},` +
 				`"next":{"id":"debian","version_id":"12","codename":"bookworm","pretty_name":"Debian 12 (bookworm)","state":"report"}}`,
+		},
+		{
+			"the same Debian 11 with a table that is stale: it has still ended, and nothing about what comes after",
+			map[string]string{"ID": "debian", "VERSION_ID": "11", "VERSION_CODENAME": "bullseye", "PRETTY_NAME": "Debian GNU/Linux 11 (bullseye)"},
+			"amd64", "2028-05-01",
+			`{"id":"debian","version_id":"11","codename":"bullseye","pretty_name":"Debian GNU/Linux 11 (bullseye)","arch":"amd64","known":true,` +
+				`"support":{"state":"security_ended","ends":"2026-08-31","precision":"day","source":"https://www.debian.org/News/2026/20260831"}}`,
 		},
 		{
 			"an Ubuntu 22.04 that ends soon, in month precision",
 			map[string]string{"ID": "ubuntu", "ID_LIKE": "debian", "VERSION_ID": "22.04", "VERSION_CODENAME": "jammy", "PRETTY_NAME": "Ubuntu 22.04.5 LTS"},
 			"amd64", "2027-01-15",
 			`{"id":"ubuntu","version_id":"22.04","codename":"jammy","pretty_name":"Ubuntu 22.04.5 LTS","arch":"amd64","known":true,` +
-				`"support":{"state":"ending_soon","ends":"2027-06-01","precision":"month","extended":{"name":"Ubuntu Pro (ESM)","ends":"2032-04-21"},"source":"https://ubuntu.com/about/release-cycle"},` +
+				`"support":{"state":"ending_soon","ends":"2027-05-31","precision":"month","extended":{"name":"Ubuntu Pro (ESM)","ends":"2032-04-21","precision":"month"},"source":"https://ubuntu.com/about/release-cycle"},` +
 				`"next":{"id":"ubuntu","version_id":"24.04","codename":"noble","pretty_name":"Ubuntu 24.04 LTS (noble)","state":"report"}}`,
 		},
 		{

@@ -103,7 +103,7 @@ func osSupportSentence(report ossupport.Report) string {
 }
 
 // osSupportDate is the day in words, "31 August 2026", or the month with "around" for a date the
-// sources do not agree on the day of: "around June 2027".
+// vendor gives only the month of: "around May 2027".
 func osSupportDate(support ossupport.Support) string {
 	end, err := time.Parse("2006-01-02", support.Ends)
 	if err != nil {

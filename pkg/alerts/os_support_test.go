@@ -65,11 +65,11 @@ func TestTheSupportOfTheOperatingSystemIsToldInWords(t *testing.T) {
 		"Debian 12 ending": {debian12, "2028-01-15",
 			"Debian 12 stops receiving Debian security updates on 30 June 2028." + handoff},
 		"Ubuntu 22.04 ending, to the month": {ubuntu22, "2027-01-15",
-			"Ubuntu 22.04 stops receiving standard security updates around June 2027." + handoff},
+			"Ubuntu 22.04 stops receiving standard security updates around May 2027." + handoff},
 		"Ubuntu 22.04 ended, to the month": {ubuntu22, "2027-06-02",
-			"Ubuntu 22.04 no longer receives standard security updates since around June 2027." + handoff},
+			"Ubuntu 22.04 no longer receives standard security updates since around May 2027." + handoff},
 		"Ubuntu 20.04 ended": {ubuntu20, "2026-10-10",
-			"Ubuntu 20.04 no longer receives standard security updates since 29 May 2025." + handoff},
+			"Ubuntu 20.04 no longer receives standard security updates since around May 2025." + handoff},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h, o, now := newHub(t)
@@ -97,7 +97,7 @@ func TestNothingIsToldForASupportedOrUnknownSystem(t *testing.T) {
 		day     string
 	}{
 		"Debian 12, supported":            {debian12, "2026-10-10"},
-		"Ubuntu 22.04, supported":         {ubuntu22, "2026-12-02"},
+		"Ubuntu 22.04, supported":         {ubuntu22, "2026-12-01"},
 		"a Mint, which is not known":      {mint, "2026-10-10"},
 		"nothing read":                    {nil, "2026-10-10"},
 		"a table gone stale, a Debian 12": {debian12, "2028-05-01"},
@@ -163,7 +163,7 @@ func TestAStateIsToldAgainOnlyWhenItChanges(t *testing.T) {
 	step("2026-12-03")
 	step("2026-12-04")
 	step("2027-05-31")
-	if got := o.texts(phone); len(got) != 1 || !strings.HasPrefix(got[0], "Ubuntu 22.04 stops receiving standard security updates around June 2027.") {
+	if got := o.texts(phone); len(got) != 1 || !strings.HasPrefix(got[0], "Ubuntu 22.04 stops receiving standard security updates around May 2027.") {
 		t.Fatalf("ending: sent %q", got)
 	}
 	if got := osMarker(h); got != "ubuntu-22.04-ending_soon\n" {
@@ -174,7 +174,7 @@ func TestAStateIsToldAgainOnlyWhenItChanges(t *testing.T) {
 	step("2027-06-02")
 	step("2027-06-03")
 	got := o.texts(phone)
-	if len(got) != 2 || !strings.HasPrefix(got[1], "Ubuntu 22.04 no longer receives standard security updates since around June 2027.") {
+	if len(got) != 2 || !strings.HasPrefix(got[1], "Ubuntu 22.04 no longer receives standard security updates since around May 2027.") {
 		t.Fatalf("ended: sent %q", got)
 	}
 	if got := osMarker(h); got != "ubuntu-22.04-security_ended\n" {

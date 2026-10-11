@@ -31,7 +31,9 @@ const (
 	Unknown = "unknown"
 )
 
-// The precisions of Support.Ends: the sources agree on the day, or only on the month.
+// The precisions of Support.Ends: the vendor says the day, or only the month. A date the vendor's
+// page gives as a month ("May 2027") is PrecisionMonth, whatever day another source puts in it, and
+// is shown as the month.
 const (
 	PrecisionDay   = "day"
 	PrecisionMonth = "month"
@@ -66,10 +68,12 @@ type Identity struct {
 }
 
 // Extended is the vendor's later, separate programme of security maintenance. Only its name and
-// its last day are said: what it costs, and for whom, is the vendor's to say.
+// its last day are said: what it costs, and for whom, is the vendor's to say. Precision is that of
+// Ends, as for a Support.
 type Extended struct {
-	Name string `json:"name"`
-	Ends string `json:"ends"`
+	Name      string `json:"name"`
+	Ends      string `json:"ends"`
+	Precision string `json:"precision"`
 }
 
 // Next is the release after this one. State is StateReport: it is information only.
@@ -85,7 +89,7 @@ type Next struct {
 type Support struct {
 	State string `json:"state"`
 	// Ends is the last day of the free security updates, "2006-01-02", with Precision "day"; with
-	// "month" the sources do not agree on the day, and only the month is to be shown.
+	// "month" the vendor says only the month, and only the month is to be shown.
 	Ends      string    `json:"ends,omitempty"`
 	Precision string    `json:"precision,omitempty"`
 	Extended  *Extended `json:"extended,omitempty"`
@@ -116,11 +120,22 @@ type entry struct {
 
 // table is the whole of what is claimed, checked against its sources on AsOf. A box that is not
 // in it is "unknown".
+//
+// The Debian rows say the day, as the Debian pages do. The Ubuntu rows say only the month, because
+// the page they cite (ubuntu.com/about/release-cycle) gives only a month for every end, the
+// standard one and the extended one ("May 2027", "May 2032"), and the other pages disagree on the
+// day and sometimes on the month. Where Canonical's pages differ (checked on 2026-10-11) the earlier
+// month is the one kept, which is the side a warning is safe on: the release team's list says
+// "Jun 2027" and "Jun 2029" for 22.04 and 24.04 where the release-cycle page says May, and
+// distro-info-data and that list say April for the ESM of 20.04 where the release-cycle page and
+// the 20.04 post say May 2030 (distro-info-data: April for all four). The day of an Ubuntu row is
+// the one that carries that month: distro-info-data's, except for 22.04, whose 2027-06-01 is the day
+// after its last (the release-cycle page gives 2027-05-31).
 var table = []entry{
 	{
 		id: "debian", versionID: "11", codename: "bullseye",
 		ends: "2026-08-31", precision: PrecisionDay,
-		extended: &Extended{Name: "Debian ELTS (Freexian)", Ends: "2031-06-30"},
+		extended: &Extended{Name: "Debian ELTS (Freexian)", Ends: "2031-06-30", Precision: PrecisionDay},
 		sources:  []string{"https://www.debian.org/News/2026/20260831", "https://wiki.debian.org/LTS/Extended"},
 		next:     &Next{ID: "debian", VersionID: "12", Codename: "bookworm", PrettyName: "Debian 12 (bookworm)", State: StateReport},
 	},
@@ -139,35 +154,34 @@ var table = []entry{
 		sources: []string{"https://www.debian.org/releases/"},
 	},
 	{
-		// No upgrade path is offered: the installer never supported 20.04. The days of every Ubuntu
-		// row are distro-info-data's; the release-cycle page gives only months, and for the ESM
-		// of all four releases it says May where distro-info-data says April (the extended dates
-		// are shown as information and decide no state).
+		// No upgrade path is offered: the installer never supported 20.04. Its standard support ended
+		// "May 2025": the release team's post says 29 May, Canonical's blog 31 May.
 		id: "ubuntu", versionID: "20.04", codename: "focal",
-		ends: "2025-05-29", precision: PrecisionDay,
-		extended: &Extended{Name: "Ubuntu Pro (ESM)", Ends: "2030-04-23"},
-		sources:  []string{"https://ubuntu.com/about/release-cycle", "https://git.launchpad.net/ubuntu/+source/distro-info-data/plain/ubuntu.csv?h=ubuntu/devel"},
+		ends: "2025-05-29", precision: PrecisionMonth,
+		extended: &Extended{Name: "Ubuntu Pro (ESM)", Ends: "2030-04-23", Precision: PrecisionMonth},
+		sources: []string{"https://ubuntu.com/about/release-cycle", "https://ubuntu.com/blog/20.04-end-of-standard-support",
+			"https://git.launchpad.net/ubuntu/+source/distro-info-data/plain/ubuntu.csv?h=ubuntu/devel"},
 	},
 	{
-		// the sources say June 1st (distro-info-data) and "May 2027" (release-cycle page): only the
-		// month is claimed
 		id: "ubuntu", versionID: "22.04", codename: "jammy",
-		ends: "2027-06-01", precision: PrecisionMonth,
-		extended: &Extended{Name: "Ubuntu Pro (ESM)", Ends: "2032-04-21"},
-		sources:  []string{"https://ubuntu.com/about/release-cycle", "https://git.launchpad.net/ubuntu/+source/distro-info-data/plain/ubuntu.csv?h=ubuntu/devel"},
-		next:     &Next{ID: "ubuntu", VersionID: "24.04", Codename: "noble", PrettyName: "Ubuntu 24.04 LTS (noble)", State: StateReport},
+		ends: "2027-05-31", precision: PrecisionMonth,
+		extended: &Extended{Name: "Ubuntu Pro (ESM)", Ends: "2032-04-21", Precision: PrecisionMonth},
+		sources: []string{"https://ubuntu.com/about/release-cycle", "https://ubuntu.com/project/docs/release-team/list-of-releases/",
+			"https://git.launchpad.net/ubuntu/+source/distro-info-data/plain/ubuntu.csv?h=ubuntu/devel"},
+		next: &Next{ID: "ubuntu", VersionID: "24.04", Codename: "noble", PrettyName: "Ubuntu 24.04 LTS (noble)", State: StateReport},
 	},
 	{
 		id: "ubuntu", versionID: "24.04", codename: "noble",
-		ends: "2029-05-31", precision: PrecisionDay,
-		extended: &Extended{Name: "Ubuntu Pro (ESM)", Ends: "2034-04-25"},
-		sources:  []string{"https://ubuntu.com/about/release-cycle", "https://git.launchpad.net/ubuntu/+source/distro-info-data/plain/ubuntu.csv?h=ubuntu/devel"},
-		next:     &Next{ID: "ubuntu", VersionID: "26.04", Codename: "resolute", PrettyName: "Ubuntu 26.04 LTS (resolute)", State: StateReport},
+		ends: "2029-05-31", precision: PrecisionMonth,
+		extended: &Extended{Name: "Ubuntu Pro (ESM)", Ends: "2034-04-25", Precision: PrecisionMonth},
+		sources: []string{"https://ubuntu.com/about/release-cycle", "https://ubuntu.com/project/docs/release-team/list-of-releases/",
+			"https://git.launchpad.net/ubuntu/+source/distro-info-data/plain/ubuntu.csv?h=ubuntu/devel"},
+		next: &Next{ID: "ubuntu", VersionID: "26.04", Codename: "resolute", PrettyName: "Ubuntu 26.04 LTS (resolute)", State: StateReport},
 	},
 	{
 		id: "ubuntu", versionID: "26.04", codename: "resolute",
-		ends: "2031-05-29", precision: PrecisionDay,
-		extended: &Extended{Name: "Ubuntu Pro (ESM)", Ends: "2036-04-23"},
+		ends: "2031-05-29", precision: PrecisionMonth,
+		extended: &Extended{Name: "Ubuntu Pro (ESM)", Ends: "2036-04-23", Precision: PrecisionMonth},
 		sources:  []string{"https://ubuntu.com/about/release-cycle", "https://git.launchpad.net/ubuntu/+source/distro-info-data/plain/ubuntu.csv?h=ubuntu/devel"},
 	},
 }
