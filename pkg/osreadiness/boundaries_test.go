@@ -209,7 +209,8 @@ func TestDKMSModulesAreOnceEachAndLinesThatAreNotOnesAreNotModules(t *testing.T)
 }
 
 // A stack of cards is followed down to the sixth, and one of devices to the sixth as well; no more than 32
-// are looked at.
+// are looked at. A stack that goes on past that is not looked at to its end, and the check says it could not:
+// the driver that is not in the part that was seen may be the one that is built from source.
 func TestTheStackOfADeviceIsFollowedToTheSixthAndNoFurther(t *testing.T) {
 	cards := func(driverAt int) func(*fakeProbe) {
 		return func(f *fakeProbe) {
@@ -234,9 +235,9 @@ func TestTheStackOfADeviceIsFollowedToTheSixthAndNoFurther(t *testing.T) {
 	}
 	runScenarios(t, "dkms", []scenario{
 		{name: "a card at the sixth step", setup: after(dkmsBox, cards(6)), severity: Refuse, data: D{"network": true}},
-		{name: "a card at the seventh", setup: after(dkmsBox, cards(7)), severity: Warn, data: D{"network": false}},
+		{name: "a card at the seventh", setup: after(dkmsBox, cards(7)), severity: Refuse, unknown: ReasonTooLarge},
 		{name: "a device at the sixth step", setup: after(dkmsBox, devices(6)), severity: Refuse, data: D{"disk": true}},
-		{name: "a device at the seventh", setup: after(dkmsBox, devices(7)), severity: Warn, data: D{"disk": false}},
+		{name: "a device at the seventh", setup: after(dkmsBox, devices(7)), severity: Refuse, unknown: ReasonTooLarge},
 	})
 	fan := func(driverAt int) func(*fakeProbe) {
 		return func(f *fakeProbe) {
@@ -262,9 +263,11 @@ func TestTheStackOfADeviceIsFollowedToTheSixthAndNoFurther(t *testing.T) {
 	}
 	runScenarios(t, "dkms", []scenario{
 		{name: "the thirty-first card of a bond", setup: after(dkmsBox, fan(31)), severity: Refuse, data: D{"network": true}},
-		{name: "the thirty-second", setup: after(dkmsBox, fan(32)), severity: Warn, data: D{"network": false}},
+		{name: "the thirty-second", setup: after(dkmsBox, fan(32)), severity: Refuse, unknown: ReasonTooLarge},
 		{name: "the thirty-first disk of a RAID", setup: after(dkmsBox, slaves(31)), severity: Refuse, data: D{"disk": true}},
-		{name: "the thirty-second", setup: after(dkmsBox, slaves(32)), severity: Warn, data: D{"disk": false}},
+		{name: "the thirty-second", setup: after(dkmsBox, slaves(32)), severity: Refuse, unknown: ReasonTooLarge},
+		{name: "forty cards of a bond and none that is built from source", setup: after(dkmsBox, fan(0)), severity: Refuse, unknown: ReasonTooLarge},
+		{name: "forty disks of a RAID and none that is built from source", setup: after(dkmsBox, slaves(0)), severity: Refuse, unknown: ReasonTooLarge},
 	})
 }
 

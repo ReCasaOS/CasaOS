@@ -239,7 +239,9 @@ func defaultRouteInterface(ctx context.Context, p Probe) (string, error) {
 }
 
 // The bounds of a stack of devices that is followed to the hardware: a machine's is a few devices deep and
-// wide, and a ring (which sysfs does not make, and a hostile tree could) is left at the second visit.
+// wide, and a ring (which sysfs does not make, and a hostile tree could) is left at the second visit. A stack that
+// is deeper or wider than that is not seen to its end, and the walk says so (ErrTooLarge, with the drivers it did
+// see): the driver that was not reached may be the one that is built from source.
 const (
 	maxStackDepth   = 6
 	maxStackDevices = 32
@@ -278,7 +280,8 @@ func interfacesUnder(ctx context.Context, p Probe, iface string) ([]string, erro
 }
 
 // networkDrivers are the drivers of the network cards the default route goes out by: of the cards that
-// are under it, when it is a bridge, a bond or a VLAN, down to the ones that have nothing under them.
+// are under it, when it is a bridge, a bond or a VLAN, down to the ones that have nothing under them. A stack that
+// goes further than the bounds says so with ErrTooLarge, and the drivers it found.
 func networkDrivers(ctx context.Context, p Probe) ([]string, error) {
 	iface, err := defaultRouteInterface(ctx, p)
 	if err != nil || iface == "" {
@@ -286,9 +289,14 @@ func networkDrivers(ctx context.Context, p Probe) ([]string, error) {
 	}
 	var drivers []string
 	seen := map[string]bool{}
+	capped := false
 	var walk func(name string, depth int) error
 	walk = func(name string, depth int) error {
-		if seen[name] || len(seen) >= maxStackDevices {
+		if seen[name] {
+			return nil
+		}
+		if len(seen) >= maxStackDevices {
+			capped = true
 			return nil
 		}
 		seen[name] = true
@@ -301,6 +309,7 @@ func networkDrivers(ctx context.Context, p Probe) ([]string, error) {
 			if err == nil && driver != "" && !slices.Contains(drivers, driver) {
 				drivers = append(drivers, driver)
 			}
+			capped = capped || len(under) > 0
 			return err
 		}
 		for _, lower := range under {
@@ -313,13 +322,91 @@ func networkDrivers(ctx context.Context, p Probe) ([]string, error) {
 	if err := walk(iface, 0); err != nil {
 		return nil, err
 	}
+	if capped {
+		return drivers, ErrTooLarge
+	}
 	return drivers, nil
+}
+
+// stackStart is where the walk down from the root's disks begins: a link of sysfs, as it says its target, and the
+// directory it is relative to.
+type stackStart struct{ base, target string }
+
+// rootStarts are the places the root filesystem's devices begin at in sysfs. A root on a block device is the node
+// /sys/dev/block/<major:minor> that the mounts say; one that has no such node and is of a major that is not 0 is a
+// block device that sysfs could not be asked about, and is an error (it is not a root that has no disk driver). The
+// devices of the anonymous major 0 are not block devices, a memory filesystem, a network one or an overlay among
+// them, and have no disk to have a driver, except btrfs, which says the anonymous device of its own and lists its
+// disks in /sys/fs/btrfs.
+func rootStarts(ctx context.Context, p Probe, root mount) ([]stackStart, error) {
+	target, err := p.Readlink(ctx, "/sys/dev/block/"+root.MajorMinor)
+	switch {
+	case err == nil:
+		return []stackStart{{"/sys/dev/block", target}}, nil
+	case !isNotExist(err):
+		return nil, err
+	case root.FSType == "btrfs":
+		return btrfsStarts(ctx, p, root.Source)
+	case strings.HasPrefix(root.MajorMinor, "0:"):
+		return nil, nil
+	}
+	return nil, err
+}
+
+// btrfsStarts are the disks of the btrfs filesystem that a device is a member of: sysfs has a directory of the
+// filesystem, by its uuid, that lists the members by the names the kernel gives the block devices (dm-0, not
+// /dev/mapper/vg-root, which is a link to it). The device the mounts say is found among them, and all of them are
+// walked: the other disks of the filesystem are as much the root's as the first.
+func btrfsStarts(ctx context.Context, p Probe, source string) ([]stackStart, error) {
+	name := path.Base(source)
+	if target, err := p.Readlink(ctx, source); err == nil {
+		name = path.Base(target)
+	}
+	if !validName(blockName, name) {
+		return nil, errUnexpectedOutput
+	}
+	filesystems, err := p.ReadDir(ctx, "/sys/fs/btrfs")
+	if err != nil {
+		return nil, err
+	}
+	for _, uuid := range filesystems {
+		if !validName(blockName, uuid) {
+			continue
+		}
+		members, err := p.ReadDir(ctx, "/sys/fs/btrfs/"+uuid+"/devices")
+		if isNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(members, name) {
+			continue
+		}
+		if len(members) > maxStackDevices {
+			return nil, ErrTooLarge
+		}
+		var starts []stackStart
+		for _, member := range members {
+			if !validName(blockName, member) {
+				continue
+			}
+			lower, err := p.Readlink(ctx, "/sys/class/block/"+member)
+			if err != nil {
+				return nil, err
+			}
+			starts = append(starts, stackStart{"/sys/class/block", lower})
+		}
+		return starts, nil
+	}
+	return nil, errUnexpectedOutput
 }
 
 // rootDrivers are the drivers of the controllers the root filesystem's disks are on: the drivers of
 // every device on the way from the disk up to the bus, from /sys/dev/block/<major:minor>. A root on a
 // logical volume or a RAID is followed down to the disks it is built on, through the slaves of its
-// sysfs directory.
+// sysfs directory, and a btrfs one to the disks of its filesystem (rootStarts). A stack that goes further than the
+// bounds says so with ErrTooLarge, and the drivers it found.
 func rootDrivers(ctx context.Context, p Probe) ([]string, error) {
 	list, err := mounts(ctx, p)
 	if err != nil {
@@ -329,19 +416,21 @@ func rootDrivers(ctx context.Context, p Probe) ([]string, error) {
 	if !ok {
 		return nil, nil
 	}
-	target, err := p.Readlink(ctx, "/sys/dev/block/"+root.MajorMinor)
-	if isNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
+	starts, err := rootStarts(ctx, p, root)
+	if err != nil || len(starts) == 0 {
 		return nil, err
 	}
 	var drivers []string
 	seen := map[string]bool{}
+	capped := false
 	var walk func(base, target string, depth int) error
 	walk = func(base, target string, depth int) error {
 		full := path.Join(base, target)
-		if seen[full] || len(seen) >= maxStackDevices {
+		if seen[full] {
+			return nil
+		}
+		if len(seen) >= maxStackDevices {
+			capped = true
 			return nil
 		}
 		seen[full] = true
@@ -356,15 +445,16 @@ func rootDrivers(ctx context.Context, p Probe) ([]string, error) {
 				drivers = append(drivers, driver)
 			}
 		}
-		if depth >= maxStackDepth {
-			return nil
-		}
 		slaves, err := p.ReadDir(ctx, full+"/slaves")
 		if isNotExist(err) {
 			return nil
 		}
 		if err != nil {
 			return err
+		}
+		if depth >= maxStackDepth {
+			capped = capped || len(slaves) > 0
+			return nil
 		}
 		for _, slave := range slaves {
 			if !validName(blockName, slave) {
@@ -383,8 +473,13 @@ func rootDrivers(ctx context.Context, p Probe) ([]string, error) {
 		}
 		return nil
 	}
-	if err := walk("/sys/dev/block", target, 0); err != nil {
-		return nil, err
+	for _, start := range starts {
+		if err := walk(start.base, start.target, 0); err != nil {
+			return nil, err
+		}
+	}
+	if capped {
+		return drivers, ErrTooLarge
 	}
 	return drivers, nil
 }
@@ -466,13 +561,17 @@ func checkDKMS(ctx context.Context, p Probe) Result {
 		return pass()
 	}
 	var network, disk bool
+	var capped error
 	for _, set := range []struct {
 		drivers func(context.Context, Probe) ([]string, error)
 		found   *bool
 	}{{networkDrivers, &network}, {rootDrivers, &disk}} {
 		drivers, err := set.drivers(ctx, p)
-		if err != nil {
-			return unknown(err)
+		if errors.Is(err, ErrTooLarge) {
+			// a stack that is not seen to its end: what was seen is judged, and what was not is not known
+			capped = err
+		} else if err != nil {
+			return unknownFor(err)
 		}
 		for _, driver := range drivers {
 			dkms, err := builtFromSource(ctx, p, driver)
@@ -481,6 +580,10 @@ func checkDKMS(ctx context.Context, p Probe) Result {
 			}
 			*set.found = *set.found || dkms
 		}
+	}
+	// a driver that is built from source is known to be on the card or the disk, but none that was not met is known not to be
+	if capped != nil && !network && !disk {
+		return unknown(capped)
 	}
 	state, found, err := readOptional(ctx, p, secureBootVariable)
 	if err != nil {

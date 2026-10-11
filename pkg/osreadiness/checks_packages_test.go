@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -258,7 +259,19 @@ func TestDKMS(t *testing.T) {
 		{name: "a route whose interface is not a name", setup: after(dkmsBox, func(f *fakeProbe) {
 			f.set("/proc/net/route", "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n../etc\t00000000\t00000000\t0001\t0\t0\t100\t00000000\n")
 		}), severity: Warn},
-		{name: "a root that is not on a device of sysfs", setup: after(dkmsBox, func(f *fakeProbe) { f.remove("/sys/dev/block/8:1") }), severity: Warn},
+		{name: "a root that is on a block device that sysfs has no node of", setup: after(dkmsBox, func(f *fakeProbe) { f.remove("/sys/dev/block/8:1") }), severity: Refuse, unknown: ReasonMissing},
+		{name: "a root on a block device of a major that is not 0, and no node", setup: after(dkmsBox, func(f *fakeProbe) {
+			f.set("/proc/self/mountinfo", "22 1 253:0 / / rw,relatime shared:1 - ext4 /dev/mapper/vg-root rw\n")
+		}), severity: Refuse, unknown: ReasonMissing},
+		{name: "a root of an overlay, whose device is of the anonymous major", setup: after(dkmsBox, func(f *fakeProbe) {
+			f.set("/proc/self/mountinfo", "22 1 0:30 / / rw,relatime - overlay overlay rw,lowerdir=/a,upperdir=/b\n")
+		}), severity: Warn, data: D{"disk": false}},
+		{name: "a root on the network", setup: after(dkmsBox, func(f *fakeProbe) {
+			f.set("/proc/self/mountinfo", "22 1 0:45 / / rw,relatime - nfs4 192.168.1.2:/export rw\n")
+		}), severity: Warn, data: D{"disk": false}},
+		{name: "a root in memory", setup: after(dkmsBox, func(f *fakeProbe) {
+			f.set("/proc/self/mountinfo", "22 1 0:21 / / rw,relatime shared:1 - tmpfs tmpfs rw\n")
+		}), severity: Warn, data: D{"disk": false}},
 		{name: "no root in the mounts", setup: after(dkmsBox, func(f *fakeProbe) { f.set("/proc/self/mountinfo", "") }), severity: Warn},
 		{name: "modinfo that is not there", setup: after(dkmsBox, func(f *fakeProbe) { f.onError(ErrToolMissing, "modinfo", "-n", "e1000e") }), severity: Refuse, unknown: ReasonToolMissing},
 		{name: "dkms that fails", setup: func(f *fakeProbe) { f.on("x", 1, "dkms", "status") }, severity: Refuse, unknown: ReasonFailed},
@@ -359,12 +372,13 @@ func TestDKMSFollowsTheStackToTheHardware(t *testing.T) {
 			f.link("/sys/class/net/bond0/lower_a b", "../enp3s0")
 			f.link("/sys/class/net/a b/device/driver", "../../../bus/pci/drivers/r8168")
 		}, r8168, func(f *fakeProbe) { f.link("/sys/class/net/enp3s0/device/driver", "../../../bus/pci/drivers/e1000e") }), severity: Warn, data: D{"network": false}},
+		// a stack that is not seen to its end is not one that has no driver built from source: the check could not say
 		{name: "a stack of cards deeper than a machine's, whose bottom is built from source", setup: after(dkmsBox, route("i0"), func(f *fakeProbe) {
 			for i := 0; i < 9; i++ {
 				f.link("/sys/class/net/i"+strconv.Itoa(i)+"/lower_i"+strconv.Itoa(i+1), "../x")
 			}
 			f.link("/sys/class/net/i9/device/driver", "../../../bus/pci/drivers/r8168")
-		}, built("r8168")), severity: Warn, data: D{"network": false}},
+		}, built("r8168")), severity: Refuse, unknown: ReasonTooLarge},
 		{name: "a stack of cards that is as deep as one is, whose bottom is built from source", setup: after(dkmsBox, route("i0"), func(f *fakeProbe) {
 			for i := 0; i < 4; i++ {
 				f.link("/sys/class/net/i"+strconv.Itoa(i)+"/lower_i"+strconv.Itoa(i+1), "../x")
@@ -404,7 +418,7 @@ func TestDKMSFollowsTheStackToTheHardware(t *testing.T) {
 			}
 			f.link("/sys/devices/virtual/block/dm-9/slaves/sda1", "x")
 			f.link("/sys/class/block/sda1", "../../devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda/sda1")
-		}, built("ahci")), severity: Warn, data: D{"disk": false}},
+		}, built("ahci")), severity: Refuse, unknown: ReasonTooLarge},
 		{name: "a stack of devices as deep as one is, whose bottom is on a controller built from source", setup: after(dkmsBox, func(f *fakeProbe) {
 			f.link("/sys/dev/block/8:1", "../../devices/virtual/block/dm-0")
 			for i := 0; i < 4; i++ {
@@ -428,6 +442,86 @@ func TestDKMSFollowsTheStackToTheHardware(t *testing.T) {
 			f.fail("/sys/devices/virtual/block/dm-0/slaves", &fs.PathError{Op: "open", Path: "x", Err: fs.ErrPermission})
 		}), severity: Refuse, unknown: ReasonUnreadable},
 	})
+}
+
+const btrfsUUID = "0a1b2c3d-1111-2222-3333-444455556666"
+
+// btrfsRoot is a root on a btrfs filesystem whose devices are the members: btrfs says the anonymous device of its
+// own (0:27) and the first of its members as its source, and sysfs lists them in /sys/fs/btrfs/<uuid>/devices, by
+// the names of the block devices. sda1 is the partition of the disk of dkmsBox.
+func btrfsRoot(source string, members ...string) func(*fakeProbe) {
+	return func(f *fakeProbe) {
+		f.set("/proc/self/mountinfo", "22 1 0:27 /@ / rw,relatime shared:1 - btrfs "+source+" rw,ssd,space_cache=v2,subvolid=256,subvol=/@\n")
+		for _, member := range members {
+			f.link("/sys/fs/btrfs/"+btrfsUUID+"/devices/"+member, "../../../../devices/x/block/"+member)
+		}
+		f.link("/sys/class/block/sda1", "../../devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda/sda1")
+	}
+}
+
+func TestDKMSFollowsABtrfsRootToTheDisksOfItsFilesystem(t *testing.T) {
+	built := func(driver string) func(*fakeProbe) {
+		return func(f *fakeProbe) {
+			f.on("/lib/modules/5.10.0-35-amd64/updates/dkms/"+driver+".ko\n", 0, "modinfo", "-n", driver)
+		}
+	}
+	second := func(f *fakeProbe) {
+		f.link("/sys/class/block/sdb1", "../../devices/pci0000:00/0000:00:18.0/ata2/host1/target1:0:0/1:0:0:0/block/sdb/sdb1")
+		f.link("/sys/devices/pci0000:00/0000:00:18.0/driver", "../../../bus/pci/drivers/mpt3sas")
+		f.on("/lib/modules/5.10.0-35-amd64/kernel/drivers/scsi/mpt3sas/mpt3sas.ko\n", 0, "modinfo", "-n", "mpt3sas")
+	}
+	runScenarios(t, "dkms", []scenario{
+		{name: "a btrfs root on a disk whose controller is built from source", setup: after(dkmsBox, btrfsRoot("/dev/sda1", "sda1"), built("ahci")), severity: Refuse, data: D{"disk": true}},
+		{name: "a btrfs root on a disk whose controller is the kernel's", setup: after(dkmsBox, btrfsRoot("/dev/sda1", "sda1")), severity: Warn, data: D{"disk": false}},
+		{name: "a btrfs root of two disks, the other one on a controller built from source", setup: after(dkmsBox, btrfsRoot("/dev/sda1", "sda1", "sdb1"), second, built("mpt3sas")), severity: Refuse, data: D{"disk": true}},
+		{name: "a btrfs root of two disks, the source being the second", setup: after(dkmsBox, btrfsRoot("/dev/sdb1", "sda1", "sdb1"), second, built("ahci")), severity: Refuse, data: D{"disk": true}},
+		{name: "a btrfs root on a logical volume, which has its own name in /dev/mapper", setup: after(dkmsBox, btrfsRoot("/dev/mapper/vg-root", "dm-0"), func(f *fakeProbe) {
+			f.link("/dev/mapper/vg-root", "../dm-0")
+			f.link("/sys/class/block/dm-0", "../../devices/virtual/block/dm-0")
+			f.link("/sys/devices/virtual/block/dm-0/slaves/sda1", "../../../../pci0000:00/x/block/sda/sda1")
+		}, built("ahci")), severity: Refuse, data: D{"disk": true}},
+		{name: "a btrfs filesystem that is not the one of the first uuid", setup: after(dkmsBox, btrfsRoot("/dev/sda1", "sda1"), func(f *fakeProbe) {
+			f.link("/sys/fs/btrfs/00000000-aaaa-bbbb-cccc-dddddddddddd/devices/sdc1", "x")
+			f.set("/sys/fs/btrfs/features/extended_iref", "1")
+		}, built("ahci")), severity: Refuse, data: D{"disk": true}},
+		{name: "a btrfs root whose device no filesystem of sysfs lists", setup: after(dkmsBox, btrfsRoot("/dev/sdq1", "sda1")), severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "a btrfs root with no btrfs in sysfs", setup: after(dkmsBox, btrfsRoot("/dev/sda1", "sda1"), func(f *fakeProbe) { f.remove("/sys/fs/btrfs/" + btrfsUUID + "/devices/sda1") }), severity: Refuse, unknown: ReasonMissing},
+		{name: "a btrfs root whose source is not a device", setup: after(dkmsBox, btrfsRoot("btrfs", "sda1")), severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "a btrfs member that has no entry of its own among the block devices", setup: after(dkmsBox, btrfsRoot("/dev/sda1", "sda1"), func(f *fakeProbe) { f.remove("/sys/class/block/sda1") }), severity: Refuse, unknown: ReasonMissing},
+		{name: "the devices of a btrfs filesystem that cannot be listed", setup: after(dkmsBox, btrfsRoot("/dev/sda1", "sda1"), func(f *fakeProbe) {
+			f.fail("/sys/fs/btrfs/"+btrfsUUID+"/devices", &fs.PathError{Op: "open", Path: "x", Err: fs.ErrPermission})
+		}), severity: Refuse, unknown: ReasonUnreadable},
+		{name: "a link of a btrfs member that cannot be read", setup: after(dkmsBox, btrfsRoot("/dev/sda1", "sda1"), func(f *fakeProbe) {
+			f.fail("/sys/class/block/sda1", &fs.PathError{Op: "readlink", Path: "x", Err: fs.ErrPermission})
+		}), severity: Refuse, unknown: ReasonUnreadable},
+		{name: "a btrfs root of more disks than a machine has", setup: after(dkmsBox, btrfsRoot("/dev/sda1", "sda1"), manyMembers(40)), severity: Refuse, unknown: ReasonTooLarge},
+	})
+	// and the disks that are more than a machine has are not each asked about: the list is what is too long
+	f := newBox(t)
+	after(dkmsBox, btrfsRoot("/dev/sda1", "sda1"), manyMembers(5000))(f)
+	if got := checkOn(t, f, "dkms"); got.Data["reason"] != ReasonTooLarge {
+		t.Fatalf("finding = %+v", got)
+	}
+	asked := 0
+	for _, read := range f.readPaths() {
+		if strings.HasPrefix(read, "readlink /sys/class/block/") {
+			asked++
+		}
+	}
+	if asked > maxStackDevices {
+		t.Errorf("%d links of block devices were read for the members of a filesystem, want no more than %d", asked, maxStackDevices)
+	}
+}
+
+// manyMembers adds members to the btrfs filesystem of btrfsRoot, each with an entry of its own among the block devices.
+func manyMembers(count int) func(*fakeProbe) {
+	return func(f *fakeProbe) {
+		for i := 0; i < count; i++ {
+			member := "sd" + strconv.Itoa(i)
+			f.link("/sys/fs/btrfs/"+btrfsUUID+"/devices/"+member, "x")
+			f.link("/sys/class/block/"+member, "../../devices/pci0000:00/0000:00:19."+strconv.Itoa(i)+"/block/"+member)
+		}
+	}
 }
 
 // lvmRoot is a root on a logical volume (dm-0, 253:0) that is on the slave, a partition of the disk sda.
