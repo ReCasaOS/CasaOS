@@ -25,7 +25,19 @@ func TestDockerSwarm(t *testing.T) {
 	runScenarios(t, "docker_swarm", []scenario{
 		{name: "Docker that is not in a swarm", severity: OK},
 		{name: "a node of a swarm", setup: func(f *fakeProbe) { f.on(daemonInfo("active"), 0, argvDockerInfo...) }, severity: Refuse},
-		{name: "a swarm that is only asked about, or that errored, is not the active one", setup: func(f *fakeProbe) { f.on(daemonInfo("pending"), 0, argvDockerInfo...) }, severity: OK},
+		// a node is of a swarm in every state of its swarm but "inactive": it is about to be one, it is one that is
+		// locked, or its swarm is in error, and the upgrade's restarts reach it all the same
+		{name: "a node of a swarm that is pending", setup: func(f *fakeProbe) { f.on(daemonInfo("pending"), 0, argvDockerInfo...) }, severity: Refuse},
+		{name: "a node of a swarm that is locked, as after a restart of an auto-locked one", setup: func(f *fakeProbe) { f.on(daemonInfo("locked"), 0, argvDockerInfo...) }, severity: Refuse},
+		{name: "a node of a swarm that is in error", setup: func(f *fakeProbe) { f.on(daemonInfo("error"), 0, argvDockerInfo...) }, severity: Refuse},
+		{name: "a node that is not of a swarm, as the daemon says it", setup: func(f *fakeProbe) { f.on(daemonInfo("inactive"), 0, argvDockerInfo...) }, severity: OK},
+		{name: "a daemon that says no state of a swarm", setup: func(f *fakeProbe) { f.on(daemonInfo(""), 0, argvDockerInfo...) }, severity: OK},
+		{name: "a daemon that says nothing of a swarm", setup: func(f *fakeProbe) { f.on(`{"ServerVersion":"28.0.4"}`+"\n", 0, argvDockerInfo...) }, severity: OK},
+		{name: "a state that is none of the five", setup: func(f *fakeProbe) { f.on(daemonInfo("draining"), 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "a state in capitals is not a word of the daemon's", setup: func(f *fakeProbe) { f.on(daemonInfo("Inactive"), 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "a state that is not a word", setup: func(f *fakeProbe) { f.on(daemonInfo("inactive;reboot"), 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "a state that is a very long word", setup: func(f *fakeProbe) { f.on(daemonInfo(strings.Repeat("a", 100)), 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "a service that is stopped is no swarm, and the daemon is not asked", setup: dockerService("inactive", "loaded"), severity: OK},
 		{name: "a daemon that does not answer is not a swarm", setup: func(f *fakeProbe) {
 			f.on("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n", 1, argvDockerInfo...)
 		}, severity: OK},
@@ -34,6 +46,57 @@ func TestDockerSwarm(t *testing.T) {
 		{name: "a daemon that hangs", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvDockerInfo...) }, severity: Refuse, unknown: ReasonTimeout},
 		{name: "a docker command that breaks", setup: func(f *fakeProbe) { f.onError(errors.New("boom"), argvDockerInfo...) }, severity: Refuse, unknown: ReasonFailed},
 	})
+}
+
+// Docker's socket is a unit that starts its service at the first connection of a client: a report that
+// asked a daemon that is stopped would start it, with its containers, and change the machine it is a report
+// of. The service is asked first, and the socket is not touched unless it runs.
+func TestTheDockerDaemonIsOnlyAskedWhenItsServiceRuns(t *testing.T) {
+	for _, code := range []string{"docker_swarm", "docker_down", "docker_origin", "containers_policy", "containers_ports", "docker_update_pending"} {
+		for _, state := range []string{"inactive", "failed", "deactivating", "maintenance"} {
+			t.Run(code+"/"+state, func(t *testing.T) {
+				f := newBox(t)
+				dockerService(state, "loaded")(f)
+				got := checkOn(t, f, code)
+				if got.Data["unknown"] != false {
+					t.Fatalf("finding = %+v", got)
+				}
+				if !dockerWasNotAsked(f) {
+					t.Fatalf("the daemon of a service that is %s was asked: %v", state, f.attemptedCommands())
+				}
+			})
+		}
+	}
+	for _, code := range []string{"docker_swarm", "docker_down", "containers_policy", "containers_ports"} {
+		for _, state := range []string{"active", "activating", "reloading"} {
+			t.Run(code+"/"+state, func(t *testing.T) {
+				f := newBox(t)
+				dockerService(state, "loaded")(f)
+				checkOn(t, f, code)
+				if dockerWasNotAsked(f) {
+					t.Fatalf("the daemon of a service that is %s was not asked", state)
+				}
+			})
+		}
+	}
+}
+
+func TestTheStateOfTheDockerServiceCanBeUnknown(t *testing.T) {
+	for _, code := range []string{"docker_swarm", "docker_down", "containers_policy", "containers_ports"} {
+		t.Run(code, func(t *testing.T) {
+			runScenarios(t, code, []scenario{
+				{name: "systemctl that is not there", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvUnit(dockerUnit)...) }, severity: Refuse, unknown: ReasonToolMissing},
+				{name: "systemctl that fails", setup: func(f *fakeProbe) { f.on("", 1, argvUnit(dockerUnit)...) }, severity: Refuse, unknown: ReasonFailed},
+				{name: "systemctl that does not answer", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvUnit(dockerUnit)...) }, severity: Refuse, unknown: ReasonTimeout},
+				{name: "a state that is none of systemd's", setup: func(f *fakeProbe) { f.on("sleeping\n", 0, argvUnit(dockerUnit)...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+				{name: "a state that is nothing", setup: func(f *fakeProbe) { f.on("", 0, argvUnit(dockerUnit)...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+				{name: "a service that is stopped and whose load cannot be said", setup: func(f *fakeProbe) {
+					f.on("inactive\n", 0, argvUnit(dockerUnit)...)
+					f.onError(context.DeadlineExceeded, "systemctl", "show", dockerUnit, "--property=LoadState", "--value")
+				}, severity: Refuse, unknown: ReasonTimeout},
+			})
+		})
+	}
 }
 
 func TestDockerOrigin(t *testing.T) {
@@ -75,6 +138,17 @@ func TestDockerDown(t *testing.T) {
 		{name: "a daemon that says it is fine and exits with a failure", setup: func(f *fakeProbe) { f.on(daemonInfo("inactive"), 1, argvDockerInfo...) }, severity: Warn},
 		{name: "no Docker, so none that is down", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvDockerInfo...) }, severity: OK},
 		{name: "a daemon that hangs", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvDockerInfo...) }, severity: Refuse, unknown: ReasonTimeout},
+		// a service that is not running is a daemon that is down, and the daemon is not asked (it would start)
+		{name: "a service that is stopped", setup: dockerService("inactive", "loaded"), severity: Warn, action: ActionNone},
+		{name: "a service that has failed", setup: dockerService("failed", "loaded"), severity: Warn},
+		{name: "a service that is stopping", setup: dockerService("deactivating", "loaded"), severity: Warn},
+		{name: "a service that is masked", setup: dockerService("inactive", "masked"), severity: Warn},
+		{name: "a service that is starting, and a daemon that does not answer yet", setup: after(dockerService("activating", "loaded"), func(f *fakeProbe) {
+			f.on("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n", 1, argvDockerInfo...)
+		}), severity: Warn},
+		{name: "a service that is starting, and a daemon that answers", setup: dockerService("activating", "loaded"), severity: OK},
+		{name: "a service that is being reloaded, and a daemon that answers", setup: dockerService("reloading", "loaded"), severity: OK},
+		{name: "no service of Docker at all", setup: dockerService("inactive", "not-found"), severity: OK},
 	})
 }
 
@@ -95,7 +169,50 @@ func TestDockerUpdatePending(t *testing.T) {
 		{name: "a policy whose installed version cannot be shown", setup: engineOf("docker-ce", dockerVersion, "Installed: <script>\nCandidate: 99:xy\n"), severity: Warn, data: D{"candidate": "99:xy"}},
 		{name: "a policy whose candidate has a blank in it", setup: engineOf("docker-ce", dockerVersion, "Installed: 1\nCandidate: 99:x y\n"), severity: OK},
 		{name: "apt-cache that fails", setup: func(f *fakeProbe) { f.on("", 100, aptPolicyArgs("docker-ce")...) }, severity: Refuse, unknown: ReasonFailed},
+		// when the packages of Docker are on hold the owner has decided it, and the report does not tell him to
+		// update first: it says that there is a newer one, that the upgrade leaves Docker as it is, and where it
+		// can be updated, which is the System packages window, that asks to confirm because of the hold
+		{name: "a newer Docker, and its engine is on hold", setup: after(policy(dockerVersion, "5:29.8.0-1~debian.11~bullseye"), holds("docker-ce")), severity: Info,
+			data: D{"package": "docker-ce", "installed": dockerVersion, "candidate": "5:29.8.0-1~debian.11~bullseye", "held": true}, action: ActionNone},
+		{name: "a newer Docker, and another package of its family is on hold", setup: after(policy(dockerVersion, "5:29.8.0-1~debian.11~bullseye"), holds("containerd.io")), severity: Info, data: D{"held": true}},
+		{name: "a newer Docker, and the whole family is on hold", setup: after(policy(dockerVersion, "5:29.8.0-1~debian.11~bullseye"), holds("docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin")), severity: Info, data: D{"held": true}},
+		{name: "a newer Docker, and a package that is not Docker's is on hold", setup: after(policy(dockerVersion, "5:29.8.0-1~debian.11~bullseye"), holds("libc6")), severity: Warn},
+		{name: "a newer Docker, and the hold is of an engine that is gone", setup: after(policy(dockerVersion, "5:29.8.0-1~debian.11~bullseye"), func(f *fakeProbe) {
+			f.on("hn \tdocker-ce\tamd64\t\n", 0, argvQuery()...)
+		}), severity: Info, data: D{"held": true}},
+		{name: "a Docker that is on hold and up to date", setup: holds("docker-ce"), severity: OK},
+		{name: "a newer Docker, and the packages that cannot be listed", setup: after(policy(dockerVersion, "5:29.8.0-1~debian.11~bullseye"), func(f *fakeProbe) { f.on("error\n", 2, argvQuery()...) }), severity: Refuse, unknown: ReasonFailed},
 	})
+}
+
+// A Docker that is not on hold is told to be updated first, and a held one is not: what the owner reads
+// says what he can do.
+func TestWhatIsSaidOfANewerDockerSaysWhatCanBeDone(t *testing.T) {
+	newer := engineOf("docker-ce", dockerVersion, dockerPolicy(dockerVersion, "5:29.8.0-1~debian.11~bullseye"))
+	f := newBox(t)
+	newer(f)
+	free := checkOn(t, f, "docker_update_pending")
+	if free.Severity != Warn || !strings.Contains(free.Detail, "update Docker first") {
+		t.Fatalf("finding = %+v", free)
+	}
+	if _, has := free.Data["held"]; has {
+		t.Fatalf("data = %v: a Docker that is not on hold has no held", free.Data)
+	}
+	g := newBox(t)
+	newer(g)
+	holds("docker-ce")(g)
+	held := checkOn(t, g, "docker_update_pending")
+	if held.Severity != Info {
+		t.Fatalf("finding = %+v", held)
+	}
+	for _, words := range []string{"on hold", "leaves Docker as it is", "System packages", "before or after the upgrade", "confirm"} {
+		if !strings.Contains(held.Detail, words) {
+			t.Errorf("the detail %q does not say %q", held.Detail, words)
+		}
+	}
+	if strings.Contains(held.Detail, "update Docker first") {
+		t.Errorf("the detail tells him to update first: %q", held.Detail)
+	}
 }
 
 // running is a machine whose daemon has these containers, which the lines of "docker inspect" say.

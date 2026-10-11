@@ -95,6 +95,26 @@ func furnish(f *fakeProbe) {
 	f.on("32212254720\n", 0, argvSize("/boot")...)
 	f.installed(pkg("docker-ce", dockerVersion), "docker-ce", "docker.io")
 	f.on(dockerPolicy(dockerVersion, dockerVersion), 0, aptPolicyArgs("docker-ce")...)
+	f.on("active\n", 0, argvUnit(dockerUnit)...)
 	f.on(daemonInfo("inactive"), 0, argvDockerInfo...)
 	f.on("", 0, argvDockerPs...)
+}
+
+// dockerService is a machine whose Docker service is in a state, and has the unit file that is said to be
+// loaded or not.
+func dockerService(state, load string) func(*fakeProbe) {
+	return func(f *fakeProbe) {
+		f.on(state+"\n", 0, argvUnit(dockerUnit)...)
+		f.on(load+"\n", 0, "systemctl", "show", dockerUnit, "--property=LoadState", "--value")
+	}
+}
+
+// dockerWasNotAsked says whether the machine was not asked anything of the Docker daemon.
+func dockerWasNotAsked(f *fakeProbe) bool {
+	for _, argv := range f.attemptedCommands() {
+		if argv[0] == "docker" {
+			return false
+		}
+	}
+	return true
 }

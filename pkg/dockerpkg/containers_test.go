@@ -374,14 +374,14 @@ func TestDaemonInfoFormatRoundTrip(t *testing.T) {
 		version, swarm string
 		want           DaemonInfo
 	}{
-		{"28.0.4", "inactive", DaemonInfo{ServerVersion: "28.0.4"}},
-		{"29.8.0", "active", DaemonInfo{ServerVersion: "29.8.0", SwarmActive: true}},
+		{"28.0.4", "inactive", DaemonInfo{ServerVersion: "28.0.4", SwarmState: "inactive"}},
+		{"29.8.0", "active", DaemonInfo{ServerVersion: "29.8.0", SwarmActive: true, SwarmState: "active"}},
 		{"29.8.0", "", DaemonInfo{ServerVersion: "29.8.0"}},
-		{"29.8.0", "pending", DaemonInfo{ServerVersion: "29.8.0"}},
-		{"29.8.0", "error", DaemonInfo{ServerVersion: "29.8.0"}},
-		{"29.8.0", "locked", DaemonInfo{ServerVersion: "29.8.0"}},
-		{"25.0.0-rc.1", "inactive", DaemonInfo{ServerVersion: "25.0.0-rc.1"}},
-		{"20.10.24+dfsg1", "inactive", DaemonInfo{ServerVersion: "20.10.24+dfsg1"}},
+		{"29.8.0", "pending", DaemonInfo{ServerVersion: "29.8.0", SwarmState: "pending"}},
+		{"29.8.0", "error", DaemonInfo{ServerVersion: "29.8.0", SwarmState: "error"}},
+		{"29.8.0", "locked", DaemonInfo{ServerVersion: "29.8.0", SwarmState: "locked"}},
+		{"25.0.0-rc.1", "inactive", DaemonInfo{ServerVersion: "25.0.0-rc.1", SwarmState: "inactive"}},
+		{"20.10.24+dfsg1", "inactive", DaemonInfo{ServerVersion: "20.10.24+dfsg1", SwarmState: "inactive"}},
 	}
 	for _, c := range cases {
 		out := dockerTemplate(t, DaemonInfoFormat, info(c.version, c.swarm)) + "\n"
@@ -394,13 +394,21 @@ func TestDaemonInfoFormatRoundTrip(t *testing.T) {
 
 func TestParseDaemonInfo(t *testing.T) {
 	good := map[string]DaemonInfo{
-		`{"ServerVersion":"29.8.0","SwarmState":"inactive"}`:                                                          {ServerVersion: "29.8.0"},
-		`{"ServerVersion":"29.8.0","SwarmState":"active"}` + "\n":                                                     {ServerVersion: "29.8.0", SwarmActive: true},
-		"  {\"ServerVersion\":\"29.8.0\",\"SwarmState\":\"active\"}\r\n":                                              {ServerVersion: "29.8.0", SwarmActive: true},
+		`{"ServerVersion":"29.8.0","SwarmState":"inactive"}`:                                                          {ServerVersion: "29.8.0", SwarmState: "inactive"},
+		`{"ServerVersion":"29.8.0","SwarmState":"active"}` + "\n":                                                     {ServerVersion: "29.8.0", SwarmActive: true, SwarmState: "active"},
+		"  {\"ServerVersion\":\"29.8.0\",\"SwarmState\":\"active\"}\r\n":                                              {ServerVersion: "29.8.0", SwarmActive: true, SwarmState: "active"},
 		`{"ServerVersion":"29.8.0"}`:                                                                                  {ServerVersion: "29.8.0"},
-		`{"ServerVersion":"29.8.0","SwarmState":"Active"}`:                                                            {ServerVersion: "29.8.0"},
-		"WARNING: something\n" + `{"ServerVersion":"28.0.4","SwarmState":"inactive"}`:                                 {ServerVersion: "28.0.4"},
-		`{"ServerVersion":"28.0.4","SwarmState":"inactive"}` + "\n" + `{"ServerVersion":"1.0","SwarmState":"active"}`: {ServerVersion: "28.0.4"},
+		`{"ServerVersion":"29.8.0","SwarmState":"pending"}`:                                                           {ServerVersion: "29.8.0", SwarmState: "pending"},
+		`{"ServerVersion":"29.8.0","SwarmState":"locked"}`:                                                            {ServerVersion: "29.8.0", SwarmState: "locked"},
+		`{"ServerVersion":"29.8.0","SwarmState":"error"}`:                                                             {ServerVersion: "29.8.0", SwarmState: "error"},
+		`{"ServerVersion":"29.8.0","SwarmState":""}`:                                                                  {ServerVersion: "29.8.0"},
+		// a state that is not a word of the daemon's is not taken for the state of no swarm: it is said, as what it is
+		`{"ServerVersion":"29.8.0","SwarmState":"Active"}`:                                                            {ServerVersion: "29.8.0", SwarmState: SwarmStateInvalid},
+		`{"ServerVersion":"29.8.0","SwarmState":"inactive;x"}`:                                                        {ServerVersion: "29.8.0", SwarmState: SwarmStateInvalid},
+		`{"ServerVersion":"29.8.0","SwarmState":"abcdefghijklmnopq"}`:                                                 {ServerVersion: "29.8.0", SwarmState: SwarmStateInvalid},
+		`{"ServerVersion":"29.8.0","SwarmState":"abcdefghijklmnop"}`:                                                  {ServerVersion: "29.8.0", SwarmState: "abcdefghijklmnop"},
+		"WARNING: something\n" + `{"ServerVersion":"28.0.4","SwarmState":"inactive"}`:                                 {ServerVersion: "28.0.4", SwarmState: "inactive"},
+		`{"ServerVersion":"28.0.4","SwarmState":"inactive"}` + "\n" + `{"ServerVersion":"1.0","SwarmState":"active"}`: {ServerVersion: "28.0.4", SwarmState: "inactive"},
 	}
 	for in, want := range good {
 		if got, err := ParseDaemonInfo(in); err != nil || got != want {

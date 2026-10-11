@@ -75,15 +75,51 @@ func findEngine(ctx context.Context, p Probe) (engine, error) {
 	return engine{}, nil
 }
 
-// A daemon is what "docker info" says: that there is a docker command at all, that a daemon
-// answers it, and what it says of itself.
+// A daemon is what "docker info" says: that there is a docker at all, that a daemon answers it, and what it
+// says of itself (its swarm's state, as the daemon says it).
 type daemon struct {
-	Tool, Running, Swarm bool
+	Tool, Running bool
+	SwarmState    string
 }
 
-// askDaemon asks the daemon how it is. One that does not answer (it is stopped, the command is
-// refused) is a daemon that is down; one that does not answer in time is an error of the check.
+// dockerUnit is the service of Docker's daemon. Docker's socket is a unit of its own that starts the service
+// at the first connection of a client: the daemon is asked only when the service runs, since asking a
+// stopped one would start it, and with it the containers that have a restart policy.
+const dockerUnit = "docker.service"
+
+// unitProperty is a property of a unit, as systemctl show says it (one line).
+func unitProperty(ctx context.Context, p Probe, unit, property string) (string, error) {
+	out, err := p.Run(ctx, "systemctl", "show", unit, "--property="+property, "--value")
+	if err != nil {
+		return "", err
+	}
+	if out.ExitCode != 0 {
+		return "", errToolFailed
+	}
+	return firstLine(out.Text), nil
+}
+
+// askDaemon asks the daemon how it is. A service that does not run is a daemon that is down, and the daemon
+// is not asked; one that does not answer (the command is refused) is down as well; one that does not answer
+// in time is an error of the check.
 func askDaemon(ctx context.Context, p Probe) (daemon, error) {
+	state, err := unitProperty(ctx, p, dockerUnit, "ActiveState")
+	if err != nil {
+		return daemon{}, err
+	}
+	switch state {
+	case "active", "activating", "reloading":
+		// the daemon runs or is starting: it can be asked, and asking it starts nothing
+	case "inactive", "failed", "deactivating", "maintenance":
+		// there is a Docker when its service has a unit file (one that is masked is one that is there)
+		load, err := unitProperty(ctx, p, dockerUnit, "LoadState")
+		if err != nil {
+			return daemon{}, err
+		}
+		return daemon{Tool: load != "not-found"}, nil
+	default:
+		return daemon{}, errUnexpectedOutput
+	}
 	out, err := p.Run(ctx, "docker", "info", "--format", dockerpkg.DaemonInfoFormat)
 	if isToolMissing(err) {
 		return daemon{}, nil
@@ -98,16 +134,26 @@ func askDaemon(ctx context.Context, p Probe) (daemon, error) {
 	if err != nil {
 		return daemon{Tool: true}, nil
 	}
-	return daemon{Tool: true, Running: true, Swarm: info.SwarmActive}, nil
+	return daemon{Tool: true, Running: true, SwarmState: info.SwarmState}, nil
 }
 
 func checkDockerSwarm(ctx context.Context, p Probe) Result {
 	d, err := askDaemon(ctx, p)
 	if err != nil {
-		return unknown(err)
+		return unknownFor(err)
 	}
-	if !d.Swarm {
+	if !d.Running {
 		return pass()
+	}
+	// a node is of a swarm in every state of its swarm but "inactive" (or none): it has joined one, it is
+	// about to, it is locked after a restart, or its swarm is in error, and the restarts of the upgrade reach
+	// it in each. A state that is none of these is not an answer.
+	switch d.SwarmState {
+	case "", "inactive":
+		return pass()
+	case "active", "pending", "locked", "error":
+	default:
+		return unknownWith(ReasonUnexpectedOutput)
 	}
 	return Result{
 		Severity: Refuse, Title: "This machine is part of a Docker swarm",
@@ -121,10 +167,10 @@ func checkDockerOrigin(ctx context.Context, p Probe) Result {
 		return unknown(err)
 	}
 	if found.Origin == "" {
-		// a docker command that no package and no snap brought was put there by hand
+		// a docker that no package and no snap brought was put there by hand
 		d, err := askDaemon(ctx, p)
 		if err != nil {
-			return unknown(err)
+			return unknownFor(err)
 		}
 		if !d.Tool {
 			return Result{Severity: OK, Data: D{"installed": false}}
@@ -144,7 +190,7 @@ func checkDockerOrigin(ctx context.Context, p Probe) Result {
 func checkDockerDown(ctx context.Context, p Probe) Result {
 	d, err := askDaemon(ctx, p)
 	if err != nil {
-		return unknown(err)
+		return unknownFor(err)
 	}
 	if !d.Tool || d.Running {
 		return pass()
@@ -168,10 +214,26 @@ func checkDockerUpdatePending(ctx context.Context, p Probe) Result {
 	if installed == "" || candidate == "" || compareVersions(candidate, installed) <= 0 {
 		return pass()
 	}
+	data := D{"package": found.Package, "installed": installed, "candidate": candidate}
+	// Docker's packages on hold are a decision of the owner's, which the Docker update of the System packages
+	// window asks to confirm: the report does not tell him to update first. It says there is a newer one, that
+	// the upgrade leaves Docker as it is, and where it can be updated, before or after.
+	held, _, err := heldPackages(ctx, p)
+	if err != nil {
+		return unknown(err)
+	}
+	if len(held) > 0 {
+		data["held"] = true
+		return Result{
+			Severity: Info, Title: "A newer Docker exists, and its packages are on hold",
+			Detail: "apt knows a newer version of Docker than the one installed, and Docker's packages are on hold: the upgrade leaves Docker as it is, since its source is paused during it. It can be updated from the System packages window of the dashboard, before or after the upgrade (it asks to confirm, because of the hold).",
+			Data:   data, Action: ActionNone,
+		}
+	}
 	return Result{
 		Severity: Warn, Title: "A newer Docker is waiting",
 		Detail: "apt knows a newer version of Docker than the one installed. Its source is paused during the upgrade, so it is not updated by it: update Docker first, with the button of the System packages window, so that the upgrade starts from a Docker that is up to date.",
-		Data:   D{"package": found.Package, "installed": installed, "candidate": candidate}, Action: ActionNone,
+		Data:   data, Action: ActionNone,
 	}
 }
 
@@ -232,7 +294,7 @@ func containerNames(list []dockerpkg.Container) []string {
 func checkContainersPolicy(ctx context.Context, p Probe) Result {
 	list, err := containers(ctx, p)
 	if err != nil {
-		return unknown(err)
+		return unknownFor(err)
 	}
 	var wontReturn []dockerpkg.Container
 	for _, c := range list {
@@ -256,7 +318,7 @@ var servicePorts = []int{53, 80, 443}
 func checkContainersPorts(ctx context.Context, p Probe) Result {
 	list, err := containers(ctx, p)
 	if err != nil {
-		return unknown(err)
+		return unknownFor(err)
 	}
 	var serving []dockerpkg.Container
 	var ports []int
