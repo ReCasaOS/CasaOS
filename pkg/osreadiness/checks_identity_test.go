@@ -76,9 +76,11 @@ func TestVendorOS(t *testing.T) {
 		{name: "Proxmox VE", setup: marker("/usr/bin/pveversion"), severity: Refuse, data: D{"variant": "proxmox"}},
 		{name: "OpenMediaVault", setup: marker("/etc/openmediavault/config.xml"), severity: Refuse, data: D{"variant": "openmediavault"}},
 		{name: "Proxmox Backup Server, by its manager", setup: marker("/usr/sbin/proxmox-backup-manager"), severity: Refuse, data: D{"variant": "proxmox_backup"}, title: "Proxmox Backup Server"},
-		{name: "Proxmox Backup Server, by its directory", setup: marker("/etc/proxmox-backup/datastore.cfg"), severity: Refuse, data: D{"variant": "proxmox_backup"}},
+		// the directories stay after "apt remove" (only a purge takes them), and a container that is given
+		// them as a volume makes them: they are not what tells a box is one of these
+		{name: "a box with the directory of Proxmox Backup Server's configuration and no manager", setup: marker("/etc/proxmox-backup/datastore.cfg"), severity: OK},
 		{name: "Proxmox Mail Gateway, by pmgversion", setup: marker("/usr/bin/pmgversion"), severity: Refuse, data: D{"variant": "proxmox_mail"}, title: "Proxmox Mail Gateway"},
-		{name: "Proxmox Mail Gateway, by its directory", setup: marker("/etc/pmg/pmg.conf"), severity: Refuse, data: D{"variant": "proxmox_mail"}},
+		{name: "a box with the directory of Proxmox Mail Gateway's configuration and no pmgversion", setup: marker("/etc/pmg/pmg.conf"), severity: OK},
 		{name: "TrueNAS SCALE, by its middleware", setup: marker("/usr/bin/middlewared"), severity: Refuse, data: D{"variant": "truenas"}, title: "TrueNAS"},
 		{name: "TrueNAS SCALE, by its python package", setup: marker("/usr/lib/python3/dist-packages/middlewared/main.py"), severity: Refuse, data: D{"variant": "truenas"}},
 		{name: "Proxmox VE is Proxmox VE", setup: marker("/usr/bin/pveversion"), severity: Refuse, data: D{"variant": "proxmox"}, title: "Proxmox VE"},

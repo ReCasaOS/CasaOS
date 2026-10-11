@@ -117,12 +117,10 @@ func TestAVariantIsNotKnownWhateverItsOSReleaseSays(t *testing.T) {
 		"OpenMediaVault, by its /etc dir":            {debian("11", "bullseye"), "amd64", []string{"/etc/openmediavault"}, VariantOpenMediaVault},
 		"OpenMediaVault, by omv-confdbadm":           {debian("12", "bookworm"), "amd64", []string{"/usr/sbin/omv-confdbadm"}, VariantOpenMediaVault},
 		"Proxmox Backup Server 3, by its manager":    {debian("12", "bookworm"), "amd64", []string{"/usr/sbin/proxmox-backup-manager"}, VariantProxmoxBackup},
-		"Proxmox Backup Server 2, by its /etc dir":   {debian("11", "bullseye"), "amd64", []string{"/etc/proxmox-backup"}, VariantProxmoxBackup},
 		"Proxmox Mail Gateway, by pmgversion":        {debian("12", "bookworm"), "amd64", []string{"/usr/bin/pmgversion"}, VariantProxmoxMail},
-		"Proxmox Mail Gateway, by its /etc dir":      {debian("11", "bullseye"), "amd64", []string{"/etc/pmg"}, VariantProxmoxMail},
 		"TrueNAS SCALE, by its middleware":           {debian("12", "bookworm"), "amd64", []string{"/usr/bin/middlewared"}, VariantTrueNAS},
 		"TrueNAS SCALE, by its python package":       {debian("12", "bookworm"), "amd64", []string{"/usr/lib/python3/dist-packages/middlewared"}, VariantTrueNAS},
-		"Proxmox VE with a backup client of its own": {debian("12", "bookworm"), "amd64", []string{"/usr/bin/pveversion", "/etc/proxmox-backup"}, VariantProxmox},
+		"Proxmox VE with a backup client of its own": {debian("12", "bookworm"), "amd64", []string{"/usr/bin/pveversion", "/usr/sbin/proxmox-backup-manager"}, VariantProxmox},
 		"Ubuntu on a Raspberry Pi":                   {release("ubuntu", "22.04", "jammy", "Ubuntu 22.04.5 LTS"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
 		"Proxmox on top of a Raspberry Pi":           {debian("12", "bookworm"), "arm64", []string{"/etc/pve", "/etc/rpi-issue"}, VariantRaspberryPi},
 		"Armbian, by its PRETTY_NAME alone":          {map[string]string{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Armbian 24.11.0-trunk.81 bookworm"}, "arm64", nil, VariantArmbian},
@@ -209,7 +207,7 @@ func TestAPlainDebianOrUbuntuHasNoneOfTheMarkers(t *testing.T) {
 		}
 		slices.Sort(asked)
 		want := []string{
-			"/boot/dietpi.txt", "/etc/armbian-release", "/etc/dietpi", "/etc/openmediavault", "/etc/pmg", "/etc/proxmox-backup", "/etc/pve", "/etc/rpi-issue",
+			"/boot/dietpi.txt", "/etc/armbian-release", "/etc/dietpi", "/etc/openmediavault", "/etc/pve", "/etc/rpi-issue",
 			"/usr/bin/middlewared", "/usr/bin/pmgversion", "/usr/bin/pveversion", "/usr/lib/python3/dist-packages/middlewared", "/usr/sbin/omv-confdbadm", "/usr/sbin/proxmox-backup-manager",
 		}
 		if !slices.Equal(asked, want) {
@@ -236,6 +234,9 @@ func TestAPlainSystemIsNoVariantWhateverItHasAroundIt(t *testing.T) {
 	plain := []string{
 		"/etc/os-release", "/etc/debian_version", "/etc/apt/sources.list", "/usr/bin/dpkg", "/usr/sbin/apt-get", "/etc/fstab", "/etc/hostname",
 		"/data", "/data/manifest.json", "/etc/version", "/etc/proxmox", "/etc/backup", "/etc/pm", "/etc/pmg.conf", "/usr/bin/pmg", "/usr/sbin/middleware",
+		// what a package leaves behind when it is removed without being purged, or what a container is given
+		// as a volume: the directories of the configuration of Proxmox Backup Server and of Mail Gateway
+		"/etc/proxmox-backup", "/etc/proxmox-backup/datastore.cfg", "/etc/pmg", "/etc/pmg/pmg.conf",
 		"/usr/bin/proxmox-backup-client", "/usr/bin/proxmox-backup-file-restore", "/etc/postfix", "/etc/dovecot", "/usr/sbin/zpool", "/usr/sbin/zfs",
 		"/etc/openmedia", "/etc/rpi", "/etc/armbian", "/boot/config.txt", "/boot/firmware", "/etc/dietpi.conf",
 	}

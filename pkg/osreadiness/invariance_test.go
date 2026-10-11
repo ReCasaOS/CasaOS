@@ -199,3 +199,26 @@ func TestNamesAndDevicesThatMakeAPathAreStrict(t *testing.T) {
 		}
 	}
 }
+
+// apt-cache with the options that keep it from writing is still apt-cache: only its "policy" is allowed.
+// The other subcommands (gencaches, add, dumpavail, showpkg...) build, change or print what is not asked for, and
+// the options do not make them reads: the word that follows them is what is pinned here, spelled out and not
+// taken from the constants the checks use.
+func TestAptCacheIsOnlyAskedForItsPolicyWhateverTheOptions(t *testing.T) {
+	noWrite := []string{"-o", "Debug::NoLocking=true", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache="}
+	with := func(rest ...string) []string { return append(append([]string{"apt-cache"}, noWrite...), rest...) }
+	for _, argv := range [][]string{with("policy", "docker-ce"), with("policy", "docker-ce", "containerd.io")} {
+		if !Allowed(argv) {
+			t.Errorf("%q is not allowed", argv)
+		}
+	}
+	for _, argv := range [][]string{
+		with("gencaches"), with("gencaches", "docker-ce"), with("add", "x"), with("add", "/var/lib/apt/lists/x_Packages"), with("dumpavail"), with("dump"),
+		with("showpkg", "docker-ce"), with("show", "docker-ce"), with("search", "docker"), with("depends", "docker-ce"), with("unmet"), with("stats"),
+		with("Policy", "docker-ce"), with("policy"), with(), with("-o", "Dir::Cache=/tmp", "policy", "docker-ce"),
+	} {
+		if Allowed(argv) {
+			t.Errorf("%q is allowed", argv)
+		}
+	}
+}
