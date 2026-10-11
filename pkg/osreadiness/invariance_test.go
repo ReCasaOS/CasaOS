@@ -105,3 +105,32 @@ func TestACheckThatAsksForACommandThatIsNotAllowedDoesNotGetIt(t *testing.T) {
 		t.Fatalf("the machine was asked %v", f.attemptedCommands())
 	}
 }
+
+func TestFindmntIsOnlyAskedItsThreeQuestions(t *testing.T) {
+	for _, argv := range [][]string{
+		{"findmnt", "--poll", "-n", "-o", "SIZE", "/boot"}, {"findmnt", "-w", "10", "-o", "SIZE", "-T", "/boot"}, {"findmnt", "-x", "-n", "-o", "SIZE", "-T", "/boot"},
+		{"findmnt", "-b", "-n", "-o", "SIZE", "-S", "/boot"}, {"findmnt", "-b", "-n", "-o", "AVAIL", "-T", "/boot"}, {"findmnt", "-b", "-n", "--poll", "SIZE", "-T", "/boot"},
+	} {
+		if Allowed(argv) {
+			t.Errorf("%q is allowed", argv)
+		}
+	}
+}
+
+// The names and the devices that a path, or a command's argument, is made of: no step that goes
+// back up or stays where it is, and nothing outside the alphabet.
+func TestNamesAndDevicesThatMakeAPathAreStrict(t *testing.T) {
+	for name, ok := range map[string]bool{"enp3s0": true, "wlan0": true, "veth.1_a-b": true, ".": false, "..": false, "": false, "a/b": false, "a b": false, "-x": true, strings.Repeat("a", 16): false} {
+		if got := validName(interfaceName, name); got != ok {
+			t.Errorf("validName(interfaceName, %q) = %v, want %v", name, got, ok)
+		}
+	}
+	for device, ok := range map[string]bool{
+		"/dev/sda": true, "/dev/sda1": true, "/dev/mapper/vg0-root": true, "/dev/nvme0n1p2": true, "/dev/disk/by-id/ata-X_1": true,
+		"/dev/../etc/passwd": false, "/dev/sda/../sdb": false, "/dev//sda": false, "/dev/sda/": false, "/dev/": false, "/dev": false, "/etc/passwd": false, "dev/sda": false, "/dev/sd a": false, "/dev/sda;x": false, "/dev/sda\n": false,
+	} {
+		if got := validDevice(device); got != ok {
+			t.Errorf("validDevice(%q) = %v, want %v", device, got, ok)
+		}
+	}
+}
