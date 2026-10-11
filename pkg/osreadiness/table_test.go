@@ -207,7 +207,8 @@ var dirtyBoxes = map[string]func(*fakeProbe){
 	},
 	"a box that has Docker from the snap, and a stopped daemon": func(f *fakeProbe) {
 		noEngine(f)
-		f.on("Name    Version  Rev\ndocker  27.5.1   3265\n", 0, "snap", "list", "docker")
+		snapdService("active")(f)
+		f.on(snapListsDocker, 0, "snap", "list", "docker")
 		f.on("", 1, argvDockerInfo...)
 	},
 	"a box with no Docker at all": func(f *fakeProbe) {

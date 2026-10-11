@@ -16,8 +16,8 @@ import (
 )
 
 // GetSystemOSReadiness is the report of whether this box could be upgraded to the next release of
-// its operating system, and why not: it reads, and changes nothing (no write, no lock, no network,
-// no service started or stopped). It takes no lock of the package updater: it waits for nothing that
+// its operating system, and why not: it reads (no write under /etc or /var, no lock, no network, no
+// service started or stopped; osreadiness's doc says the little a read leaves). It takes no lock of the package updater: it waits for nothing that
 // an update holds, and an update does not wait for it. It takes up to twenty seconds.
 //
 // Requests that come while a report is being made are answered with that report: the checks run

@@ -21,6 +21,56 @@ func engineOf(pkgName, version, policy string) func(*fakeProbe) {
 
 func noEngine(f *fakeProbe) { f.installed("", "docker-ce", "docker.io") }
 
+// snapdService is the state of the service of snapd, as systemctl says it.
+func snapdService(state string) func(*fakeProbe) {
+	return func(f *fakeProbe) { f.on(state+"\n", 0, argvUnit(snapdUnit)...) }
+}
+
+const snapListsDocker = "Name    Version  Rev\ndocker  27.5.1   3265\n"
+
+// snapd answers the snap command through its socket, and a socket that is not listened to starts the service: a report that
+// asked a snapd that is stopped would start it. The snap is asked only when the service runs.
+func TestTheSnapIsOnlyAskedOfASnapdThatRuns(t *testing.T) {
+	asked := func(f *fakeProbe) bool {
+		for _, argv := range f.attemptedCommands() {
+			if len(argv) > 0 && argv[0] == "snap" {
+				return true
+			}
+		}
+		return false
+	}
+	for _, state := range []string{"inactive", "failed", "deactivating", "maintenance"} {
+		t.Run(state, func(t *testing.T) {
+			f := newBox(t)
+			after(noEngine, noDocker, snapdService(state), func(f *fakeProbe) { f.on(snapListsDocker, 0, "snap", "list", "docker") })(f)
+			got := checkOn(t, f, "docker_origin")
+			if got.Severity != OK || got.Data["installed"] != false || asked(f) {
+				t.Errorf("a snapd that is %s: finding %+v, snap asked %v", state, got, asked(f))
+			}
+			if got := checkOn(t, f, "docker_update_pending"); got.Severity != OK || asked(f) {
+				t.Errorf("docker_update_pending with a snapd that is %s: %+v, snap asked %v", state, got, asked(f))
+			}
+		})
+	}
+	for _, state := range []string{"active", "activating", "reloading"} {
+		t.Run(state, func(t *testing.T) {
+			f := newBox(t)
+			after(noEngine, noDocker, snapdService(state), func(f *fakeProbe) { f.on(snapListsDocker, 0, "snap", "list", "docker") })(f)
+			got := checkOn(t, f, "docker_origin")
+			if got.Severity != Refuse || got.Data["origin"] != "snap" || !asked(f) {
+				t.Errorf("a snapd that is %s: finding %+v, snap asked %v", state, got, asked(f))
+			}
+		})
+	}
+	runScenarios(t, "docker_origin", []scenario{
+		{name: "no snapd", setup: after(noEngine, noDocker, func(f *fakeProbe) { f.onError(ErrToolMissing, argvUnit(snapdUnit)...) }), severity: OK, data: D{"installed": false}},
+		{name: "a snapd whose state cannot be said", setup: after(noEngine, noDocker, func(f *fakeProbe) { f.on("", 1, argvUnit(snapdUnit)...) }), severity: Refuse, unknown: ReasonFailed},
+		{name: "a snapd that does not answer", setup: after(noEngine, noDocker, func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvUnit(snapdUnit)...) }), severity: Refuse, unknown: ReasonTimeout},
+		{name: "a state that is none of systemd's", setup: after(noEngine, noDocker, snapdService("sleeping")), severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "a docker package, and a snapd that is stopped: the package is the engine", setup: after(snapdService("inactive")), severity: OK, data: D{"installed": true}},
+	})
+}
+
 func TestDockerSwarm(t *testing.T) {
 	runScenarios(t, "docker_swarm", []scenario{
 		{name: "Docker that is not in a swarm", severity: OK},
@@ -126,8 +176,8 @@ func TestDockerOrigin(t *testing.T) {
 		{name: "docker-ce, and docker.io besides: docker-ce is the engine", setup: func(f *fakeProbe) {
 			f.installed(pkg("docker-ce", dockerVersion)+pkg("docker.io", "20.10.24"), "docker-ce", "docker.io")
 		}, severity: OK},
-		{name: "the snap", setup: after(noEngine, func(f *fakeProbe) { f.on("Name    Version  Rev\ndocker  27.5.1   3265\n", 0, "snap", "list", "docker") }), severity: Refuse, data: D{"origin": "snap"}},
-		{name: "snap that has no Docker, and no docker command", setup: after(noEngine, noDocker, func(f *fakeProbe) {
+		{name: "the snap", setup: after(noEngine, snapdService("active"), func(f *fakeProbe) { f.on(snapListsDocker, 0, "snap", "list", "docker") }), severity: Refuse, data: D{"origin": "snap"}},
+		{name: "snap that has no Docker, and no docker command", setup: after(noEngine, noDocker, snapdService("active"), func(f *fakeProbe) {
 			f.on("error: no matching snaps installed\n", 1, "snap", "list", "docker")
 		}), severity: OK, data: D{"installed": false}},
 		{name: "no Docker at all", setup: after(noEngine, noDocker), severity: OK, data: D{"installed": false}},
@@ -145,7 +195,7 @@ func TestDockerOrigin(t *testing.T) {
 		{name: "dpkg-query that fails", setup: func(f *fakeProbe) { f.on("x", 2, argvQuery("docker-ce", "docker.io")...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "apt-cache that fails", setup: func(f *fakeProbe) { f.on("E: broken\n", 100, aptPolicyArgs("docker-ce")...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "no apt-cache", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, aptPolicyArgs("docker-ce")...) }, severity: Refuse, unknown: ReasonToolMissing},
-		{name: "a snap command that hangs", setup: after(noEngine, func(f *fakeProbe) { f.onError(context.DeadlineExceeded, "snap", "list", "docker") }), severity: Refuse, unknown: ReasonTimeout},
+		{name: "a snap command that hangs", setup: after(noEngine, snapdService("active"), func(f *fakeProbe) { f.onError(context.DeadlineExceeded, "snap", "list", "docker") }), severity: Refuse, unknown: ReasonTimeout},
 	})
 }
 

@@ -10,9 +10,9 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 )
 
-// The report changes nothing on the machine. That is a property of the seam, and these tests pin it:
-// the Probe has no method that writes, the commands are an allow-list, and no check of the table
-// asks for anything that is not on it.
+// The report only reads the machine (the package doc says what little a read leaves: dkms's temporary file, and the
+// access time of the files). That is a property of the seam, and these tests pin it: the Probe has no method that writes,
+// the commands are an allow-list, and no check of the table asks for anything that is not on it.
 
 func TestTheProbeCannotWrite(t *testing.T) {
 	probe := reflect.TypeOf((*Probe)(nil)).Elem()

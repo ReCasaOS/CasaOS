@@ -57,7 +57,11 @@ func anything([]string) bool { return true }
 
 // allowed is the allow-list: a command, by name (a name, never a path), and a test of its
 // arguments. A command that is not here is never run, and a command that can write only runs in
-// the forms below, which read. Adding a row is adding to what the report may do to the machine:
+// the forms below, which read. Every row reads, and what a row may still leave on the machine is
+// said at the row: the temporary file of "dkms status" is the only one (the lock of dpkg is looked
+// at by the box's own probe, in service/, which opens the lock files to read and takes none), and
+// the daemons whose sockets start them (docker, snap) are asked only after their service is seen to
+// run, in the checks. Adding a row is adding to what the report may do to the machine:
 // TestTheAllowListIsPinned says which rows there are, and fails when one is added or removed.
 var allowed = map[string]func([]string) bool{
 	"dpkg": exact([]string{"--audit"}, []string{"--print-architecture"}, []string{"--print-foreign-architectures"}),
@@ -133,8 +137,8 @@ var allowed = map[string]func([]string) bool{
 	"modinfo": func(args []string) bool { return len(args) == 2 && args[0] == "-n" && moduleArg.MatchString(args[1]) },
 	// dkms status reads /var/lib/dkms. The one thing it may do to the machine is transient: dkms 3.x
 	// makes and removes a temporary file in $TMPDIR for each module while it looks (it sources the
-	// module's dkms.conf through one). It is allowed for that, and the proof of the invariance in CI
-	// does not hash /tmp, and does not say it does.
+	// module's dkms.conf through one). It is allowed for that, and it is the one exception to a report
+	// that writes nothing: the proof of the invariance in CI does not hash /tmp, and does not say it does.
 	"dkms":       exact([]string{"status"}),
 	"mokutil":    exact([]string{"--sb-state"}),
 	"pveversion": anything,
@@ -152,6 +156,8 @@ var allowed = map[string]func([]string) bool{
 		}
 		return false
 	},
+	// snap talks to snapd through its socket, which starts a snapd that is stopped: it is only asked when the
+	// service of snapd was seen to run
 	"snap": exact([]string{"list"}, []string{"list", "docker"}),
 }
 

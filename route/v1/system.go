@@ -261,7 +261,7 @@ func GetSystemOS(ctx echo.Context) error {
 }
 
 // @Summary  whether this machine could be upgraded to the next release of its operating system
-// @Description A report that changes nothing on the machine: the state (ready, attention, blocked, latest, unsupported), the checks by code with their severity, and the same as plain text. It takes up to twenty seconds.
+// @Description A report that only reads the machine: the state (ready, attention, blocked, latest, unsupported), the checks by code with their severity, and the same as plain text. It takes up to twenty seconds.
 // @Produce  application/json
 // @Accept application/json
 // @Tags sys

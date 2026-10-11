@@ -63,6 +63,17 @@ func findEngine(ctx context.Context, p Probe) (engine, error) {
 		}
 		return found, nil
 	}
+	// the snap is asked through snapd's socket, which starts a snapd that is stopped: a report does not, so it asks only when
+	// the service runs (a snap that is there with its snapd stopped is found by its client, as a Docker of unknown origin)
+	runs, err := serviceRuns(ctx, p, snapdUnit)
+	switch {
+	case isToolMissing(err):
+		return engine{}, nil
+	case err != nil:
+		return engine{}, err
+	case !runs:
+		return engine{}, nil
+	}
 	out, err := p.Run(ctx, "snap", "list", "docker")
 	switch {
 	case isToolMissing(err):
@@ -85,6 +96,9 @@ type daemon struct {
 	// what it says): the checks that need its answer could not look, docker_down says it is down.
 	Err error
 }
+
+// snapdUnit is the service of snapd, which answers the snap command through its socket.
+const snapdUnit = "snapd.service"
 
 // dockerUnit is the service of Docker's daemon. Docker's socket is a unit of its own that starts the service
 // at the first connection of a client: the daemon is asked only when the service runs, since asking a
@@ -131,25 +145,38 @@ func unitProperty(ctx context.Context, p Probe, unit, property string) (string, 
 	return firstLine(out.Text), nil
 }
 
+// serviceRuns says whether a service runs or is starting, so that what answers for it can be asked without starting it: its
+// state is active, activating or reloading. Any other state of systemd's is a service that does not; a state that is none of
+// them is not an answer.
+func serviceRuns(ctx context.Context, p Probe, unit string) (bool, error) {
+	state, err := unitProperty(ctx, p, unit, "ActiveState")
+	if err != nil {
+		return false, err
+	}
+	switch state {
+	case "active", "activating", "reloading":
+		return true, nil
+	case "inactive", "failed", "deactivating", "maintenance":
+		return false, nil
+	}
+	return false, errUnexpectedOutput
+}
+
 // askDaemon asks the daemon how it is. A service that does not run is a daemon that is not asked (and is down, if
 // there is a Docker at all: Tool); one that runs or starts is asked, and one that then does not answer, or answers
 // what is not understood, is a daemon whose answer is not known (Err). A daemon that does not answer in time, a
 // docker command that is not there for a service that runs, and a service whose state cannot be said, are
 // errors of the check.
 func askDaemon(ctx context.Context, p Probe) (daemon, error) {
-	state, err := unitProperty(ctx, p, dockerUnit, "ActiveState")
+	runs, err := serviceRuns(ctx, p, dockerUnit)
 	if err != nil {
 		return daemon{}, err
 	}
-	switch state {
-	case "active", "activating", "reloading":
-		// the daemon runs or is starting: it can be asked, and asking it starts nothing
-	case "inactive", "failed", "deactivating", "maintenance":
+	if !runs {
 		there, err := dockerThere(ctx, p)
 		return daemon{Tool: there}, err
-	default:
-		return daemon{}, errUnexpectedOutput
 	}
+	// the daemon runs or is starting: it can be asked, and asking it starts nothing
 	d := daemon{Tool: true, Active: true}
 	out, err := p.Run(ctx, "docker", "info", "--format", dockerpkg.DaemonInfoFormat)
 	if err != nil {
@@ -199,7 +226,7 @@ func checkDockerSwarm(ctx context.Context, p Probe) Result {
 func checkDockerOrigin(ctx context.Context, p Probe) Result {
 	found, err := findEngine(ctx, p)
 	if err != nil {
-		return unknown(err)
+		return unknownFor(err)
 	}
 	if found.Origin == "" {
 		// a docker that no package and no snap brought was put there by hand: found by its client or its socket,
@@ -241,7 +268,7 @@ func checkDockerDown(ctx context.Context, p Probe) Result {
 func checkDockerUpdatePending(ctx context.Context, p Probe) Result {
 	found, err := findEngine(ctx, p)
 	if err != nil {
-		return unknown(err)
+		return unknownFor(err)
 	}
 	if found.Package == "" {
 		return pass()

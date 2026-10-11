@@ -1,9 +1,14 @@
 // Package osreadiness says whether this machine could be upgraded to the next release of its
-// operating system, and why not. It is a report and nothing else: it changes nothing on the
-// machine. It writes nothing under /etc, /var/lib/dpkg, /var/lib/apt or /var/cache/apt, takes no
-// lock, starts and stops no service, and makes no request to the network. One tool leaves a
-// transient trace that is said here and in the allow-list: dkms 3.x makes and removes a file in
-// $TMPDIR while "dkms status" runs.
+// operating system, and why not. It is a report and nothing else: it reads. It writes nothing under
+// /etc, /var/lib/dpkg, /var/lib/apt or /var/cache/apt, makes no cache, lock or file under /var, /etc
+// or /run, starts and stops no service (the daemons whose sockets would start them, Docker's and
+// snapd's, are asked only when their service runs), and makes no request to the network. What it does
+// leave is said here, and nowhere else is anything: dkms 3.x makes and removes a temporary file in
+// $TMPDIR while "dkms status" runs; dpkg's lock files are opened to read, and the kernel is asked
+// whether another process holds a lock on them (F_GETLK), which takes none (that is the box's side of
+// the report, in service/); and a file that is read has its access time, where the file system keeps
+// one. Those are all: nothing else of the machine is the report's to change, which the invariance
+// proof of CI checks on real machines.
 //
 // That is a property of the seam, not a promise of the checks: a check sees the machine only
 // through a Probe, which has no method that writes, creates, removes or starts anything, and the

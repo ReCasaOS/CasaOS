@@ -95,7 +95,7 @@ func TestFstabNetwork(t *testing.T) {
 
 // fstab_network used to ask "findmnt --verify", which resolves the UUID= and LABEL= of fstab through
 // libblkid: it probes the devices (a disk that sleeps wakes) and may rewrite the cache in /run/blkid.
-// The report reads and changes nothing, so the check is the fstab as it is written, and no command.
+// The report only reads, and this read is of the fstab as it is written: no command.
 func TestFstabNetworkAsksNoCommand(t *testing.T) {
 	f := newBox(t)
 	f.set(fstabPath, "UUID=1234-ABCD /data ext4 defaults 0 2\nnas:/export /mnt/nas nfs defaults 0 0\n")
