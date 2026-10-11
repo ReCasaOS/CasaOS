@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	commonfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
@@ -107,6 +108,9 @@ type systemPackageUpdater struct {
 	freeBytes func(path string) (uint64, error)
 	// appOperations says which apps have an operation in progress; nil means it cannot be asked.
 	appOperations AppOperationsFunc
+	// appOps is appOperations again, for the one that reads it without the lock: the report of
+	// whether the box could be upgraded to the next release of its system.
+	appOps atomic.Pointer[AppOperationsFunc]
 	// onDockerQueued is told, with mu held, that the log of a new Docker update was written; nil
 	// means no one is waiting for the end of one.
 	onDockerQueued func()

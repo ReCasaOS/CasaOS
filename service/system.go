@@ -23,6 +23,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/httper"
@@ -65,6 +66,9 @@ type SystemService interface {
 	OnDockerUpdateQueued(queued func())
 	// GetSystemOS is the operating system and how long its security updates last: it only reads.
 	GetSystemOS() ossupport.Report
+	// GetSystemOSReadiness is the report of whether the box could be upgraded to the next release of
+	// its operating system, and why not: it only reads, and takes up to twenty seconds.
+	GetSystemOSReadiness() osreadiness.Answer
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()
