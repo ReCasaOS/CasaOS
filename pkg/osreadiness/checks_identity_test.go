@@ -75,6 +75,13 @@ func TestVendorOS(t *testing.T) {
 		{name: "DietPi", setup: marker("/boot/dietpi.txt"), severity: Refuse, data: D{"variant": "dietpi"}},
 		{name: "Proxmox VE", setup: marker("/usr/bin/pveversion"), severity: Refuse, data: D{"variant": "proxmox"}},
 		{name: "OpenMediaVault", setup: marker("/etc/openmediavault/config.xml"), severity: Refuse, data: D{"variant": "openmediavault"}},
+		{name: "Proxmox Backup Server, by its manager", setup: marker("/usr/sbin/proxmox-backup-manager"), severity: Refuse, data: D{"variant": "proxmox_backup"}, title: "Proxmox Backup Server"},
+		{name: "Proxmox Backup Server, by its directory", setup: marker("/etc/proxmox-backup/datastore.cfg"), severity: Refuse, data: D{"variant": "proxmox_backup"}},
+		{name: "Proxmox Mail Gateway, by pmgversion", setup: marker("/usr/bin/pmgversion"), severity: Refuse, data: D{"variant": "proxmox_mail"}, title: "Proxmox Mail Gateway"},
+		{name: "Proxmox Mail Gateway, by its directory", setup: marker("/etc/pmg/pmg.conf"), severity: Refuse, data: D{"variant": "proxmox_mail"}},
+		{name: "TrueNAS SCALE, by its middleware", setup: marker("/usr/bin/middlewared"), severity: Refuse, data: D{"variant": "truenas"}, title: "TrueNAS"},
+		{name: "TrueNAS SCALE, by its python package", setup: marker("/usr/lib/python3/dist-packages/middlewared/main.py"), severity: Refuse, data: D{"variant": "truenas"}},
+		{name: "Proxmox VE is Proxmox VE", setup: marker("/usr/bin/pveversion"), severity: Refuse, data: D{"variant": "proxmox"}, title: "Proxmox VE"},
 		{name: "Armbian by its os-release", setup: func(f *fakeProbe) {
 			f.set("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\nVERSION_CODENAME=bookworm\nPRETTY_NAME=\"Armbian 24.2.1 bookworm\"\n")
 		}, severity: Refuse, data: D{"variant": "armbian"}},

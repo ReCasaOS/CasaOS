@@ -33,6 +33,9 @@ func TestABoxTheUpgradeIsNotForIsReportedWithItsReasonsOnly(t *testing.T) {
 		{"Raspberry Pi OS, which says Debian", func(f *fakeProbe) {
 			f.set("/etc/rpi-issue", "Raspberry Pi reference 2024-03-15")
 		}, []string{"vendor_os=refuse"}},
+		{"a Proxmox Backup Server, which says Debian", func(f *fakeProbe) { f.set("/usr/sbin/proxmox-backup-manager", "") }, []string{"vendor_os=refuse"}},
+		{"a Proxmox Mail Gateway, which says Debian", func(f *fakeProbe) { f.set("/usr/bin/pmgversion", "") }, []string{"vendor_os=refuse"}},
+		{"a TrueNAS SCALE, which says Debian", func(f *fakeProbe) { f.set("/usr/bin/middlewared", "") }, []string{"vendor_os=refuse"}},
 		{"an arm64 machine", func(f *fakeProbe) { f.arch = "arm64" }, []string{"unproven_arch=refuse"}},
 		{"a Raspberry Pi 64-bit, which is a variant and arm64", func(f *fakeProbe) {
 			f.set("/etc/rpi-issue", "x")

@@ -90,6 +90,9 @@ var variantNames = map[string]string{
 	"dietpi":         "DietPi",
 	"proxmox":        "Proxmox VE",
 	"openmediavault": "OpenMediaVault",
+	"proxmox_backup": "Proxmox Backup Server",
+	"proxmox_mail":   "Proxmox Mail Gateway",
+	"truenas":        "TrueNAS",
 }
 
 func checkVendorOS(ctx context.Context, _ Probe) Result {

@@ -68,6 +68,9 @@ func TestSystemOSOfAVariantIsNotKnown(t *testing.T) {
 		"dietpi":         "/boot/dietpi.txt",
 		"proxmox":        "/usr/bin/pveversion",
 		"openmediavault": "/etc/openmediavault",
+		"proxmox_backup": "/usr/sbin/proxmox-backup-manager",
+		"proxmox_mail":   "/usr/bin/pmgversion",
+		"truenas":        "/usr/bin/middlewared",
 	} {
 		t.Run(variant, func(t *testing.T) {
 			body, err := json.Marshal(systemOS(read, func(p string) bool { return p == path }, "arm64", now))

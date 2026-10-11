@@ -9,7 +9,8 @@
 //     claimed;
 //   - but ID cannot tell a plain Debian or Ubuntu from the systems that keep its own os-release
 //     (ID=debian, no ID_LIKE): Raspberry Pi OS (64-bit, and Bookworm and later), Armbian, DietPi,
-//     Proxmox VE and OpenMediaVault. Those are found by marker files, read through the exists seam
+//     Proxmox VE, Proxmox Backup Server, Proxmox Mail Gateway, TrueNAS SCALE and OpenMediaVault.
+//     Those are found by marker files, read through the exists seam
 //     of Describe, and are not known either: the answer says which Variant it is, claims nothing,
 //     and offers no next release, because each of them upgrades by its own guide, or not in place;
 //   - a release that is not in the table (Debian 14, Ubuntu 26.10, any non-LTS Ubuntu, 18.04) is
@@ -84,15 +85,29 @@ const (
 	VariantDietPi         = "dietpi"
 	VariantProxmox        = "proxmox"
 	VariantOpenMediaVault = "openmediavault"
+	// TrueNAS SCALE (before 25.04 its os-release says ID=debian), Proxmox Backup Server and Proxmox
+	// Mail Gateway (both keep Debian's own os-release, as Proxmox VE does).
+	VariantTrueNAS       = "truenas"
+	VariantProxmoxBackup = "proxmox_backup"
+	VariantProxmoxMail   = "proxmox_mail"
 )
 
 // variantMarkers are the files that say a box is a variant, the first one found deciding: Raspberry
 // Pi OS writes /etc/rpi-issue (its os-release is Debian's own, 64-bit and from Bookworm); Armbian
 // /etc/armbian-release; DietPi /boot/dietpi.txt and /etc/dietpi; Proxmox VE has /usr/bin/pveversion
-// and mounts /etc/pve; OpenMediaVault has /etc/openmediavault and /usr/sbin/omv-confdbadm.
+// and mounts /etc/pve; OpenMediaVault has /etc/openmediavault and /usr/sbin/omv-confdbadm; Proxmox
+// Backup Server has /usr/sbin/proxmox-backup-manager (proxmox-backup-server.install of its package,
+// git.proxmox.com) and /etc/proxmox-backup ("all Proxmox Backup Server configuration files reside in
+// the directory /etc/proxmox-backup", pbs.proxmox.com/docs); Proxmox Mail Gateway has
+// /usr/bin/pmgversion (its Makefile installs the command-line tools in /usr/bin, git.proxmox.com
+// pmg-api) and /etc/pmg (/etc/pmg/pmg.conf, pmg.proxmox.com/pmg-docs); TrueNAS SCALE runs
+// /usr/bin/middlewared (ExecStart of middlewared.service, github.com/truenas/middleware) from the
+// python package /usr/lib/python3/dist-packages/middlewared.
 // Sources: Raspberry Pi forum t=329094, Proxmox forum "we re-use the /etc/os-release file from
 // Debian", the DietPi forum, docs.armbian.com/build-framework/switches/branding, and the packages'
-// own file lists.
+// own file lists. A marker has to be a file that no plain Debian or Ubuntu has, since this is also
+// what the badge of the released system goes by: none of /data/manifest.json (TrueNAS's, where an
+// owner may keep an app's own) and /etc/version (not found in TrueNAS SCALE's sources) is one.
 var variantMarkers = []struct {
 	variant string
 	paths   []string
@@ -102,6 +117,9 @@ var variantMarkers = []struct {
 	{VariantDietPi, []string{"/boot/dietpi.txt", "/etc/dietpi"}},
 	{VariantProxmox, []string{"/usr/bin/pveversion", "/etc/pve"}},
 	{VariantOpenMediaVault, []string{"/etc/openmediavault", "/usr/sbin/omv-confdbadm"}},
+	{VariantProxmoxBackup, []string{"/usr/sbin/proxmox-backup-manager", "/etc/proxmox-backup"}},
+	{VariantProxmoxMail, []string{"/usr/bin/pmgversion", "/etc/pmg"}},
+	{VariantTrueNAS, []string{"/usr/bin/middlewared", "/usr/lib/python3/dist-packages/middlewared"}},
 }
 
 // Extended is the vendor's later, separate programme of security maintenance. Only its name and
