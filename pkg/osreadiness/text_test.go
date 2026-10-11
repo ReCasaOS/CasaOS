@@ -156,3 +156,55 @@ func TestTheAnswerCarriesTheTextAndFlattensTheReport(t *testing.T) {
 		t.Errorf("the report is nested: %s", data)
 	}
 }
+
+func manyFindings(severity Severity, n int, detail string) []Finding {
+	var findings []Finding
+	for i := 0; i < n; i++ {
+		findings = append(findings, Finding{Code: fmt.Sprintf("check_%03d", i), Severity: severity, Title: "Something to look at, said in a sentence of some length", Detail: detail, Data: D{"files": []string{"a.list", "b.list"}}, Action: ActionReviewSources})
+	}
+	return findings
+}
+
+// A report that does not fit says less of each finding before it leaves one out: the owner who
+// pastes it into a forum gets every code, and the page has the rest.
+func TestAReportThatDoesNotFitLosesItsDetailsBeforeItLosesAFinding(t *testing.T) {
+	blocker := Finding{Code: "broken_dpkg", Severity: Refuse, Title: "dpkg has an unfinished operation", Detail: "the detail of the blocker", Data: D{"audit": true}, Action: ActionFinishDpkg}
+	for name, tc := range map[string]struct {
+		findings []Finding
+		blockers bool // the details of the blockers are kept
+		details  bool // the details of the others are kept
+	}{
+		"one blocker and warnings of 195 bytes of detail": {append([]Finding{blocker}, manyFindings(Warn, 60, strings.Repeat("and a detail ", 15))...), true, false},
+		"blockers whose details do not fit either":        {manyFindings(Refuse, 80, strings.Repeat("and a detail of a blocker ", 12)), false, false},
+		"a report that fits":                              {append([]Finding{blocker}, manyFindings(Warn, 3, "and a detail and a detail")...), true, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := sampleReport()
+			r.Checks = tc.findings
+			got := Text(r)
+			if len(got) > MaxTextBytes {
+				t.Fatalf("the text is %d bytes", len(got))
+			}
+			for _, f := range tc.findings {
+				if !strings.Contains(got, "["+f.Code+"] ") {
+					t.Fatalf("%s is not in the text:\n%s", f.Code, got)
+				}
+			}
+			if strings.Contains(got, "the rest is on the page") {
+				t.Errorf("a finding was left out")
+			}
+			if has := strings.Contains(got, "the detail of the blocker") || strings.Contains(got, "and a detail of a blocker"); has != tc.blockers {
+				t.Errorf("the details of the blockers are in the text: %v, want %v", has, tc.blockers)
+			}
+			if has := strings.Contains(got, "and a detail and a detail"); has != tc.details {
+				t.Errorf("the details of the others are in the text: %v, want %v", has, tc.details)
+			}
+			if said := strings.Contains(got, "Details are left out here"); said == (tc.details && tc.blockers) {
+				t.Errorf("the text says that details are left out: %v", said)
+			}
+			if !strings.HasSuffix(got, "This check changes nothing on the machine.\n") {
+				t.Errorf("no end")
+			}
+		})
+	}
+}

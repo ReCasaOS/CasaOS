@@ -80,6 +80,38 @@ func stateSentence(r Report) string {
 // sentence of its own for a code, this says the English one the check gave.
 func Text(r Report) string {
 	const footer = "This check changes nothing on the machine."
+	// A report that does not fit is said in less words before any finding is left out: first the
+	// warnings and the notes lose their details, then everything does, and each finding keeps its
+	// code and its title. Only a report with more findings than that is cut, at a whole line.
+	for level := 0; level <= 2; level++ {
+		if lines := textLines(r, level, footer); textSize(lines) <= MaxTextBytes {
+			return strings.Join(lines, "\n") + "\n"
+		}
+	}
+	lines := textLines(r, 2, footer)
+	var out strings.Builder
+	room := MaxTextBytes - len(footer) - 120
+	for i, line := range lines {
+		if out.Len()+len(line)+1 > room && i < len(lines)-2 {
+			out.WriteString("... (the rest is on the page)\n\n" + footer + "\n")
+			return out.String()
+		}
+		out.WriteString(line + "\n")
+	}
+	return out.String()
+}
+
+func textSize(lines []string) int {
+	size := 0
+	for _, line := range lines {
+		size += len(line) + 1
+	}
+	return size
+}
+
+// textLines are the lines of the text at a level of detail: 0 says everything, 1 says the details
+// and the data of the blockers only, 2 says the title of each finding and no more.
+func textLines(r Report, level int, footer string) []string {
 	lines := []string{
 		"ReCasaOS: can this machine be upgraded to the next release?",
 		"Checked: " + r.CheckedAt.UTC().Format("2006-01-02T15:04:05Z"),
@@ -89,6 +121,9 @@ func Text(r Report) string {
 		lines = append(lines, "From: "+scrub(r.Hop.From.String()), "To: "+scrub(r.Hop.To.String()))
 	}
 	lines = append(lines, fmt.Sprintf("Blockers %d, warnings %d, notes %d, ok %d", r.Counts.Refuse, r.Counts.Warn, r.Counts.Info, r.Counts.OK))
+	if level > 0 {
+		lines = append(lines, "Details are left out here to keep this short: the page has them.")
+	}
 
 	var oks []string
 	for _, section := range []struct {
@@ -101,6 +136,9 @@ func Text(r Report) string {
 				continue
 			}
 			body = append(body, "["+f.Code+"] "+scrub(f.Title))
+			if level == 2 || (level == 1 && f.Severity != Refuse) {
+				continue
+			}
 			if f.Detail != "" {
 				body = append(body, "    "+scrub(f.Detail))
 			}
@@ -122,19 +160,7 @@ func Text(r Report) string {
 	if len(oks) > 0 {
 		lines = append(lines, "", "OK ("+strconv.Itoa(len(oks))+"): "+strings.Join(oks, ", "))
 	}
-	lines = append(lines, "", footer)
-
-	// Cut at a whole line, keeping the footer: what is left out is said.
-	var out strings.Builder
-	room := MaxTextBytes - len(footer) - 120
-	for i, line := range lines {
-		if out.Len()+len(line)+1 > room && i < len(lines)-2 {
-			out.WriteString("... (the rest is on the page)\n\n" + footer + "\n")
-			return out.String()
-		}
-		out.WriteString(line + "\n")
-	}
-	return out.String()
+	return append(lines, "", footer)
 }
 
 // dataLines are the data of a finding, one key a line, in the order of the keys.
