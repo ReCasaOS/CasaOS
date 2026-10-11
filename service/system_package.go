@@ -104,6 +104,10 @@ type systemPackageUpdater struct {
 	now           func() time.Time
 	// dpkgLocked says whether a package manager holds dpkg's lock; nil means never.
 	dpkgLocked func() bool
+	// dpkgLockState is dpkgLocked that says when it could not look; the report of whether the box could
+	// be upgraded asks it, and refuses for a lock it cannot see. When it is nil the report asks
+	// dpkgLocked, and when both are, it cannot ask.
+	dpkgLockState func() (bool, error)
 	// freeBytes is the room left on the filesystem of a path; nil means it cannot be read.
 	freeBytes func(path string) (uint64, error)
 	// appOperations says which apps have an operation in progress; nil means it cannot be asked.
@@ -147,6 +151,7 @@ func newSystemPackageUpdater() *systemPackageUpdater {
 		readDir:       os.ReadDir,
 		now:           time.Now,
 		dpkgLocked:    dpkgLockHeld,
+		dpkgLockState: dpkgLockStatus,
 		freeBytes:     freeDiskBytes,
 	}
 }

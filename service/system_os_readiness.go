@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
@@ -43,6 +44,10 @@ var (
 // what the updater already knows. It has nothing that writes.
 type osReadinessProbe struct {
 	updater *systemPackageUpdater
+	// command runs a command, in English, and gives what it printed (at most osreadiness.MaxOutputBytes
+	// of it, and whether it printed more); nil is boundedCommand. It is what Run and the questions of
+	// MaintenanceBusy to systemd go through, and the one thing a test puts its own in the place of.
+	command func(ctx context.Context, name string, args ...string) (text []byte, truncated bool, err error)
 }
 
 var _ osreadiness.Probe = osReadinessProbe{}
@@ -118,19 +123,73 @@ func (osReadinessProbe) Readlink(ctx context.Context, path string) (string, erro
 	return os.Readlink(path)
 }
 
-// Run runs a command the way the package updater runs its own (LC_ALL=C: the answers are in
-// English), and says how it ended. A command that ran and failed is an exit status, and not an
-// error; one that is not installed is osreadiness.ErrToolMissing; one that was stopped by the end
-// of its time is the context's error.
+// readinessWaitDelay is how long Run waits for the output of a command whose process has ended (or
+// was killed at the end of its time) and whose child still holds it open.
+const readinessWaitDelay = 2 * time.Second
+
+// boundedOutput is where the standard output and the error output of a command are written: it keeps
+// the start, up to max bytes and the one that says there was more, and throws the rest away while
+// it takes every write whole, so that the process is neither held up nor told to stop and the memory
+// it costs is the bound, however much the tool prints.
+type boundedOutput struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if room := b.max + 1 - len(b.buf); room > 0 {
+		b.buf = append(b.buf, p[:min(room, len(p))]...)
+	}
+	return len(p), nil
+}
+
+// result is what was kept, cut to the bound, and whether the command printed more than that.
+func (b *boundedOutput) result() ([]byte, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.buf) > b.max {
+		return b.buf[:b.max], true
+	}
+	return b.buf, false
+}
+
+// boundedCommand runs a command the way the package updater runs its own (LC_ALL=C: the answers are in
+// English) with what the report asks of one that must not cost the box anything: its output is kept
+// only up to osreadiness.MaxOutputBytes as it is read, and not whole before it is cut; its process is
+// killed when ctx ends; and a child that holds the output open after the process has gone is waited
+// for readinessWaitDelay, and not for as long as it lives.
+func boundedCommand(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.WaitDelay = readinessWaitDelay
+	out := &boundedOutput{max: osreadiness.MaxOutputBytes}
+	// one writer for both: they are one stream, in the order the process wrote them
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
+	text, truncated := out.result()
+	return text, truncated, err
+}
+
+func (p osReadinessProbe) run(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
+	if p.command != nil {
+		return p.command(ctx, name, args...)
+	}
+	return boundedCommand(ctx, name, args...)
+}
+
+// Run runs a command, in English, and says how it ended. A command that ran and failed is an exit
+// status, and not an error; one that is not installed is osreadiness.ErrToolMissing; one that was
+// stopped by the end of its time is the context's error; one whose output a child still holds is an
+// error (exec.ErrWaitDelay), since what it printed is not known to be whole.
 func (p osReadinessProbe) Run(ctx context.Context, argv ...string) (osreadiness.Output, error) {
 	if len(argv) == 0 {
 		return osreadiness.Output{}, errors.New("no command")
 	}
-	out, err := p.updater.command(ctx, argv[0], argv[1:]...)
-	result := osreadiness.Output{Text: string(out)}
-	if len(out) > osreadiness.MaxOutputBytes {
-		result.Text, result.Truncated = string(out[:osreadiness.MaxOutputBytes]), true
-	}
+	out, truncated, err := p.run(ctx, argv[0], argv[1:]...)
+	result := osreadiness.Output{Text: string(out), Truncated: truncated}
 	if err == nil {
 		return result, nil
 	}
@@ -156,9 +215,13 @@ func (p osReadinessProbe) FreeBytes(_ context.Context, path string) (uint64, err
 
 // MaintenanceBusy is the updater's own question: one of the units that change the box's packages
 // or its ReCasaOS release runs, or a package manager holds dpkg's lock. Every unit is asked about,
-// none is the caller's.
-func (p osReadinessProbe) MaintenanceBusy(ctx context.Context) (string, bool) {
-	return p.updater.maintenanceBusy(ctx, "")
+// none is the caller's. Where the updater's own answer is "not busy" for a lock it cannot see, this
+// one is an error: the report refuses for a lock it could not look at.
+func (p osReadinessProbe) MaintenanceBusy(ctx context.Context) (string, bool, error) {
+	return p.updater.maintenanceState(ctx, "", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, _, err := p.run(ctx, name, args...)
+		return out, err
+	})
 }
 
 // AppOperations are the apps AppManagement says have an operation in progress. The question is

@@ -34,8 +34,12 @@ func checkBusy(ctx context.Context, p Probe) Result {
 			Action: ActionWaitForPackageManager,
 		}
 	}
-	if reason, isBusy := p.MaintenanceBusy(ctx); isBusy {
+	reason, isBusy, err := p.MaintenanceBusy(ctx)
+	if isBusy {
 		return busy(reason+".", D{"source": "maintenance"})
+	}
+	if err != nil {
+		return unknown(err)
 	}
 	for _, unit := range busyUnits {
 		out, err := p.Run(ctx, "systemctl", "show", unit, "--property=ActiveState", "--value")

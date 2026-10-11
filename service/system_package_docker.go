@@ -64,24 +64,48 @@ var systemMaintenanceUnits = []string{common.UPDATE_UNIT + ".service", systemPac
 // above is active, or, on a host that has dpkg, a package manager holds its lock. Systemd
 // not answering is not busy: a refusal that cannot be explained helps nobody.
 func (u *systemPackageUpdater) maintenanceBusy(ctx context.Context, except string) (string, bool) {
+	reason, busy, _ := u.maintenanceState(ctx, except, u.command)
+	return reason, busy
+}
+
+// maintenanceState is maintenanceBusy that says when it could not ask: dpkg's lock cannot be looked at,
+// or the box is not one that has a lock to look at (not root, not a Debian, no apt-get or no
+// systemd-run), and then the answer is no busy and an error, for whoever must know the difference (the
+// report of whether the box could be upgraded: a lock that cannot be seen is not one nobody holds).
+// The units are asked through command. A busy box has no error: what is seen is an answer.
+func (u *systemPackageUpdater) maintenanceState(ctx context.Context, except string, command func(context.Context, string, ...string) ([]byte, error)) (string, bool, error) {
 	for _, unit := range systemMaintenanceUnits {
 		if unit == except {
 			continue
 		}
-		output, err := u.command(ctx, "systemctl", "show", unit, "--property=ActiveState", "--value")
+		output, err := command(ctx, "systemctl", "show", unit, "--property=ActiveState", "--value")
 		if err != nil {
 			continue
 		}
 		switch strings.TrimSpace(string(output)) {
 		case "active", "activating", "deactivating":
-			return fmt.Sprintf("%s is running", strings.TrimSuffix(unit, ".service")), true
+			return fmt.Sprintf("%s is running", strings.TrimSuffix(unit, ".service")), true, nil
 		}
 	}
 	// the lock is dpkg's: a host that has no dpkg has none to hold
-	if u.dpkgLocked != nil && u.support().supported && u.dpkgLocked() {
-		return "another package manager holds dpkg's lock", true
+	state := u.dpkgLockState
+	if state == nil && u.dpkgLocked != nil {
+		state = func() (bool, error) { return u.dpkgLocked(), nil }
 	}
-	return "", false
+	if state == nil {
+		return "", false, errors.New("dpkg's lock cannot be looked at here")
+	}
+	if support := u.support(); !support.supported {
+		return "", false, errors.New(support.reason)
+	}
+	locked, err := state()
+	if err != nil {
+		return "", false, err
+	}
+	if locked {
+		return "another package manager holds dpkg's lock", true, nil
+	}
+	return "", false, nil
 }
 
 // MaintenanceBusy is maintenanceBusy for a caller that is not one of the units: the

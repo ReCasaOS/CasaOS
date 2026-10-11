@@ -3,10 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -83,18 +86,107 @@ func TestACommandThatRunsOutOfTimeIsTheContextsError(t *testing.T) {
 	}
 }
 
-func TestTheOutputOfACommandIsBounded(t *testing.T) {
-	probe, updater := readinessProbe(t)
-	updater.command = func(context.Context, string, ...string) ([]byte, error) {
-		return []byte(strings.Repeat("x", osreadiness.MaxOutputBytes+100)), nil
+// What a command prints is kept up to the bound as it is read, and no more: a tool that floods
+// (a wedged docker, a hostile format) is not held in memory until it ends.
+func TestTheOutputOfACommandIsBoundedAsItIsRead(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
 	}
-	out, err := probe.Run(context.Background(), "dpkg", "--audit")
-	if err != nil || len(out.Text) != osreadiness.MaxOutputBytes || !out.Truncated {
-		t.Fatalf("%d bytes, truncated %v, err %v", len(out.Text), out.Truncated, err)
+	probe := osReadinessProbe{updater: newSystemPackageUpdater()}
+	emit := func(bytes int, to string) string { return fmt.Sprintf("head -c %d /dev/zero %s", bytes, to) }
+	for name, tc := range map[string]struct {
+		script    string
+		length    int
+		truncated bool
+	}{
+		"a little over the bound":         {emit(osreadiness.MaxOutputBytes+100, ""), osreadiness.MaxOutputBytes, true},
+		"one byte over the bound":         {emit(osreadiness.MaxOutputBytes+1, ""), osreadiness.MaxOutputBytes, true},
+		"exactly the bound":               {emit(osreadiness.MaxOutputBytes, ""), osreadiness.MaxOutputBytes, false},
+		"one byte under the bound":        {emit(osreadiness.MaxOutputBytes-1, ""), osreadiness.MaxOutputBytes - 1, false},
+		"a flood on the error output":     {emit(40<<20, "1>&2"), osreadiness.MaxOutputBytes, true},
+		"a flood on the standard output":  {emit(40<<20, ""), osreadiness.MaxOutputBytes, true},
+		"the two outputs share the bound": {emit(osreadiness.MaxOutputBytes, "") + "; " + emit(osreadiness.MaxOutputBytes, "1>&2"), osreadiness.MaxOutputBytes, true},
+		"nothing":                         {"true", 0, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			started := time.Now()
+			out, err := probe.Run(context.Background(), sh, "-c", tc.script)
+			if err != nil || out.ExitCode != 0 || len(out.Text) != tc.length || out.Truncated != tc.truncated {
+				t.Fatalf("%d bytes, truncated %v, exit %d, err %v; want %d bytes, truncated %v", len(out.Text), out.Truncated, out.ExitCode, err, tc.length, tc.truncated)
+			}
+			if time.Since(started) > 10*time.Second {
+				t.Fatalf("the command took %v", time.Since(started))
+			}
+		})
 	}
-	updater.command = func(context.Context, string, ...string) ([]byte, error) { return []byte("short"), nil }
-	if out, _ := probe.Run(context.Background(), "dpkg", "--audit"); out.Truncated || out.Text != "short" {
-		t.Fatalf("out = %+v", out)
+	out, err := probe.Run(context.Background(), sh, "-c", "echo said; echo failed 1>&2; exit 3")
+	if err != nil || out.ExitCode != 3 || !strings.Contains(out.Text, "said\n") || !strings.Contains(out.Text, "failed\n") || out.Truncated {
+		t.Fatalf("out = %+v, err = %v: both outputs are what the command said", out, err)
+	}
+}
+
+func TestTheWriterThatBoundsAnOutputKeepsTheStartAndSaysItCutTheRest(t *testing.T) {
+	const bound = 10
+	for name, tc := range map[string]struct {
+		writes    []string
+		text      string
+		truncated bool
+	}{
+		"nothing":                        {nil, "", false},
+		"less":                           {[]string{"abc", "def"}, "abcdef", false},
+		"exactly the bound":              {[]string{"abcde", "fghij"}, "abcdefghij", false},
+		"one over":                       {[]string{"abcde", "fghijk"}, "abcdefghij", true},
+		"a write that crosses the bound": {[]string{"abcdefg", "hijklmnop", "qrs"}, "abcdefghij", true},
+		"a write that is the whole":      {[]string{"abcdefghijklmnopqrstuvwxyz"}, "abcdefghij", true},
+		"after the bound":                {[]string{"abcdefghij", "k", "lmn"}, "abcdefghij", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := &boundedOutput{max: bound}
+			for _, chunk := range tc.writes {
+				// the whole write is taken: the process is not blocked, and not told to stop
+				if n, err := w.Write([]byte(chunk)); n != len(chunk) || err != nil {
+					t.Fatalf("Write(%q) = %d, %v", chunk, n, err)
+				}
+			}
+			text, truncated := w.result()
+			if string(text) != tc.text || truncated != tc.truncated {
+				t.Fatalf("result = %q, %v; want %q, %v", text, truncated, tc.text, tc.truncated)
+			}
+			if len(w.buf) > bound+1 {
+				t.Fatalf("%d bytes are kept, which is more than the bound and the one that says it was crossed", len(w.buf))
+			}
+		})
+	}
+}
+
+// A tool that forked and left a child holding its output open is a tool that ended: the report waits
+// for the pipe two seconds, and not for as long as the child lives. What it printed is not an answer
+// the report can believe, and it says so.
+func TestACommandWhoseChildHoldsItsOutputOpenDoesNotHoldTheReport(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	probe := osReadinessProbe{updater: newSystemPackageUpdater()}
+
+	started := time.Now()
+	_, err = probe.Run(context.Background(), sh, "-c", "sleep 7 & echo said")
+	if elapsed := time.Since(started); elapsed > 5*time.Second || elapsed < time.Second {
+		t.Fatalf("took %v: the pipe is waited for two seconds, and not less, and not until its child ends", elapsed)
+	}
+	if err == nil {
+		t.Fatal("an output that a child still holds was taken for a whole one")
+	}
+
+	// and when its time ends: the process is killed, the child is left to end by itself, and the end of the
+	// time is what is said
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	started = time.Now()
+	_, err = probe.Run(ctx, sh, "-c", "sleep 7 & sleep 7")
+	if elapsed := time.Since(started); elapsed > 5*time.Second || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v after %v", err, elapsed)
 	}
 }
 
@@ -135,6 +227,49 @@ func TestFilesAreReadWithinTheirBounds(t *testing.T) {
 		if data, err := probe.ReadFile(ctx, "/proc/uptime"); err != nil || len(data) == 0 {
 			t.Fatalf("/proc/uptime: %q, %v", data, err)
 		}
+	}
+}
+
+// Every look at the machine that has a context is given it first: one that has ended is not asked.
+func TestWhatTheProbeLooksAtIsNotLookedAtAfterTheEndOfItsTime(t *testing.T) {
+	probe, _ := readinessProbe(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a", filepath.Join(dir, "link")); err != nil {
+		t.Skip("no symbolic links here")
+	}
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := probe.ReadDir(ended, dir); !errors.Is(err, context.Canceled) {
+		t.Errorf("ReadDir: err = %v", err)
+	}
+	if _, err := probe.Stat(ended, dir); !errors.Is(err, context.Canceled) {
+		t.Errorf("Stat: err = %v", err)
+	}
+	if _, err := probe.Lstat(ended, filepath.Join(dir, "link")); !errors.Is(err, context.Canceled) {
+		t.Errorf("Lstat: err = %v", err)
+	}
+	if _, err := probe.Readlink(ended, filepath.Join(dir, "link")); !errors.Is(err, context.Canceled) {
+		t.Errorf("Readlink: err = %v", err)
+	}
+	if _, err := probe.ReadFile(ended, filepath.Join(dir, "a")); !errors.Is(err, context.Canceled) {
+		t.Errorf("ReadFile: err = %v", err)
+	}
+	// and with time, the same calls answer
+	live := context.Background()
+	if _, err := probe.ReadDir(live, dir); err != nil {
+		t.Errorf("ReadDir: err = %v", err)
+	}
+	if _, err := probe.Stat(live, dir); err != nil {
+		t.Errorf("Stat: err = %v", err)
+	}
+	if _, err := probe.Lstat(live, filepath.Join(dir, "link")); err != nil {
+		t.Errorf("Lstat: err = %v", err)
+	}
+	if _, err := probe.Readlink(live, filepath.Join(dir, "link")); err != nil {
+		t.Errorf("Readlink: err = %v", err)
 	}
 }
 
@@ -179,22 +314,122 @@ func TestDirectoriesAndLinksAreListedAndSeen(t *testing.T) {
 	}
 }
 
+// asReadinessCommand is the commands of an apt box (the fake of the updater's tests) as the probe runs
+// its own.
+func asReadinessCommand(box *aptBox) func(context.Context, string, ...string) ([]byte, bool, error) {
+	return func(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
+		out, err := box.command(ctx, name, args...)
+		return out, false, err
+	}
+}
+
+// MaintenanceBusy is the updater's own question, with one thing more: when it could not ask (dpkg's
+// lock cannot be looked at, or the updater is not one that has a lock to look at), it says so, and
+// the check says it did not know: a lock that cannot be seen is not a lock that nobody holds.
 func TestMaintenanceBusyIsTheUpdatersOwnQuestion(t *testing.T) {
+	ctx := context.Background()
 	probe, updater := readinessProbe(t)
-	if reason, busy := probe.MaintenanceBusy(context.Background()); busy {
-		t.Fatalf("an idle box is busy: %q", reason)
+	probe.command = asReadinessCommand(&aptBox{})
+	updater.dpkgLockState = func() (bool, error) { return false, nil }
+	if reason, busy, err := probe.MaintenanceBusy(ctx); busy || err != nil {
+		t.Fatalf("an idle box: busy = %v (%q), err = %v", busy, reason, err)
 	}
 	// every unit counts, the package update's too: none is the report's own
 	for _, unit := range systemMaintenanceUnits {
-		updater.command = (&aptBox{activeUnits: map[string]bool{unit: true}}).command
-		if reason, busy := probe.MaintenanceBusy(context.Background()); !busy || reason == "" {
-			t.Errorf("%s runs: busy = %v, reason = %q", unit, busy, reason)
+		probe.command = asReadinessCommand(&aptBox{activeUnits: map[string]bool{unit: true}})
+		if reason, busy, err := probe.MaintenanceBusy(ctx); !busy || reason == "" || err != nil {
+			t.Errorf("%s runs: busy = %v, reason = %q, err = %v", unit, busy, reason, err)
 		}
 	}
-	updater.command = (&aptBox{}).command
+	// a unit that runs is an answer, whatever the lock says
+	updater.dpkgLockState = func() (bool, error) { return false, errors.New("no lock") }
+	if _, busy, err := probe.MaintenanceBusy(ctx); !busy || err != nil {
+		t.Errorf("a unit runs and the lock cannot be looked at: busy = %v, err = %v", busy, err)
+	}
+
+	probe.command = asReadinessCommand(&aptBox{})
+	updater.dpkgLockState = func() (bool, error) { return true, nil }
+	if reason, busy, err := probe.MaintenanceBusy(ctx); !busy || !strings.Contains(reason, "dpkg") || err != nil {
+		t.Fatalf("a lock that is held: busy = %v, reason = %q, err = %v", busy, reason, err)
+	}
+}
+
+func TestMaintenanceBusySaysWhenItCouldNotAsk(t *testing.T) {
+	ctx := context.Background()
+	denied := &fs.PathError{Op: "open", Path: "/var/lib/dpkg/lock-frontend", Err: fs.ErrPermission}
+	for name, tc := range map[string]struct {
+		setup func(u *systemPackageUpdater)
+		is    error
+	}{
+		"a lock file that may not be opened": {func(u *systemPackageUpdater) { u.dpkgLockState = func() (bool, error) { return false, denied } }, fs.ErrPermission},
+		"a lock that cannot be looked at": {func(u *systemPackageUpdater) {
+			u.dpkgLockState = func() (bool, error) { return false, errors.New("boom") }
+		}, nil},
+		"no way to look at the lock at all": {func(u *systemPackageUpdater) { u.dpkgLockState, u.dpkgLocked = nil, nil }, nil},
+		"not root":                          {func(u *systemPackageUpdater) { u.getEUID = func() int { return 1000 } }, nil},
+		"not a Debian": {func(u *systemPackageUpdater) {
+			u.readOSRelease = func() (map[string]string, error) { return map[string]string{"ID": "arch"}, nil }
+		}, nil},
+		"an os-release that cannot be read": {func(u *systemPackageUpdater) {
+			u.readOSRelease = func() (map[string]string, error) { return nil, errors.New("unreadable") }
+		}, nil},
+		"no apt-get": {func(u *systemPackageUpdater) {
+			u.lookPath = func(name string) (string, error) {
+				if name == "apt-get" {
+					return "", errors.New("not found")
+				}
+				return "/usr/bin/" + name, nil
+			}
+		}, nil},
+		"no systemd-run": {func(u *systemPackageUpdater) {
+			u.lookPath = func(name string) (string, error) {
+				if name == "systemd-run" {
+					return "", errors.New("not found")
+				}
+				return "/usr/bin/" + name, nil
+			}
+		}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			probe, updater := readinessProbe(t)
+			probe.command = asReadinessCommand(&aptBox{})
+			updater.dpkgLockState = func() (bool, error) { return false, nil }
+			tc.setup(updater)
+			reason, busy, err := probe.MaintenanceBusy(ctx)
+			if err == nil || busy {
+				t.Fatalf("busy = %v (%q), err = %v: the lock was not looked at, and the answer says it was", busy, reason, err)
+			}
+			if tc.is != nil && !errors.Is(err, tc.is) {
+				t.Fatalf("err = %v, want one that is %v", err, tc.is)
+			}
+		})
+	}
+
+	// the older way to say it, a function of one answer, is still one: a box that has only it is asked
+	probe, updater := readinessProbe(t)
+	probe.command = asReadinessCommand(&aptBox{})
 	updater.dpkgLocked = func() bool { return true }
-	if reason, busy := probe.MaintenanceBusy(context.Background()); !busy || !strings.Contains(reason, "dpkg") {
-		t.Fatalf("a lock that is held: busy = %v, reason = %q", busy, reason)
+	if _, busy, err := probe.MaintenanceBusy(ctx); !busy || err != nil {
+		t.Fatalf("busy = %v, err = %v", busy, err)
+	}
+	updater.dpkgLocked = func() bool { return false }
+	if _, busy, err := probe.MaintenanceBusy(ctx); busy || err != nil {
+		t.Fatalf("busy = %v, err = %v", busy, err)
+	}
+}
+
+// The ReCasaOS update asks the same question, and does not get the new answer: a host that has no
+// lock to look at is not one it refuses to start on.
+func TestTheQuestionOfTheUpdateIsStillNotAnErrorWhenTheLockCannotBeSeen(t *testing.T) {
+	updater := newTestSystemPackageUpdater(t)
+	updater.command = (&aptBox{}).command
+	updater.dpkgLockState = func() (bool, error) { return false, errors.New("boom") }
+	if reason, busy := updater.maintenanceBusy(context.Background(), ""); busy {
+		t.Fatalf("a lock that cannot be seen is held: %q", reason)
+	}
+	updater.dpkgLockState, updater.dpkgLocked = nil, nil
+	if _, busy := updater.maintenanceBusy(context.Background(), ""); busy {
+		t.Fatal("a box with no way to look at the lock is busy")
 	}
 }
 
@@ -239,7 +474,7 @@ func TestTheClockTheUserAndTheRoomComeFromTheUpdater(t *testing.T) {
 	updater.getEUID = func() int { return 1000 }
 	updater.now = func() time.Time { return time.Date(2026, 10, 11, 20, 15, 2, 0, time.UTC) }
 	updater.freeBytes = func(path string) (uint64, error) { return uint64(len(path)), nil }
-	if probe.EUID() != 1000 || !probe.Now().Equal(time.Date(2026, 10, 11, 20, 15, 2, 0, time.UTC)) || probe.Arch() == "" {
+	if probe.EUID() != 1000 || !probe.Now().Equal(time.Date(2026, 10, 11, 20, 15, 2, 0, time.UTC)) || probe.Arch() != runtime.GOARCH {
 		t.Fatalf("euid %d, now %v, arch %q", probe.EUID(), probe.Now(), probe.Arch())
 	}
 	if free, err := probe.FreeBytes(context.Background(), "/boot"); err != nil || free != 5 {

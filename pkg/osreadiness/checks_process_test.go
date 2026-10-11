@@ -23,6 +23,15 @@ func TestBusy(t *testing.T) {
 		{name: "a unit that has failed is not running", setup: unit("packagekit.service", "failed"), severity: OK},
 		// unattended-upgrades.service is a service that waits for the shutdown, and is active on every box that has it
 		{name: "unattended-upgrades.service is active on every box", setup: unit("unattended-upgrades.service", "active"), severity: OK},
+		// a lock that cannot be looked at is not a lock nobody holds: the box says it could not ask
+		{name: "the probe cannot say whether dpkg's lock is held", setup: func(f *fakeProbe) { f.busyErr = errors.New("the lock cannot be looked at here") }, severity: Refuse, unknown: ReasonFailed},
+		{name: "a lock file that may not be opened", setup: func(f *fakeProbe) {
+			f.busyErr = &fs.PathError{Op: "open", Path: "/var/lib/dpkg/lock-frontend", Err: fs.ErrPermission}
+		}, severity: Refuse, unknown: ReasonUnreadable},
+		{name: "the probe that does not answer in time", setup: func(f *fakeProbe) { f.busyErr = context.DeadlineExceeded }, severity: Refuse, unknown: ReasonTimeout},
+		{name: "a lock that is held says so, whatever else the probe could not ask", setup: func(f *fakeProbe) {
+			f.busyReason, f.busyErr = "another package manager holds dpkg's lock", errors.New("another file")
+		}, severity: Refuse, data: D{"source": "maintenance"}, action: ActionWaitForPackageManager},
 		{name: "systemctl that is not there", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvUnit("apt-daily.service")...) }, severity: Refuse, unknown: ReasonToolMissing},
 		{name: "systemctl that fails", setup: func(f *fakeProbe) { f.on("", 1, argvUnit("packagekit.service")...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "systemctl that does not answer", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvUnit("apt-daily-upgrade.service")...) }, severity: Refuse, unknown: ReasonTimeout},

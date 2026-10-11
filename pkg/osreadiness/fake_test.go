@@ -27,6 +27,7 @@ type fakeProbe struct {
 	cmds  map[string]fakeCmd
 
 	busyReason string
+	busyErr    error
 	apps       []string
 	appsErr    error
 	free       map[string]uint64
@@ -271,11 +272,11 @@ func (f *fakeProbe) FreeBytes(ctx context.Context, p string) (uint64, error) {
 	return 0, notExist("statfs", p)
 }
 
-func (f *fakeProbe) MaintenanceBusy(context.Context) (string, bool) {
+func (f *fakeProbe) MaintenanceBusy(context.Context) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("busy")
-	return f.busyReason, f.busyReason != ""
+	return f.busyReason, f.busyReason != "", f.busyErr
 }
 
 func (f *fakeProbe) AppOperations(context.Context) ([]string, error) {

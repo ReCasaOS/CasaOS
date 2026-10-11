@@ -86,8 +86,11 @@ type Probe interface {
 	FreeBytes(ctx context.Context, path string) (uint64, error)
 	// MaintenanceBusy says whether something else is changing the box's packages or its ReCasaOS
 	// release now (one of the maintenance units runs, or a package manager holds dpkg's lock),
-	// and says what, in a few words.
-	MaintenanceBusy(ctx context.Context) (reason string, busy bool)
+	// and says what, in a few words. An error says it could not ask (dpkg's lock cannot be looked at,
+	// the box is not one that has a lock to look at): a lock that cannot be seen is not one that
+	// nobody holds, and the check that asks says it does not know. A busy box is busy whatever else
+	// could not be looked at, and has no error.
+	MaintenanceBusy(ctx context.Context) (reason string, busy bool, err error)
 	// AppOperations are the apps that have an operation in progress (an install, an update, a
 	// backup, a restore), by name. An error is no answer: AppManagement cannot be asked.
 	AppOperations(ctx context.Context) ([]string, error)
