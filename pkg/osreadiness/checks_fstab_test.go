@@ -41,6 +41,7 @@ func TestFstabUnresolved(t *testing.T) {
 			f.link("/dev/mapper/vg-data", "../dm-1")
 			f.set("/dev/dm-1", "")
 		}), severity: OK},
+		{name: "a path that goes back up out of /dev is no device's", setup: fstab("/dev/../nowhere /data ext4 defaults 0 2"), severity: OK},
 		{name: "nofail", setup: fstab("UUID=1234-ABCD /data ext4 defaults,nofail 0 2"), severity: OK},
 		{name: "noauto", setup: fstab("UUID=1234-ABCD /data ext4 noauto,user 0 0"), severity: OK},
 		{name: "mounted when it is first used", setup: fstab("UUID=1234-ABCD /data ext4 defaults,x-systemd.automount 0 0"), severity: OK},

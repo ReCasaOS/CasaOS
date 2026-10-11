@@ -109,6 +109,7 @@ func TestBootloader(t *testing.T) {
 		{name: "BIOS, grub-pc with a disk that is gone", setup: grubPC("/dev/disk/by-id/ata-GONE", ""), severity: Refuse, data: D{"kind": "install_device_missing", "count": 1}},
 		{name: "BIOS, grub-pc with one disk there and one gone", setup: grubPC(disk+", /dev/disk/by-id/ata-GONE", ""), severity: Refuse, data: D{"kind": "install_device_missing", "count": 2}},
 		{name: "BIOS, grub-pc with a value that is no device", setup: grubPC("not a device", ""), severity: Refuse, data: D{"kind": "install_device_missing"}},
+		{name: "BIOS, grub-pc with a path that goes back up out of /dev", setup: after(grubPC("/dev/../tmp/x", ""), disks("/dev/../tmp/x")), severity: Refuse, data: D{"kind": "install_device_missing"}},
 		{name: "BIOS, grub-pc with a value that is a file there is, and no device", setup: grubPC("/etc/os-release", ""), severity: Refuse, data: D{"kind": "install_device_missing"}},
 		{name: "BIOS, grub-pc with a disk that cannot be looked at", setup: after(grubPC(disk, ""), func(f *fakeProbe) {
 			f.fail(disk, &fs.PathError{Op: "stat", Path: disk, Err: fs.ErrPermission})

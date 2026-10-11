@@ -112,6 +112,10 @@ func udevDecode(name string) string {
 // not a device of this machine's (a network share, tmpfs, a bind): nothing is said of it.
 func sourceStatus(ctx context.Context, p Probe, spec string) (known, there bool, err error) {
 	if strings.HasPrefix(spec, "/dev/") {
+		// a path that goes back up, or has a NUL in it, is no device's
+		if strings.Contains(spec, "..") || strings.ContainsRune(spec, 0) {
+			return false, false, nil
+		}
 		_, err := p.Stat(ctx, spec)
 		if isNotExist(err) {
 			return true, false, nil

@@ -183,7 +183,7 @@ func checkInstallDevices(ctx context.Context, p Probe, refuse func(kind, title, 
 			"The package grub-pc is installed on a BIOS machine, and the disks it writes GRUB to are not set (grub-pc/install_devices). Without a terminal its update ends in error: it has to be set first (dpkg-reconfigure grub-pc).", nil)
 	}
 	for _, device := range devices {
-		if !strings.HasPrefix(device, "/dev/") || strings.ContainsAny(device, "\x00\n") {
+		if !strings.HasPrefix(device, "/dev/") || strings.ContainsAny(device, "\x00\n") || strings.Contains(device, "..") {
 			return refuse("install_device_missing", "A disk GRUB is installed on is not there",
 				"A disk named for GRUB is not one of this machine's disks any more: the update of GRUB would end in error. Set the disks again (dpkg-reconfigure grub-pc).", D{"count": len(devices)})
 		}
