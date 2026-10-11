@@ -329,6 +329,11 @@ func dayOf(t time.Time) time.Time {
 // the table has nothing.
 func BeforeTable(now time.Time) bool { return dayOf(now).Before(AsOf) }
 
+// Stale says whether the table is too old to be believed on the day of now: more than eighteen months after
+// AsOf. Whoever asks what the table says of a release should say that the table is old, and not that the release
+// has nothing. A day before AsOf is not stale, it is a clock that is wrong (BeforeTable).
+func Stale(now time.Time) bool { return dayOf(now).After(AsOf.AddDate(0, staleAfterMonths, 0)) }
+
 // Evaluate is how long the free security updates of id last, on the day of now (UTC). The last day
 // is a day of support: SecurityEnded begins the day after it, and EndingSoon the 180th day before
 // it. A box that is not Known, a release the table does not have, a codename that is not the
@@ -344,7 +349,7 @@ func Evaluate(id Identity, now time.Time) Support {
 	if !id.Known || BeforeTable(now) {
 		return unknown
 	}
-	stale := today.After(AsOf.AddDate(0, staleAfterMonths, 0))
+	stale := Stale(now)
 	for _, e := range table {
 		if e.id != id.ID || e.versionID != id.VersionID || (id.Codename != "" && id.Codename != e.codename) {
 			continue

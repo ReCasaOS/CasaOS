@@ -330,7 +330,7 @@ var (
 	argvConfigDump = []string{"apt-config", "dump"}
 	argvContainer  = []string{"systemd-detect-virt", "--container"}
 	argvVM         = []string{"systemd-detect-virt", "--vm"}
-	busyUnitsAsked = []string{"apt-daily.service", "apt-daily-upgrade.service", "packagekit.service"}
+	busyUnitsAsked = []string{"apt-daily.service", "apt-daily-upgrade.service"}
 )
 
 func argvUnit(unit string) []string {

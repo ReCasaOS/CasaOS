@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // The checks of the disks and of what starts the machine: its directories, its boot loader, the
@@ -105,11 +106,26 @@ var bootloaderPackages = append(slices.Clone(grubPackages), "systemd-boot")
 
 // systemdBootMarkers are the files that say systemd-boot starts the machine: its loader.conf, on the ESP
 // wherever it is mounted (Debian and Ubuntu mount it on /boot/efi, systemd on /efi, and /boot can be the
-// partition systemd-boot calls XBOOTLDR), and the variable that it sets in the firmware, which says what
-// loader started this boot.
-var systemdBootMarkers = []string{
-	"/boot/loader/loader.conf", "/boot/efi/loader/loader.conf", "/efi/loader/loader.conf",
-	"/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f",
+// partition systemd-boot calls XBOOTLDR).
+var systemdBootMarkers = []string{"/boot/loader/loader.conf", "/boot/efi/loader/loader.conf", "/efi/loader/loader.conf"}
+
+// loaderInfoVariable is the variable of the Boot Loader Interface that says what loader started this boot, with its
+// version: systemd-boot sets it, and so does GRUB 2.12 (its bli module: "GRUB 2.12..."), so that it being there
+// says nothing: its value does.
+const loaderInfoVariable = "/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+
+// efiText is the text of the file of an EFI string variable (efivarfs): four bytes of attributes, then the text in
+// UTF-16, little endian (and a NUL at its end, which a prefix does not meet). A file that is not that (too short, an odd rest) has no text.
+func efiText(data []byte) string {
+	if len(data) < 4 {
+		return ""
+	}
+	data = data[4:]
+	units := make([]uint16, 0, len(data)/2)
+	for i := 0; i+1 < len(data); i += 2 {
+		units = append(units, uint16(data[i])|uint16(data[i+1])<<8)
+	}
+	return string(utf16.Decode(units))
 }
 
 const (
@@ -142,6 +158,14 @@ func checkBootloader(ctx context.Context, p Probe) Result {
 			return unknown(err)
 		}
 		systemdBoot = systemdBoot || found
+	}
+	if !systemdBoot {
+		// the loader that started this boot, by the name it gives itself: a read that fails is no answer
+		data, found, err := readOptional(ctx, p, loaderInfoVariable)
+		if err != nil {
+			return unknown(err)
+		}
+		systemdBoot = found && strings.HasPrefix(efiText(data), "systemd-boot")
 	}
 	if systemdBoot {
 		return refuse("systemd_boot", "The boot loader is systemd-boot",

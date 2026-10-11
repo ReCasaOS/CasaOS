@@ -21,8 +21,12 @@ func TestBusy(t *testing.T) {
 		{name: "the daily apt refresh runs", setup: unit("apt-daily.service", "activating"), severity: Refuse, data: D{"source": "unit", "unit": "apt-daily.service"}, action: ActionWaitForPackageManager},
 		{name: "the daily unattended upgrade runs", setup: unit("apt-daily-upgrade.service", "active"), severity: Refuse, data: D{"unit": "apt-daily-upgrade.service"}, action: ActionWaitForPackageManager},
 		{name: "a unit that is stopping", setup: unit("apt-daily-upgrade.service", "deactivating"), severity: Refuse},
-		{name: "PackageKit runs", setup: unit("packagekit.service", "active"), severity: Refuse, data: D{"unit": "packagekit.service"}},
-		{name: "a unit that has failed is not running", setup: unit("packagekit.service", "failed"), severity: OK},
+		// PackageKit stays active for five minutes after any apt run of a stock Ubuntu, and idle: a transaction of
+		// its own holds dpkg's lock, which the check reads on its own. The unit is not asked about at all.
+		{name: "PackageKit is active, as it is for five minutes after an apt run", setup: unit("packagekit.service", "active"), severity: OK},
+		{name: "PackageKit is active and dpkg's lock is held", setup: after(unit("packagekit.service", "active"), func(f *fakeProbe) { f.busyReason = "another package manager holds dpkg's lock" }),
+			severity: Refuse, data: D{"source": "maintenance"}},
+		{name: "a unit that has failed is not running", setup: unit("apt-daily.service", "failed"), severity: OK},
 		// unattended-upgrades.service is a service that waits for the shutdown, and is active on every box that has it
 		{name: "unattended-upgrades.service is active on every box", setup: unit("unattended-upgrades.service", "active"), severity: OK},
 		// a lock that cannot be looked at is not a lock nobody holds: the box says it could not ask
@@ -35,7 +39,7 @@ func TestBusy(t *testing.T) {
 			f.busyReason, f.busyErr = "another package manager holds dpkg's lock", errors.New("another file")
 		}, severity: Refuse, data: D{"source": "maintenance"}, action: ActionWaitForPackageManager},
 		{name: "systemctl that is not there", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvUnit("apt-daily.service")...) }, severity: Refuse, unknown: ReasonToolMissing},
-		{name: "systemctl that fails", setup: func(f *fakeProbe) { f.on("", 1, argvUnit("packagekit.service")...) }, severity: Refuse, unknown: ReasonFailed},
+		{name: "systemctl that fails", setup: func(f *fakeProbe) { f.on("", 1, argvUnit("apt-daily-upgrade.service")...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "systemctl that does not answer", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvUnit("apt-daily-upgrade.service")...) }, severity: Refuse, unknown: ReasonTimeout},
 	})
 }

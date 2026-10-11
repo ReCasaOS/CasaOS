@@ -189,6 +189,9 @@ const (
 	// ReasonClock: the date of the machine is before the day the table of the releases was written, so
 	// the table cannot be read against it.
 	ReasonClock = "clock"
+	// ReasonStale: the table of the releases is more than eighteen months old, so it cannot say what upgrade a
+	// release has: this ReCasaOS is too old to know it.
+	ReasonStale = "stale"
 )
 
 var reasonText = map[string]string{
@@ -204,6 +207,7 @@ var reasonText = map[string]string{
 	ReasonInvalid:          "it gave an answer that is not valid",
 	ReasonFailed:           "a tool or a file it needs failed",
 	ReasonClock:            "the date of this machine is wrong",
+	ReasonStale:            "this ReCasaOS is too old to know the releases",
 }
 
 // unknownWith is the Result of a check that could not say: a refusal that says it does not know,

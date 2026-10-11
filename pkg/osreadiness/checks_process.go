@@ -24,8 +24,11 @@ func init() {
 // busyUnits are the services whose being active says a package manager is at work. Not
 // unattended-upgrades.service: that is a service that waits for the shutdown, and is active on
 // every box that has it. The unattended upgrade itself runs under apt-daily-upgrade.service, and
-// holds dpkg's locks (MaintenanceBusy).
-var busyUnits = []string{"apt-daily.service", "apt-daily-upgrade.service", "packagekit.service"}
+// holds dpkg's locks (MaintenanceBusy). Not packagekit.service either: on a stock Ubuntu it is active
+// for five minutes after any apt run (it leaves after 300 seconds idle), with nothing to do, and a
+// transaction of its own holds dpkg's lock, which MaintenanceBusy reads. It is not asked about, and
+// not said in the finding: a report that said "busy" for it would refuse a box that is not.
+var busyUnits = []string{"apt-daily.service", "apt-daily-upgrade.service"}
 
 func checkBusy(ctx context.Context, p Probe) Result {
 	busy := func(detail string, data D) Result {

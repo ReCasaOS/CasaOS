@@ -47,7 +47,52 @@ func TestUnsupportedOS(t *testing.T) {
 			f.set("/etc/os-release", "ID=arch\nVERSION_ID=\"rolling\"\n")
 			f.now = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 		}, severity: Refuse, title: "This is not Debian or Ubuntu"},
+		// the other end of the table: more than eighteen months after the day it was written, it says nothing of
+		// what is to come, and a Debian 12 has no upgrade because this ReCasaOS is too old to know it, and not
+		// because the release has none
+		{name: "the last day the table is believed", setup: func(f *fakeProbe) { debian12(f); f.now = time.Date(2028, 4, 9, 23, 59, 59, 0, time.UTC) }, severity: OK},
+		{name: "the first day the table is stale, on a Debian 12", setup: func(f *fakeProbe) { debian12(f); f.now = time.Date(2028, 4, 10, 0, 0, 0, 0, time.UTC) },
+			severity: Refuse, unknown: ReasonStale, title: "too old", data: D{"id": "debian", "version_id": "12"}},
+		{name: "a stale table, on a Debian 11 whose end it still says", setup: func(f *fakeProbe) { f.now = time.Date(2029, 1, 1, 0, 0, 0, 0, time.UTC) },
+			severity: Refuse, unknown: ReasonStale, data: D{"id": "debian", "version_id": "11"}},
+		{name: "a clock two years ahead, on an Ubuntu 24.04", setup: func(f *fakeProbe) { ubuntu2404(f); f.now = time.Date(2028, 10, 11, 0, 0, 0, 0, time.UTC) },
+			severity: Refuse, unknown: ReasonStale, data: D{"id": "ubuntu", "version_id": "24.04"}},
+		{name: "a stale table, on a release it never knew", setup: func(f *fakeProbe) {
+			f.set("/etc/os-release", osRelease("ubuntu", "25.10", "questing", "Ubuntu 25.10"))
+			f.now = time.Date(2029, 1, 1, 0, 0, 0, 0, time.UTC)
+		}, severity: Refuse, unknown: ReasonStale},
+		{name: "a stale table says nothing of a system that is not Debian", setup: func(f *fakeProbe) {
+			f.set("/etc/os-release", "ID=arch\nVERSION_ID=\"rolling\"\n")
+			f.now = time.Date(2029, 1, 1, 0, 0, 0, 0, time.UTC)
+		}, severity: Refuse, title: "This is not Debian or Ubuntu"},
+		{name: "a stale table says nothing of a variant", setup: func(f *fakeProbe) { f.set("/etc/rpi-issue", "x"); f.now = time.Date(2029, 1, 1, 0, 0, 0, 0, time.UTC) }, severity: OK},
 	})
+}
+
+// What the owner reads when the table is stale is that this ReCasaOS is too old, and that it has to be updated:
+// not that the release has no upgrade, and not the generic "could not check".
+func TestATableThatIsStaleIsSaidAsSuch(t *testing.T) {
+	f := newBox(t)
+	debian12(f)
+	f.now = time.Date(2029, 1, 1, 0, 0, 0, 0, time.UTC)
+	got := checkOn(t, f, "unsupported_os")
+	if got.Data["reason"] != "stale" || got.Data["unknown"] != true {
+		t.Fatalf("data = %v", got.Data)
+	}
+	if text := got.Title + " " + got.Detail; !strings.Contains(text, "too old") || strings.Contains(text, "no upgrade") || !strings.Contains(got.Detail, "2026-10-09") || !strings.Contains(got.Detail, "Update") {
+		t.Fatalf("title %q, detail %q", got.Title, got.Detail)
+	}
+	if strings.HasPrefix(got.Title, "Could not check") {
+		t.Fatalf("the title is the generic one: %q", got.Title)
+	}
+	if reasonText[ReasonStale] != "this ReCasaOS is too old to know the releases" {
+		t.Fatalf("the text of the reason is %q", reasonText[ReasonStale])
+	}
+	// a report on such a box is blocked by it, and the other checks are made
+	report := Run(context.Background(), f, Options{})
+	if report.State != StateBlocked || len(report.Checks) < 10 {
+		t.Fatalf("state = %s with %d findings", report.State, len(report.Checks))
+	}
 }
 
 // What the owner reads when the clock is wrong is that it is, in words that say so.

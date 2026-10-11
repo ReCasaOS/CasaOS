@@ -74,6 +74,14 @@ func checkUnsupportedOS(ctx context.Context, p Probe) Result {
 			Detail: "The date of this machine is before " + ossupport.AsOf.Format("2006-01-02") + ", which cannot be: the table of the releases cannot be read against it, so the report cannot say what upgrade this machine has. Set the date (and the time synchronisation of the machine), then check again.",
 			Data:   D{"unknown": true, "reason": ReasonClock, "id": id.ID, "version_id": id.VersionID},
 		}
+	case s.Hop == nil && !s.Latest && ossupport.Stale(p.Now()):
+		// the other end of the table: it was written more than eighteen months ago, and says nothing of what is to
+		// come. The release may well have an upgrade: it is this ReCasaOS that does not know it.
+		return Result{
+			Severity: Refuse, Title: "This ReCasaOS is too old to know the releases",
+			Detail: "The table of the releases that this ReCasaOS carries was written on " + ossupport.AsOf.Format("2006-01-02") + ", more than eighteen months ago, and cannot say what upgrade this machine has. Update ReCasaOS (or set the date of the machine, if it is wrong), then check again.",
+			Data:   D{"unknown": true, "reason": ReasonStale, "id": id.ID, "version_id": id.VersionID},
+		}
 	case s.Hop == nil && !s.Latest:
 		return Result{
 			Severity: Refuse, Title: "There is no upgrade from this release",

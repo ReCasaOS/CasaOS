@@ -8,7 +8,20 @@ import (
 	"io/fs"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
+
+// efiString is the file of an EFI string variable in efivarfs: four bytes of attributes, then the text in UTF-16, little
+// endian, and a NUL at the end.
+func efiString(text string) string {
+	out := []byte{0x06, 0, 0, 0}
+	for _, unit := range utf16.Encode([]rune(text + "\x00")) {
+		out = append(out, byte(unit), byte(unit>>8))
+	}
+	return string(out)
+}
+
+const loaderInfoPath = "/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 
 func TestMergedUsr(t *testing.T) {
 	directory := func(dirs ...string) func(*fakeProbe) {
@@ -112,8 +125,32 @@ func TestBootloader(t *testing.T) {
 		{name: "systemd-boot by its loader.conf, on the ESP at /boot/efi", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set("/boot/efi/loader/loader.conf", "default debian\n") }), severity: Refuse, data: D{"kind": "systemd_boot"}},
 		{name: "systemd-boot by its loader.conf, on the ESP at /efi", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set("/efi/loader/loader.conf", "default debian\n") }), severity: Refuse, data: D{"kind": "systemd_boot"}},
 		{name: "systemd-boot by the variable it sets", setup: after(uefi, espMounted, func(f *fakeProbe) {
-			f.set("/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f", "systemd-boot 252")
+			f.set(loaderInfoPath, efiString("systemd-boot 252.22-1~deb12u1"))
 		}), severity: Refuse, data: D{"kind": "systemd_boot"}},
+		// the variable is the Boot Loader Interface's: GRUB 2.12 writes it too (its bli module), with its own name
+		{name: "the variable GRUB 2.12 sets is not systemd-boot's", setup: after(uefi, espMounted, func(f *fakeProbe) {
+			f.set(loaderInfoPath, efiString("GRUB 2.12-1ubuntu7"))
+		}), severity: OK},
+		{name: "a variable of another loader that mentions systemd-boot is not systemd-boot's", setup: after(uefi, espMounted, func(f *fakeProbe) {
+			f.set(loaderInfoPath, efiString("rEFInd 0.14 (not systemd-boot)"))
+		}), severity: OK},
+		{name: "the name has to start the variable", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, efiString("xsystemd-boot 252")) }), severity: OK},
+		{name: "a variable with no NUL at its end", setup: after(uefi, espMounted, func(f *fakeProbe) {
+			f.set(loaderInfoPath, strings.TrimSuffix(efiString("systemd-boot 252"), "\x00\x00"))
+		}), severity: Refuse, data: D{"kind": "systemd_boot"}},
+		{name: "a variable that is only its attributes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, "\x06\x00\x00\x00") }), severity: OK},
+		{name: "a variable that is shorter than its attributes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, "\x06") }), severity: OK},
+		{name: "a variable of an odd number of bytes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, efiString("GRUB 2.12")+"x") }), severity: OK},
+		{name: "systemd-boot's text in ASCII, with no attributes, is not what the firmware writes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, "systemd-boot 252") }), severity: OK},
+		{name: "GRUB's variable and systemd-boot's package", setup: after(uefi, espMounted, func(f *fakeProbe) {
+			f.set(loaderInfoPath, efiString("GRUB 2.12-1ubuntu7"))
+			f.installed(pkg("systemd-boot", "252")+pkg("grub-efi-amd64", "2.06"), bootloaderPackages...)
+		}), severity: Refuse, data: D{"kind": "systemd_boot"}},
+		{name: "the variable that cannot be read", setup: after(uefi, espMounted, func(f *fakeProbe) {
+			f.set(loaderInfoPath, efiString("GRUB 2.12"))
+			f.fail(loaderInfoPath, &fs.PathError{Op: "read", Path: loaderInfoPath, Err: errors.New("input/output error")})
+		}), severity: Refuse, unknown: ReasonFailed},
+		{name: "the variable that is too large", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, strings.Repeat("x", MaxFileBytes+1)) }), severity: Refuse, unknown: ReasonTooLarge},
 		{name: "a variable of another loader is not systemd-boot's", setup: after(uefi, espMounted, func(f *fakeProbe) {
 			f.set("/sys/firmware/efi/efivars/LoaderEntries-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f", "x")
 		}), severity: OK},
@@ -121,7 +158,7 @@ func TestBootloader(t *testing.T) {
 			f.fail("/boot/loader/loader.conf", &fs.PathError{Op: "stat", Path: "x", Err: fs.ErrPermission})
 		}, severity: Refuse, unknown: ReasonUnreadable},
 		{name: "the variable of systemd-boot that cannot be looked at", setup: func(f *fakeProbe) {
-			f.fail("/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f", &fs.PathError{Op: "stat", Path: "x", Err: fs.ErrPermission})
+			f.fail(loaderInfoPath, &fs.PathError{Op: "stat", Path: "x", Err: fs.ErrPermission})
 		}, severity: Refuse, unknown: ReasonUnreadable},
 		{name: "BIOS, grub-pc with its disk", setup: grubPC(disk, ""), severity: OK},
 		{name: "BIOS, grub-pc with two disks, both there", setup: after(grubPC(disk+", /dev/sda", ""), func(f *fakeProbe) { f.set("/dev/sda", "") }), severity: OK},

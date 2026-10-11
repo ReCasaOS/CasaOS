@@ -680,3 +680,27 @@ func TestTheReportsAsJSON(t *testing.T) {
 		}
 	}
 }
+
+// Stale is the rule of the table that Evaluate uses, said for whoever asks what the table can say: after eighteen
+// months, it is the table that is old, and the release that is not to blame. A clock before the table is not
+// stale: it is wrong (BeforeTable).
+func TestTheTableIsStaleOnlyAfterEighteenMonthsAndMovesWithAsOf(t *testing.T) {
+	for now, want := range map[string]bool{
+		"2026-10-09": false, "2027-10-09": false, "2028-04-09": false, "2028-04-10": true, "2029-01-01": true, "2040-01-01": true,
+		"2026-10-08": false, "1970-01-01": false,
+	} {
+		if got := Stale(day(t, now)); got != want {
+			t.Errorf("Stale(%s) = %v, want %v", now, got, want)
+		}
+	}
+	if !Stale(day(t, "2028-04-09").Add(24 * time.Hour)) {
+		t.Error("the first instant of the day after the last one is stale")
+	}
+	if Stale(day(t, "2028-04-09").Add(24*time.Hour - time.Second)) {
+		t.Error("the last second of the last day is not stale")
+	}
+	asOf(t, "2026-12-30")
+	if Stale(day(t, "2028-06-30")) || !Stale(day(t, "2028-07-01")) {
+		t.Error("the day it goes stale on moves with AsOf")
+	}
+}
