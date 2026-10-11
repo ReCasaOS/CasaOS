@@ -51,7 +51,7 @@ func TestOnlyTheReadingFormsOfTheAllowedCommandsAreAllowed(t *testing.T) {
 		{"stat", "-fc", "%T", "/sys/fs/cgroup"}, {"findmnt", "-n", "-o", "SOURCE", "/"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/boot"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/"},
 		{"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda1"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/mapper/vg0-root"}, {"uname", "-r"},
 		{"smartctl", "-n", "standby", "-H", "/dev/sda"}, {"modinfo", "-n", "r8168"}, {"dkms", "status"}, {"mokutil", "--sb-state"}, {"pveversion"},
-		{"docker", "info", "--format", dockerpkg.DaemonInfoFormat}, {"docker", "ps", "-q"},
+		{"docker", "info", "--format", dockerpkg.DaemonInfoFormat}, {"docker", "ps", "-q"}, {"docker", "--version"},
 		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789ab"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789ab", strings.Repeat("f", 64)},
 		{"snap", "list"}, {"snap", "list", "docker"},
 	} {
@@ -76,6 +76,8 @@ func TestOnlyTheReadingFormsOfTheAllowedCommandsAreAllowed(t *testing.T) {
 		{"smartctl", "-H", "-n", "standby", "/dev/sda"}, {"smartctl", "-n", "standby,", "-H", "/dev/sda"}, {"smartctl", "-n", "standby", "-H", "/dev/sda", "/dev/sdb"}, {"smartctl", "-n", "standby", "-X", "/dev/sda"},
 		{"smartctl", "-n", "standby", "-a", "/dev/sda"}, {"smartctl", "-X", "/dev/sda"}, {"smartctl", "-n", "standby", "-H", "/etc/passwd"}, {"smartctl", "-n", "standby", "-H", "/dev/sda;x"},
 		{"modinfo", "-n", "../x"}, {"modinfo", "x"}, {"modinfo", "-k", "x"}, {"modinfo", "-F", "x"}, {"modinfo", "-0", "x"}, {"modinfo", "-k", "x", "y"}, {"modinfo", "-k", "x", "-n", "y"}, {"modinfo", "-n", "x", "y"}, {"modinfo", "-n"}, {"modinfo"}, {"dkms", "install", "x"}, {"dkms", "remove", "x"}, {"mokutil", "--import", "x"}, {"mokutil", "--disable-validation"},
+		// the client's version is the one question that asks no daemon, and in its one form
+		{"docker", "--version", "x"}, {"docker", "-v"}, {"docker", "version"}, {"docker", "--help"}, {"docker", "--version", "--format", "x"}, {"docker", "--host", "tcp://x:2375", "--version"}, {"docker", "-H", "x", "info"},
 		{"docker", "rm", "x"}, {"docker", "run", "x"}, {"docker", "exec", "x", "sh"}, {"docker", "stop", "x"}, {"docker", "system", "prune"}, {"docker"},
 		{"docker", "info"}, {"docker", "info", "--format", "{{json .}}"}, {"docker", "ps"}, {"docker", "ps", "-a"}, {"docker", "ps", "-q", "-a"}, {"docker", "inspect", "--format", "x", "0123456789ab"},
 		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "--all"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "-s", "0123456789ab"},

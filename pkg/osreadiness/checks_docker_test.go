@@ -37,12 +37,24 @@ func TestDockerSwarm(t *testing.T) {
 		{name: "a state in capitals is not a word of the daemon's", setup: func(f *fakeProbe) { f.on(daemonInfo("Inactive"), 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
 		{name: "a state that is not a word", setup: func(f *fakeProbe) { f.on(daemonInfo("inactive;reboot"), 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
 		{name: "a state that is a very long word", setup: func(f *fakeProbe) { f.on(daemonInfo(strings.Repeat("a", 100)), 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
-		{name: "a service that is stopped is no swarm, and the daemon is not asked", setup: dockerService("inactive", "loaded"), severity: OK},
-		{name: "a daemon that does not answer is not a swarm", setup: func(f *fakeProbe) {
+		// a service that does not run is a daemon that is not asked (it would start): the report says it did not look
+		{name: "a service that is stopped: the swarm is not looked at, and the report says so", setup: dockerService("inactive", "loaded"), severity: Info, data: D{"why": "not_running"}, action: ActionNone, title: "not running"},
+		{name: "a service that has failed", setup: dockerService("failed", "loaded"), severity: Info, data: D{"why": "not_running"}},
+		{name: "a service that is masked", setup: dockerService("inactive", "masked"), severity: Info, data: D{"why": "not_running"}},
+		{name: "a service that is stopped, and only the docker command is there", setup: onlyTheClient, severity: Info, data: D{"why": "not_running"}},
+		{name: "a service that is stopped, and only the socket of a daemon is there", setup: onlyTheSocket, severity: Info, data: D{"why": "not_running"}},
+		// a daemon whose service runs and that gives no answer that can be read is a machine this check could not look at:
+		// it may be a swarm's node that is wedged, or one that is still restoring its containers
+		{name: "a service that runs and a daemon that does not answer", setup: func(f *fakeProbe) {
 			f.on("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n", 1, argvDockerInfo...)
-		}, severity: OK},
-		{name: "a docker command that says something that is not an answer", setup: func(f *fakeProbe) { f.on("<html>nope</html>\n", 0, argvDockerInfo...) }, severity: OK},
-		{name: "no Docker", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvDockerInfo...) }, severity: OK},
+		}, severity: Refuse, unknown: ReasonFailed},
+		{name: "a service that is starting and a daemon that does not answer yet", setup: after(dockerService("activating", "loaded"), func(f *fakeProbe) { f.on("", 1, argvDockerInfo...) }), severity: Refuse, unknown: ReasonFailed},
+		{name: "a service that is being reloaded and a daemon that does not answer", setup: after(dockerService("reloading", "loaded"), func(f *fakeProbe) { f.on("", 1, argvDockerInfo...) }), severity: Refuse, unknown: ReasonFailed},
+		{name: "a daemon that says it is fine and exits with a failure", setup: func(f *fakeProbe) { f.on(daemonInfo("active"), 1, argvDockerInfo...) }, severity: Refuse, unknown: ReasonFailed},
+		{name: "a docker command that says something that is not an answer", setup: func(f *fakeProbe) { f.on("<html>nope</html>\n", 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "a docker command that says nothing", setup: func(f *fakeProbe) { f.on("", 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "a service that runs and no docker command to ask it with", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvDockerInfo...) }, severity: Refuse, unknown: ReasonToolMissing},
+		{name: "no Docker", setup: noDocker, severity: OK},
 		{name: "a daemon that hangs", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvDockerInfo...) }, severity: Refuse, unknown: ReasonTimeout},
 		{name: "a docker command that breaks", setup: func(f *fakeProbe) { f.onError(errors.New("boom"), argvDockerInfo...) }, severity: Refuse, unknown: ReasonFailed},
 	})
@@ -90,10 +102,12 @@ func TestTheStateOfTheDockerServiceCanBeUnknown(t *testing.T) {
 				{name: "systemctl that does not answer", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvUnit(dockerUnit)...) }, severity: Refuse, unknown: ReasonTimeout},
 				{name: "a state that is none of systemd's", setup: func(f *fakeProbe) { f.on("sleeping\n", 0, argvUnit(dockerUnit)...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
 				{name: "a state that is nothing", setup: func(f *fakeProbe) { f.on("", 0, argvUnit(dockerUnit)...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
-				{name: "a service that is stopped and whose load cannot be said", setup: func(f *fakeProbe) {
-					f.on("inactive\n", 0, argvUnit(dockerUnit)...)
-					f.onError(context.DeadlineExceeded, "systemctl", "show", dockerUnit, "--property=LoadState", "--value")
-				}, severity: Refuse, unknown: ReasonTimeout},
+				// the client's own version is asked when the service does not run, to know whether there is a Docker at all
+				{name: "a service that is stopped and a client that does not answer", setup: after(dockerService("inactive", "loaded"), func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvDockerVersion...) }), severity: Refuse, unknown: ReasonTimeout},
+				{name: "a service that is stopped and a client that breaks", setup: after(dockerService("inactive", "loaded"), func(f *fakeProbe) { f.onError(errors.New("boom"), argvDockerVersion...) }), severity: Refuse, unknown: ReasonFailed},
+				{name: "a service that is stopped, a client that is not there and a socket that cannot be looked at", setup: after(noDocker, func(f *fakeProbe) {
+					f.fail(dockerSocket, &fs.PathError{Op: "stat", Path: dockerSocket, Err: fs.ErrPermission})
+				}), severity: Refuse, unknown: ReasonUnreadable},
 			})
 		})
 	}
@@ -113,17 +127,25 @@ func TestDockerOrigin(t *testing.T) {
 			f.installed(pkg("docker-ce", dockerVersion)+pkg("docker.io", "20.10.24"), "docker-ce", "docker.io")
 		}, severity: OK},
 		{name: "the snap", setup: after(noEngine, func(f *fakeProbe) { f.on("Name    Version  Rev\ndocker  27.5.1   3265\n", 0, "snap", "list", "docker") }), severity: Refuse, data: D{"origin": "snap"}},
-		{name: "snap that has no Docker, and no docker command", setup: after(noEngine, func(f *fakeProbe) {
+		{name: "snap that has no Docker, and no docker command", setup: after(noEngine, noDocker, func(f *fakeProbe) {
 			f.on("error: no matching snaps installed\n", 1, "snap", "list", "docker")
-			f.onError(ErrToolMissing, argvDockerInfo...)
 		}), severity: OK, data: D{"installed": false}},
-		{name: "no Docker at all", setup: after(noEngine, func(f *fakeProbe) { f.onError(ErrToolMissing, argvDockerInfo...) }), severity: OK, data: D{"installed": false}},
+		{name: "no Docker at all", setup: after(noEngine, noDocker), severity: OK, data: D{"installed": false}},
+		// a Docker that no package and no snap brought, found by its client or its socket and not by its service:
+		// one that was put by hand, run by a unit of another name, or a shim of another engine (podman-docker)
 		{name: "a docker command that no package brought", setup: noEngine, severity: Refuse, data: D{"origin": "unknown"}},
+		{name: "a docker command that no package brought, whose service is not running", setup: after(noEngine, dockerService("inactive", "not-found")), severity: Refuse, data: D{"origin": "unknown"}},
+		{name: "a docker command that no package brought, and no service of Docker at all", setup: after(noEngine, onlyTheClient), severity: Refuse, data: D{"origin": "unknown"}},
+		{name: "a docker command that prints something else than a version and fails", setup: after(noEngine, onlyTheClient, func(f *fakeProbe) { f.on("Error\n", 2, argvDockerVersion...) }), severity: Refuse, data: D{"origin": "unknown"}},
+		{name: "a socket and no docker command, no package, no snap", setup: after(noEngine, onlyTheSocket), severity: Refuse, data: D{"origin": "unknown"}},
+		{name: "a socket that cannot be looked at", setup: after(noEngine, noDocker, func(f *fakeProbe) {
+			f.fail(dockerSocket, &fs.PathError{Op: "stat", Path: dockerSocket, Err: fs.ErrPermission})
+		}), severity: Refuse, unknown: ReasonUnreadable},
+		{name: "a docker command that does not answer its version", setup: after(noEngine, func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvDockerVersion...) }), severity: Refuse, unknown: ReasonTimeout},
 		{name: "dpkg-query that fails", setup: func(f *fakeProbe) { f.on("x", 2, argvQuery("docker-ce", "docker.io")...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "apt-cache that fails", setup: func(f *fakeProbe) { f.on("E: broken\n", 100, aptPolicyArgs("docker-ce")...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "no apt-cache", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, aptPolicyArgs("docker-ce")...) }, severity: Refuse, unknown: ReasonToolMissing},
 		{name: "a snap command that hangs", setup: after(noEngine, func(f *fakeProbe) { f.onError(context.DeadlineExceeded, "snap", "list", "docker") }), severity: Refuse, unknown: ReasonTimeout},
-		{name: "a docker command that hangs, for a Docker no package brought", setup: after(noEngine, func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvDockerInfo...) }), severity: Refuse, unknown: ReasonTimeout},
 	})
 }
 
@@ -136,7 +158,10 @@ func TestDockerDown(t *testing.T) {
 		{name: "a daemon that says nothing", setup: func(f *fakeProbe) { f.on("", 0, argvDockerInfo...) }, severity: Warn},
 		{name: "a daemon whose answer is not its version", setup: func(f *fakeProbe) { f.on(`{"ServerVersion":"<b>","SwarmState":"inactive"}`+"\n", 0, argvDockerInfo...) }, severity: Warn},
 		{name: "a daemon that says it is fine and exits with a failure", setup: func(f *fakeProbe) { f.on(daemonInfo("inactive"), 1, argvDockerInfo...) }, severity: Warn},
-		{name: "no Docker, so none that is down", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvDockerInfo...) }, severity: OK},
+		{name: "no Docker, so none that is down", setup: noDocker, severity: OK},
+		{name: "a service that runs and no docker command to ask it with", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvDockerInfo...) }, severity: Refuse, unknown: ReasonToolMissing},
+		{name: "a docker command, and no service: the daemon is down", setup: onlyTheClient, severity: Warn, action: ActionNone},
+		{name: "a socket, and no service of Docker: the daemon is down", setup: onlyTheSocket, severity: Warn},
 		{name: "a daemon that hangs", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvDockerInfo...) }, severity: Refuse, unknown: ReasonTimeout},
 		// a service that is not running is a daemon that is down, and the daemon is not asked (it would start)
 		{name: "a service that is stopped", setup: dockerService("inactive", "loaded"), severity: Warn, action: ActionNone},
@@ -148,7 +173,7 @@ func TestDockerDown(t *testing.T) {
 		}), severity: Warn},
 		{name: "a service that is starting, and a daemon that answers", setup: dockerService("activating", "loaded"), severity: OK},
 		{name: "a service that is being reloaded, and a daemon that answers", setup: dockerService("reloading", "loaded"), severity: OK},
-		{name: "no service of Docker at all", setup: dockerService("inactive", "not-found"), severity: OK},
+		{name: "no service of Docker at all, and no client or socket", setup: noDocker, severity: OK},
 	})
 }
 
@@ -250,8 +275,10 @@ func TestContainersPolicy(t *testing.T) {
 			f.on(inspected("web", "no", false), 0, inspectArgv(fmt.Sprintf("%012x", 1))...)
 		}, severity: Warn, data: D{"names": []string{"web"}}},
 		{name: "ps that lists nothing valid", setup: func(f *fakeProbe) { f.on("--all\n", 0, argvDockerPs...) }, severity: OK},
-		{name: "a daemon that is down: no container runs", setup: func(f *fakeProbe) { f.on("", 1, argvDockerInfo...) }, severity: OK},
-		{name: "no Docker", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvDockerInfo...) }, severity: OK},
+		{name: "a daemon that is down, as its service says: the report did not look", setup: dockerService("inactive", "loaded"), severity: Info, data: D{"why": "not_running"}, action: ActionNone, title: "not running"},
+		{name: "a daemon whose service runs and that does not answer", setup: func(f *fakeProbe) { f.on("", 1, argvDockerInfo...) }, severity: Refuse, unknown: ReasonFailed},
+		{name: "a daemon whose service runs and whose answer is not one", setup: func(f *fakeProbe) { f.on("<b>?</b>\n", 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "no Docker", setup: noDocker, severity: OK},
 		{name: "ps that fails", setup: func(f *fakeProbe) { f.on("Error\n", 1, argvDockerPs...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "ps whose list was cut", setup: func(f *fakeProbe) { f.onTruncated(fmt.Sprintf("%012x\n", 1), argvDockerPs...) }, severity: Refuse, unknown: ReasonTooLarge},
 		{name: "ps that hangs", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvDockerPs...) }, severity: Refuse, unknown: ReasonTimeout},
@@ -287,8 +314,10 @@ func TestContainersPorts(t *testing.T) {
 		{name: "a container on the machine's network", setup: running(inspected("homeassistant", "always", true)), severity: Warn, data: D{"names": []string{"homeassistant"}, "ports": []string{}, "host_network": true}},
 		{name: "one that is, and one that is not", setup: running(inspected("a", "always", true), inspected("b", "always", false, "9000/tcp:9000")), severity: Warn, data: D{"names": []string{"a"}}},
 		{name: "container port 80 on another host port, and host port 80 for another container port", setup: running(inspected("a", "always", false, "80/tcp:8080"), inspected("b", "always", false, "8080/tcp:80")), severity: Warn, data: D{"names": []string{"b"}, "ports": []string{"80"}}},
-		{name: "a daemon that is down", setup: func(f *fakeProbe) { f.on("", 1, argvDockerInfo...) }, severity: OK},
-		{name: "no Docker", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvDockerInfo...) }, severity: OK},
+		{name: "a daemon that is down, as its service says: the report did not look", setup: dockerService("inactive", "loaded"), severity: Info, data: D{"why": "not_running"}, action: ActionNone, title: "not running"},
+		{name: "a daemon whose service runs and that does not answer", setup: func(f *fakeProbe) { f.on("", 1, argvDockerInfo...) }, severity: Refuse, unknown: ReasonFailed},
+		{name: "a daemon whose service runs and whose answer is not one", setup: func(f *fakeProbe) { f.on("<b>?</b>\n", 0, argvDockerInfo...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "no Docker", setup: noDocker, severity: OK},
 		{name: "ps that fails", setup: func(f *fakeProbe) { f.on("", 1, argvDockerPs...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "inspect that has no tool", setup: func(f *fakeProbe) {
 			f.on(fmt.Sprintf("%012x\n", 1), 0, argvDockerPs...)

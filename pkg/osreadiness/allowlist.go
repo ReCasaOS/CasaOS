@@ -138,10 +138,13 @@ var allowed = map[string]func([]string) bool{
 	"dkms":       exact([]string{"status"}),
 	"mokutil":    exact([]string{"--sb-state"}),
 	"pveversion": anything,
-	// the daemon's own answers, in the forms that only read: its info, the ids of the running
-	// containers, and what inspect says of some of them
+	// the client's own version (it asks no daemon, and says there is a docker command), and the daemon's own
+	// answers, in the forms that only read: its info, the ids of the running containers, and what inspect says
+	// of some of them
 	"docker": func(args []string) bool {
 		switch {
+		case slices.Equal(args, []string{"--version"}):
+			return true
 		case slices.Equal(args, []string{"info", "--format", dockerpkg.DaemonInfoFormat}), slices.Equal(args, []string{"ps", "-q"}):
 			return true
 		case len(args) >= 4 && len(args) <= 3+maxInspected && args[0] == "inspect" && args[1] == "--format" && args[2] == dockerpkg.ContainerInspectFormat:

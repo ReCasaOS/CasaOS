@@ -75,17 +75,49 @@ func findEngine(ctx context.Context, p Probe) (engine, error) {
 	return engine{}, nil
 }
 
-// A daemon is what "docker info" says: that there is a docker at all, that a daemon answers it, and what it
-// says of itself (its swarm's state, as the daemon says it).
+// A daemon is what the report knows of Docker's daemon: whether there is a Docker at all (Tool), whether its
+// service runs and the daemon was asked (Active), whether it answered (Running), and what it says of itself (its
+// swarm's state, as the daemon says it).
 type daemon struct {
-	Tool, Running bool
-	SwarmState    string
+	Tool, Active, Running bool
+	SwarmState            string
+	// Err is why a daemon that was asked gave no answer that can be read (it failed, or said something that is not
+	// what it says): the checks that need its answer could not look, docker_down says it is down.
+	Err error
 }
 
 // dockerUnit is the service of Docker's daemon. Docker's socket is a unit of its own that starts the service
 // at the first connection of a client: the daemon is asked only when the service runs, since asking a
 // stopped one would start it, and with it the containers that have a restart policy.
 const dockerUnit = "docker.service"
+
+// dockerSocket is where the daemon of Docker listens.
+const dockerSocket = "/run/docker.sock"
+
+// dockerThere says whether there is a Docker on the box, from its client or its socket, and without asking a
+// daemon, so without starting one: the command answers its own version, and the socket is a file that is there or
+// not. A box where the service of Docker is of another name, or none (a tarball's dockerd run by hand, a shim of
+// another engine) has one of the two. A client that ran, whatever it said, is a client.
+func dockerThere(ctx context.Context, p Probe) (bool, error) {
+	_, err := p.Run(ctx, "docker", "--version")
+	switch {
+	case err == nil:
+		return true, nil
+	case !isToolMissing(err):
+		return false, err
+	}
+	return exists(ctx, p, dockerSocket)
+}
+
+// notRunning is the finding of a check that looks at what a daemon says, on a box whose Docker is there and whose
+// service does not run: the daemon is not asked (it would start), so the check says it did not look, and why.
+func notRunning(what string) Result {
+	return Result{
+		Severity: Info, Title: "Not checked: Docker is not running",
+		Detail: "The Docker daemon is not running, and asking it would start it, which a report does not do: " + what + " was not looked at. Start Docker and check again.",
+		Data:   D{"why": "not_running"}, Action: ActionNone,
+	}
+}
 
 // unitProperty is a property of a unit, as systemctl show says it (one line).
 func unitProperty(ctx context.Context, p Probe, unit, property string) (string, error) {
@@ -99,9 +131,11 @@ func unitProperty(ctx context.Context, p Probe, unit, property string) (string, 
 	return firstLine(out.Text), nil
 }
 
-// askDaemon asks the daemon how it is. A service that does not run is a daemon that is down, and the daemon
-// is not asked; one that does not answer (the command is refused) is down as well; one that does not answer
-// in time is an error of the check.
+// askDaemon asks the daemon how it is. A service that does not run is a daemon that is not asked (and is down, if
+// there is a Docker at all: Tool); one that runs or starts is asked, and one that then does not answer, or answers
+// what is not understood, is a daemon whose answer is not known (Err). A daemon that does not answer in time, a
+// docker command that is not there for a service that runs, and a service whose state cannot be said, are
+// errors of the check.
 func askDaemon(ctx context.Context, p Probe) (daemon, error) {
 	state, err := unitProperty(ctx, p, dockerUnit, "ActiveState")
 	if err != nil {
@@ -111,39 +145,40 @@ func askDaemon(ctx context.Context, p Probe) (daemon, error) {
 	case "active", "activating", "reloading":
 		// the daemon runs or is starting: it can be asked, and asking it starts nothing
 	case "inactive", "failed", "deactivating", "maintenance":
-		// there is a Docker when its service has a unit file (one that is masked is one that is there)
-		load, err := unitProperty(ctx, p, dockerUnit, "LoadState")
-		if err != nil {
-			return daemon{}, err
-		}
-		return daemon{Tool: load != "not-found"}, nil
+		there, err := dockerThere(ctx, p)
+		return daemon{Tool: there}, err
 	default:
 		return daemon{}, errUnexpectedOutput
 	}
+	d := daemon{Tool: true, Active: true}
 	out, err := p.Run(ctx, "docker", "info", "--format", dockerpkg.DaemonInfoFormat)
-	if isToolMissing(err) {
-		return daemon{}, nil
-	}
 	if err != nil {
 		return daemon{}, err
 	}
 	if out.ExitCode != 0 {
-		return daemon{Tool: true}, nil
+		d.Err = errToolFailed
+		return d, nil
 	}
 	info, err := dockerpkg.ParseDaemonInfo(out.Text)
 	if err != nil {
-		return daemon{Tool: true}, nil
+		d.Err = errUnexpectedOutput
+		return d, nil
 	}
-	return daemon{Tool: true, Running: true, SwarmState: info.SwarmState}, nil
+	d.Running, d.SwarmState = true, info.SwarmState
+	return d, nil
 }
 
 func checkDockerSwarm(ctx context.Context, p Probe) Result {
 	d, err := askDaemon(ctx, p)
-	if err != nil {
+	switch {
+	case err != nil:
 		return unknownFor(err)
-	}
-	if !d.Running {
+	case !d.Tool:
 		return pass()
+	case !d.Active:
+		return notRunning("whether the machine is part of a swarm")
+	case d.Err != nil:
+		return unknownFor(d.Err)
 	}
 	// a node is of a swarm in every state of its swarm but "inactive" (or none): it has joined one, it is
 	// about to, it is locked after a restart, or its swarm is in error, and the restarts of the upgrade reach
@@ -167,12 +202,13 @@ func checkDockerOrigin(ctx context.Context, p Probe) Result {
 		return unknown(err)
 	}
 	if found.Origin == "" {
-		// a docker that no package and no snap brought was put there by hand
-		d, err := askDaemon(ctx, p)
+		// a docker that no package and no snap brought was put there by hand: found by its client or its socket,
+		// and not by its service, which may be of another name
+		there, err := dockerThere(ctx, p)
 		if err != nil {
-			return unknownFor(err)
+			return unknown(err)
 		}
-		if !d.Tool {
+		if !there {
 			return Result{Severity: OK, Data: D{"installed": false}}
 		}
 		found.Origin = dockerpkg.OriginUnknown
@@ -237,12 +273,25 @@ func checkDockerUpdatePending(ctx context.Context, p Probe) Result {
 	}
 }
 
-// containers are the containers that run now; nil when there is no daemon to ask.
-func containers(ctx context.Context, p Probe) ([]dockerpkg.Container, error) {
+// containers are the containers that run now; nil when there is no Docker to ask, and then stopped is true when it is there and
+// not running (the daemon is not asked: the checks say they did not look).
+func containers(ctx context.Context, p Probe) (list []dockerpkg.Container, stopped bool, err error) {
 	d, err := askDaemon(ctx, p)
-	if err != nil || !d.Running {
-		return nil, err
+	switch {
+	case err != nil:
+		return nil, false, err
+	case !d.Tool:
+		return nil, false, nil
+	case !d.Active:
+		return nil, true, nil
+	case d.Err != nil:
+		return nil, false, d.Err
 	}
+	list, err = runningContainers(ctx, p)
+	return list, false, err
+}
+
+func runningContainers(ctx context.Context, p Probe) ([]dockerpkg.Container, error) {
 	out, err := p.Run(ctx, "docker", "ps", "-q")
 	if err != nil {
 		return nil, err
@@ -296,9 +345,12 @@ func containerNames(list []dockerpkg.Container) []string {
 // restart of the daemon or of the machine (its documentation says so). Left as it is; the owner decides later
 // whether it is to be named too.
 func checkContainersPolicy(ctx context.Context, p Probe) Result {
-	list, err := containers(ctx, p)
-	if err != nil {
+	list, stopped, err := containers(ctx, p)
+	switch {
+	case err != nil:
 		return unknownFor(err)
+	case stopped:
+		return notRunning("which containers would not start again")
 	}
 	var wontReturn []dockerpkg.Container
 	for _, c := range list {
@@ -320,9 +372,12 @@ func checkContainersPolicy(ctx context.Context, p Probe) Result {
 var servicePorts = []int{53, 80, 443}
 
 func checkContainersPorts(ctx context.Context, p Probe) Result {
-	list, err := containers(ctx, p)
-	if err != nil {
+	list, stopped, err := containers(ctx, p)
+	switch {
+	case err != nil:
 		return unknownFor(err)
+	case stopped:
+		return notRunning("which containers publish the ports of a DNS or a web server")
 	}
 	var serving []dockerpkg.Container
 	var ports []int

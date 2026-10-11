@@ -142,9 +142,13 @@ func TestAToolThatIsNotThereIsAnAnswerAtOnce(t *testing.T) {
 	if time.Since(started) > 2*time.Second {
 		t.Fatalf("the report took %v", time.Since(started))
 	}
-	// no docker is no daemon that is down, and no apps; no systemd-detect-virt is a machine that is looked at in other ways
-	for _, code := range []string{"docker_swarm", "docker_down", "containers_policy", "containers_ports", "container"} {
-		if got := findingOf(t, report, code); got.Severity != OK {
+	// no systemd-detect-virt is a machine that is looked at in other ways
+	if got := findingOf(t, report, "container"); got.Severity != OK {
+		t.Errorf("container = %+v", got)
+	}
+	// a service of Docker that runs and a docker command that is not there is a daemon that cannot be asked
+	for _, code := range []string{"docker_swarm", "docker_down", "containers_policy", "containers_ports"} {
+		if got := findingOf(t, report, code); got.Severity != Refuse || got.Data["reason"] != ReasonToolMissing {
 			t.Errorf("%s = %+v", code, got)
 		}
 	}

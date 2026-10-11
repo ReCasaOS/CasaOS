@@ -2,6 +2,7 @@ package osreadiness
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
@@ -13,6 +14,8 @@ var (
 	argvCgroup     = []string{"stat", "-fc", "%T", "/sys/fs/cgroup"}
 	argvDockerInfo = []string{"docker", "info", "--format", dockerpkg.DaemonInfoFormat}
 	argvDockerPs   = []string{"docker", "ps", "-q"}
+	// the client's own version, which asks no daemon
+	argvDockerVersion = []string{"docker", "--version"}
 )
 
 func argvLsblk(device string) []string {
@@ -96,6 +99,7 @@ func furnish(f *fakeProbe) {
 	f.installed(pkg("docker-ce", dockerVersion), "docker-ce", "docker.io")
 	f.on(dockerPolicy(dockerVersion, dockerVersion), 0, aptPolicyArgs("docker-ce")...)
 	f.on("active\n", 0, argvUnit(dockerUnit)...)
+	f.on("Docker version 28.0.4, build b8034c0\n", 0, argvDockerVersion...)
 	f.on(daemonInfo("inactive"), 0, argvDockerInfo...)
 	f.on("", 0, argvDockerPs...)
 }
@@ -109,12 +113,32 @@ func dockerService(state, load string) func(*fakeProbe) {
 	}
 }
 
-// dockerWasNotAsked says whether the machine was not asked anything of the Docker daemon.
+// dockerWasNotAsked says whether the machine was not asked anything of the Docker daemon: the client's own
+// version is not a question to it.
 func dockerWasNotAsked(f *fakeProbe) bool {
 	for _, argv := range f.attemptedCommands() {
-		if argv[0] == "docker" {
+		if argv[0] == "docker" && !slices.Equal(argv, argvDockerVersion) {
 			return false
 		}
 	}
 	return true
+}
+
+// noDocker is a machine with no Docker: no client, no socket, and no service of it.
+func noDocker(f *fakeProbe) {
+	f.onError(ErrToolMissing, argvDockerVersion...)
+	f.remove(dockerSocket)
+	dockerService("inactive", "not-found")(f)
+}
+
+// onlyTheClient is a machine that has the docker command, and no socket and no service.
+func onlyTheClient(f *fakeProbe) {
+	noDocker(f)
+	f.on("Docker version 28.0.4, build b8034c0\n", 0, argvDockerVersion...)
+}
+
+// onlyTheSocket is a machine that has the socket of a daemon, and no docker command and no service of its own.
+func onlyTheSocket(f *fakeProbe) {
+	noDocker(f)
+	f.set(dockerSocket, "")
 }
