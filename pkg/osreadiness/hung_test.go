@@ -31,7 +31,7 @@ func quick(timeout time.Duration) []Check {
 
 // hungCodes are the checks that ask the commands that hang in these tests, and so cannot answer.
 var hungCommands = [][]string{
-	argvDockerInfo, aptCheckArgs, argvSmart("/dev/sda"), argvVerify, argvLsblk("/dev/sda1"), argvAudit, argvForeign, argvContainer,
+	argvDockerInfo, aptCheckArgs, argvSmart("/dev/sda"), argvLsblk("/dev/sda1"), argvAudit, argvForeign, argvContainer,
 }
 
 var hungCodes = []string{
@@ -41,8 +41,6 @@ var hungCodes = []string{
 	"broken_dpkg",
 	// smartctl, lsblk
 	"smart_failed", "root_luks",
-	// findmnt --verify
-	"fstab_network",
 	// dpkg --print-foreign-architectures
 	"foreign_arch",
 	// systemd-detect-virt --container
@@ -150,7 +148,7 @@ func TestAToolThatIsNotThereIsAnAnswerAtOnce(t *testing.T) {
 			t.Errorf("%s = %+v", code, got)
 		}
 	}
-	for _, code := range []string{"broken_dpkg", "fstab_network", "foreign_arch", "root_luks", "smart_failed"} {
+	for _, code := range []string{"broken_dpkg", "foreign_arch", "root_luks", "smart_failed"} {
 		if got := findingOf(t, report, code); got.Severity != Refuse || got.Data["reason"] != ReasonToolMissing {
 			t.Errorf("%s = %+v", code, got)
 		}

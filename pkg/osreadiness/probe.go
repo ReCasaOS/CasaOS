@@ -1,7 +1,9 @@
 // Package osreadiness says whether this machine could be upgraded to the next release of its
 // operating system, and why not. It is a report and nothing else: it changes nothing on the
 // machine. It writes nothing under /etc, /var/lib/dpkg, /var/lib/apt or /var/cache/apt, takes no
-// lock, starts and stops no service, and makes no request to the network.
+// lock, starts and stops no service, and makes no request to the network. One tool leaves a
+// transient trace that is said here and in the allow-list: dkms 3.x makes and removes a file in
+// $TMPDIR while "dkms status" runs.
 //
 // That is a property of the seam, not a promise of the checks: a check sees the machine only
 // through a Probe, which has no method that writes, creates, removes or starts anything, and the

@@ -163,10 +163,6 @@ func TestTheParsersOfToolOutputAreBoundedAndStrict(t *testing.T) {
 					t.Errorf("an entry that is not one: %+v", e)
 				}
 			}
-			errs, warnings, _ := verifyFindings(Output{Text: payload})
-			if errs < 0 || warnings < 0 {
-				t.Errorf("verifyFindings = %d, %d", errs, warnings)
-			}
 			if out := smartHealth(Output{Text: payload}); out == smartFailed && !strings.Contains(payload, "FAILED") {
 				t.Errorf("a disk that fails, on %q", payload[:min(40, len(payload))])
 			}

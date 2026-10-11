@@ -1,7 +1,6 @@
 package osreadiness
 
 import (
-	"context"
 	"io/fs"
 	"reflect"
 	"strings"
@@ -69,33 +68,52 @@ func TestFstabUnresolved(t *testing.T) {
 }
 
 func TestFstabNetwork(t *testing.T) {
-	verify := func(text string, exit int) func(*fakeProbe) {
-		return func(f *fakeProbe) { f.on(text, exit, argvVerify...) }
-	}
 	runScenarios(t, "fstab_network", []scenario{
 		{name: "nothing to look at", severity: OK},
-		{name: "an NFS share with no _netdev", setup: fstab("nas:/export /mnt/nas nfs defaults 0 0"), severity: Warn, data: D{"mounts": []string{"/mnt/nas"}, "count": 1, "verify_errors": 0, "verify_warnings": 0}, action: ActionNone},
+		{name: "an NFS share with no _netdev", setup: fstab("nas:/export /mnt/nas nfs defaults 0 0"), severity: Warn, data: D{"mounts": []string{"/mnt/nas"}, "count": 1}, action: ActionNone},
 		{name: "NFS 4 and CIFS", setup: fstab("nas:/a /mnt/a nfs4 defaults 0 0", "//nas/b /mnt/b cifs credentials=/root/c 0 0"), severity: Warn, data: D{"mounts": []string{"/mnt/a", "/mnt/b"}, "count": 2}},
+		{name: "every kind of network share", setup: fstab(
+			"a:/x /mnt/nfs nfs defaults 0 0", "a:/x /mnt/nfs4 nfs4 defaults 0 0", "//a/x /mnt/cifs cifs defaults 0 0", "//a/x /mnt/smb3 smb3 defaults 0 0", "//a/x /mnt/smbfs smbfs defaults 0 0",
+			"a:/x /mnt/sshfs sshfs defaults 0 0", "a:/x /mnt/fusesshfs fuse.sshfs defaults 0 0", "a:/x /mnt/gluster glusterfs defaults 0 0", "a:/x /mnt/ceph ceph defaults 0 0", "share /mnt/nine 9p defaults 0 0",
+		), severity: Warn, data: D{"count": 10}},
+		{name: "a 9p share with _netdev", setup: fstab("share /mnt/nine 9p defaults,_netdev 0 0"), severity: OK},
 		{name: "an NFS share with _netdev", setup: fstab("nas:/export /mnt/nas nfs defaults,_netdev 0 0"), severity: OK},
 		{name: "an NFS share with nofail", setup: fstab("nas:/export /mnt/nas nfs defaults,nofail 0 0"), severity: OK},
 		{name: "an NFS share that is not mounted at start", setup: fstab("nas:/export /mnt/nas nfs noauto 0 0", "nas:/b /mnt/b nfs x-systemd.automount 0 0"), severity: OK},
 		{name: "a share in a user's directory", setup: fstab("nas:/export /home/alice/nas nfs defaults 0 0"), severity: Warn, data: D{"mounts": []string{"/home/_/nas"}}},
 		{name: "a local disk is not a share", setup: fstab("UUID=x /data ext4 defaults 0 2"), severity: OK},
 		{name: "a share that is commented out", setup: fstab("#nas:/export /mnt/nas nfs defaults 0 0", "   # nas:/b /mnt/b nfs defaults 0 0"), severity: OK},
-		{name: "findmnt finds a warning", setup: verify("/boot/efi\n   [W] UUID=1234-ABCD translation failed\n\n0 parse errors, 0 errors, 1 warning\n", 64), severity: Warn, data: D{"verify_errors": 0, "verify_warnings": 1}},
-		{name: "findmnt finds an error and two warnings", setup: verify("/data\n   [E] unreachable on boot required source: UUID=x\n   [W] non-bind mount source /dev/x does not exist\n   [W] option x is deprecated\n", 1), severity: Warn, data: D{"verify_errors": 1, "verify_warnings": 2}},
-		{name: "findmnt finds a fatal error", setup: verify("   [F] cannot read /etc/fstab\n", 1), severity: Warn, data: D{"verify_errors": 1}},
-		{name: "findmnt and a share", setup: after(fstab("nas:/export /mnt/nas nfs defaults 0 0"), verify("   [W] x\n", 64)), severity: Warn, data: D{"count": 1, "verify_warnings": 1}},
-		{name: "a mark that is in the middle of a line, and marks of nothing", setup: verify("note [W] this is not a finding\n[X] nor this\nSuccess, no errors or warnings detected\n", 0), severity: OK},
-		{name: "findmnt that says only its exit status", setup: verify("", 0), severity: OK},
-		{name: "findmnt that fails and says something else", setup: verify("findmnt: cannot open /etc/fstab: Permission denied\n", 1), severity: Refuse, unknown: ReasonUnexpectedOutput},
-		{name: "no findmnt", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvVerify...) }, severity: Refuse, unknown: ReasonToolMissing},
-		{name: "findmnt that does not answer", setup: func(f *fakeProbe) { f.onError(context.DeadlineExceeded, argvVerify...) }, severity: Refuse, unknown: ReasonTimeout},
-		{name: "no /etc/fstab: findmnt is asked all the same", setup: func(f *fakeProbe) { f.remove(fstabPath) }, severity: OK},
+		{name: "a line that is no entry says nothing", setup: fstab("nas:/export nfs", "this is not a line of fstab"), severity: OK},
+		{name: "a bad line next to a good one does not hide it", setup: fstab("one two", "nas:/export /mnt/nas nfs defaults 0 0"), severity: Warn, data: D{"count": 1}},
+		{name: "no /etc/fstab", setup: func(f *fakeProbe) { f.remove(fstabPath) }, severity: OK},
 		{name: "an /etc/fstab that cannot be read", setup: func(f *fakeProbe) {
 			f.fail(fstabPath, &fs.PathError{Op: "open", Path: fstabPath, Err: fs.ErrPermission})
 		}, severity: Refuse, unknown: ReasonUnreadable},
+		{name: "an /etc/fstab that is too large", setup: func(f *fakeProbe) { f.set(fstabPath, strings.Repeat("# x\n", MaxFileBytes)) }, severity: Refuse, unknown: ReasonTooLarge},
 	})
+}
+
+// fstab_network used to ask "findmnt --verify", which resolves the UUID= and LABEL= of fstab through
+// libblkid: it probes the devices (a disk that sleeps wakes) and may rewrite the cache in /run/blkid.
+// The report reads and changes nothing, so the check is the fstab as it is written, and no command.
+func TestFstabNetworkAsksNoCommand(t *testing.T) {
+	f := newBox(t)
+	f.set(fstabPath, "UUID=1234-ABCD /data ext4 defaults 0 2\nnas:/export /mnt/nas nfs defaults 0 0\n")
+	got := checkOn(t, f, "fstab_network")
+	if got.Severity != Warn || got.Data["unknown"] != false {
+		t.Fatalf("finding = %+v", got)
+	}
+	for _, argv := range f.attemptedCommands() {
+		t.Errorf("the check asked for %q", argv)
+	}
+	for key := range got.Data {
+		if strings.HasPrefix(key, "verify") {
+			t.Errorf("data has %q, which only findmnt --verify could say", key)
+		}
+	}
+	if Allowed([]string{"findmnt", "--verify"}) {
+		t.Error("findmnt --verify is allowed")
+	}
 }
 
 func TestFstabIsReadAsMountReadsIt(t *testing.T) {
@@ -139,30 +157,6 @@ func TestAMountPointIsShownWithoutTheNameOfAUser(t *testing.T) {
 	} {
 		if got := maskedPath(in); got != want {
 			t.Errorf("maskedPath(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestVerifyFindingsAreCountedByTheirMark(t *testing.T) {
-	for name, tc := range map[string]struct {
-		out            Output
-		errs, warnings int
-		ok             bool
-	}{
-		"clean":                       {Output{Text: "Success, no errors or warnings detected\n"}, 0, 0, true},
-		"clean and an exit status":    {Output{Text: "Success, no errors or warnings detected\n", ExitCode: 1}, 0, 0, true},
-		"findings":                    {Output{Text: "/a\n   [W] one\n   [W] two\n   [E] three\n", ExitCode: 1}, 1, 2, true},
-		"windows line ends":           {Output{Text: "   [W] one\r\n   [E] two\r\n"}, 1, 1, true},
-		"unindented marks":            {Output{Text: "[W] one\n"}, 0, 1, true},
-		"a mark with nothing after":   {Output{Text: "   [W]\n", ExitCode: 1}, 0, 0, false},
-		"nothing, with a good status": {Output{}, 0, 0, true},
-		"nothing, with a bad status":  {Output{ExitCode: 1}, 0, 0, false},
-		"a message and a bad status":  {Output{Text: "findmnt: failed\n", ExitCode: 1}, 0, 0, false},
-		"binary":                      {Output{Text: "\x00\xff[W]\x00\n"}, 0, 0, true},
-	} {
-		errs, warnings, ok := verifyFindings(tc.out)
-		if errs != tc.errs || warnings != tc.warnings || ok != tc.ok {
-			t.Errorf("%s: verifyFindings = %d, %d, %v; want %d, %d, %v", name, errs, warnings, ok, tc.errs, tc.warnings, tc.ok)
 		}
 	}
 }

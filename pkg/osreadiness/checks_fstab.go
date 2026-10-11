@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // The checks of /etc/fstab: the list of what the machine mounts when it starts. A machine that has
@@ -16,7 +15,7 @@ import (
 func init() {
 	register(
 		Check{Code: "fstab_unresolved", Group: GroupFilesystem, Title: "Every mount at start has its device", Run: checkFstabUnresolved},
-		Check{Code: "fstab_network", Group: GroupFilesystem, Title: "The mounts at start are in order", Timeout: 8 * time.Second, Run: checkFstabNetwork},
+		Check{Code: "fstab_network", Group: GroupFilesystem, Title: "The mounts at start are in order", Run: checkFstabNetwork},
 	)
 }
 
@@ -226,63 +225,39 @@ func checkFstabUnresolved(ctx context.Context, p Probe) Result {
 }
 
 // networkFilesystems are the types of mounts that need the network to be there.
-var networkFilesystems = []string{"nfs", "nfs4", "cifs", "smb3", "smbfs", "ceph", "glusterfs", "davfs", "sshfs", "fuse.sshfs", "fuse.glusterfs"}
-
-var verifyMark = regexp.MustCompile(`^\s*\[([EWF])\]\s`)
-
-// verifyFindings are the errors and the warnings "findmnt --verify" has found in fstab: each is a
-// line that starts with its mark. ok is false for an answer that is neither a list of findings nor
-// the one it gives when it finds none.
-func verifyFindings(out Output) (errorsFound, warnings int, ok bool) {
-	clean := false
-	for _, line := range strings.Split(out.Text, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if m := verifyMark.FindStringSubmatch(line); m != nil {
-			if m[1] == "W" {
-				warnings++
-			} else {
-				errorsFound++
-			}
-		} else if strings.HasPrefix(line, "Success, no errors or warnings detected") {
-			clean = true
-		}
-	}
-	return errorsFound, warnings, clean || errorsFound+warnings > 0 || out.ExitCode == 0
+var networkFilesystems = []string{
+	"nfs", "nfs4", "cifs", "smb3", "smbfs", "sshfs", "fuse.sshfs", "glusterfs", "fuse.glusterfs", "ceph", "davfs", "9p",
 }
 
+// checkFstabNetwork says which mounts at start are of a network and do not say _netdev or nofail:
+// the start waits for the network for them, and stops in emergency mode when it is late.
+//
+// It reads the fstab as it is written, and runs no command. It used to ask "findmnt --verify" too,
+// for what it finds wrong with the file; that is not a read: libblkid resolves the UUID= and LABEL=
+// of every line through the devices (it probes them, and a disk that sleeps wakes) and may rewrite
+// its cache in /run/blkid. A line whose device is gone is fstab_unresolved's, which looks at
+// /dev/disk/by-* and nothing else; a line that cannot be parsed is not an entry here, as it is not
+// one for mount. The data it had of findmnt (verify_errors, verify_warnings) went with it.
 func checkFstabNetwork(ctx context.Context, p Probe) Result {
 	data, found, err := readText(ctx, p, fstabPath)
 	if err != nil {
 		return unknown(err)
 	}
-	var network []fstabEntry
-	if found {
-		for _, e := range parseFstab(data) {
-			if slices.Contains(networkFilesystems, e.Type) && !e.has("_netdev") && e.mountedAtStart() {
-				network = append(network, e)
-			}
-		}
-	}
-	// findmnt reads fstab and the devices it names, and says what it finds wrong with it
-	out, err := p.Run(ctx, "findmnt", "--verify")
-	if err != nil {
-		return unknown(err)
-	}
-	errorsFound, warnings, ok := verifyFindings(out)
-	if !ok {
-		return unknownWith(ReasonUnexpectedOutput)
-	}
-	if len(network) == 0 && errorsFound+warnings == 0 {
+	if !found {
 		return pass()
 	}
-	result := Result{
+	var network []fstabEntry
+	for _, e := range parseFstab(data) {
+		if slices.Contains(networkFilesystems, e.Type) && !e.has("_netdev") && e.mountedAtStart() {
+			network = append(network, e)
+		}
+	}
+	if len(network) == 0 {
+		return pass()
+	}
+	return Result{
 		Severity: Warn, Title: "The mounts at start have things to look at",
-		Detail: "Network shares (NFS, CIFS) that are mounted at start and do not say _netdev or nofail make the start wait for the network, and stop in emergency mode when it is late; and findmnt --verify reports what is wrong in /etc/fstab.",
-		Data:   D{"verify_errors": errorsFound, "verify_warnings": warnings}, Action: ActionNone,
+		Detail: "Network shares (NFS, CIFS) that are mounted at start and do not say _netdev or nofail make the start wait for the network, and stop in emergency mode when it is late.",
+		Data:   D{"mounts": mountPoints(network), "count": len(network)}, Action: ActionNone,
 	}
-	if len(network) > 0 {
-		result.Data["mounts"] = mountPoints(network)
-		result.Data["count"] = len(network)
-	}
-	return result
 }

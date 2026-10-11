@@ -106,10 +106,13 @@ var allowed = map[string]func([]string) bool{
 	"stat": func(args []string) bool {
 		return len(args) == 3 && args[0] == "-fc" && args[1] == "%T" && strings.HasPrefix(args[2], "/") && !strings.ContainsAny(args[2], "\x00\n")
 	},
-	// findmnt reads: the fstab's check, the device the root is on, the size of the filesystem of a path
+	// findmnt reads: the device the root is on, and the size of the filesystem of a path. Not
+	// "findmnt --verify": it resolves the UUID= and LABEL= of fstab through libblkid, which probes
+	// the devices (a disk that sleeps wakes) and may rewrite its cache in /run/blkid, so it is not
+	// a read. fstab_network is decided from the parsed /etc/fstab alone for that reason.
 	"findmnt": func(args []string) bool {
 		switch {
-		case slices.Equal(args, []string{"--verify"}), slices.Equal(args, []string{"-n", "-o", "SOURCE", "/"}):
+		case slices.Equal(args, []string{"-n", "-o", "SOURCE", "/"}):
 			return true
 		case len(args) == 6 && slices.Equal(args[:5], []string{"-b", "-n", "-o", "SIZE", "-T"}):
 			return mountPathArg.MatchString(args[5])
@@ -121,9 +124,17 @@ var allowed = map[string]func([]string) bool{
 		return len(args) == 7 && slices.Equal(args[:6], []string{"-s", "-n", "-P", "-p", "-o", "NAME,TYPE"}) && validDevice(args[6])
 	},
 	"uname": anything,
-	// the health of a disk: -H reads it, where -s, -t and -o would change the disk's settings
-	"smartctl":   func(args []string) bool { return len(args) == 2 && args[0] == "-H" && validDevice(args[1]) },
-	"modinfo":    func(args []string) bool { return len(args) == 2 && args[0] == "-n" && moduleArg.MatchString(args[1]) },
+	// the health of a disk: -H reads it, where -s, -t and -o would change the disk's settings, and
+	// "-n standby" keeps it from waking a disk that sleeps: smartctl then says it is in standby, with
+	// exit status 2, and does not touch it. The form is this one and no other.
+	"smartctl": func(args []string) bool {
+		return len(args) == 4 && args[0] == "-n" && args[1] == "standby" && args[2] == "-H" && validDevice(args[3])
+	},
+	"modinfo": func(args []string) bool { return len(args) == 2 && args[0] == "-n" && moduleArg.MatchString(args[1]) },
+	// dkms status reads /var/lib/dkms. The one thing it may do to the machine is transient: dkms 3.x
+	// makes and removes a temporary file in $TMPDIR for each module while it looks (it sources the
+	// module's dkms.conf through one). It is allowed for that, and the proof of the invariance in CI
+	// does not hash /tmp, and does not say it does.
 	"dkms":       exact([]string{"status"}),
 	"mokutil":    exact([]string{"--sb-state"}),
 	"pveversion": anything,

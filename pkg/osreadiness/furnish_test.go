@@ -13,7 +13,6 @@ var (
 	argvCgroup     = []string{"stat", "-fc", "%T", "/sys/fs/cgroup"}
 	argvDockerInfo = []string{"docker", "info", "--format", dockerpkg.DaemonInfoFormat}
 	argvDockerPs   = []string{"docker", "ps", "-q"}
-	argvVerify     = []string{"findmnt", "--verify"}
 )
 
 func argvLsblk(device string) []string {
@@ -24,7 +23,7 @@ func argvSize(path string) []string {
 	return []string{"findmnt", "-b", "-n", "-o", "SIZE", "-T", path}
 }
 
-func argvSmart(disk string) []string { return []string{"smartctl", "-H", disk} }
+func argvSmart(disk string) []string { return []string{"smartctl", "-n", "standby", "-H", disk} }
 
 // lsblkOf is what "lsblk -P" prints for a stack of devices, each given as "name:type".
 func lsblkOf(devices ...string) string {
@@ -93,7 +92,6 @@ func furnish(f *fakeProbe) {
 	f.on("cgroup2fs\n", 0, argvCgroup...)
 	f.on(lsblkOf("/dev/sda1:part", "/dev/sda:disk"), 0, argvLsblk("/dev/sda1")...)
 	f.on(smartOf("PASSED"), 0, argvSmart("/dev/sda")...)
-	f.on("Success, no errors or warnings detected\n", 0, argvVerify...)
 	f.on("32212254720\n", 0, argvSize("/boot")...)
 	f.installed(pkg("docker-ce", dockerVersion), "docker-ce", "docker.io")
 	f.on(dockerPolicy(dockerVersion, dockerVersion), 0, aptPolicyArgs("docker-ce")...)

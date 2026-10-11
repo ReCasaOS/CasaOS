@@ -149,7 +149,6 @@ func dirty(f *fakeProbe) {
 	f.set("/proc/mdstat", "Personalities : [raid1]\nmd0 : active raid1 sda1[0]\n      1046528 blocks super 1.2 [2/1] [U_]\n\nunused devices: <none>\n")
 	f.on(smartOf("FAILED!"), 8, argvSmart("/dev/sda")...)
 	f.set(fstabPath, "UUID=gone /data ext4 defaults 0 2\nnas:/export /home/alice/nas nfs defaults 0 0\n")
-	f.on("/data\n   [E] unreachable on boot required source: UUID=gone\n   [W] x\n", 1, argvVerify...)
 	f.set("/proc/self/mountinfo", rootMountInfo+"30 22 0:30 / /var/log rw - tmpfs tmpfs rw\n")
 	f.free["/"], f.free["/usr"], f.free["/boot"], f.free["/var/cache/apt/archives"] = 1<<20, 1<<20, 1<<20, 1<<20
 	f.set("/proc/meminfo", "MemTotal: 500000 kB\nSwapTotal: 0 kB\n")
@@ -333,7 +332,6 @@ func TestTheTextOfADirtyBoxHasNothingOfWhoOwnsIt(t *testing.T) {
 	f := newBox(t)
 	dirty(f)
 	f.set(fstabPath, "UUID=gone /home/alice/data ext4 defaults 0 2\n//bob:hunter2@192.168.1.5/share /media/carol/nas cifs defaults 0 0\nnas.home.lan:/export /mnt/nas nfs defaults 0 0\n")
-	f.on("/home/alice/data\n   [E] unreachable: UUID=gone on 192.168.1.5 (aa:bb:cc:dd:ee:ff)\n", 1, argvVerify...)
 	f.set("/etc/apt/sources.list.d/private.list", "deb https://dave:secret@apt.internal.example:8443/debian bullseye main\n")
 	report := Run(context.Background(), f, Options{})
 	answer, err := json.Marshal(NewAnswer(report))
@@ -357,7 +355,7 @@ func TestTheTextOfADirtyBoxHasNothingOfWhoOwnsIt(t *testing.T) {
 func TestTheChecksThatAskSlowToolsHaveTimeForThem(t *testing.T) {
 	for code, atLeast := range map[string]time.Duration{
 		"broken_dpkg": 15 * time.Second, "docker_origin": 12 * time.Second, "docker_update_pending": 12 * time.Second, "smart_failed": 12 * time.Second,
-		"bootloader": 8 * time.Second, "fstab_network": 8 * time.Second, "docker_swarm": 8 * time.Second,
+		"bootloader": 8 * time.Second, "docker_swarm": 8 * time.Second,
 	} {
 		if got := checkNamed(t, code).timeout(); got < atLeast {
 			t.Errorf("%s has %v, want at least %v", code, got, atLeast)

@@ -48,9 +48,9 @@ func TestOnlyTheReadingFormsOfTheAllowedCommandsAreAllowed(t *testing.T) {
 		aptCheckArgs, aptPolicyArgs("docker-ce"), aptPolicyArgs("docker-ce", "containerd.io"), {"apt-config", "dump"},
 		{"systemd-detect-virt", "--container"}, {"systemd-detect-virt", "--vm"},
 		{"systemctl", "show", "apt-daily.service", "--property=ActiveState", "--value"}, {"systemctl", "is-system-running"}, {"systemctl", "is-active", "ssh.service"}, {"systemctl", "is-enabled", "systemd-resolved"},
-		{"stat", "-fc", "%T", "/sys/fs/cgroup"}, {"findmnt", "--verify"}, {"findmnt", "-n", "-o", "SOURCE", "/"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/boot"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/"},
+		{"stat", "-fc", "%T", "/sys/fs/cgroup"}, {"findmnt", "-n", "-o", "SOURCE", "/"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/boot"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/"},
 		{"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda1"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/mapper/vg0-root"}, {"uname", "-r"},
-		{"smartctl", "-H", "/dev/sda"}, {"modinfo", "-n", "r8168"}, {"dkms", "status"}, {"mokutil", "--sb-state"}, {"pveversion"},
+		{"smartctl", "-n", "standby", "-H", "/dev/sda"}, {"modinfo", "-n", "r8168"}, {"dkms", "status"}, {"mokutil", "--sb-state"}, {"pveversion"},
 		{"docker", "info", "--format", dockerpkg.DaemonInfoFormat}, {"docker", "ps", "-q"},
 		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789ab"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789ab", strings.Repeat("f", 64)},
 		{"snap", "list"}, {"snap", "list", "docker"},
@@ -69,25 +69,90 @@ func TestOnlyTheReadingFormsOfTheAllowedCommandsAreAllowed(t *testing.T) {
 		{"apt-config", "shell", "x", "y"}, {"apt-config"}, {"systemd-detect-virt"},
 		{"systemctl", "stop", "docker"}, {"systemctl", "restart", "docker"}, {"systemctl", "reboot"}, {"systemctl", "mask", "x"}, {"systemctl", "daemon-reload"},
 		{"systemctl", "show", "x.service", "--property=ActiveState"}, {"systemctl", "show", "x.service", "--property=ActiveState", "--user"}, {"systemctl", "show", "../x", "--property=A", "--value"}, {"systemctl", "show", "x", "--property=a;b", "--value"}, {"systemctl", "is-active", "-x"},
-		{"stat", "-c", "%T", "/"}, {"stat", "-fc", "%T", "relative"}, {"stat", "-fc", "%T"},
-		{"smartctl", "-s", "on", "/dev/sda"}, {"smartctl", "-t", "long", "/dev/sda"}, {"smartctl", "-H", "sda"}, {"smartctl", "-H", "/dev/sda", "-s", "off"}, {"smartctl", "--scan"},
-		{"modinfo", "-n", "../x"}, {"modinfo", "x"}, {"dkms", "install", "x"}, {"dkms", "remove", "x"}, {"mokutil", "--import", "x"}, {"mokutil", "--disable-validation"},
+		{"stat", "-c", "%T", "/"}, {"stat", "-fc", "%T", "relative"}, {"stat", "-fc", "%T"}, {"stat", "-fc", "%n", "/"}, {"stat", "-fc", "%T", "/", "/boot"}, {"stat", "-f", "/"}, {"stat", "-L", "-fc", "%T", "/"}, {"stat"},
+		{"smartctl", "-s", "on", "/dev/sda"}, {"smartctl", "-t", "long", "/dev/sda"}, {"smartctl", "-n", "standby", "-H", "sda"}, {"smartctl", "-n", "standby", "-H", "/dev/sda", "-s", "off"}, {"smartctl", "--scan"},
+		// a disk that sleeps is not woken: -H without "-n standby" is not a form of the report, and neither is another mode
+		{"smartctl", "-H", "/dev/sda"}, {"smartctl", "-n", "never", "-H", "/dev/sda"}, {"smartctl", "-n", "sleep", "-H", "/dev/sda"}, {"smartctl", "-n", "idle", "-H", "/dev/sda"}, {"smartctl", "-n", "standby", "-H"},
+		{"smartctl", "-H", "-n", "standby", "/dev/sda"}, {"smartctl", "-n", "standby,", "-H", "/dev/sda"}, {"smartctl", "-n", "standby", "-H", "/dev/sda", "/dev/sdb"}, {"smartctl", "-n", "standby", "-X", "/dev/sda"},
+		{"smartctl", "-n", "standby", "-a", "/dev/sda"}, {"smartctl", "-X", "/dev/sda"}, {"smartctl", "-n", "standby", "-H", "/etc/passwd"}, {"smartctl", "-n", "standby", "-H", "/dev/sda;x"},
+		{"modinfo", "-n", "../x"}, {"modinfo", "x"}, {"modinfo", "-k", "x"}, {"modinfo", "-F", "x"}, {"modinfo", "-0", "x"}, {"modinfo", "-k", "x", "y"}, {"modinfo", "-k", "x", "-n", "y"}, {"modinfo", "-n", "x", "y"}, {"modinfo", "-n"}, {"modinfo"}, {"dkms", "install", "x"}, {"dkms", "remove", "x"}, {"mokutil", "--import", "x"}, {"mokutil", "--disable-validation"},
 		{"docker", "rm", "x"}, {"docker", "run", "x"}, {"docker", "exec", "x", "sh"}, {"docker", "stop", "x"}, {"docker", "system", "prune"}, {"docker"},
 		{"docker", "info"}, {"docker", "info", "--format", "{{json .}}"}, {"docker", "ps"}, {"docker", "ps", "-a"}, {"docker", "ps", "-q", "-a"}, {"docker", "inspect", "--format", "x", "0123456789ab"},
 		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "--all"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "-s", "0123456789ab"},
 		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789A"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789a"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, strings.Repeat("a", 65)},
 		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "../etc/passwd"}, append([]string{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat}, slices.Repeat([]string{"0123456789ab"}, maxInspected+1)...),
-		{"findmnt"}, {"findmnt", "--poll"}, {"findmnt", "--verify", "--poll"}, {"findmnt", "-w", "10"}, {"findmnt", "-n", "-o", "FSTYPE", "/"}, {"findmnt", "-n", "-o", "SOURCE", "/boot"},
+		{"findmnt"}, {"findmnt", "--poll"}, {"findmnt", "--verify"}, {"findmnt", "--verify", "--poll"}, {"findmnt", "--verify", "-v"}, {"findmnt", "-x"}, {"findmnt", "--fstab"}, {"findmnt", "-s"}, {"findmnt", "-w", "10"}, {"findmnt", "-n", "-o", "FSTYPE", "/"}, {"findmnt", "-n", "-o", "SOURCE", "/boot"},
 		{"findmnt", "-b", "-n", "-o", "SIZE", "-T", "relative"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/a b"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/x;y"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T"},
 		{"lsblk"}, {"lsblk", "-J"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "sda"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda;x"},
 		{"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/etc/passwd"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda", "/dev/sdb"}, {"lsblk", "-f", "/dev/sda"},
 		{"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/../etc/passwd"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev//sda"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda/"},
-		{"smartctl", "-H", "/dev/../etc/shadow"}, {"smartctl", "-H", "/dev/sda/"}, {"smartctl", "-H", "/dev//sda"},
+		{"smartctl", "-n", "standby", "-H", "/dev/../etc/shadow"}, {"smartctl", "-n", "standby", "-H", "/dev/sda/"}, {"smartctl", "-n", "standby", "-H", "/dev//sda"},
 		{"snap", "remove", "docker"}, {"snap", "refresh"}, {"snap", "list", "docker", "x"},
 	} {
 		if Allowed(argv) {
 			t.Errorf("%q is allowed", argv)
 		}
+	}
+}
+
+// The options that keep apt-get and apt-cache from taking a lock and from writing the caches they
+// build are the only thing between "apt-get check" and a write to /var/cache/apt on a box whose
+// caches are stale: they are pinned here as they are written, and not through the constants the
+// checks use (a test that builds its expectation from the constant says the same whatever the
+// constant says).
+func TestTheAptToolsAskTheirQuestionsWithTheOptionsThatKeepThemFromWriting(t *testing.T) {
+	check := []string{"apt-get", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "check"}
+	policyOf := []string{"apt-cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "policy"}
+	if !slices.Equal(aptCheckArgs, check) {
+		t.Errorf("aptCheckArgs = %q, want %q", aptCheckArgs, check)
+	}
+	policy := append(slices.Clone(policyOf), "docker-ce", "containerd.io")
+	if got := aptPolicyArgs("docker-ce", "containerd.io"); !slices.Equal(got, policy) {
+		t.Errorf("aptPolicyArgs = %q, want %q", got, policy)
+	}
+	if !Allowed(check) || !Allowed(policy) {
+		t.Fatal("the forms of the report are not allowed")
+	}
+	// not one of the options may go, be turned off, or be given a place to write
+	for name, argv := range map[string][]string{
+		"locking on":                       {"apt-get", "-o", "Debug::NoLocking=false", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "check"},
+		"locking left out":                 {"apt-get", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "check"},
+		"pkgcache left out":                {"apt-get", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::srcpkgcache=", "check"},
+		"srcpkgcache left out":             {"apt-get", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::pkgcache=", "check"},
+		"pkgcache given a path":            {"apt-get", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::pkgcache=/tmp/p.bin", "-o", "Dir::Cache::srcpkgcache=", "check"},
+		"srcpkgcache given a path":         {"apt-get", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=/tmp/s.bin", "check"},
+		"no options":                       {"apt-get", "check"},
+		"policy, locking on":               {"apt-cache", "-o", "Debug::NoLocking=false", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "policy", "docker-ce"},
+		"policy, locking left out":         {"apt-cache", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "policy", "docker-ce"},
+		"policy, pkgcache left out":        {"apt-cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::srcpkgcache=", "policy", "docker-ce"},
+		"policy, srcpkgcache left out":     {"apt-cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::pkgcache=", "policy", "docker-ce"},
+		"policy, pkgcache given a path":    {"apt-cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::pkgcache=/x", "-o", "Dir::Cache::srcpkgcache=", "policy", "docker-ce"},
+		"policy, srcpkgcache given a path": {"apt-cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=/x", "policy", "docker-ce"},
+	} {
+		if Allowed(argv) {
+			t.Errorf("%s: %q is allowed", name, argv)
+		}
+	}
+	// and the checks ask in these forms, whatever the constants are
+	f := newBox(t)
+	Run(context.Background(), f, Options{Checks: []Check{checkNamed(t, "broken_dpkg"), checkNamed(t, "docker_origin")}})
+	var sawCheck, sawPolicy bool
+	for _, argv := range f.attemptedCommands() {
+		switch argv[0] {
+		case "apt-get":
+			sawCheck = true
+			if !slices.Equal(argv, check) {
+				t.Errorf("apt-get was asked %q", argv)
+			}
+		case "apt-cache":
+			sawPolicy = true
+			if len(argv) <= len(policyOf) || !slices.Equal(argv[:len(policyOf)], policyOf) {
+				t.Errorf("apt-cache was asked %q", argv)
+			}
+		}
+	}
+	if !sawCheck || !sawPolicy {
+		t.Errorf("apt-get check asked: %v, apt-cache policy asked: %v", sawCheck, sawPolicy)
 	}
 }
 
@@ -106,7 +171,7 @@ func TestACheckThatAsksForACommandThatIsNotAllowedDoesNotGetIt(t *testing.T) {
 	}
 }
 
-func TestFindmntIsOnlyAskedItsThreeQuestions(t *testing.T) {
+func TestFindmntIsOnlyAskedItsTwoQuestions(t *testing.T) {
 	for _, argv := range [][]string{
 		{"findmnt", "--poll", "-n", "-o", "SIZE", "/boot"}, {"findmnt", "-w", "10", "-o", "SIZE", "-T", "/boot"}, {"findmnt", "-x", "-n", "-o", "SIZE", "-T", "/boot"},
 		{"findmnt", "-b", "-n", "-o", "SIZE", "-S", "/boot"}, {"findmnt", "-b", "-n", "-o", "AVAIL", "-T", "/boot"}, {"findmnt", "-b", "-n", "--poll", "SIZE", "-T", "/boot"},

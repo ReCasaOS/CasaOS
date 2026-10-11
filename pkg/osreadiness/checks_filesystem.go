@@ -406,7 +406,7 @@ const (
 	smartFailed
 )
 
-// smartHealth is what "smartctl -H" says of a disk: it passed, it failed (the text says so, or the
+// smartHealth is what "smartctl -n standby -H" says of a disk: it passed, it failed (the text says so, or the
 // exit status has its bit 3, "disk failing"), or it did not say (a virtual disk, a controller that
 // does not pass the questions on).
 func smartHealth(out Output) smartState {
@@ -461,7 +461,7 @@ func checkSmart(ctx context.Context, p Probe) Result {
 	}
 	var failed, unavailable []string
 	for _, disk := range disks {
-		out, err := p.Run(ctx, "smartctl", "-H", disk)
+		out, err := p.Run(ctx, "smartctl", "-n", "standby", "-H", disk)
 		if isToolMissing(err) {
 			return notChecked("no_smartctl", nil)
 		}
