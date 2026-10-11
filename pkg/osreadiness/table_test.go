@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The checks of the table as a whole: the report of a healthy box, the codes, and the commands that
@@ -346,6 +347,25 @@ func TestTheTextOfADirtyBoxHasNothingOfWhoOwnsIt(t *testing.T) {
 		}
 		if strings.Contains(string(answer), secret) && secret != "8443" {
 			t.Errorf("the answer has %q", secret)
+		}
+	}
+}
+
+// The checks that ask for a tool that builds apt's caches in memory, or that wakes a disk, are given
+// the time such a tool takes on a slow machine (an SD card, a spinning disk): a check that is told to
+// stop is a refusal, so a time that is too short is a machine that is refused for being slow.
+func TestTheChecksThatAskSlowToolsHaveTimeForThem(t *testing.T) {
+	for code, atLeast := range map[string]time.Duration{
+		"broken_dpkg": 15 * time.Second, "docker_origin": 12 * time.Second, "docker_update_pending": 12 * time.Second, "smart_failed": 12 * time.Second,
+		"bootloader": 8 * time.Second, "fstab_network": 8 * time.Second, "docker_swarm": 8 * time.Second,
+	} {
+		if got := checkNamed(t, code).timeout(); got < atLeast {
+			t.Errorf("%s has %v, want at least %v", code, got, atLeast)
+		}
+	}
+	for _, c := range Checks() {
+		if c.timeout() > DefaultBudget {
+			t.Errorf("%s has %v, which is more than the report has", c.Code, c.timeout())
 		}
 	}
 }

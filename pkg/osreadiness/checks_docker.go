@@ -18,9 +18,9 @@ import (
 func init() {
 	register(
 		Check{Code: "docker_swarm", Group: GroupDocker, Title: "Docker is not part of a swarm", Timeout: 8 * time.Second, Run: checkDockerSwarm},
-		Check{Code: "docker_origin", Group: GroupDocker, Title: "Docker comes from Docker's own repository", Timeout: 8 * time.Second, Run: checkDockerOrigin},
+		Check{Code: "docker_origin", Group: GroupDocker, Title: "Docker comes from Docker's own repository", Timeout: 12 * time.Second, Run: checkDockerOrigin},
 		Check{Code: "docker_down", Group: GroupDocker, Title: "The Docker daemon answers", Timeout: 8 * time.Second, Run: checkDockerDown},
-		Check{Code: "docker_update_pending", Group: GroupDocker, Title: "Docker is up to date", Run: checkDockerUpdatePending},
+		Check{Code: "docker_update_pending", Group: GroupDocker, Title: "Docker is up to date", Timeout: 12 * time.Second, Run: checkDockerUpdatePending},
 		Check{Code: "containers_policy", Group: GroupDocker, Title: "The containers that run come back by themselves", Timeout: 8 * time.Second, Run: checkContainersPolicy},
 		Check{Code: "containers_ports", Group: GroupDocker, Title: "No container is the machine's DNS or web server", Timeout: 8 * time.Second, Run: checkContainersPorts},
 		Check{Code: "backup_age", Group: GroupDocker, Title: "The apps have a recent backup", Run: checkBackupAge},
