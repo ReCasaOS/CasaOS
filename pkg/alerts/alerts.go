@@ -20,7 +20,8 @@
 //
 // And when the operating system's security updates are about to end, or have ended,
 // the owner is told once for each state of each release, from a look every day: the
-// last one told is kept in os-support.notified.
+// last one told is kept in os-support.notified, written once a message has gone out,
+// so that a state is looked at again, every day, until a channel has taken it.
 package alerts
 
 import (
@@ -32,6 +33,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -177,6 +179,14 @@ func (h *Hub) Run(ctx context.Context) {
 // the next message says how often it came back. It reports whether a is now
 // on record as sent.
 func (h *Hub) raise(a alert) bool {
+	return h.raiseAs(a, false)
+}
+
+// raiseAs is raise, and with wait it sends now and waits for the channels, and then
+// reports whether one of them took the message: when none did, a is not on record, so
+// that the caller can try again. A caller that tells a condition once, for good, needs
+// that; the others fire and forget.
+func (h *Hub) raiseAs(a alert, wait bool) bool {
 	c := h.load()
 	if len(c.Channels) == 0 || !c.Categories[a.category] {
 		return false
@@ -195,8 +205,21 @@ func (h *Hub) raise(a alert) bool {
 	if previous != nil && previous.repeats > 0 {
 		sentence += fmt.Sprintf(" It happened %d times since %s.", previous.repeats+1, previous.at.Format("15:04"))
 	}
-	h.deliver(c.Channels, a.category, sentence)
-	return true
+	if !wait {
+		h.deliver(c.Channels, a.category, sentence)
+		return true
+	}
+	if h.deliverAll(c.Channels, a.category, sentence) {
+		return true
+	}
+	h.mu.Lock()
+	if previous == nil {
+		delete(h.sent, a.key)
+	} else {
+		h.sent[a.key] = previous
+	}
+	h.mu.Unlock()
+	return false
 }
 
 // resolve sends one "resolved" message for key, only if its alert was sent,
@@ -223,17 +246,27 @@ func (h *Hub) deliver(channels []Channel, category, sentence string) {
 	h.sending.Add(1)
 	go func() {
 		defer h.sending.Done()
-		title, message := h.compose(category, sentence)
-		var each sync.WaitGroup
-		for _, channel := range channels {
-			each.Add(1)
-			go func() {
-				defer each.Done()
-				_ = h.sendTo(channel, title, message)
-			}()
-		}
-		each.Wait()
+		h.deliverAll(channels, category, sentence)
 	}()
+}
+
+// deliverAll sends a message to every channel, each on its own, and waits for them: it
+// reports whether at least one took it.
+func (h *Hub) deliverAll(channels []Channel, category, sentence string) bool {
+	title, message := h.compose(category, sentence)
+	var each sync.WaitGroup
+	var accepted atomic.Bool
+	for _, channel := range channels {
+		each.Add(1)
+		go func() {
+			defer each.Done()
+			if h.sendTo(channel, title, message) == nil {
+				accepted.Store(true)
+			}
+		}()
+	}
+	each.Wait()
+	return accepted.Load()
 }
 
 // compose is the title, "ReCasaOS · <hostname> · <category>", and the message:

@@ -2,6 +2,7 @@ package alerts
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -260,29 +261,31 @@ func TestAMarkerThatIsGarbageDoesNotSilenceAState(t *testing.T) {
 	}
 }
 
-// The marker is written before the message is raised: a restart in between loses the message and
-// never repeats it. The clock is read by raise before it sends, and looks for the marker.
-func TestTheMarkerIsWrittenBeforeTheMessageIsRaised(t *testing.T) {
+// The marker is written once the message went out, and not before: a state that lasts for months
+// must not be spent on a message that never left. Each send looks for the marker.
+func TestTheMarkerIsWrittenOnceTheMessageWentOut(t *testing.T) {
 	h, o, now := newHub(t)
 	osFrom(h, debian11, now)
 	onDay(t, now, "2026-10-10")
-	clock := *now
 	var seen []string
-	h.Now = func() time.Time {
+	h.Send = func(rawURL, title, text string) error {
 		seen = append(seen, osMarker(h))
-		return clock
+		return o.send(rawURL, title, text)
 	}
 
 	h.checkOSSupport()
 	h.sending.Wait()
 
-	if len(o.texts(phone)) != 1 || len(seen) == 0 {
-		t.Fatalf("sent %q, the clock was read %d times", o.texts(phone), len(seen))
+	if len(o.texts(phone)) != 1 || len(seen) != 2 {
+		t.Fatalf("sent %q, the channels were sent to %d times", o.texts(phone), len(seen))
 	}
 	for _, marker := range seen {
-		if marker != "debian-11-security_ended\n" {
-			t.Fatalf("when the alert was raised the marker was %q, want it written already", marker)
+		if marker != "" {
+			t.Fatalf("while the message was sent the marker was %q, want it not written yet", marker)
 		}
+	}
+	if got := osMarker(h); got != "debian-11-security_ended\n" {
+		t.Fatalf("marker after the send = %q", got)
 	}
 }
 
@@ -342,26 +345,102 @@ func TestRacingLooksSendOnce(t *testing.T) {
 	}
 }
 
-// The state is on record whether or not there is a channel: the owner who adds one next week is not
-// sent the news of this one.
-func TestAStateIsRecordedWithNoChannelToTell(t *testing.T) {
-	h, o, now := newHub(t)
-	saveConfig(t, h, Config{Categories: map[string]bool{Backups: true, Disks: true, Updates: true, Apps: true}, DiskThreshold: 90})
+// A state that lasts is not spent on a box that cannot tell it. With no channel (the default), or
+// with the Updates category off, nothing is sent and nothing is written; the owner who adds a
+// channel, or turns the category on, next week is told on the next look.
+func TestAStateIsNotSpentWithNoChannelOrWithUpdatesOff(t *testing.T) {
+	everything := map[string]bool{Backups: true, Disks: true, Updates: true, Apps: true}
+	noUpdates := map[string]bool{Backups: true, Disks: true, Updates: false, Apps: true}
+	for name, tc := range map[string]struct {
+		before Config
+		after  Config
+	}{
+		"no channel, then one": {
+			Config{Categories: everything, DiskThreshold: 90},
+			Config{Channels: []Channel{{ID: "a1", Name: "Phone", URL: phone}}, Categories: everything, DiskThreshold: 90},
+		},
+		"a channel, Updates off, then on": {
+			Config{Channels: []Channel{{ID: "a1", Name: "Phone", URL: phone}}, Categories: noUpdates, DiskThreshold: 90},
+			Config{Channels: []Channel{{ID: "a1", Name: "Phone", URL: phone}}, Categories: everything, DiskThreshold: 90},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, o, now := newHub(t)
+			osFrom(h, debian11, now)
+			onDay(t, now, "2026-10-10")
+			saveConfig(t, h, tc.before)
+
+			h.checkOSSupport()
+			h.sending.Wait()
+			if len(o.sent) != 0 || osMarker(h) != "" || len(h.sent) != 0 {
+				t.Fatalf("sent %+v, marker %q, on record %v: want nothing spent", o.sent, osMarker(h), h.sent)
+			}
+			onDay(t, now, "2026-10-11")
+			h.checkOSSupport()
+			h.sending.Wait()
+			if len(o.sent) != 0 || osMarker(h) != "" {
+				t.Fatalf("a day later, still nothing to tell with: sent %+v, marker %q", o.sent, osMarker(h))
+			}
+
+			saveConfig(t, h, tc.after)
+			onDay(t, now, "2026-10-12")
+			h.checkOSSupport()
+			h.sending.Wait()
+			if got := o.texts(phone); len(got) != 1 || !strings.HasPrefix(got[0], "Debian 11 no longer receives Debian security updates since 31 August 2026.") {
+				t.Fatalf("sent %q, want the state told now that it can be", got)
+			}
+			if got := osMarker(h); got != "debian-11-security_ended\n" {
+				t.Fatalf("marker = %q", got)
+			}
+			// and then it is told
+			onDay(t, now, "2026-10-13")
+			h.checkOSSupport()
+			h.sending.Wait()
+			if got := o.texts(phone); len(got) != 1 {
+				t.Fatalf("sent %q, want it told once", got)
+			}
+		})
+	}
+}
+
+// A message that fails to leave does not spend the state either: with every channel failing the
+// marker is not written, and the next look, with the network back, tells it, even when it comes
+// inside the six quiet hours of an alert already sent. One channel taking it is enough.
+func TestAStateIsNotSpentOnAFailedSend(t *testing.T) {
+	h, o, now := newHub(t) // the hub's clock stays at 06:00 on 2026-09-25
 	osFrom(h, debian11, now)
 	onDay(t, now, "2026-10-10")
+	clock := *now
+	h.Now = func() time.Time { return clock }
+	o.fail[phone] = errors.New("network is unreachable")
+	o.fail[mail] = errors.New("network is unreachable")
 
 	h.checkOSSupport()
 	h.sending.Wait()
-	saveConfig(t, h, Config{
-		Channels:      []Channel{{ID: "a1", Name: "Phone", URL: phone}},
-		Categories:    map[string]bool{Backups: true, Disks: true, Updates: true, Apps: true},
-		DiskThreshold: 90,
-	})
+	if len(o.sent) != 0 || osMarker(h) != "" || len(h.sent) != 0 {
+		t.Fatalf("sent %+v, marker %q, on record %v: want nothing spent", o.sent, osMarker(h), h.sent)
+	}
+	if h.lastFailure == nil {
+		t.Fatal("the failure was not kept for the dashboard")
+	}
+
+	// one look later, a minute on, the phone's server is back and the mail's is not
+	clock = clock.Add(time.Minute)
+	delete(o.fail, phone)
 	h.checkOSSupport()
 	h.sending.Wait()
-
-	if len(o.sent) != 0 || osMarker(h) != "debian-11-security_ended\n" {
-		t.Fatalf("sent %+v, marker %q", o.sent, osMarker(h))
+	if len(o.texts(phone)) != 1 || len(o.texts(mail)) != 0 {
+		t.Fatalf("sent %+v, want the one channel that works to tell it", o.sent)
+	}
+	if got := osMarker(h); got != "debian-11-security_ended\n" {
+		t.Fatalf("marker = %q: one channel took the message", got)
+	}
+	clock = clock.Add(24 * time.Hour)
+	delete(o.fail, mail)
+	h.checkOSSupport()
+	h.sending.Wait()
+	if len(o.sent) != 1 {
+		t.Fatalf("sent %+v, want it told once", o.sent)
 	}
 }
 

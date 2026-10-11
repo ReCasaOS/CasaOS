@@ -44,10 +44,11 @@ func (h *Hub) watchOSSupport(ctx context.Context) {
 
 // checkOSSupport sends the one message of a state of support that is not told yet, and nothing for
 // "supported" or "unknown". The state is told once: the last one told is in memory and in the marker
-// file, and the file is written before the message is sent, so that no restart, however badly
-// timed, tells a state twice (and one that is lost is not told again: the dashboard shows it). It is
-// written whether or not there is a channel to tell, as the Docker update's is. Any number of
-// looks may run at once: one of them tells it.
+// file. Unlike a Docker run, which is over, a state of support lasts for months, and a warning that
+// was lost is worse than one that comes twice: so the marker is written only after a message went
+// out. With no channel, with the Updates category off, or when every channel failed, nothing is
+// written and the next look (a day later) tries again. A crash between the send and the marker
+// may tell the state once more. Any number of looks may run at once: one of them tells it.
 func (h *Hub) checkOSSupport() {
 	report := h.OSSupport()
 	state := report.Support.State
@@ -66,13 +67,15 @@ func (h *Hub) checkOSSupport() {
 		h.osNotified = key
 		return
 	}
+	// one key per state: the six hours an alert stays quiet are for repeats, not for the next state
+	if !h.raiseAs(alert{key: "os-support:" + key, category: Updates, sentence: osSupportSentence(report)}, true) {
+		return
+	}
 	// ponytail: without the file (an unwritable state directory) a restart tells the state again.
 	h.osNotified = key
 	if err := file.WriteFileAtomic(path, []byte(key+"\n")); err != nil {
 		logger.Error("alerts: cannot remember that the support of the operating system was told", zap.Error(err))
 	}
-	// one key per state: the six hours an alert stays quiet are for repeats, not for the next state
-	h.raise(alert{key: "os-support:" + key, category: Updates, sentence: osSupportSentence(report)})
 }
 
 // osSupportSentence is what the owner reads: what ends or ended and when, then what the product
