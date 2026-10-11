@@ -294,15 +294,22 @@ func TestTheMarkerIsWrittenOnceTheMessageWentOut(t *testing.T) {
 	h, o, now := newHub(t)
 	osFrom(h, debian11, now)
 	onDay(t, now, "2026-10-10")
+	// the channels are sent to from their own goroutines
+	var mu sync.Mutex
 	var seen []string
 	h.Send = func(rawURL, title, text string) error {
-		seen = append(seen, osMarker(h))
+		marker := osMarker(h)
+		mu.Lock()
+		seen = append(seen, marker)
+		mu.Unlock()
 		return o.send(rawURL, title, text)
 	}
 
 	h.checkOSSupport()
 	h.sending.Wait()
 
+	mu.Lock()
+	defer mu.Unlock()
 	if len(o.texts(phone)) != 1 || len(seen) != 2 {
 		t.Fatalf("sent %q, the channels were sent to %d times", o.texts(phone), len(seen))
 	}
