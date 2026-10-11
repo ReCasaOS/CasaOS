@@ -37,15 +37,18 @@ type SystemPackageDocker struct {
 	// System packages update.
 	Updates []SystemPackageUpdate `json:"updates"`
 	// Candidate is a newer engine version that apt knows of and does not offer for an
-	// update, with Held saying whether the package is on hold: said, rather than "up to
-	// date", of a Docker that is behind and that this update cannot move.
+	// update, with Held saying whether packages of the engine are on hold (any of them: they
+	// move together, and a held sibling keeps docker-ce back as much as its own hold does):
+	// said, rather than "up to date", of a Docker that is behind and that this update cannot move.
 	Candidate string `json:"candidate,omitempty"`
 	Held      bool   `json:"held,omitempty"`
 	// RestartsDocker is whether installing those updates restarts the daemon: the engine's
 	// own packages do, a plugin or the client do not.
 	RestartsDocker bool `json:"restarts_docker"`
 	// ManualCommand is what to type to update Docker oneself; empty when this does not
-	// know a command to stand behind.
+	// know a command to stand behind. For a box that has packages of the engine on hold it
+	// names all of the engine's installed packages and puts the hold back afterwards (see
+	// dockerpkg.ManualCommandHeld).
 	ManualCommand string `json:"manual_command,omitempty"`
 	// Update is whether the page may update the engine itself, and with what; absent when
 	// there is nothing to update.
@@ -151,6 +154,9 @@ func (u *systemPackageUpdater) dockerInfo(ctx context.Context, pending []SystemP
 		info.Updates = []SystemPackageUpdate{}
 	}
 	var enginePackage, policyText string
+	// engineInstalled and engineHeld are the packages of the engine that are on the box and the ones of them
+	// that are on hold, which the manual command of a held box names and puts back on hold
+	var engineInstalled, engineHeld []string
 	switch {
 	case u.installedVersion(ctx, "docker-ce") != "":
 		info.Installed = true
@@ -185,12 +191,23 @@ func (u *systemPackageUpdater) dockerInfo(ctx context.Context, pending []SystemP
 		installed, candidate := dockerpkg.PolicyVersions(policyText)
 		if candidate != "" && installed != "" && candidate != installed && u.isNewer(ctx, candidate, installed) {
 			info.Candidate = dockerpkg.EngineVersion(candidate)
-			info.Held = u.packageHeld(ctx, enginePackage)
+			// held when any package of the engine is: with docker-ce 29 behind a held containerd.io, apt keeps
+			// docker-ce back without it being on hold itself
+			if enginePackage == "docker.io" {
+				// the distribution's package is not one of the engine's (dockerpkg.EngineNames)
+				engineInstalled = []string{enginePackage}
+				if u.packageHeld(ctx, enginePackage) {
+					engineHeld = engineInstalled
+				}
+			} else {
+				engineInstalled, engineHeld = u.enginePackages(ctx)
+			}
+			info.Held = len(engineHeld) > 0
 			names = append(names, enginePackage)
 		}
 	}
 	info.RestartsDocker = dockerpkg.RestartsEngine(names)
-	info.ManualCommand = dockerpkg.ManualCommandHeld(dockerpkg.Origin(info.Origin), names, info.Held)
+	info.ManualCommand = dockerpkg.ManualCommandHeld(dockerpkg.Origin(info.Origin), names, engineInstalled, engineHeld)
 	return info
 }
 

@@ -190,7 +190,7 @@ func TestTheAlertsAreToldOfARunWhenItsLogIsWritten(t *testing.T) {
 			logged++
 		}
 	})
-	if _, err := system.StartDockerUpdate(s.planID); err != nil {
+	if _, err := system.StartDockerUpdate(s.planID, false); err != nil {
 		t.Fatal(err)
 	}
 	if told != 1 || logged != 1 {
@@ -205,7 +205,7 @@ func TestTheAlertsAreToldOfARunWhenItsLogIsWritten(t *testing.T) {
 	told = 0
 	system = &systemService{packageUpdates: f.updater}
 	system.OnDockerUpdateQueued(func() { told++ })
-	if _, err := system.StartDockerUpdate(f.planID); err == nil || told != 1 {
+	if _, err := system.StartDockerUpdate(f.planID, false); err == nil || told != 1 {
 		t.Fatalf("error = %v, told %d times", err, told)
 	}
 	if run := dockerpkg.ParseRun(logText(t, f.updater)); run.Terminal != dockerpkg.TerminalFailed {
@@ -218,7 +218,7 @@ func TestTheAlertsAreToldOfARunWhenItsLogIsWritten(t *testing.T) {
 	system = &systemService{packageUpdates: r.updater}
 	system.OnDockerUpdateQueued(func() { told++ })
 	for _, planID := range []string{strings.Repeat("0", 64), "nonsense"} {
-		if _, err := system.StartDockerUpdate(planID); err == nil {
+		if _, err := system.StartDockerUpdate(planID, false); err == nil {
 			t.Fatalf("plan %q was started", planID)
 		}
 	}
@@ -230,7 +230,7 @@ func TestTheAlertsAreToldOfARunWhenItsLogIsWritten(t *testing.T) {
 	// and with no one to tell the update starts all the same
 	n := newStartBox(t, nil)
 	system = &systemService{packageUpdates: n.updater}
-	if _, err := system.StartDockerUpdate(n.planID); err != nil {
+	if _, err := system.StartDockerUpdate(n.planID, false); err != nil {
 		t.Errorf("error = %v", err)
 	}
 }

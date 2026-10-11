@@ -118,17 +118,20 @@ var defaultPackages = map[Origin][]string{
 	OriginDistribution: {"docker.io"},
 }
 
-// ManualCommand is what an owner types to update Docker themselves, for an origin, or ""
-// when there is no command this can stand behind. It names the packages apt says are
-// pending when it said some, so that running it leaves nothing behind, and only names from
-// the fixed family: nothing apt printed reaches it unless it is one of them.
-func ManualCommand(origin Origin, pending []string) string {
-	if origin == OriginSnap {
-		return "sudo snap refresh docker"
-	}
+const (
+	// manualHead is the start of the command that updates Docker's packages by hand.
+	manualHead = "sudo apt-get update && sudo apt-get install --only-upgrade "
+	// allowHeldFlag is what apt is told so that it may change a package that is on hold.
+	allowHeldFlag = "--allow-change-held-packages"
+)
+
+// manualNames are the packages the command names, once each: the Docker packages among those apt says
+// are pending, or the origin's defaults when it said none. It is nil for an origin that has no apt
+// command (a snap's, an unknown one).
+func manualNames(origin Origin, pending []string) map[string]struct{} {
 	defaults, ok := defaultPackages[origin]
 	if !ok {
-		return ""
+		return nil
 	}
 	chosen := map[string]struct{}{}
 	for _, name := range pending {
@@ -141,22 +144,66 @@ func ManualCommand(origin Origin, pending []string) string {
 			chosen[name] = struct{}{}
 		}
 	}
-	names := make([]string, 0, len(chosen))
-	for name := range chosen {
+	return chosen
+}
+
+// sortedNames are the members of a set, sorted.
+func sortedNames(set map[string]struct{}) []string {
+	names := make([]string, 0, len(set))
+	for name := range set {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return "sudo apt-get update && sudo apt-get install --only-upgrade " + strings.Join(names, " ")
+	return names
 }
 
-// ManualCommandHeld is ManualCommand for a package that is on hold: apt refuses to upgrade
-// a held package that is named on the command line unless it is told it may.
-func ManualCommandHeld(origin Origin, pending []string, held bool) string {
-	command := ManualCommand(origin, pending)
-	if held && strings.Contains(command, "--only-upgrade ") {
-		return strings.Replace(command, "--only-upgrade ", "--only-upgrade --allow-change-held-packages ", 1)
+// holdNames are the names that go after "apt-mark hold": the Docker packages among names, as the box
+// names them (no architecture), once each, sorted. Nothing else gets into a command.
+func holdNames(names []string) []string {
+	set := map[string]struct{}{}
+	for _, name := range names {
+		if IsFamily(name) && !strings.Contains(name, ":") {
+			set[name] = struct{}{}
+		}
 	}
-	return command
+	return sortedNames(set)
+}
+
+// ManualCommand is what an owner types to update Docker themselves, for an origin, or ""
+// when there is no command this can stand behind. It names the packages apt says are
+// pending when it said some, so that running it leaves nothing behind, and only names from
+// the fixed family: nothing apt printed reaches it unless it is one of them.
+func ManualCommand(origin Origin, pending []string) string {
+	if origin == OriginSnap {
+		return "sudo snap refresh docker"
+	}
+	chosen := manualNames(origin, pending)
+	if chosen == nil {
+		return ""
+	}
+	return manualHead + strings.Join(sortedNames(chosen), " ")
+}
+
+// ManualCommandHeld is ManualCommand for a box that has Docker's packages on hold (held: the names of
+// the ones that are, installed: the ones that are installed). apt fails when it is told only the package
+// that is behind and a held sibling has to move with it (docker-ce 29 needs a newer containerd.io), so the
+// command names every installed package of the engine, the same list the dashboard's plan is made of, and
+// says apt may change what is held. dpkg drops the hold of every package it unpacks, so the command ends
+// by putting the hold back on the ones that were held. The hold is joined with `;` and not `&&`: an install
+// that fails may already have unpacked packages, and dpkg has dropped their hold by then, so the hold goes
+// back whatever apt-get returned (apt-mark hold is idempotent). The `update && install` part keeps its
+// `&&`. For a box that holds nothing, and for an origin that has no apt command, it is ManualCommand, byte
+// for byte.
+func ManualCommandHeld(origin Origin, pending, installed, held []string) string {
+	holds := holdNames(held)
+	chosen := manualNames(origin, pending)
+	if len(holds) == 0 || chosen == nil {
+		return ManualCommand(origin, pending)
+	}
+	for _, name := range append(holdNames(installed), holds...) {
+		chosen[name] = struct{}{}
+	}
+	return manualHead + allowHeldFlag + " " + strings.Join(sortedNames(chosen), " ") + " ; sudo apt-mark hold " + strings.Join(holds, " ")
 }
 
 var (

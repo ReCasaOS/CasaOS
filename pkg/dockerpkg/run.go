@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -173,6 +174,33 @@ type Run struct {
 	// whether it changes the major version, and is false with no PLAN line.
 	From, To  string
 	MajorJump bool
+	// Held is what the unit saw on hold when it started, among the engine's packages the core named to
+	// it (CASAOS_DU_HELD, which are the ones the check reports): names of the engine's, sorted, empty
+	// (not nil) for a "-", nil when the unit did not say (the first valid HELD line counts). Holds is
+	// what it saw on hold of those when it ended, after it had put back the hold that dpkg drops from
+	// every package it unpacks, in the same way (the last valid HOLDS line counts).
+	Held  []string
+	Holds []string
+}
+
+// HoldsKept says that the holds are in place again at the end of the update: the unit saw packages
+// on hold when it started, and every one of them is on hold in what it said when it ended (a name more
+// is no hold lost). A run that held nothing has no hold to say is back, and a run whose unit did not say
+// the end of it (it was lost) has none that it can say is.
+func (r Run) HoldsKept() bool {
+	if len(r.Held) == 0 {
+		return false
+	}
+	still := make(map[string]struct{}, len(r.Holds))
+	for _, name := range r.Holds {
+		still[name] = struct{}{}
+	}
+	for _, name := range r.Held {
+		if _, ok := still[name]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // markerOf splits a line that is a marker of this run: "CASAOS_DOCKER_UPDATE_<KIND> <nonce>"
@@ -263,6 +291,14 @@ func ParseRun(log string) Run {
 				planSeen = true
 				run.From, run.To, run.MajorJump = from, to, majorJump
 			}
+		case "HELD":
+			if names, ok := heldNames(fields); ok && run.Held == nil {
+				run.Held = names
+			}
+		case "HOLDS":
+			if names, ok := heldNames(fields); ok {
+				run.Holds = names
+			}
 		case "DAEMON":
 			if len(fields) == 1 && validDaemonVersion(fields[0]) {
 				run.DaemonVersion = fields[0]
@@ -287,6 +323,30 @@ func ParseRun(log string) Run {
 		}
 	}
 	return run
+}
+
+// heldNames reads the fields of a HELD or HOLDS marker: the names of the engine's packages that are
+// on hold, each once, or a single "-" for none. Anything else is not one, and none of it is kept:
+// a name that is not exactly one of EngineNames (which no shell character, glob or architecture
+// is) fails the whole line. The names come back sorted, and are never nil.
+func heldNames(fields []string) ([]string, bool) {
+	if len(fields) == 1 && fields[0] == "-" {
+		return []string{}, true
+	}
+	if len(fields) == 0 {
+		return nil, false
+	}
+	names := make([]string, 0, len(fields))
+	seen := map[string]struct{}{}
+	for _, name := range fields {
+		if _, dup := seen[name]; dup || strings.Contains(name, ":") || !IsEngineName(name) {
+			return nil, false
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, true
 }
 
 // Phase is the step a run is at, from the markers it has written so far: PhasePreparing until the
@@ -371,4 +431,23 @@ func RollbackCommand(previous []string) string {
 		return ""
 	}
 	return "sudo apt-get install --allow-downgrades " + strings.Join(pins, " ")
+}
+
+// RollbackCommandHeld is RollbackCommand for a run that went ahead of a hold (held: Run.Held, the
+// packages that were on hold when the unit started, which it put back when it ended). The owner types it
+// as the update was run: with the flag of the terminal command (apt-get install with -y refuses to change
+// a package that is on hold unless it is told it may; without -y it only asks, and the flag is there to
+// say so), and since dpkg drops the hold of every package it unpacks, it ends by putting the hold back on
+// the packages that were held. The hold is joined with `;` and not `&&`: this command is shown for a run
+// that failed, where an install that fails again may already have unpacked packages and dpkg has dropped
+// their hold, so it goes back whatever apt-get returned (apt-mark hold is idempotent). For a run that held
+// nothing it is RollbackCommand, byte for byte.
+func RollbackCommandHeld(previous, held []string) string {
+	command := RollbackCommand(previous)
+	holds := holdNames(held)
+	if command == "" || len(holds) == 0 {
+		return command
+	}
+	command = strings.Replace(command, "--allow-downgrades ", "--allow-downgrades "+allowHeldFlag+" ", 1)
+	return command + " ; sudo apt-mark hold " + strings.Join(holds, " ")
 }

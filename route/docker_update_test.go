@@ -109,7 +109,7 @@ type fakeUpdateSystem struct {
 	asked int
 }
 
-func (f *fakeUpdateSystem) StartDockerUpdate(string) (service.SystemDockerUpdateStatus, error) {
+func (f *fakeUpdateSystem) StartDockerUpdate(string, bool) (service.SystemDockerUpdateStatus, error) {
 	f.asked++
 	return service.SystemDockerUpdateStatus{Supported: true, State: "running"}, nil
 }

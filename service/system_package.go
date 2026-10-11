@@ -261,9 +261,9 @@ func (u *systemPackageUpdater) check() (SystemPackageUpdates, error) {
 	result.Count = len(result.Updates)
 	result.Docker = u.dockerInfo(ctx, dockerUpdates)
 	// The simulation of the engine's update is the expensive part: only for an engine that has
-	// something to update.
+	// something to update. A hold is said, not refused: the plan is the one the owner would confirm.
 	if docker := result.Docker; docker != nil && (len(docker.Updates) > 0 || docker.Candidate != "") {
-		if update, _ := u.dockerUpdatePreflight(ctx, support); update.Refusal != "" || len(update.Packages) > 0 {
+		if update, _ := u.dockerUpdatePreflight(ctx, support, true); update.Refusal != "" || len(update.Packages) > 0 {
 			docker.Update = &update
 		}
 	}

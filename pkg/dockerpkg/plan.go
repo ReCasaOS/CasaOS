@@ -64,6 +64,12 @@ type Plan struct {
 	// Removed is every package it would remove (a Remv or Purg line), as apt printed it:
 	// show Offending, not this.
 	Removed []string
+	// Held are the packages of the engine that are on hold, and that the update goes ahead of
+	// because the owner said so (dpkg drops the hold of those it unpacks, and the unit puts it
+	// back): valid names of EngineNames, sorted. Apt's simulation does not tell, so the caller,
+	// which asked dpkg, sets it. ID covers it: a hold that is set, removed or moved after the
+	// owner confirmed is another plan to confirm.
+	Held []string
 }
 
 var (
@@ -152,17 +158,29 @@ func (p Plan) Offending() []string {
 }
 
 // ID identifies the plan: the lower case hex SHA-256 of the lines "name current>candidate"
-// of its packages, sorted and joined with "\n". It does not depend on the order apt printed
-// them in and changes with any name or version, so that "I confirmed this" can be told
-// from "apt now says something else".
+// of its packages, sorted and joined with "\n", and of one line more, "held name name ...",
+// when packages of the engine are on hold. It does not depend on the order apt printed them
+// in and changes with any name or version, and with a hold, so that "I confirmed this" can be
+// told from "apt now says something else". A plan with no hold has the id it has always had.
 func (p Plan) ID() string {
-	lines := make([]string, 0, len(p.Packages))
+	lines := make([]string, 0, len(p.Packages)+1)
 	for _, pkg := range p.Packages {
 		lines = append(lines, pkg.Name+" "+pkg.Current+">"+pkg.Candidate)
+	}
+	if len(p.Held) > 0 {
+		lines = append(lines, heldLine(p.Held))
 	}
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
 	return hex.EncodeToString(sum[:])
+}
+
+// heldLine is the line of a plan's id that says which packages are on hold: no package's own
+// line has the shape of it (theirs hold a ">", and "held" is not followed by a version).
+func heldLine(held []string) string {
+	names := append([]string{}, held...)
+	sort.Strings(names)
+	return "held " + strings.Join(names, " ")
 }
 
 // Pins are the "name=candidate" arguments that make apt upgrade the packages of this plan to

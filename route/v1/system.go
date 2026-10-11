@@ -172,9 +172,12 @@ func GetSystemDockerContainers(ctx echo.Context) error {
 }
 
 // dockerUpdateRequest is the body of the start of an update of Docker: the id of the plan that
-// the owner confirmed (see the check's docker.update.plan_id), and nothing else.
+// the owner confirmed (see the check's docker.update.plan_id), and whether the owner said that the
+// update may go ahead of a hold on Docker's packages (the check's docker.update.held), which is false
+// when it is left out; and nothing else.
 type dockerUpdateRequest struct {
-	PlanID string `json:"plan_id"`
+	PlanID    string `json:"plan_id"`
+	AllowHeld bool   `json:"allow_held"`
 }
 
 // @Summary update the Docker engine, to the plan the check offered
@@ -192,10 +195,10 @@ func StartDockerUpdate(ctx echo.Context) error {
 	decoder := json.NewDecoder(io.LimitReader(ctx.Request().Body, 4096))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil || decoder.More() {
-		return ctx.JSON(http.StatusBadRequest, model.Result{Success: http.StatusBadRequest, Message: `the body must be {"plan_id": "<64 hex digits>"} and nothing else`})
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: http.StatusBadRequest, Message: `the body must be {"plan_id": "<64 hex digits>", "allow_held": true or false} and nothing else`})
 	}
 
-	status, err := service.MyService.System().StartDockerUpdate(request.PlanID)
+	status, err := service.MyService.System().StartDockerUpdate(request.PlanID, request.AllowHeld)
 	if err != nil {
 		var refusal *service.DockerUpdateRefusal
 		switch {
