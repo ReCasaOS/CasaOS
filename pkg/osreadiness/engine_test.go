@@ -3,6 +3,9 @@ package osreadiness
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"math"
 	"slices"
 	"strings"
@@ -10,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // answering is a check that gives the Result it is given.
@@ -372,6 +376,62 @@ func TestCheckedAtIsInUTCAndToTheSecond(t *testing.T) {
 	}
 	if !strings.Contains(Text(report), "Checked: 2026-10-11T20:15:02Z\n") {
 		t.Fatalf("text = %s", Text(report))
+	}
+}
+
+// A text that is shown is on one line, with no character that moves or hides anything, and is cut
+// between two characters: never in the middle of one.
+func TestATextThatIsShownIsOnOneLineAndCutBetweenTwoCharacters(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":                    "plain",
+		"two\nlines":               "two lines",
+		"a\r\nb":                   "a  b",
+		"a\tb":                     "a b",
+		"  padded \n":              "padded",
+		"nul\x00 and bell\x07":     "nul and bell",
+		"line separator here":      "lineseparatorhere",
+		"bad \xff byte":            "bad  byte",
+		"escape \x1b[31m":          "escape [31m",
+		"é accents à la française": "é accents à la française",
+	} {
+		if got := cleanText(in, 100); got != want {
+			t.Errorf("cleanText(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// "é" is two bytes: a cut at an odd place is between two bytes of one
+	for max, want := range map[int]string{6: "aéé", 5: "aéé", 4: "aé", 3: "aé", 2: "a", 1: "a", 0: ""} {
+		if got := cleanText("a"+strings.Repeat("é", 10), max); got != want || !utf8.ValidString(got) {
+			t.Errorf("cleanText(…, %d) = %q, want %q", max, got, want)
+		}
+	}
+	report := runWith(t, newBox(t), Options{Checks: []Check{answering("c", Result{Severity: Warn, Title: "a" + strings.Repeat("é", 200), Detail: "a" + strings.Repeat("é", 400)})}})
+	f := findingOf(t, report, "c")
+	if !utf8.ValidString(f.Title) || !utf8.ValidString(f.Detail) || len(f.Title) != 159 || len(f.Detail) != 599 {
+		t.Errorf("title of %d bytes, detail of %d: a cut in the middle of a character", len(f.Title), len(f.Detail))
+	}
+}
+
+// What the probe's context says it is, it is for the page: a check that was told to stop, by its time or by
+// the end of the report, did not answer in time.
+func TestTheErrorsOfTheProbeAreTheReasonsOfTheFinding(t *testing.T) {
+	for err, want := range map[error]string{
+		context.DeadlineExceeded:              ReasonTimeout,
+		context.Canceled:                      ReasonTimeout,
+		fmt.Errorf("x: %w", context.Canceled): ReasonTimeout,
+		ErrToolMissing:                        ReasonToolMissing,
+		ErrTooLarge:                           ReasonTooLarge,
+		ErrNotAllowed:                         ReasonNotAllowed,
+		fs.ErrNotExist:                        ReasonMissing,
+		fs.ErrPermission:                      ReasonUnreadable,
+		errPanicked:                           ReasonPanic,
+		errors.New("something else"):          ReasonFailed,
+	} {
+		if got := unknown(err); got.Data["reason"] != want || got.Data["unknown"] != true || got.Severity != Refuse {
+			t.Errorf("unknown(%v) = %+v, want the reason %s", err, got, want)
+		}
+	}
+	if got := unknownWith("a reason that is not one").Data["reason"]; got != ReasonFailed {
+		t.Errorf("a reason that is not one became %v", got)
 	}
 }
 
