@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -173,6 +174,32 @@ type Run struct {
 	// whether it changes the major version, and is false with no PLAN line.
 	From, To  string
 	MajorJump bool
+	// Held is what the unit saw on hold, among the packages it may touch, when it started: names of
+	// the engine's, sorted, empty (not nil) for a "-", nil when the unit did not say (the first valid
+	// HELD line counts). Holds is what it saw on hold when it ended, the names it started with among
+	// them if the hold is still there, in the same way (the last valid HOLDS line counts).
+	Held  []string
+	Holds []string
+}
+
+// HoldsKept says that the update left the holds as they were: the unit saw packages on hold when
+// it started, and every one of them is still on hold in what it said when it ended. A run that
+// held nothing has no hold to say is kept, and a run whose unit did not say the end of it (it was
+// lost) has none that it can say is.
+func (r Run) HoldsKept() bool {
+	if len(r.Held) == 0 {
+		return false
+	}
+	still := make(map[string]struct{}, len(r.Holds))
+	for _, name := range r.Holds {
+		still[name] = struct{}{}
+	}
+	for _, name := range r.Held {
+		if _, ok := still[name]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // markerOf splits a line that is a marker of this run: "CASAOS_DOCKER_UPDATE_<KIND> <nonce>"
@@ -263,6 +290,14 @@ func ParseRun(log string) Run {
 				planSeen = true
 				run.From, run.To, run.MajorJump = from, to, majorJump
 			}
+		case "HELD":
+			if names, ok := heldNames(fields); ok && run.Held == nil {
+				run.Held = names
+			}
+		case "HOLDS":
+			if names, ok := heldNames(fields); ok {
+				run.Holds = names
+			}
 		case "DAEMON":
 			if len(fields) == 1 && validDaemonVersion(fields[0]) {
 				run.DaemonVersion = fields[0]
@@ -287,6 +322,30 @@ func ParseRun(log string) Run {
 		}
 	}
 	return run
+}
+
+// heldNames reads the fields of a HELD or HOLDS marker: the names of the engine's packages that are
+// on hold, each once, or a single "-" for none. Anything else is not one, and none of it is kept:
+// a name that is not exactly one of EngineNames (which no shell character, glob or architecture
+// is) fails the whole line. The names come back sorted, and are never nil.
+func heldNames(fields []string) ([]string, bool) {
+	if len(fields) == 1 && fields[0] == "-" {
+		return []string{}, true
+	}
+	if len(fields) == 0 {
+		return nil, false
+	}
+	names := make([]string, 0, len(fields))
+	seen := map[string]struct{}{}
+	for _, name := range fields {
+		if _, dup := seen[name]; dup || strings.Contains(name, ":") || !IsEngineName(name) {
+			return nil, false
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, true
 }
 
 // Phase is the step a run is at, from the markers it has written so far: PhasePreparing until the
