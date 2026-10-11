@@ -168,6 +168,9 @@ type Options struct {
 	Budget time.Duration
 	// Concurrency is how many checks run at once; zero is DefaultConcurrency.
 	Concurrency int
+	// IdentityTimeout is how long reading who the box is has (it is made before the checks, and is
+	// not one of them); zero is DefaultTimeout. It never has more than what the report has left.
+	IdentityTimeout time.Duration
 }
 
 // The reasons a check could not say, as they are in Data["reason"] of a finding that is unknown.
@@ -183,6 +186,9 @@ const (
 	ReasonPanic            = "panic"
 	ReasonInvalid          = "invalid_result"
 	ReasonFailed           = "failed"
+	// ReasonClock: the date of the machine is before the day the table of the releases was written, so
+	// the table cannot be read against it.
+	ReasonClock = "clock"
 )
 
 var reasonText = map[string]string{
@@ -197,6 +203,7 @@ var reasonText = map[string]string{
 	ReasonPanic:            "it failed unexpectedly",
 	ReasonInvalid:          "it gave an answer that is not valid",
 	ReasonFailed:           "a tool or a file it needs failed",
+	ReasonClock:            "the date of this machine is wrong",
 }
 
 // unknownWith is the Result of a check that could not say: a refusal that says it does not know,
@@ -208,10 +215,15 @@ func unknownWith(reason string) Result {
 	return Result{Severity: Refuse, Data: D{"unknown": true, "reason": reason}}
 }
 
+// errPanicked is the error of a step of the report that panicked: the reason it gives is "panic".
+var errPanicked = errors.New("it failed unexpectedly")
+
 // unknown is unknownWith for an error of the Probe.
 func unknown(err error) Result {
 	reason := ReasonFailed
 	switch {
+	case errors.Is(err, errPanicked):
+		reason = ReasonPanic
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		reason = ReasonTimeout
 	case errors.Is(err, ErrToolMissing):
@@ -284,10 +296,9 @@ type Finding struct {
 }
 
 const (
-	maxTitle      = 160
-	maxDetail     = 600
-	maxDataString = 128
-	maxDataList   = 50
+	maxTitle    = 160
+	maxDetail   = 600
+	maxDataList = 50
 )
 
 // finalize makes the Result of a check a Finding: a severity that is none of the four, and a

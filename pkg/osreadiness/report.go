@@ -65,7 +65,7 @@ func Run(ctx context.Context, p Probe, opts Options) Report {
 	p = guarded{p}
 
 	report := Report{CheckedAt: p.Now().UTC().Truncate(time.Second), Checks: []Finding{}}
-	session := identify(ctx, p)
+	session := identifyWithin(ctx, p, opts.IdentityTimeout)
 	ctx = withSession(ctx, session)
 
 	var gates, rest []Check
@@ -77,16 +77,21 @@ func Run(ctx context.Context, p Probe, opts Options) Report {
 		}
 	}
 	findings := execute(ctx, p, gates, opts.Concurrency)
+	// A gate that says no, and knows, makes the box one the upgrade is not for. A gate that could not
+	// answer (a read that failed, a tool that was too slow) says nothing of the box: it is a refusal
+	// like another, the report is blocked by it, and the other checks are made.
 	var refused []Finding
+	definitive := false
 	for _, f := range findings {
 		if f.Severity == Refuse {
 			refused = append(refused, f)
+			definitive = definitive || f.Data["unknown"] != true
 		}
 	}
 	switch {
-	case len(refused) > 0:
+	case definitive:
 		// not a box the upgrade is for: what is asked of it past this point is of no use, and
-		// only the reasons are reported
+		// only the reasons are reported (the gates that could not answer are refusals too)
 		report.State, report.Checks = StateUnsupported, refused
 		sortFindings(report.Checks)
 		report.Counts = count(report.Checks)

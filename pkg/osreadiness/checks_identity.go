@@ -5,6 +5,8 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+
+	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
 )
 
 func init() {
@@ -50,7 +52,7 @@ func withTokens(pairs ...string) D {
 	return data
 }
 
-func checkUnsupportedOS(ctx context.Context, _ Probe) Result {
+func checkUnsupportedOS(ctx context.Context, p Probe) Result {
 	s := SessionOf(ctx)
 	id := s.Identity
 	switch {
@@ -63,6 +65,14 @@ func checkUnsupportedOS(ctx context.Context, _ Probe) Result {
 			Severity: Refuse, Title: "This is not Debian or Ubuntu",
 			Detail: "Only Debian and the LTS releases of Ubuntu can be upgraded from here: Debian 11 and 12, Ubuntu 22.04 and 24.04.",
 			Data:   withTokens("id", id.ID, "version_id", id.VersionID),
+		}
+	case s.Hop == nil && !s.Latest && ossupport.BeforeTable(p.Now()):
+		// the table has nothing for a day before the one it was written on: it is the date that is
+		// wrong, and not the release that has no upgrade. The check cannot say, and says why.
+		return Result{
+			Severity: Refuse, Title: "The date of this machine is wrong",
+			Detail: "The date of this machine is before " + ossupport.AsOf.Format("2006-01-02") + ", which cannot be: the table of the releases cannot be read against it, so the report cannot say what upgrade this machine has. Set the date (and the time synchronisation of the machine), then check again.",
+			Data:   D{"unknown": true, "reason": ReasonClock, "id": id.ID, "version_id": id.VersionID},
 		}
 	case s.Hop == nil && !s.Latest:
 		return Result{

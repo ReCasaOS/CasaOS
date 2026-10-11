@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"time"
 
 	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
 )
@@ -80,6 +81,36 @@ func (s Session) HopOf() HopID {
 		return ""
 	}
 	return s.Hop.id
+}
+
+// identifyWithin is identify under the rules of every check: it has the time of a check and what is
+// left of the report's, and a panic in it, or no answer in time, is a session that says it could not
+// look (the refusals of unsupported_os and vendor_os, that do not know, and say why). The read that
+// does not stop for its context is left behind, as the body of a check that does not is: the report
+// does not wait for it, and neither does the request that comes next.
+func identifyWithin(ctx context.Context, p Probe, timeout time.Duration) Session {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	ictx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	done := make(chan Session, 1) // room for the answer of a step that is no longer waited for
+	go func() {
+		defer func() {
+			if recover() != nil {
+				done <- Session{ReleaseErr: errPanicked, MarkerErr: errPanicked}
+			}
+		}()
+		done <- identify(ictx, p)
+	}()
+	select {
+	case session := <-done:
+		// what was read is what there is, whenever it came: a read that its context cut short says so
+		// in the session's errors
+		return session
+	case <-ictx.Done():
+		return Session{ReleaseErr: ictx.Err(), MarkerErr: ictx.Err()}
+	}
 }
 
 // identify reads who the box is: os-release (and the files that tell a variant), through the

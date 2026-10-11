@@ -3,6 +3,7 @@ package osreadiness
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -257,6 +258,120 @@ func TestADataValueIsOnlyShownWhenItIsSafeToShow(t *testing.T) {
 	}
 	if !strings.HasPrefix(f.Detail, "é") || strings.Contains(f.Detail, "�") {
 		t.Fatalf("the detail is cut in the middle of a character: %q", f.Detail[len(f.Detail)-4:])
+	}
+}
+
+// The time a report has, and the time of a check, are those of the spec when nobody says: 20 seconds
+// and 5. They are pinned as numbers, and by the deadline a check is given, so that the zero value of
+// Options (what the API uses) is not a report of a day.
+func TestTheTimeAReportAndACheckHaveByDefault(t *testing.T) {
+	if DefaultBudget != 20*time.Second || DefaultTimeout != 5*time.Second || DefaultConcurrency != 4 {
+		t.Fatalf("budget %v, timeout %v, concurrency %d", DefaultBudget, DefaultTimeout, DefaultConcurrency)
+	}
+	for name, opts := range map[string]Options{"the zero value": {}, "a budget that is not": {Budget: -time.Second}} {
+		t.Run(name, func(t *testing.T) {
+			var mu sync.Mutex
+			var budget, timeout time.Duration
+			started := time.Now()
+			// a check that has all the time it asks, and one that asks for none
+			long := Check{Code: "long", Title: "long", Timeout: time.Hour, Run: func(ctx context.Context, _ Probe) Result {
+				deadline, _ := ctx.Deadline()
+				mu.Lock()
+				budget = deadline.Sub(started)
+				mu.Unlock()
+				return pass()
+			}}
+			plain := Check{Code: "plain", Title: "plain", Run: func(ctx context.Context, _ Probe) Result {
+				deadline, _ := ctx.Deadline()
+				mu.Lock()
+				timeout = deadline.Sub(started)
+				mu.Unlock()
+				return pass()
+			}}
+			opts.Checks = []Check{long, plain}
+			runWith(t, newBox(t), opts)
+			mu.Lock()
+			defer mu.Unlock()
+			if budget < 19*time.Second || budget > 21*time.Second {
+				t.Errorf("the report has %v when nobody says, want 20s", budget)
+			}
+			if timeout < 4*time.Second || timeout > 6*time.Second {
+				t.Errorf("a check has %v when nobody says, want 5s", timeout)
+			}
+		})
+	}
+}
+
+// A number that is not a number cannot be written as JSON, and a report that has one answers 500 for
+// all of it: it is not data.
+func TestANumberThatIsNotANumberIsNotData(t *testing.T) {
+	report := runWith(t, newBox(t), Options{Checks: []Check{answering("c", Result{
+		Severity: Warn, Data: D{"nan": math.NaN(), "inf": math.Inf(1), "ninf": math.Inf(-1), "half": 0.5, "zero": 0.0, "n": 3},
+	})}})
+	f := findingOf(t, report, "c")
+	for _, key := range []string{"nan", "inf", "ninf"} {
+		if _, there := f.Data[key]; there {
+			t.Errorf("data has %s: %v", key, f.Data)
+		}
+	}
+	if f.Data["half"] != 0.5 || f.Data["zero"] != 0.0 || f.Data["n"] != 3 {
+		t.Errorf("data = %v", f.Data)
+	}
+	if _, err := json.Marshal(NewAnswer(report)); err != nil {
+		t.Fatalf("the answer cannot be written: %v", err)
+	}
+}
+
+// The bounds of what a finding says, as numbers and not as the constants the code has them in: the
+// title and the detail are cut to 160 and 600 bytes, a string of the data to 128, a list to 50
+// strings, a name of a key to 32 characters.
+func TestWhatAFindingSaysIsBoundedByTheNumbersOfTheSpec(t *testing.T) {
+	long := func(n int) string { return strings.Repeat("a", n) }
+	many := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = "pkg" + strings.Repeat("a", i%5)
+		}
+		return out
+	}
+	report := runWith(t, newBox(t), Options{Checks: []Check{
+		answering("fits", Result{Severity: Warn, Title: long(160), Detail: long(600), Data: D{"s": long(128), "k" + long(31): "x", "list": many(50)}}),
+		answering("over", Result{Severity: Warn, Title: long(161), Detail: long(601), Data: D{"s": long(129), "k" + long(32): "x", "list": many(51)}}),
+	}})
+	fits, over := findingOf(t, report, "fits"), findingOf(t, report, "over")
+	if len(fits.Title) != 160 || len(fits.Detail) != 600 || fits.Data["s"] != long(128) || len(fits.Data["list"].([]string)) != 50 || len(fits.Data) != 4 {
+		t.Errorf("what fits was changed: %d, %d, %d data", len(fits.Title), len(fits.Detail), len(fits.Data))
+	}
+	if len(over.Title) != 160 || len(over.Detail) != 600 {
+		t.Errorf("title of %d bytes, detail of %d", len(over.Title), len(over.Detail))
+	}
+	if _, there := over.Data["s"]; there {
+		t.Error("a string of 129 characters is data")
+	}
+	if got := len(over.Data["list"].([]string)); got != 50 {
+		t.Errorf("a list of 51 strings has %d", got)
+	}
+	// "unknown" and the list: a key of 33 characters is none
+	if len(over.Data) != 2 {
+		t.Errorf("data = %v", over.Data)
+	}
+}
+
+// checked_at is the time the report was made, in UTC and to the second, as the spec writes it: the
+// clock of the box may be in any zone and have a fraction.
+func TestCheckedAtIsInUTCAndToTheSecond(t *testing.T) {
+	f := newBox(t)
+	f.now = time.Date(2026, 10, 11, 22, 15, 2, 987654321, time.FixedZone("CEST", 2*3600))
+	report := runWith(t, f, Options{Checks: []Check{answering("c", pass())}})
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"checked_at":"2026-10-11T20:15:02Z"`) {
+		t.Fatalf("report = %s", data)
+	}
+	if !strings.Contains(Text(report), "Checked: 2026-10-11T20:15:02Z\n") {
+		t.Fatalf("text = %s", Text(report))
 	}
 }
 

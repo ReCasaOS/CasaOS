@@ -297,6 +297,12 @@ func dayOf(t time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
+// BeforeTable says whether now is a day before AsOf: a clock that is wrong, since the table was
+// written on AsOf and no box that runs this code is earlier than that. Evaluate says nothing of such
+// a day, and whoever asks for what the table says should say that the date is wrong, and not that
+// the table has nothing.
+func BeforeTable(now time.Time) bool { return dayOf(now).Before(AsOf) }
+
 // Evaluate is how long the free security updates of id last, on the day of now (UTC). The last day
 // is a day of support: SecurityEnded begins the day after it, and EndingSoon the 180th day before
 // it. A box that is not Known, a release the table does not have, a codename that is not the
@@ -308,9 +314,8 @@ func dayOf(t time.Time) time.Time {
 func Evaluate(id Identity, now time.Time) Support {
 	unknown := Support{State: Unknown}
 	today := dayOf(now)
-	// A day before AsOf is a clock that is wrong: the table was written on AsOf, so no box that
-	// runs this code is earlier than that.
-	if !id.Known || today.Before(AsOf) {
+	// A day before AsOf is a clock that is wrong (BeforeTable)
+	if !id.Known || BeforeTable(now) {
 		return unknown
 	}
 	stale := today.After(AsOf.AddDate(0, staleAfterMonths, 0))

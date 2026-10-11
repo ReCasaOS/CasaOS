@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestUnsupportedOS(t *testing.T) {
@@ -31,7 +33,37 @@ func TestUnsupportedOS(t *testing.T) {
 			f.fail("/etc/os-release", &fs.PathError{Op: "open", Path: "/etc/os-release", Err: fs.ErrPermission})
 		}, severity: Refuse, unknown: ReasonUnreadable},
 		{name: "no os-release at all", setup: func(f *fakeProbe) { f.remove("/etc/os-release") }, severity: Refuse, unknown: ReasonMissing},
+		// the table of the releases was written on a day, and a box that says an earlier one has a clock
+		// that is wrong (a dead battery, no time server): that is what the owner is told, and not that
+		// there is no upgrade from a Debian 11
+		{name: "a clock a day before the table", setup: func(f *fakeProbe) { f.now = time.Date(2026, 10, 8, 23, 59, 59, 0, time.UTC) }, severity: Refuse, unknown: ReasonClock, title: "date", data: D{"id": "debian", "version_id": "11"}},
+		{name: "a clock of 1970", setup: func(f *fakeProbe) { f.now = time.Unix(0, 0) }, severity: Refuse, unknown: ReasonClock},
+		{name: "a clock on the day of the table", setup: func(f *fakeProbe) { f.now = time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC) }, severity: OK},
+		{name: "a clock that is wrong, on a release the table has no upgrade from", setup: func(f *fakeProbe) {
+			f.set("/etc/os-release", osRelease("ubuntu", "25.10", "questing", "Ubuntu 25.10"))
+			f.now = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		}, severity: Refuse, unknown: ReasonClock},
+		{name: "a clock that is wrong says nothing of a system that is not Debian", setup: func(f *fakeProbe) {
+			f.set("/etc/os-release", "ID=arch\nVERSION_ID=\"rolling\"\n")
+			f.now = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		}, severity: Refuse, title: "This is not Debian or Ubuntu"},
 	})
+}
+
+// What the owner reads when the clock is wrong is that it is, in words that say so.
+func TestAClockThatIsWrongIsSaidAsSuch(t *testing.T) {
+	f := newBox(t)
+	f.now = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	got := checkOn(t, f, "unsupported_os")
+	if got.Data["reason"] != "clock" {
+		t.Fatalf("data = %v", got.Data)
+	}
+	if text := got.Title + " " + got.Detail; !strings.Contains(text, "date") || strings.Contains(text, "no upgrade") || !strings.Contains(got.Detail, "2026-10-09") {
+		t.Fatalf("title %q, detail %q", got.Title, got.Detail)
+	}
+	if strings.HasPrefix(got.Title, "Could not check") {
+		t.Fatalf("the title is the generic one: %q", got.Title)
+	}
 }
 
 func TestVendorOS(t *testing.T) {
