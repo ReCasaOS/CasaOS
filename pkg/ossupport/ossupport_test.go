@@ -333,41 +333,70 @@ func TestWhatIsNotInTheTableIsUnknown(t *testing.T) {
 	}
 }
 
-// 18 months after the day the table was checked, it is "unknown" rather than possibly false.
+// 18 months after the day the table was checked it is stale: what a vendor can still move
+// (supported, ending soon) is "unknown" rather than possibly false, and what has ended stays ended,
+// since an end that has passed cannot un-end. A stale ended answer says the day it ended and its
+// source, and nothing about what comes after it.
 func TestTheTableGoesStaleAfterEighteenMonths(t *testing.T) {
 	bullseye := Parse(release("debian", "11", "bullseye", ""), "amd64")
 	bookworm := Parse(release("debian", "12", "bookworm", ""), "amd64")
 	for _, c := range []struct {
-		name string
-		now  time.Time
-		want string // for bullseye
+		name     string
+		now      time.Time
+		bullseye string
+		bookworm string
+		stale    bool // extended and next are no longer said
 	}{
-		{"the day it was checked", day(t, "2026-10-09"), SecurityEnded},
-		{"a year after", day(t, "2027-10-09"), SecurityEnded},
-		{"18 months after, at its first second", day(t, "2028-04-09"), SecurityEnded},
-		{"18 months after, at its last second", day(t, "2028-04-09").Add(24*time.Hour - time.Second), SecurityEnded},
-		{"18 months and a day after", day(t, "2028-04-10"), Unknown},
-		{"two years after", day(t, "2028-10-09"), Unknown},
-		{"far after", day(t, "2040-01-01"), Unknown},
-		{"the day before it was checked: a clock that is wrong", day(t, "2026-10-08").Add(23 * time.Hour), Unknown},
-		{"the epoch", time.Unix(0, 0), Unknown},
+		{"the day it was checked", day(t, "2026-10-09"), SecurityEnded, Supported, false},
+		{"a year after", day(t, "2027-10-09"), SecurityEnded, Supported, false},
+		{"18 months after, at its first second", day(t, "2028-04-09"), SecurityEnded, EndingSoon, false},
+		{"18 months after, at its last second", day(t, "2028-04-09").Add(24*time.Hour - time.Second), SecurityEnded, EndingSoon, false},
+		// stale: what is to come is unknown, what ended is not
+		{"18 months and a day after", day(t, "2028-04-10"), SecurityEnded, Unknown, true},
+		{"bookworm's last day, stale", day(t, "2028-06-30"), SecurityEnded, Unknown, true},
+		// the table says it ended: a stale table says so too
+		{"the day after bookworm's, stale", day(t, "2028-07-01"), SecurityEnded, SecurityEnded, true},
+		{"two years after", day(t, "2028-10-09"), SecurityEnded, SecurityEnded, true},
+		{"far after", day(t, "2040-01-01"), SecurityEnded, SecurityEnded, true},
+		// a clock that is wrong is not believed, whatever the state
+		{"the day before it was checked", day(t, "2026-10-08").Add(23 * time.Hour), Unknown, Unknown, true},
+		{"the epoch", time.Unix(0, 0), Unknown, Unknown, true},
 	} {
-		if got := Evaluate(bullseye, c.now); got.State != c.want {
-			t.Errorf("%s: bullseye is %s, want %s", c.name, got.State, c.want)
-		}
-		if c.want == Unknown {
-			if got := Evaluate(bookworm, c.now); got.State != Unknown || got.Ends != "" || got.Next != nil || got.Extended != nil || got.Source != "" {
-				t.Errorf("%s: bookworm is %+v, want unknown and nothing else", c.name, got)
+		for _, box := range []struct {
+			name  string
+			id    Identity
+			want  string
+			ended string
+		}{{"bullseye", bullseye, c.bullseye, "2026-08-31"}, {"bookworm", bookworm, c.bookworm, "2028-06-30"}} {
+			got := Evaluate(box.id, c.now)
+			if got.State != box.want {
+				t.Errorf("%s: %s is %s, want %s", c.name, box.name, got.State, box.want)
+				continue
+			}
+			switch {
+			case got.State == Unknown:
+				if got.Ends != "" || got.Precision != "" || got.Next != nil || got.Extended != nil || got.Source != "" {
+					t.Errorf("%s: %s is %+v, want unknown and nothing else", c.name, box.name, got)
+				}
+			case got.Ends != box.ended || got.Source == "":
+				t.Errorf("%s: %s says %+v, want the day it ends and its source", c.name, box.name, got)
+			case c.stale && (got.Extended != nil || got.Next != nil):
+				t.Errorf("%s: %s says extended %+v and next %+v of a table that is stale", c.name, box.name, got.Extended, got.Next)
+			case !c.stale && got.Next == nil:
+				t.Errorf("%s: %s lost its next release before the table is stale", c.name, box.name)
 			}
 		}
 	}
 	// the date it goes stale on moves with AsOf: it is a rule of the table, not a date of the code
 	asOf(t, "2026-12-30")
-	if got := Evaluate(bullseye, day(t, "2028-06-30")); got.State != SecurityEnded {
-		t.Errorf("with the table checked on 2026-12-30, 2028-06-30 is %s", got.State)
+	if got := Evaluate(bookworm, day(t, "2028-06-30")); got.State != EndingSoon || got.Next == nil {
+		t.Errorf("with the table checked on 2026-12-30, bookworm on 2028-06-30 is %+v, want it ending soon and not stale yet", got)
 	}
-	if got := Evaluate(bullseye, day(t, "2028-07-01")); got.State != Unknown {
-		t.Errorf("with the table checked on 2026-12-30, 2028-07-01 is %s", got.State)
+	if got := Evaluate(bookworm, day(t, "2028-07-01")); got.State != SecurityEnded || got.Next != nil {
+		t.Errorf("with the table checked on 2026-12-30, bookworm on 2028-07-01 is %+v, want it ended and stale", got)
+	}
+	if got := Evaluate(bullseye, day(t, "2028-07-01")); got.State != SecurityEnded || got.Next != nil {
+		t.Errorf("with the table checked on 2026-12-30, bullseye on 2028-07-01 is %+v", got)
 	}
 }
 

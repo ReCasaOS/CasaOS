@@ -5,11 +5,13 @@
 //
 // Three rules keep it from saying something false:
 //   - the identity is strict: ID must be exactly "debian" or "ubuntu". ID_LIKE is never looked at,
-//     so Mint, Pop!_OS, Raspbian, DietPi and the rest are not known, and nothing is claimed;
+//     so Mint, Pop!_OS, Raspbian (32-bit, ID=raspbian) and the rest are not known, and nothing is
+//     claimed;
 //   - a release that is not in the table (Debian 14, Ubuntu 26.10, any non-LTS Ubuntu, 18.04) is
 //     "unknown", not guessed;
-//   - eighteen months after the day the table was last checked (AsOf) every answer is "unknown": a
-//     table nobody has updated is no longer a source.
+//   - eighteen months after the day the table was last checked (AsOf) what is still to come is
+//     "unknown": a table nobody has updated is no longer a source for it. What has ended stays
+//     ended, since an end that has passed cannot un-end.
 package ossupport
 
 import (
@@ -225,16 +227,20 @@ func dayOf(t time.Time) time.Time {
 // Evaluate is how long the free security updates of id last, on the day of now (UTC). The last day
 // is a day of support: SecurityEnded begins the day after it, and EndingSoon the 180th day before
 // it. A box that is not Known, a release the table does not have, a codename that is not the
-// release's (a derivative, a testing system), any day more than 18 months after AsOf and any
-// day before it are Unknown.
+// release's (a derivative, a testing system) and any day before AsOf are Unknown. More than 18
+// months after AsOf the table is stale: Supported and EndingSoon, which a vendor can still move,
+// are Unknown then, and SecurityEnded stays SecurityEnded, with only the day it ended and its
+// source: what the vendor offers after it, and the next release, are claims about a time the table
+// has not been looked at for.
 func Evaluate(id Identity, now time.Time) Support {
 	unknown := Support{State: Unknown}
 	today := dayOf(now)
 	// A day before AsOf is a clock that is wrong: the table was written on AsOf, so no box that
 	// runs this code is earlier than that.
-	if !id.Known || today.Before(AsOf) || today.After(AsOf.AddDate(0, staleAfterMonths, 0)) {
+	if !id.Known || today.Before(AsOf) {
 		return unknown
 	}
+	stale := today.After(AsOf.AddDate(0, staleAfterMonths, 0))
 	for _, e := range table {
 		if e.id != id.ID || e.versionID != id.VersionID || (id.Codename != "" && id.Codename != e.codename) {
 			continue
@@ -249,6 +255,12 @@ func Evaluate(id Identity, now time.Time) Support {
 			support.State = SecurityEnded
 		case end.Sub(today) <= endingSoonDays*24*time.Hour:
 			support.State = EndingSoon
+		}
+		if stale {
+			if support.State != SecurityEnded {
+				return unknown
+			}
+			return support
 		}
 		if e.extended != nil {
 			extended := *e.extended

@@ -59,6 +59,9 @@ func TestTheSupportOfTheOperatingSystemIsToldInWords(t *testing.T) {
 			"Debian 11 no longer receives Debian security updates since 31 August 2026." + handoff},
 		"Debian 11 ended, a year later": {debian11, "2027-10-10",
 			"Debian 11 no longer receives Debian security updates since 31 August 2026." + handoff},
+		// what ended stays ended when the table is old: the owner is still told
+		"Debian 11 ended, the table stale": {debian11, "2028-05-01",
+			"Debian 11 no longer receives Debian security updates since 31 August 2026." + handoff},
 		"Debian 12 ending": {debian12, "2028-01-15",
 			"Debian 12 stops receiving Debian security updates on 30 June 2028." + handoff},
 		"Ubuntu 22.04 ending, to the month": {ubuntu22, "2027-01-15",
@@ -97,7 +100,7 @@ func TestNothingIsToldForASupportedOrUnknownSystem(t *testing.T) {
 		"Ubuntu 22.04, supported":         {ubuntu22, "2026-12-02"},
 		"a Mint, which is not known":      {mint, "2026-10-10"},
 		"nothing read":                    {nil, "2026-10-10"},
-		"a table gone stale, a Debian 11": {debian11, "2028-04-10"},
+		"a table gone stale, a Debian 12": {debian12, "2028-05-01"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h, o, now := newHub(t)
@@ -580,7 +583,9 @@ func TestRunStartsTheDailyLook(t *testing.T) {
 		o.mu.Lock()
 		told := len(o.sent)
 		o.mu.Unlock()
-		if told > 0 {
+		// the marker is the last thing the look does, after the send: the state directory is not
+		// removed under it
+		if told > 0 && osMarker(h) != "" {
 			break
 		}
 		select {
