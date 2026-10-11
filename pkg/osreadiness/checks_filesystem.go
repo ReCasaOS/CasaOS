@@ -681,7 +681,7 @@ func checkDiskBoot(ctx context.Context, p Probe) Result {
 		return Result{
 			Severity: Refuse, Title: "/boot is too small for the next release",
 			// no room that is freed makes the filesystem larger: the partition has to be
-			Detail: "Debian 13 asks for a /boot partition of 768 MB, with about 300 MiB free: its kernels and initial RAM disks are larger. The filesystem of this one has " + strconv.FormatUint(total/mebibyte, 10) + " MiB, less than the 700 MiB that such a partition has, and freeing room in it does not make it larger: the partition has to be made larger first.",
+			Detail: "Debian 13 asks for a /boot partition of 768 MB, with about 300 MiB free: its kernels and initial RAM disks are larger. The filesystem of this one has " + strconv.FormatUint(total/mebibyte, 10) + " MiB, where a partition of 768 MB has about 700 MiB of filesystem (it is the filesystem's size that is measured, and not the partition's), and freeing room in it does not make it larger: the partition has to be made larger first.",
 			Data:   D{"path": "/boot", "total_mib": total / mebibyte, "needed_mib": uint64(bootTotal / mebibyte)}, Action: ActionNone,
 		}
 	}
