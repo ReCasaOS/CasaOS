@@ -22,7 +22,10 @@ import (
 // with the names of the engine's packages that the core saw on hold (CASAOS_DU_HELD), and never
 // without them: the flag lets apt change a held package, and dpkg then drops the hold of every package it
 // unpacks (apt passes it nothing of the holds, and dpkg sets the selection of a package it unpacks back
-// to install, flag or no flag), so the unit puts the hold back, for those names and no others.
+// to install, flag or no flag), so the unit puts the hold back, for those names and no others. The flag
+// is global to the three calls, so a package among the names the unit may touch that is on hold when the
+// unit starts and that the core did not name is a run the unit refuses (GUARD plan), before it asks apt
+// for anything: it could not put that hold back.
 //
 // Two lists travel: the pins (name=version) of the packages to upgrade, which are all the
 // script names to apt, and the names of every package apt may install, which are the pins' and
@@ -354,7 +357,8 @@ var (
 // owner allowed the update to go ahead of: there are none for a plan that has no hold to go ahead of.
 // They are an environment variable of their own, sorted, and so is the word that goes with them
 // (CASAOS_DU_ALLOW_HELD, which is there exactly when they are): the unit holds them again when the
-// install is over. The script checks both again.
+// install is over, and refuses to start when another package it may touch is on hold. The script checks
+// both again.
 func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to string, held []string) ([]string, error) {
 	switch {
 	case !dockerpkg.ValidNonce(nonce):
