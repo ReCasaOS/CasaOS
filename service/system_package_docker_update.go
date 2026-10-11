@@ -19,15 +19,19 @@ import (
 
 // The reasons the button is refused for, in the order they are looked at: the first that
 // applies is the one given (unsupported, origin, held, dpkg, daemon, swarm, plan, disk). The page
-// maps these codes to its own words.
+// maps these codes to its own words. A hold is not one for the check: it is said, with the plan
+// (SystemPackageDockerUpdate.Held), and the start refuses it until the owner has allowed it.
 const (
 	// DockerRefusalUnsupported is a host that is not Debian-family root with apt-get and
 	// systemd-run.
 	DockerRefusalUnsupported = "unsupported"
 	// DockerRefusalOrigin is an engine that is not docker-ce from Docker's own repository.
 	DockerRefusalOrigin = "origin"
-	// DockerRefusalHeld is docker-ce, or another package of the engine, on hold: the owner
-	// put it there, and the button does not undo it.
+	// DockerRefusalHeld is docker-ce, or another package of the engine, on hold, when the owner
+	// has not said that the update may go ahead of the hold. The hold is the owner's: the update
+	// goes ahead of it as the terminal command with --allow-change-held-packages does, which drops
+	// the hold of the packages dpkg unpacks, and the unit puts it back and says whether it did
+	// (HOLDS, holds_kept).
 	DockerRefusalHeld = "held"
 	// DockerRefusalDpkg is a package operation that was interrupted and left unfinished (a power
 	// cut in the middle of an install): the simulations take no lock, so they pass, and the first
@@ -47,6 +51,9 @@ const (
 )
 
 const (
+	// systemDockerHeldFlag is what apt is told, when the owner has allowed it, so that it may change a
+	// package that is on hold: the terminal command's own.
+	systemDockerHeldFlag = "--allow-change-held-packages"
 	// systemDockerInfoTimeout is how long the Docker daemon has to answer.
 	systemDockerInfoTimeout = 5 * time.Second
 	// systemDockerMinFreeBytes is the room the packages of the engine are downloaded and
@@ -74,6 +81,13 @@ type SystemPackageDockerUpdate struct {
 	// package names, or dockerpkg.InvalidName, or dockerpkg.TooManyNew), for DockerRefusalPlan;
 	// otherwise empty, never null.
 	RefusalDetail []string `json:"refusal_detail"`
+	// Held is whether packages of the engine are on hold, and HeldPackages which, sorted; never
+	// null. The update may be available all the same: it goes ahead of the hold only when the
+	// owner allows it, and PlanID covers the hold, so that one that is set, removed or moved after
+	// the owner confirmed is another plan. A refusal that comes before the question of the holds
+	// (unsupported, origin) says none.
+	Held         bool     `json:"held"`
+	HeldPackages []string `json:"held_packages"`
 	// From and To are the engine's version before and after, digits and dots: 28.0.4, 29.8.0.
 	// They are the same when only a package other than docker-ce moves.
 	From string `json:"from"`
@@ -96,13 +110,21 @@ type SystemPackageDockerUpdate struct {
 // calls it again under the lock: the start refuses unless Refusal is "", the plan is not
 // empty (Packages is) and PlanID is the one the owner confirmed.
 //
+// allowHeld is the owner's word that the update may go ahead of a hold on the engine's packages.
+// The check gives it: it is what the page is to confirm, and says the hold. The start gives what the
+// owner sent, and a hold with no word is the refusal DockerRefusalHeld, in its place in the order
+// and before the plan is simulated. With it the plan is the one apt makes when it is told it may
+// change what is held (Plan.Held says which are), as the terminal command would, which drops the hold
+// of what dpkg unpacks (the unit puts it back); and it must not make a plan that changes a held
+// package that is not the engine's.
+//
 // The plan is returned only when it is within bounds, whether or not a later reason (the
 // disk) refuses: it is the zero Plan otherwise, and for a plan with nothing to upgrade (new
 // packages alone: apt installs nothing of its own with --only-upgrade). Plan.Pins are what to
 // put on the command line, Plan.Names what the unit's guard may let apt install, and nothing
 // else may be.
-func (u *systemPackageUpdater) dockerUpdatePreflight(ctx context.Context, support systemPackageSupport) (SystemPackageDockerUpdate, dockerpkg.Plan) {
-	update := SystemPackageDockerUpdate{RefusalDetail: []string{}, Packages: []SystemPackageUpdate{}}
+func (u *systemPackageUpdater) dockerUpdatePreflight(ctx context.Context, support systemPackageSupport, allowHeld bool) (SystemPackageDockerUpdate, dockerpkg.Plan) {
+	update := SystemPackageDockerUpdate{RefusalDetail: []string{}, HeldPackages: []string{}, Packages: []SystemPackageUpdate{}}
 	refuse := func(code string, detail ...string) (SystemPackageDockerUpdate, dockerpkg.Plan) {
 		update.Refusal = code
 		update.RefusalDetail = append(update.RefusalDetail, detail...)
@@ -116,8 +138,11 @@ func (u *systemPackageUpdater) dockerUpdatePreflight(ctx context.Context, suppor
 		return refuse(DockerRefusalOrigin)
 	}
 	installed, held := u.enginePackages(ctx)
-	if held {
-		return refuse(DockerRefusalHeld)
+	if len(held) > 0 {
+		update.Held, update.HeldPackages = true, held
+		if !allowHeld {
+			return refuse(DockerRefusalHeld, held...)
+		}
 	}
 	if u.dpkgUnfinished(ctx) {
 		return refuse(DockerRefusalDpkg)
@@ -130,13 +155,22 @@ func (u *systemPackageUpdater) dockerUpdatePreflight(ctx context.Context, suppor
 		return refuse(DockerRefusalSwarm)
 	}
 
-	plan, err := u.enginePlan(ctx, support, installed)
+	plan, err := u.enginePlan(ctx, support, installed, update.Held)
 	if err != nil {
 		// fail closed: a simulation that did not succeed says nothing of what would happen
 		return refuse(DockerRefusalPlan)
 	}
+	plan.Held = held
 	if offending := plan.Offending(); len(offending) > 0 {
 		return refuse(DockerRefusalPlan, offending...)
+	}
+	if update.Held {
+		// the flag is for the engine's packages: a held package that the plan would also change
+		// (it would have been an upgrade of one that is not the engine's, which is refused above, or
+		// it is one that is new) is the owner's hold on something else, and is not let go of
+		if foreign := u.heldForeign(ctx, plan); len(foreign) > 0 {
+			return refuse(DockerRefusalPlan, foreign...)
+		}
 	}
 
 	if len(plan.Pins()) == 0 {
@@ -180,19 +214,39 @@ func (u *systemPackageUpdater) engineOrigin(ctx context.Context) dockerpkg.Origi
 	return ""
 }
 
-// enginePackages are the packages of dockerpkg.EngineNames that are on the box, in that order,
-// and whether any of them is on hold.
-func (u *systemPackageUpdater) enginePackages(ctx context.Context) (installed []string, held bool) {
+// enginePackages are the packages of dockerpkg.EngineNames that are on the box, in that order, and
+// which of them are on hold, in the same order, which is the sorted one.
+func (u *systemPackageUpdater) enginePackages(ctx context.Context) (installed, held []string) {
 	for _, name := range dockerpkg.EngineNames {
 		if u.installedVersion(ctx, name) == "" {
 			continue
 		}
 		installed = append(installed, name)
 		if u.packageHeld(ctx, name) {
-			held = true
+			held = append(held, name)
 		}
 	}
 	return installed, held
+}
+
+// heldForeign are the packages of the plan that are not the engine's and that dpkg has on hold,
+// sorted: the new ones, since an upgrade of a package that is not the engine's is refused before this.
+// The names have passed dockerpkg.Plan.Offending.
+//
+// It is defence in depth. Real apt does not get here for such a package: it marks a package that
+// is not named on the command line as a dependency, and a held package is not changed by a dependency
+// even with --allow-change-held-packages, so a held new dependency, or a held foreign dependency, makes
+// the simulation itself fail before apt prints a plan. That is the refusal DockerRefusalPlan, without
+// names, from enginePlan's error.
+func (u *systemPackageUpdater) heldForeign(ctx context.Context, plan dockerpkg.Plan) []string {
+	var names []string
+	for _, pkg := range plan.Packages {
+		if !dockerpkg.IsEngineName(pkg.Name) && u.packageHeld(ctx, pkg.Name) {
+			names = append(names, pkg.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // dpkgUnfinished says whether a package operation was left half done, by the two things apt itself
@@ -246,12 +300,17 @@ func (u *systemPackageUpdater) dockerDaemon(ctx context.Context) (string, docker
 // enginePlan simulates upgrading the installed packages of the engine, all of them in one
 // transaction, as apt would run it. Only the packages that are on the box are named: with
 // --only-upgrade apt skips the others (and fails, "Unable to locate package", for one that
-// its repositories do not carry, as docker-model-plugin may not be).
-func (u *systemPackageUpdater) enginePlan(ctx context.Context, support systemPackageSupport, installed []string) (dockerpkg.Plan, error) {
+// its repositories do not carry, as docker-model-plugin may not be). With changeHeld apt is told
+// it may change what is on hold, as the owner's terminal command tells it.
+func (u *systemPackageUpdater) enginePlan(ctx context.Context, support systemPackageSupport, installed []string, changeHeld bool) (dockerpkg.Plan, error) {
 	if len(installed) == 0 {
 		return dockerpkg.Plan{}, nil
 	}
-	args := systemPackageSimulateArgs(append([]string{"install", "--only-upgrade", "--no-install-recommends"}, installed...)...)
+	words := []string{"install", "--only-upgrade", "--no-install-recommends"}
+	if changeHeld {
+		words = append(words, systemDockerHeldFlag)
+	}
+	args := systemPackageSimulateArgs(append(words, installed...)...)
 	output, err := u.command(ctx, support.aptPath, args...)
 	if err != nil {
 		return dockerpkg.Plan{}, err

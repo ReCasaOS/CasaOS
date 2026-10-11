@@ -478,6 +478,63 @@ func TestRollbackCommandFromARun(t *testing.T) {
 	}
 }
 
+// The packages of a run that went ahead of a hold are on hold again when the owner reads the command (the
+// unit puts the hold back), and the command that puts the old engine back drops the hold of every package
+// dpkg unpacks, as the update did: the command of such a run says apt may change what is held, and ends by
+// putting the hold back on the packages that were held. The command of any other run is what it always was.
+func TestRollbackCommandHeld(t *testing.T) {
+	previous := []string{"docker-ce=5:28.0.4-1~debian.11~bullseye", "containerd.io=1.7.27-1"}
+	plain := RollbackCommand(previous)
+	for _, none := range [][]string{nil, {}} {
+		if got := RollbackCommandHeld(previous, none); got != plain {
+			t.Errorf("RollbackCommandHeld(held=%#v) = %q, want %q: byte for byte the command of a run that held nothing", none, got, plain)
+		}
+	}
+	const pins = "docker-ce=5:28.0.4-1~debian.11~bullseye containerd.io=1.7.27-1"
+	const head = "sudo apt-get install --allow-downgrades --allow-change-held-packages "
+	for _, c := range []struct {
+		name string
+		held []string
+		want string
+	}{
+		{"all three held", []string{"docker-ce", "docker-ce-cli", "containerd.io"}, head + pins + " ; sudo apt-mark hold containerd.io docker-ce docker-ce-cli"},
+		{"only a sibling held", []string{"containerd.io"}, head + pins + " ; sudo apt-mark hold containerd.io"},
+		{"one held, given twice and in no order", []string{"docker-ce-cli", "docker-ce", "docker-ce-cli"}, head + pins + " ; sudo apt-mark hold docker-ce docker-ce-cli"},
+	} {
+		if got := RollbackCommandHeld(previous, c.held); got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+	}
+	// the flag is before the pins and there once; a command that has no pin is still none, held or not
+	if got := RollbackCommandHeld(previous, []string{"docker-ce"}); strings.Count(got, "--allow-change-held-packages") != 1 || strings.Index(got, "--allow-change-held-packages") > strings.Index(got, "docker-ce=") {
+		t.Errorf("the flag is not once, before the pins: %q", got)
+	}
+	for _, none := range [][]string{nil, {}, {""}, {"libc6=2.31", "docker-ce;reboot=5:1"}} {
+		if got := RollbackCommandHeld(none, []string{"docker-ce"}); got != "" {
+			t.Errorf("RollbackCommandHeld(%q, held) = %q, want none", none, got)
+		}
+	}
+	// only the pins that pass validation, held or not
+	got := RollbackCommandHeld([]string{"docker-ce=5:28.0.4-1", "docker-ce=5:1;reboot", "containerd.io=1.7.27-1"}, []string{"docker-ce"})
+	if want := head + "docker-ce=5:28.0.4-1 containerd.io=1.7.27-1 ; sudo apt-mark hold docker-ce"; got != want {
+		t.Errorf("RollbackCommandHeld(mixed) = %q, want %q", got, want)
+	}
+	// and only names of Docker's packages are put back on hold, as the box names them
+	hostile := []string{"x; rm -rf /", "$(id)", "libc6", "-oAPT::Foo=1", "docker-ce:armhf", "docker-ce\nreboot", "docker-ce && reboot", ""}
+	got = RollbackCommandHeld(previous, append([]string{"docker-ce"}, hostile...))
+	if want := head + pins + " ; sudo apt-mark hold docker-ce"; got != want {
+		t.Errorf("RollbackCommandHeld(hostile names) = %q, want %q", got, want)
+	}
+	// the one `;` is the unit's own, between the install and the hold; no other shell character
+	if strings.ContainsAny(got, "$`'\"\\<>()\n#*?!{}|") || strings.Count(got, ";") != 1 {
+		t.Errorf("the command holds a shell character, or not just the one `;`: %q", got)
+	}
+	// no name that is one: nothing on hold to put back, so the command of a run that held nothing
+	if got := RollbackCommandHeld(previous, hostile); got != plain {
+		t.Errorf("RollbackCommandHeld(only hostile names) = %q, want %q", got, plain)
+	}
+}
+
 func TestIsMarkerLineIsTheShapeParseRunLooksFor(t *testing.T) {
 	for line, want := range map[string]bool{
 		"CASAOS_DOCKER_UPDATE_SUCCESS " + testNonce + " 2026-08-13T01:05:00Z": true,

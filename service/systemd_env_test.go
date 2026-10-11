@@ -155,7 +155,7 @@ func TestSystemdLeavesTheDockerUpdateScriptAsItIsWritten(t *testing.T) {
 	nonce := "0123456789abcdef0123456789abcdef"
 	pins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
 	names := []string{"containerd.io", "docker-ce", "docker-ce-cli", "nftables"}
-	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0")
+	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,12 +177,37 @@ func TestSystemdLeavesTheDockerUpdateScriptAsItIsWritten(t *testing.T) {
 // script uses in ${...}, so that a substitution cannot pass for an unset name.
 func TestSystemdLeavesTheScriptAloneWhateverTheEnvironmentHolds(t *testing.T) {
 	nonce := "0123456789abcdef0123456789abcdef"
-	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", []string{"docker-ce=" + debian29}, []string{"docker-ce"}, "29.8.0")
+	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", []string{"docker-ce=" + debian29}, []string{"docker-ce"}, "29.8.0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	env, command := systemRunCommand(t, args)
-	for _, name := range []string{"Package", "Version", "previous", "pin", "pair", "policy", "CASAOS_DU_POLL", "CASAOS_DU_NONCE"} {
+	for _, name := range []string{"Package", "Version", "previous", "pin", "pair", "policy", "list", "st", "pkg", "hold_flag", "CASAOS_DU_POLL", "CASAOS_DU_NONCE", "CASAOS_DU_ALLOW_HELD", "CASAOS_DU_HELD", "held_names", "held_start", "install_ran", "install_rc", "holds_back", "tries", "seen", "bad", "name"} {
+		env[name] = "SUBSTITUTED"
+	}
+	if got := systemdExpandArgv(command, env); got[2] != dockerUpdateScript {
+		t.Errorf("the shell is given a script that is not the one written:\n%s", firstDifference(dockerUpdateScript, got[2]))
+	}
+}
+
+// ... and with the owner's word to go ahead of a hold, and the names that are held, in the environment:
+// two variables more, and the same script, whatever they hold.
+func TestSystemdLeavesTheScriptAloneWithTheOwnersWordToo(t *testing.T) {
+	nonce := "0123456789abcdef0123456789abcdef"
+	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", []string{"docker-ce=" + debian29}, []string{"docker-ce"}, "29.8.0", []string{"containerd.io", "docker-ce"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, command := systemRunCommand(t, args)
+	if env["CASAOS_DU_ALLOW_HELD"] != "1" || env["CASAOS_DU_HELD"] != "containerd.io docker-ce" {
+		t.Fatalf("the environment = %v", env)
+	}
+	if got := systemdExpandArgv(command, env); len(got) != 3 || got[2] != dockerUpdateScript {
+		t.Errorf("the shell is given a script that is not the one written:\n%s", firstDifference(dockerUpdateScript, got[len(got)-1]))
+	}
+	// the names of the packages are made of letters, digits and ".+-": none is a ${...} that systemd could
+	// expand, and the script holds none either way, so that the word and the names change nothing
+	for _, name := range []string{"Package", "held_names", "held_start", "CASAOS_DU_HELD"} {
 		env[name] = "SUBSTITUTED"
 	}
 	if got := systemdExpandArgv(command, env); got[2] != dockerUpdateScript {

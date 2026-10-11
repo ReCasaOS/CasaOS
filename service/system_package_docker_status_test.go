@@ -95,13 +95,13 @@ func ownersRun(tail ...string) []string {
 func TestDockerStatusWithoutARun(t *testing.T) {
 	s := newStatusBox(t)
 	status := s.status(t)
-	want := SystemDockerUpdateStatus{Supported: true, State: "idle", NotReturned: []dockerpkg.NotReturned{}}
+	want := SystemDockerUpdateStatus{Supported: true, State: "idle", NotReturned: []dockerpkg.NotReturned{}, HeldPackages: []string{}}
 	if !reflect.DeepEqual(status, want) {
 		t.Errorf("status = %#v, want %#v", status, want)
 	}
 	// ... and what the page reads
 	encoded, _ := json.Marshal(status)
-	if got := string(encoded); got != `{"supported":true,"state":"idle","phase":"","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"","completed_at":"","from":"","to":"","major_jump":false,"not_returned":[],"rollback_command":"","log":""}` {
+	if got := string(encoded); got != `{"supported":true,"state":"idle","phase":"","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"","completed_at":"","from":"","to":"","major_jump":false,"held":false,"held_packages":[],"holds_kept":false,"not_returned":[],"rollback_command":"","log":""}` {
 		t.Errorf("JSON = %s", got)
 	}
 }
@@ -277,8 +277,9 @@ func TestDockerStatusSucceeded(t *testing.T) {
 		Supported: true, State: "succeeded", Outcome: "success",
 		StartedAt: "2026-08-13T01:00:05Z", CompletedAt: "2026-08-13T01:05:00Z",
 		From: "28.0.4", To: "29.8.0",
-		NotReturned: []dockerpkg.NotReturned{{Name: "job", RestartPolicy: "no"}, {Name: "scratch"}},
-		Log:         status.Log,
+		NotReturned:  []dockerpkg.NotReturned{{Name: "job", RestartPolicy: "no"}, {Name: "scratch"}},
+		HeldPackages: []string{},
+		Log:          status.Log,
 	}
 	if !reflect.DeepEqual(status, want) {
 		t.Errorf("status = %#v\nwant %#v", status, want)
@@ -933,5 +934,183 @@ func TestReadDockerMarkersKeepsThePlanLine(t *testing.T) {
 	}
 	if run := dockerpkg.ParseRun(read); !run.MajorJump || run.From != "28.0.4" || run.To != "29.8.0" || run.Terminal != dockerpkg.TerminalFailed {
 		t.Errorf("run = %#v", run)
+	}
+}
+
+// ---- packages on hold ------------------------------------------------------------------------
+
+// heldRun is a run whose unit said what it saw on hold when it started (HELD, after STARTED) and, if
+// holds is not empty, what it saw when it ended (HOLDS, after the daemon is back).
+func heldRun(held, holds string, tail ...string) []string {
+	run := []string{
+		logQueued, logStarted, mark("HELD", held), logPrevious,
+		"container: web always",
+		mark("DOWNLOADED", "2026-08-13T01:00:30Z"),
+		mark("INSTALLED", "2026-08-13T01:02:00Z"),
+		mark("DAEMON", "29.8.0"),
+	}
+	if holds != "" {
+		run = append(run, mark("HOLDS", holds))
+	}
+	return append(run, tail...)
+}
+
+func TestDockerStatusSaysWhatWasHeldAndThatTheHoldIsStillThere(t *testing.T) {
+	s := newStatusBox(t)
+	s.write(t, heldRun("docker-ce docker-ce-cli", "docker-ce docker-ce-cli", mark("SUCCESS", "2026-08-13T01:05:00Z"))...)
+	status := s.status(t)
+	if status.State != "succeeded" || !status.Held || !reflect.DeepEqual(status.HeldPackages, []string{"docker-ce", "docker-ce-cli"}) || !status.HoldsKept {
+		t.Fatalf("status = %#v", status)
+	}
+	// what the page reads of it
+	status.Log = ""
+	encoded, _ := json.Marshal(status)
+	want := `{"supported":true,"state":"succeeded","phase":"","outcome":"success","error":"","error_code":"","exit_code":null,"started_at":"2026-08-13T01:00:05Z","completed_at":"2026-08-13T01:05:00Z","from":"28.0.4","to":"29.8.0","major_jump":false,"held":true,"held_packages":["docker-ce","docker-ce-cli"],"holds_kept":true,"not_returned":[],"rollback_command":"","log":""}`
+	if string(encoded) != want {
+		t.Errorf("JSON = %s\nwant   %s", encoded, want)
+	}
+}
+
+func TestDockerStatusDoesNotSayAHoldIsKeptThatItCannotConfirm(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		lines []string
+		state string
+		held  bool
+	}{
+		{"one of the holds is gone", heldRun("docker-ce docker-ce-cli", "docker-ce", mark("SUCCESS", "2026-08-13T01:05:00Z")), "succeeded", true},
+		{"all of them are", heldRun("docker-ce docker-ce-cli", "-", mark("SUCCESS", "2026-08-13T01:05:00Z")), "succeeded", true},
+		{"another package is held now", heldRun("docker-ce", "containerd.io", mark("SUCCESS", "2026-08-13T01:05:00Z")), "succeeded", true},
+		{"the unit never said what it left (it was lost)", heldRun("docker-ce", ""), "failed", true},
+		{"the update failed and the unit did not say what it left", heldRun("docker-ce", "", mark("FAILED", "2026-08-13T01:03:00Z", "daemon")), "failed", true},
+		{"nothing was held", heldRun("-", "-", mark("SUCCESS", "2026-08-13T01:05:00Z")), "succeeded", false},
+		{"nothing was held and a hold is there now", heldRun("-", "docker-ce", mark("SUCCESS", "2026-08-13T01:05:00Z")), "succeeded", false},
+	} {
+		s := newStatusBox(t)
+		s.write(t, c.lines...)
+		status := s.status(t)
+		if status.State != c.state || status.Held != c.held || status.HoldsKept {
+			t.Errorf("%s: state %q, held %v, holds kept %v, want %q, %v, false", c.name, status.State, status.Held, status.HoldsKept, c.state, c.held)
+		}
+		if status.HeldPackages == nil {
+			t.Errorf("%s: held_packages is null", c.name)
+		}
+	}
+}
+
+func TestDockerStatusSaysTheHoldsOfARunThatFailedAndOfOneThatGoesOn(t *testing.T) {
+	s := newStatusBox(t)
+	s.write(t, heldRun("docker-ce", "docker-ce", mark("FAILED", "2026-08-13T01:03:00Z", "daemon"))...)
+	if status := s.status(t); status.State != "failed" || status.ErrorCode != "daemon" || !status.Held || !status.HoldsKept {
+		t.Errorf("a failed run: status = %#v", status)
+	}
+
+	// a unit that runs has said what it saw at its start and not what it leaves
+	s.box.activeUnits[systemDockerUpdateUnit] = true
+	s.write(t, heldRun("docker-ce", "")...)
+	if status := s.status(t); status.State != "running" || !status.Held || status.HoldsKept || !reflect.DeepEqual(status.HeldPackages, []string{"docker-ce"}) {
+		t.Errorf("a run that goes on: status = %#v", status)
+	}
+
+	// and one that has not said anything yet says nothing
+	s.write(t, logQueued)
+	if status := s.status(t); status.Held || status.HoldsKept || status.HeldPackages == nil || len(status.HeldPackages) != 0 {
+		t.Errorf("a run that was only queued: status = %#v", status)
+	}
+}
+
+// The packages of a run that went ahead of a hold are on hold again when it is over, and the command that
+// puts the engine back drops the hold of every package dpkg unpacks, as the update did: the command to put
+// the engine back says apt may change what is held and ends by putting the hold back on the packages that
+// were held when the unit started, for such a run, and is what it always was for one that held nothing.
+func TestDockerStatusRollbackCommandOfARunThatWentAheadOfAHold(t *testing.T) {
+	const pins = "containerd.io=1.7.27-1 docker-ce=" + debian28 + " docker-ce-cli=" + debian28
+	plain := "sudo apt-get install --allow-downgrades " + pins
+	held := func(names string) string {
+		return "sudo apt-get install --allow-downgrades --allow-change-held-packages " + pins + " ; sudo apt-mark hold " + names
+	}
+	failed := mark("FAILED", "2026-08-13T01:03:00Z", "daemon")
+	for _, c := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"a failed run that went ahead of a hold", heldRun("docker-ce docker-ce-cli", "docker-ce docker-ce-cli", failed), held("docker-ce docker-ce-cli")},
+		{"... whose hold could not be put back", heldRun("docker-ce docker-ce-cli", "-", failed), held("docker-ce docker-ce-cli")},
+		{"... whose unit did not say what it left", heldRun("docker-ce", "", failed), held("docker-ce")},
+		{"a run whose unit is lost, that went ahead of a hold", heldRun("docker-ce", ""), held("docker-ce")},
+		{"all three held", heldRun("docker-ce docker-ce-cli containerd.io", "containerd.io docker-ce docker-ce-cli", failed), held("containerd.io docker-ce docker-ce-cli")},
+		{"only a sibling held", heldRun("containerd.io", "containerd.io", failed), held("containerd.io")},
+		{"a failed run that held nothing", heldRun("-", "-", failed), plain},
+		{"a failed run of a unit that said nothing of holds", ownersRun(mark("DAEMON", "29.8.0"), failed), plain},
+		{"a run that went well", heldRun("docker-ce", "docker-ce", mark("SUCCESS", "2026-08-13T01:05:00Z")), ""},
+	} {
+		s := newStatusBox(t)
+		s.write(t, c.lines...)
+		if status := s.status(t); status.RollbackCommand != c.want {
+			t.Errorf("%s: rollback = %q, want %q (state %s, held %v)", c.name, status.RollbackCommand, c.want, status.State, status.Held)
+		}
+	}
+
+	// a major jump has no way back, held or not
+	s := newStatusBox(t)
+	s.write(t, append([]string{logQueued, "CASAOS_DOCKER_UPDATE_PLAN " + scriptNonce + " 28.0.4 29.8.0 1"}, heldRun("docker-ce", "docker-ce", failed)[1:]...)...)
+	if status := s.status(t); !status.MajorJump || status.RollbackCommand != "" {
+		t.Errorf("a major jump: status = %#v", status)
+	}
+}
+
+func TestDockerStatusIgnoresHoldLinesThatAreNotTheUnitsWord(t *testing.T) {
+	forged := func(kind, fields string) string {
+		return "CASAOS_DOCKER_UPDATE_" + kind + " " + otherScriptNonce + " " + fields
+	}
+	for name, lines := range map[string][]string{
+		"another nonce":                      {logQueued, logStarted, forged("HELD", "docker-ce"), logPrevious, forged("HOLDS", "docker-ce"), mark("SUCCESS", "2026-08-13T01:05:00Z")},
+		"a name that is a command":           {logQueued, logStarted, mark("HELD", "docker-ce;reboot"), logPrevious, mark("HOLDS", "docker-ce;reboot"), mark("SUCCESS", "2026-08-13T01:05:00Z")},
+		"a package that is not the engine's": {logQueued, logStarted, mark("HELD", "libc6"), logPrevious, mark("HOLDS", "libc6"), mark("SUCCESS", "2026-08-13T01:05:00Z")},
+		"a marker in the middle of a line":   {logQueued, logStarted, "apt: " + mark("HELD", "docker-ce"), logPrevious, "apt: " + mark("HOLDS", "docker-ce"), mark("SUCCESS", "2026-08-13T01:05:00Z")},
+		"a container named like the marker":  {logQueued, logStarted, "container: CASAOS_DOCKER_UPDATE_HELD " + scriptNonce, logPrevious, mark("SUCCESS", "2026-08-13T01:05:00Z")},
+		"a marker with no names":             {logQueued, logStarted, mark("HELD", ""), logPrevious, mark("SUCCESS", "2026-08-13T01:05:00Z")},
+	} {
+		s := newStatusBox(t)
+		s.write(t, lines...)
+		status := s.status(t)
+		if status.State != "succeeded" || status.Held || status.HoldsKept || len(status.HeldPackages) != 0 {
+			t.Errorf("%s: status = %#v", name, status)
+		}
+		// the log is shown as it is; what the status says of the run is not what it holds
+		status.Log = ""
+		encoded, _ := json.Marshal(status)
+		for _, bad := range []string{"reboot", "libc6", "docker-ce"} {
+			if strings.Contains(string(encoded), bad) {
+				t.Errorf("%s: the status holds %q: %s", name, bad, encoded)
+			}
+		}
+	}
+}
+
+const otherScriptNonce = "ffffffffffffffffffffffffffffffff"
+
+// The unit says HELD at its start and HOLDS at its end, and what apt prints is between: a noisy
+// install, and a log beyond the bound of the scan, must not lose either.
+func TestDockerStatusKeepsTheHoldLinesOfANoisyInstallAndOfAHugeLog(t *testing.T) {
+	before := lines(logQueued, logStarted, mark("HELD", "docker-ce"), logPrevious, "container: web always", mark("DOWNLOADED", "2026-08-13T01:00:30Z"))
+	after := lines(mark("INSTALLED", "2026-08-13T01:02:00Z"), mark("DAEMON", "29.8.0"), mark("HOLDS", "docker-ce"), mark("SUCCESS", "2026-08-13T01:05:00Z"))
+
+	s := newStatusBox(t)
+	s.writeRaw(t, before+aptNoise+after)
+	if status := s.status(t); status.State != "succeeded" || !status.Held || !status.HoldsKept {
+		t.Errorf("a noisy install: status = %#v", status)
+	}
+
+	huge := strings.Repeat(strings.Repeat("x", 1023)+"\n", 20<<10) // 20 MiB
+	log := before + huge + after
+	if int64(len(log)) <= systemDockerMarkerScanBytes {
+		t.Fatalf("the log is %d bytes, not beyond the bound of %d", len(log), systemDockerMarkerScanBytes)
+	}
+	s = newStatusBox(t)
+	s.writeRaw(t, log)
+	if status := s.status(t); status.State != "succeeded" || !status.Held || !status.HoldsKept {
+		t.Errorf("a huge log: status = %#v", status)
 	}
 }

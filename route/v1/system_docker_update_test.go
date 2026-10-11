@@ -19,13 +19,15 @@ const planID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
 type fakeDockerUpdateService struct {
 	service.SystemService
-	asked  []string
-	status service.SystemDockerUpdateStatus
-	err    error
+	asked   []string
+	allowed []bool
+	status  service.SystemDockerUpdateStatus
+	err     error
 }
 
-func (f *fakeDockerUpdateService) StartDockerUpdate(id string) (service.SystemDockerUpdateStatus, error) {
+func (f *fakeDockerUpdateService) StartDockerUpdate(id string, allowHeld bool) (service.SystemDockerUpdateStatus, error) {
 	f.asked = append(f.asked, id)
+	f.allowed = append(f.allowed, allowHeld)
 	return f.status, f.err
 }
 
@@ -63,15 +65,15 @@ func decodeResult(t *testing.T, recorder *httptest.ResponseRecorder) (model.Resu
 
 func TestStartDockerUpdatePassesThePlanIDAndAnswersWithTheStatus(t *testing.T) {
 	fake := &fakeDockerUpdateService{status: service.SystemDockerUpdateStatus{
-		Supported: true, State: "running", Phase: "downloading", StartedAt: "2026-10-09T10:00:00Z", NotReturned: []dockerpkg.NotReturned{},
+		Supported: true, State: "running", Phase: "downloading", StartedAt: "2026-10-09T10:00:00Z", NotReturned: []dockerpkg.NotReturned{}, HeldPackages: []string{},
 	}}
 	withDockerUpdateService(t, fake)
 
 	recorder := postDockerUpdate(t, `{"plan_id":"`+planID+`"}`)
-	if recorder.Code != http.StatusOK || len(fake.asked) != 1 || fake.asked[0] != planID {
+	if recorder.Code != http.StatusOK || len(fake.asked) != 1 || fake.asked[0] != planID || len(fake.allowed) != 1 || fake.allowed[0] {
 		t.Fatalf("status = %d, asked = %v, body = %s", recorder.Code, fake.asked, recorder.Body)
 	}
-	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"running","phase":"downloading","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"","from":"","to":"","major_jump":false,"not_returned":[],"rollback_command":"","log":""}}`
+	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"running","phase":"downloading","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"","from":"","to":"","major_jump":false,"held":false,"held_packages":[],"holds_kept":false,"not_returned":[],"rollback_command":"","log":""}}`
 	if got := strings.TrimSpace(recorder.Body.String()); got != want {
 		t.Errorf("body = %s\nwant   %s", got, want)
 	}
@@ -89,8 +91,17 @@ func TestStartDockerUpdateTakesOnlyThePlanID(t *testing.T) {
 		"only another field":         `{"plan":"` + planID + `"}`,
 		"two objects":                `{"plan_id":"` + planID + `"}{"plan_id":"` + planID + `"}`,
 		"junk after it":              `{"plan_id":"` + planID + `"} x`,
-		"cut short":                  `{"plan_id":"` + planID,
-		"too much":                   huge,
+		// the owner's word is true or false, and nothing else is a word
+		"the word as a string":         `{"plan_id":"` + planID + `","allow_held":"true"}`,
+		"the word as a number":         `{"plan_id":"` + planID + `","allow_held":1}`,
+		"the word as yes":              `{"plan_id":"` + planID + `","allow_held":"yes"}`,
+		"the word as a list":           `{"plan_id":"` + planID + `","allow_held":[true]}`,
+		"the word as an object":        `{"plan_id":"` + planID + `","allow_held":{}}`,
+		"the word spelled another way": `{"plan_id":"` + planID + `","allowHeld":true}`,
+		"the word with another field":  `{"plan_id":"` + planID + `","allow_held":true,"force":true}`,
+		"the word alone":               `{"allow_held":true,"extra":1}`,
+		"cut short":                    `{"plan_id":"` + planID,
+		"too much":                     huge,
 	} {
 		fake := &fakeDockerUpdateService{}
 		withDockerUpdateService(t, fake)
@@ -99,6 +110,11 @@ func TestStartDockerUpdateTakesOnlyThePlanID(t *testing.T) {
 			t.Errorf("%s: status = %d, asked = %v", name, recorder.Code, fake.asked)
 		}
 	}
+	// the answer to a bad body says what a body is
+	withDockerUpdateService(t, &fakeDockerUpdateService{})
+	if result, _ := decodeResult(t, postDockerUpdate(t, `{"plan_id":"`+planID+`","force":true}`)); !strings.Contains(result.Message, "plan_id") || !strings.Contains(result.Message, "allow_held") {
+		t.Errorf("message = %q", result.Message)
+	}
 
 	// an id that is not an id is the service's to refuse, and it is a bad request too
 	for name, body := range map[string]string{"null": `null`, "empty object": `{}`, "short": `{"plan_id":"abc"}`} {
@@ -106,6 +122,31 @@ func TestStartDockerUpdateTakesOnlyThePlanID(t *testing.T) {
 		withDockerUpdateService(t, fake)
 		if recorder := postDockerUpdate(t, body); recorder.Code != http.StatusBadRequest || len(fake.asked) != 1 {
 			t.Errorf("%s: status = %d, asked = %v", name, recorder.Code, fake.asked)
+		}
+	}
+}
+
+// allow_held is the owner's word, in the confirmation, that the update may go ahead of a hold: true
+// is the only word that is one, and nothing is true that the owner did not say.
+func TestStartDockerUpdatePassesTheOwnersWordAndNothingElse(t *testing.T) {
+	for name, c := range map[string]struct {
+		body string
+		want bool
+	}{
+		"no word":           {`{"plan_id":"` + planID + `"}`, false},
+		"false":             {`{"plan_id":"` + planID + `","allow_held":false}`, false},
+		"null":              {`{"plan_id":"` + planID + `","allow_held":null}`, false},
+		"true":              {`{"plan_id":"` + planID + `","allow_held":true}`, true},
+		"true, first":       {`{"allow_held":true,"plan_id":"` + planID + `"}`, true},
+		"true, with spaces": {`  { "plan_id" : "` + planID + `" , "allow_held" : true }  `, true},
+		"false, then true":  {`{"plan_id":"` + planID + `","allow_held":false,"allow_held":true}`, true},
+		"true, then false":  {`{"plan_id":"` + planID + `","allow_held":true,"allow_held":false}`, false},
+	} {
+		fake := &fakeDockerUpdateService{status: service.SystemDockerUpdateStatus{Supported: true, State: "running", NotReturned: []dockerpkg.NotReturned{}, HeldPackages: []string{}}}
+		withDockerUpdateService(t, fake)
+		recorder := postDockerUpdate(t, c.body)
+		if recorder.Code != http.StatusOK || len(fake.asked) != 1 || fake.asked[0] != planID || len(fake.allowed) != 1 || fake.allowed[0] != c.want {
+			t.Errorf("%s: status = %d, asked = %v, allowed = %v, want %v", name, recorder.Code, fake.asked, fake.allowed, c.want)
 		}
 	}
 }
@@ -122,7 +163,7 @@ func TestStartDockerUpdateRefusalsAreConflictsThatCarryTheirReason(t *testing.T)
 			fake := &fakeDockerUpdateService{
 				err: fmt.Errorf("wrapped: %w", &service.DockerUpdateRefusal{Code: code, Reason: reason, Detail: []string{"immich"}}),
 				// a status that says nothing: the handler puts the reason where the page reads it
-				status: service.SystemDockerUpdateStatus{Supported: true, State: "idle", NotReturned: []dockerpkg.NotReturned{}},
+				status: service.SystemDockerUpdateStatus{Supported: true, State: "idle", NotReturned: []dockerpkg.NotReturned{}, HeldPackages: []string{}},
 			}
 			withDockerUpdateService(t, fake)
 
@@ -141,7 +182,7 @@ func TestStartDockerUpdateRefusalsAreConflictsThatCarryTheirReason(t *testing.T)
 	fake := &fakeDockerUpdateService{
 		err: &service.DockerUpdateRefusal{Code: "apps", Reason: "An app is busy."},
 		status: service.SystemDockerUpdateStatus{
-			Supported: true, State: "idle", Error: "An app is busy.", ErrorCode: "apps", RefusalDetail: []string{"immich"}, NotReturned: []dockerpkg.NotReturned{},
+			Supported: true, State: "idle", Error: "An app is busy.", ErrorCode: "apps", RefusalDetail: []string{"immich"}, NotReturned: []dockerpkg.NotReturned{}, HeldPackages: []string{},
 		},
 	}
 	withDockerUpdateService(t, fake)
@@ -154,7 +195,7 @@ func TestStartDockerUpdateRefusalsAreConflictsThatCarryTheirReason(t *testing.T)
 func TestStartDockerUpdateOnAHostThatCannotIsNotImplemented(t *testing.T) {
 	fake := &fakeDockerUpdateService{
 		err:    fmt.Errorf("%w", service.ErrSystemPackageUpdatesUnsupported),
-		status: service.SystemDockerUpdateStatus{Error: "CasaOS must run as root to update system packages.", State: "idle", NotReturned: []dockerpkg.NotReturned{}},
+		status: service.SystemDockerUpdateStatus{Error: "CasaOS must run as root to update system packages.", State: "idle", NotReturned: []dockerpkg.NotReturned{}, HeldPackages: []string{}},
 	}
 	withDockerUpdateService(t, fake)
 	recorder := postDockerUpdate(t, `{"plan_id":"`+planID+`"}`)
@@ -167,7 +208,7 @@ func TestStartDockerUpdateOnAHostThatCannotIsNotImplemented(t *testing.T) {
 func TestStartDockerUpdateFailuresOnTheBoxAreServerErrors(t *testing.T) {
 	fake := &fakeDockerUpdateService{
 		err:    errors.New("start Docker update: Access denied"),
-		status: service.SystemDockerUpdateStatus{Supported: true, State: "failed", Outcome: "failed", ErrorCode: "start", NotReturned: []dockerpkg.NotReturned{}},
+		status: service.SystemDockerUpdateStatus{Supported: true, State: "failed", Outcome: "failed", ErrorCode: "start", NotReturned: []dockerpkg.NotReturned{}, HeldPackages: []string{}},
 	}
 	withDockerUpdateService(t, fake)
 	recorder := postDockerUpdate(t, `{"plan_id":"`+planID+`"}`)
@@ -182,7 +223,7 @@ func TestGetDockerUpdateStatusAnswersWithTheStatus(t *testing.T) {
 	fake := &fakeDockerUpdateService{status: service.SystemDockerUpdateStatus{
 		Supported: true, State: "failed", Outcome: "failed", Error: "Docker did not come back after the update.", ErrorCode: "daemon",
 		StartedAt: "2026-10-09T10:00:00Z", CompletedAt: "2026-10-09T10:07:00Z", From: "28.0.4", To: "",
-		NotReturned:     []dockerpkg.NotReturned{{Name: "job", RestartPolicy: "no"}},
+		NotReturned: []dockerpkg.NotReturned{{Name: "job", RestartPolicy: "no"}}, HeldPackages: []string{},
 		RollbackCommand: "sudo apt-get install --allow-downgrades docker-ce=5:28.0.4-1",
 		Log:             "CASAOS_DOCKER_UPDATE_QUEUED x\n",
 	}}
@@ -193,7 +234,7 @@ func TestGetDockerUpdateStatusAnswersWithTheStatus(t *testing.T) {
 	if err := GetDockerUpdateStatus(echo.New().NewContext(request, recorder)); err != nil {
 		t.Fatal(err)
 	}
-	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"failed","phase":"","outcome":"failed","error":"Docker did not come back after the update.","error_code":"daemon","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"2026-10-09T10:07:00Z","from":"28.0.4","to":"","major_jump":false,"not_returned":[{"name":"job","restart_policy":"no"}],"rollback_command":"sudo apt-get install --allow-downgrades docker-ce=5:28.0.4-1","log":"CASAOS_DOCKER_UPDATE_QUEUED x\n"}}`
+	want := `{"success":200,"message":"ok","data":{"supported":true,"state":"failed","phase":"","outcome":"failed","error":"Docker did not come back after the update.","error_code":"daemon","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"2026-10-09T10:07:00Z","from":"28.0.4","to":"","major_jump":false,"held":false,"held_packages":[],"holds_kept":false,"not_returned":[{"name":"job","restart_policy":"no"}],"rollback_command":"sudo apt-get install --allow-downgrades docker-ce=5:28.0.4-1","log":"CASAOS_DOCKER_UPDATE_QUEUED x\n"}}`
 	if got := strings.TrimSpace(recorder.Body.String()); recorder.Code != http.StatusOK || got != want {
 		t.Errorf("status = %d\nbody = %s\nwant   %s", recorder.Code, got, want)
 	}
@@ -205,19 +246,19 @@ func TestDockerUpdateStatusOfAMajorJumpCarriesTheJumpAndNoRollback(t *testing.T)
 	failed := service.SystemDockerUpdateStatus{
 		Supported: true, State: "failed", Outcome: "failed", Error: "Docker did not come back after the update.", ErrorCode: "daemon",
 		StartedAt: "2026-10-09T10:00:00Z", CompletedAt: "2026-10-09T10:07:00Z", From: "28.0.4", To: "29.8.0", MajorJump: true,
-		NotReturned: []dockerpkg.NotReturned{{Name: "job", RestartPolicy: "no"}},
-		Log:         "CASAOS_DOCKER_UPDATE_QUEUED x\n",
+		NotReturned: []dockerpkg.NotReturned{{Name: "job", RestartPolicy: "no"}}, HeldPackages: []string{},
+		Log: "CASAOS_DOCKER_UPDATE_QUEUED x\n",
 	}
 	running := service.SystemDockerUpdateStatus{
 		Supported: true, State: "running", Phase: "downloading", StartedAt: "2026-10-09T10:00:00Z", From: "28.0.4", To: "29.8.0", MajorJump: true,
-		NotReturned: []dockerpkg.NotReturned{},
+		NotReturned: []dockerpkg.NotReturned{}, HeldPackages: []string{},
 	}
 	for name, c := range map[string]struct {
 		status service.SystemDockerUpdateStatus
 		want   string
 	}{
-		"failed":  {failed, `{"success":200,"message":"ok","data":{"supported":true,"state":"failed","phase":"","outcome":"failed","error":"Docker did not come back after the update.","error_code":"daemon","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"2026-10-09T10:07:00Z","from":"28.0.4","to":"29.8.0","major_jump":true,"not_returned":[{"name":"job","restart_policy":"no"}],"rollback_command":"","log":"CASAOS_DOCKER_UPDATE_QUEUED x\n"}}`},
-		"running": {running, `{"success":200,"message":"ok","data":{"supported":true,"state":"running","phase":"downloading","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"","from":"28.0.4","to":"29.8.0","major_jump":true,"not_returned":[],"rollback_command":"","log":""}}`},
+		"failed":  {failed, `{"success":200,"message":"ok","data":{"supported":true,"state":"failed","phase":"","outcome":"failed","error":"Docker did not come back after the update.","error_code":"daemon","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"2026-10-09T10:07:00Z","from":"28.0.4","to":"29.8.0","major_jump":true,"held":false,"held_packages":[],"holds_kept":false,"not_returned":[{"name":"job","restart_policy":"no"}],"rollback_command":"","log":"CASAOS_DOCKER_UPDATE_QUEUED x\n"}}`},
+		"running": {running, `{"success":200,"message":"ok","data":{"supported":true,"state":"running","phase":"downloading","outcome":"","error":"","error_code":"","exit_code":null,"started_at":"2026-10-09T10:00:00Z","completed_at":"","from":"28.0.4","to":"29.8.0","major_jump":true,"held":false,"held_packages":[],"holds_kept":false,"not_returned":[],"rollback_command":"","log":""}}`},
 	} {
 		withDockerUpdateService(t, &fakeDockerUpdateService{status: c.status})
 		request := httptest.NewRequest(http.MethodGet, "/v1/sys/docker/update/status", nil)
