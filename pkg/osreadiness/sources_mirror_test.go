@@ -31,8 +31,13 @@ func release(name, origin string) func(*fakeProbe) {
 	}
 }
 
-// What apt calls a Release file it keeps: the address of the source with its scheme and its user left out, every / a _,
-// and the characters of the address that apt quotes as %xx (URItoFileName of apt-pkg/acquire.cc).
+// What apt calls a Release file it keeps: the address of the source as FixupURI of apt-pkg/sourcelist.cc (80-95) makes it
+// ($(ARCH) put in, a / put at its end) and as URItoFileName of apt-pkg/contrib/strutl.cc (557-569) writes it: its scheme and
+// its user left out, the host of an IPv6 address without its brackets (URI::operator string, 1747-1789, brackets only when
+// the scheme is there), the port as a number and not at all when it is 0, the user and password cut at the last @ of the
+// authority that is not its first character (URI::CopyFrom, 1631-1742), the path as it was written, and the characters
+// that apt quotes as %xx (QuoteString, 388-403), and every / a _. The rows were printed by apt 2.6.1 itself, with
+// "apt-get update --print-uris", and are not what this code thinks they should be.
 func TestAptNamesTheReleaseFilesItKeepsAfterTheAddressOfTheSource(t *testing.T) {
 	for _, tc := range []struct {
 		uri, suite string
@@ -55,6 +60,48 @@ func TestAptNamesTheReleaseFilesItKeepsAfterTheAddressOfTheSource(t *testing.T) 
 		{"https://mirror.example.edu/a=b", "bookworm", "mirror.example.edu_a%3db_dists_bookworm", true},
 		{"https://my_mirror.example.edu/debian", "bookworm", "my%5fmirror.example.edu_debian_dists_bookworm", true},
 		{"https://mirror.example.edu/debian+x", "bookworm", "mirror.example.edu_debian+x_dists_bookworm", true},
+		{"http://MIRROR.Example.edu/Debian", "bookworm", "MIRROR.Example.edu_Debian_dists_bookworm", true},
+		{"http://mirror.example.edu/debian", "bookworm-backports-sloppy", "mirror.example.edu_debian_dists_bookworm-backports-sloppy", true},
+		// an IPv6 address is written without its brackets, and its port after it
+		{"http://[2001:db8::1]/debian", "bookworm", "2001:db8::1_debian_dists_bookworm", true},
+		{"http://[2001:db8::1]:8080/debian", "bookworm", "2001:db8::1:8080_debian_dists_bookworm", true},
+		{"http://[2001:db8::1]:/debian", "bookworm", "2001:db8::1_debian_dists_bookworm", true},
+		{"http://[2001:db8::1]:0/debian", "bookworm", "2001:db8::1_debian_dists_bookworm", true},
+		{"http://[::1]/debian", "bookworm", "::1_debian_dists_bookworm", true},
+		{"http://user:secret@[2001:db8::1]:8080/debian", "bookworm", "2001:db8::1:8080_debian_dists_bookworm", true},
+		{"http://mirror[x].example.edu/debian", "bookworm", "mirrorx.example.edu_debian_dists_bookworm", true},
+		{"http://mirror.example.edu/d[e]bian", "bookworm", "mirror.example.edu_d%5be%5dbian_dists_bookworm", true},
+		{"http://[2001:db8::1", "bookworm", "", false},
+		{"http://[2001:db8::1/x]/debian", "bookworm", "2001:db8::1_x_debian_dists_bookworm", true},
+		{"http://[2001:db8::1/x]:8080/debian", "bookworm", "2001:db8::1_x:8080_debian_dists_bookworm", true},
+		{"http://[::1]:8080", "bookworm", "::1:8080_dists_bookworm", true},
+		{"http://u@[::1]:8080/x", "bookworm", "::1:8080_x_dists_bookworm", true},
+		// the user and the password end at the last @ of the authority, and an @ that starts it ends nothing
+		{"http://user:p@ss@host.example/debian", "bookworm", "host.example_debian_dists_bookworm", true},
+		{"http://u@v@w@host.example/debian", "bookworm", "host.example_debian_dists_bookworm", true},
+		{"http://@host.example/debian", "bookworm", "%40host.example_debian_dists_bookworm", true},
+		// slashes are all kept, and the one that is added is the one that is missing
+		{"http://mirror.example.edu/debian//", "bookworm", "mirror.example.edu_debian__dists_bookworm", true},
+		{"http://mirror.example.edu//debian", "bookworm", "mirror.example.edu__debian_dists_bookworm", true},
+		{"http://mirror.example.edu/debian///x", "bookworm", "mirror.example.edu_debian___x_dists_bookworm", true},
+		// a port is a number: 0 is none, and an empty one is none
+		{"http://mirror.example.edu:0080/debian", "bookworm", "mirror.example.edu:80_debian_dists_bookworm", true},
+		{"http://mirror.example.edu:0/debian", "bookworm", "mirror.example.edu_debian_dists_bookworm", true},
+		{"http://mirror.example.edu:/debian", "bookworm", "mirror.example.edu_debian_dists_bookworm", true},
+		{"http://mirror.example.edu:http/debian", "bookworm", "", false},
+		// $(ARCH) is the architecture of the machine, in the address
+		{"http://mirror.example.edu/debian-$(ARCH)", "bookworm", "mirror.example.edu_debian-amd64_dists_bookworm", true},
+		{"http://mirror-$(ARCH).example.edu/debian", "bookworm", "mirror-amd64.example.edu_debian_dists_bookworm", true},
+		{"http://mirror.example.edu/debian/$(ARCH)/$(ARCH)", "bookworm", "mirror.example.edu_debian_amd64_amd64_dists_bookworm", true},
+		// the suite is written as apt writes the name of a file in an address (+ and ~ as %xx) and then once more
+		{"https://mirror.example.edu/debian", "bookworm+x", "mirror.example.edu_debian_dists_bookworm%252bx", true},
+		{"https://mirror.example.edu/debian", "book~worm", "mirror.example.edu_debian_dists_book%257eworm", true},
+		// what the two formats of the sources do not read the same (%xx is a byte in a .list, and is itself in a .sources), a
+		// suite that has a variable of its own (a .sources substitutes it, and a .list does not), and a quote: not derived
+		{"https://mirror.example.edu/a%20b", "bookworm", "", false},
+		{"https://mirror.example.edu/debian", "bookworm%x", "", false},
+		{"https://mirror.example.edu/debian", "$(ARCH)", "", false},
+		{"https://mirror.example.edu/de\"bian", "bookworm", "", false},
 		// what is not an address of a mirror
 		{"cdrom:[Debian 11]/", "bullseye", "", false},
 		{"file:/srv/mirror", "bullseye", "", false},
@@ -69,9 +116,44 @@ func TestAptNamesTheReleaseFilesItKeepsAfterTheAddressOfTheSource(t *testing.T) 
 		{"https://repo.example.org/apt", "", "", false},
 		{"https://repo.example.org/apt", "a b", "", false},
 	} {
-		got, ok := releaseListName(tc.uri, tc.suite)
+		got, ok := releaseListName(tc.uri, tc.suite, "amd64")
 		if got != tc.want || ok != tc.ok {
 			t.Errorf("releaseListName(%q, %q) = %q, %v; want %q, %v", tc.uri, tc.suite, got, ok, tc.want, tc.ok)
+		}
+	}
+	// the architecture is the machine's
+	if got, ok := releaseListName("http://mirror.example.edu/debian-$(ARCH)", "bookworm", "arm64"); !ok || got != "mirror.example.edu_debian-arm64_dists_bookworm" {
+		t.Errorf("$(ARCH) on arm64: %q, %v", got, ok)
+	}
+}
+
+// The Origin that says a Release file is the distribution's: the word Debian or Ubuntu, alone or first of the words of a
+// label ("Debian Backports" is what Debian's backports say), and no other origin that has the word in it somewhere.
+func TestTheOriginsThatAreTheDistributions(t *testing.T) {
+	for origin, want := range map[string]bool{
+		"Debian":            true,
+		"Ubuntu":            true,
+		"Debian Backports":  true,
+		"Debian Security":   true,
+		"Ubuntu Backports":  true,
+		"Debian Ports":      true,
+		"":                  false,
+		"debian":            false,
+		"DEBIAN":            false,
+		"ubuntu":            false,
+		"Debianish":         false,
+		"Ubuntuish":         false,
+		"SomeDebianThing":   false,
+		"Raspbian":          false,
+		"Debian-Backports":  false,
+		"Debian\tBackports": false,
+		" Debian":           false,
+		"Evil Debian":       false,
+		"UbuntuESM":         false,
+		"InfluxData":        false,
+	} {
+		if got := distroOrigin(origin); got != want {
+			t.Errorf("distroOrigin(%q) = %v, want %v", origin, got, want)
 		}
 	}
 }
@@ -104,13 +186,20 @@ func TestTheOriginOfAReleaseFileIsReadFromItsStart(t *testing.T) {
 	}
 }
 
+// marked says whether the source is the distribution's in all its suites: a source that has some suites that are not is
+// two (see markDistro), and is not.
 func marked(t *testing.T, f *fakeProbe, uri string, suites ...string) bool {
 	t.Helper()
 	entries, err := markDistro(context.Background(), f, []sourceEntry{{File: "x.list", Kind: "deb", URI: uri, Suites: suites}})
-	if err != nil || len(entries) != 1 {
+	if err != nil || len(entries) == 0 || len(entries) > 2 {
 		t.Fatalf("entries = %+v, err = %v", entries, err)
 	}
-	return entries[0].distro()
+	for _, e := range entries {
+		if !e.distro() {
+			return false
+		}
+	}
+	return true
 }
 
 // A source of a host that is not the distribution's own is the distribution's only when apt kept a Release file
@@ -142,7 +231,15 @@ func TestAMirrorIsTheDistributionsOnlyWhenItsReleaseFileSaysSo(t *testing.T) {
 		{"Element's", "https://packages.element.io/debian/", []string{"default"}, inRelease("packages.element.io_debian_dists_default", "Element"), false},
 		{"ProtonVPN's, whose suite is stable", "https://repo.protonvpn.com/debian", []string{"stable"}, inRelease("repo.protonvpn.com_debian_dists_stable", "Proton"), false},
 		{"a vendor that says it is Debian", "https://repo.example.org/debian", []string{"stable"}, inRelease("repo.example.org_debian_dists_stable", "Debianish"), false},
-		{"an origin that is Debian's backports", "https://mirror.example.edu/debian", []string{"bookworm-backports"}, inRelease("mirror.example.edu_debian_dists_bookworm-backports", "Debian Backports"), false},
+		// what Debian's own Release files say: the backports are "Debian Backports", and a label that has the word elsewhere is not it
+		{"an origin that is Debian's backports", "https://mirror.example.edu/debian", []string{"bookworm-backports"}, inRelease("mirror.example.edu_debian_dists_bookworm-backports", "Debian Backports"), true},
+		{"an origin that is Ubuntu's backports", "http://mirror.example.edu/ubuntu", []string{"jammy-backports"}, inRelease("mirror.example.edu_ubuntu_dists_jammy-backports", "Ubuntu Backports"), true},
+		{"an origin that has the word Debian in it, and is a vendor's", "https://repo.example.org/debian", []string{"stable"}, inRelease("repo.example.org_debian_dists_stable", "SomeDebianThing"), false},
+		{"an origin that has the word Debian in it, after another", "https://repo.example.org/debian", []string{"stable"}, inRelease("repo.example.org_debian_dists_stable", "Evil Debian"), false},
+		{"a mirror at an IPv6 address", "http://[2001:db8::1]/debian", []string{"bookworm"}, inRelease("2001:db8::1_debian_dists_bookworm", "Debian"), true},
+		{"a mirror whose address ends in two slashes", "http://mirror.example.edu/debian//", []string{"bookworm"}, inRelease("mirror.example.edu_debian__dists_bookworm", "Debian"), true},
+		{"a mirror whose address has $(ARCH) in it", "http://mirror.example.edu/debian-$(ARCH)", []string{"bookworm"}, inRelease("mirror.example.edu_debian-amd64_dists_bookworm", "Debian"), true},
+		{"a mirror whose password has an @ in it", "http://user:p@ss@mirror.example.edu/debian", []string{"bookworm"}, inRelease("mirror.example.edu_debian_dists_bookworm", "Debian"), true},
 		{"an origin of another case", "https://mirror.example.edu/debian", []string{"stable"}, inRelease("mirror.example.edu_debian_dists_stable", "debian"), false},
 		{"a Release file with no origin", "https://mirror.example.edu/debian", []string{"stable"}, func(f *fakeProbe) {
 			f.set(listsDir+"mirror.example.edu_debian_dists_stable_InRelease", "Label: Debian\nSuite: stable\n")
@@ -404,5 +501,83 @@ func TestAHostileSourcesFileStaysInsideItsTimeBound(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Each suite of a source is judged by its own Release file: a source that has some suites that are the distribution's and
+// some that are not is two sources, the same file, address and components, so that what is said of the archive is said of
+// the suites that are its own, and what is said of the others is said of the others.
+func TestEachSuiteOfASourceIsJudgedByItsOwnReleaseFile(t *testing.T) {
+	f := newBox(t)
+	inRelease("mirror.example.edu_debian_dists_stable", "Debian")(f)
+	inRelease("mirror.example.edu_debian_dists_stable-backports", "Debian Backports")(f)
+	inRelease("mirror.example.edu_debian_dists_vendor", "Vendor")(f)
+	entry := sourceEntry{File: "x.sources", Kind: "deb", URI: "https://mirror.example.edu/debian",
+		Suites: []string{"stable", "vendor", "stable-backports", "nofile"}, Components: []string{"main", "contrib"}}
+	got, err := markDistro(context.Background(), f, []sourceEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("entries = %+v, want the suites that are the distribution's, and the others", got)
+	}
+	own, other := got[0], got[1]
+	if !own.distro() || strings.Join(own.Suites, " ") != "stable stable-backports" {
+		t.Errorf("the distribution's = %+v", own)
+	}
+	if other.distro() || strings.Join(other.Suites, " ") != "vendor nofile" {
+		t.Errorf("the others = %+v", other)
+	}
+	for _, e := range got {
+		if e.File != "x.sources" || e.Kind != "deb" || e.URI != entry.URI || strings.Join(e.Components, " ") != "main contrib" {
+			t.Errorf("an entry lost what it had: %+v", e)
+		}
+	}
+	// a source whose suites are all of one kind stays one source, with its suites as they were
+	g := newBox(t)
+	inRelease("mirror.example.edu_debian_dists_stable", "Debian")(g)
+	inRelease("mirror.example.edu_debian_dists_stable-updates", "Debian")(g)
+	same, err := markDistro(context.Background(), g, []sourceEntry{{File: "y.list", Kind: "deb", URI: "https://mirror.example.edu/debian", Suites: []string{"stable", "stable-updates"}}})
+	if err != nil || len(same) != 1 || !same[0].distro() || len(same[0].Suites) != 2 {
+		t.Errorf("a source of two suites that are the distribution's: %+v, err = %v", same, err)
+	}
+	none, err := markDistro(context.Background(), newBox(t), []sourceEntry{{File: "y.list", Kind: "deb", URI: "https://mirror.example.edu/debian", Suites: []string{"a", "b"}}})
+	if err != nil || len(none) != 1 || none[0].distro() || len(none[0].Suites) != 2 {
+		t.Errorf("a source of two suites that are not: %+v, err = %v", none, err)
+	}
+}
+
+// Sixty thousand different suites in a file of the most a file can be, on the archive's own host (where no Release file is
+// looked at, so that nothing else costs): the list of the suites is made once for each of them, and the report is made in
+// a time that is far from the five seconds of a check. A list that is searched for each suite it is given is the square of
+// the number of them (3.9 s on a fast machine, for this file).
+func TestAFileOfSixtyThousandDifferentSuitesStaysFarInsideItsTimeBound(t *testing.T) {
+	var text strings.Builder
+	for stanza := 0; ; stanza++ {
+		var one strings.Builder
+		one.WriteString("Types: deb\nURIs: http://deb.debian.org/debian\nSuites:")
+		for j := 0; j < maxSourceSuites; j++ {
+			one.WriteString(" x" + strconv.Itoa(stanza*maxSourceSuites+j) + "-proposed")
+		}
+		one.WriteString("\nComponents: main\n\n")
+		if text.Len()+one.Len() > MaxFileBytes {
+			break
+		}
+		text.WriteString(one.String())
+	}
+	if text.Len() > MaxFileBytes || strings.Count(text.String(), "-proposed") < 55000 {
+		t.Fatalf("the payload is %d bytes and has %d suites, want one of the most a file can be", text.Len(), strings.Count(text.String(), "-proposed"))
+	}
+	f := newBox(t)
+	f.set("/etc/apt/sources.list.d/x.sources", text.String())
+	started := time.Now()
+	report := Run(context.Background(), f, Options{})
+	if elapsed := time.Since(started); elapsed > 1500*time.Millisecond {
+		t.Errorf("the report took %v", elapsed)
+	}
+	got := findingOf(t, report, "sources_proposed")
+	suites, _ := got.Data["suites"].([]string)
+	if got.Severity != Refuse || got.Data["unknown"] != false || len(suites) != maxDataList {
+		t.Errorf("sources_proposed = %+v, want a refusal that names the first %d suites", got, maxDataList)
 	}
 }

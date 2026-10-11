@@ -40,16 +40,26 @@ func lines(s string) []string {
 // packageBase is a Debian package name, without an architecture.
 var packageBase = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}$`)
 
-// names is the valid package names of a list, once each, sorted.
-func names(list []string) []string {
-	out := []string{}
-	for _, name := range list {
-		if packageBase.MatchString(name) && !slices.Contains(out, name) {
-			out = append(out, name)
-		}
+// sortedKeys is the words of a set, sorted, and an empty list (not none) for an empty set.
+func sortedKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for word := range set {
+		out = append(out, word)
 	}
 	slices.Sort(out)
 	return out
+}
+
+// names is the valid package names of a list, once each, sorted. A name is put in a set as it comes: a list is as long as
+// what a tool can print, and one that is searched for each name is the square of its length.
+func names(list []string) []string {
+	seen := map[string]struct{}{}
+	for _, name := range list {
+		if packageBase.MatchString(name) {
+			seen[name] = struct{}{}
+		}
+	}
+	return sortedKeys(seen)
 }
 
 // installedFormat is what dpkg-query prints for each package: its status (two or three letters:

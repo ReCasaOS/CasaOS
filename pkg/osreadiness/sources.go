@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -20,8 +21,8 @@ type sourceEntry struct {
 	URI        string
 	Suites     []string
 	Components []string
-	// Distro says that the source is the distribution's own archive. It is decided once for the report, by
-	// markDistro (see distro).
+	// Distro says that the suites of the source are the distribution's own archive. It is decided once for the report, by
+	// markDistro (see distro), which makes two sources of one that has suites of both kinds.
 	Distro bool
 }
 
@@ -391,67 +392,79 @@ func (e sourceEntry) official() bool {
 	return !e.local() && officialHost(e.host())
 }
 
-// distro says whether the source is the distribution's own archive: Debian's or Ubuntu's host, or a mirror of
-// the archive that apt has a Release file of that says so (markDistro). It is a fact the report decided, once,
-// for the sources it read: an entry that was not looked at is not the distribution's. Every other source is a
-// third party's, and is warned of as one: the refusals of the aliases, of the proposed updates and of the
-// backports are about the distribution's archive and do not apply to it.
+// distro says whether the source is the distribution's own archive: Debian's or Ubuntu's host, or suites of a mirror of
+// the archive that apt has a Release file of that says so (markDistro). It is a fact the report decided, once, for the
+// sources it read: an entry that was not looked at is not the distribution's. Every other source is a third party's, and
+// is warned of as one: the refusals of the aliases, of the proposed updates and of the backports are about the
+// distribution's archive and do not apply to it.
 func (e sourceEntry) distro() bool { return e.Distro }
 
-// markDistro says, for each source, whether it is the distribution's own archive. The official hosts are, and a
-// disc or a directory is not: the address decides. Any other host is when apt keeps a Release file for every
-// suite of the source that says Origin: Debian or Origin: Ubuntu (a vendor that serves its repository at /debian,
-// and names its suite stable, says its own name); no file, a file that cannot be read and a Release file of
-// another origin are all "not the distribution's". It looks at the files that apt names, and at no more than
-// maxReleaseLookups of them in all, each once.
+// markDistro says, for each source, whether it is the distribution's own archive, and says it of each suite of a source on
+// its own. The official hosts are, and a disc or a directory is not: the address decides. Any other host is when apt
+// keeps a Release file of the suite that says Origin: Debian or Origin: Ubuntu, or a label that starts with those words
+// (Debian's backports say Origin: Debian Backports; a vendor that serves its repository at /debian, and names its suite
+// stable, says its own name); no file, a file that cannot be read and a Release file of another origin are all "not the
+// distribution's". A source that has suites of both kinds becomes two, the same file, address and components, one with
+// the suites that are the distribution's and one with the others: what is said of the archive (that an alias moves it,
+// that the proposed updates are not ready) is said of its suites, and what is said of a third party (that it is paused) of
+// the rest, and a stanza that lists the backports is not another's because of them. It looks at the files that apt names,
+// and at no more than maxReleaseLookups of them in all, each once.
 func markDistro(ctx context.Context, p Probe, entries []sourceEntry) ([]sourceEntry, error) {
-	marked := make([]sourceEntry, len(entries))
+	marked := make([]sourceEntry, 0, len(entries))
 	looked := map[string]bool{}
-	for i, e := range entries {
+	arch := p.Arch()
+	for _, e := range entries {
 		switch {
 		case e.local():
 			e.Distro = false
 		case e.official():
 			e.Distro = true
 		default:
-			ok, err := releasesSayDistro(ctx, p, e, looked)
-			if err != nil {
-				return nil, err
+			var own, rest []string
+			for _, suite := range e.Suites {
+				says, err := suiteSaysDistro(ctx, p, e.URI, suite, arch, looked)
+				if err != nil {
+					return nil, err
+				}
+				if says {
+					own = append(own, suite)
+				} else {
+					rest = append(rest, suite)
+				}
 			}
-			e.Distro = ok
+			if len(own) > 0 && len(rest) > 0 {
+				d := e
+				d.Suites, d.Distro = own, true
+				marked = append(marked, d)
+				e.Suites = rest
+			} else {
+				e.Distro = len(own) > 0
+			}
 		}
-		marked[i] = e
+		marked = append(marked, e)
 	}
 	return marked, nil
 }
 
-// releasesSayDistro says whether the Release file of every suite of a source says it is the distribution's own;
-// looked has the answers of the files already asked for, and says how many have been.
-func releasesSayDistro(ctx context.Context, p Probe, e sourceEntry, looked map[string]bool) (bool, error) {
-	if len(e.Suites) == 0 {
+// suiteSaysDistro says whether the Release file apt kept of a suite of a source says it is the distribution's own; looked
+// has the answers of the files already asked for, and says how many have been.
+func suiteSaysDistro(ctx context.Context, p Probe, uri, suite, arch string, looked map[string]bool) (bool, error) {
+	name, ok := releaseListName(uri, suite, arch)
+	if !ok {
 		return false, nil
 	}
-	for _, suite := range e.Suites {
-		name, ok := releaseListName(e.URI, suite)
-		if !ok {
-			return false, nil
-		}
-		says, known := looked[name]
-		if !known {
-			if len(looked) >= maxReleaseLookups {
-				return false, nil
-			}
-			var err error
-			if says, err = releaseSaysDistro(ctx, p, name); err != nil {
-				return false, err
-			}
-			looked[name] = says
-		}
-		if !says {
-			return false, nil
-		}
+	if says, known := looked[name]; known {
+		return says, nil
 	}
-	return true, nil
+	if len(looked) >= maxReleaseLookups {
+		return false, nil
+	}
+	says, err := releaseSaysDistro(ctx, p, name)
+	if err != nil {
+		return false, err
+	}
+	looked[name] = says
+	return says, nil
 }
 
 // releaseSaysDistro reads the start of the InRelease file apt kept under a name (the Release file, when there is no
@@ -465,8 +478,7 @@ func releaseSaysDistro(ctx context.Context, p Probe, name string) (bool, error) 
 		data, err := p.ReadHead(ctx, listsDir+name+suffix, releaseHeadBytes)
 		switch {
 		case err == nil:
-			origin := releaseOrigin(data)
-			return origin == "Debian" || origin == "Ubuntu", nil
+			return distroOrigin(releaseOrigin(data)), nil
 		case isNotExist(err):
 			continue
 		case ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
@@ -475,6 +487,18 @@ func releaseSaysDistro(ctx context.Context, p Probe, name string) (bool, error) 
 		return false, nil
 	}
 	return false, nil
+}
+
+// distroOrigin says whether the Origin of a Release file is the distribution's own: Debian or Ubuntu, alone or as the first
+// word of a label ("Debian Backports" is what Debian's backports say). An origin that only has the word somewhere else in
+// it (a vendor's "SomeDebianThing", "Debianish", "Evil Debian") is not.
+func distroOrigin(origin string) bool {
+	for _, name := range []string{"Debian", "Ubuntu"} {
+		if origin == name || strings.HasPrefix(origin, name+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // releaseOrigin is the Origin of a Release file: the value of the first line that starts with "Origin:". Only the
@@ -493,43 +517,123 @@ func releaseOrigin(data []byte) string {
 	return ""
 }
 
-// aptQuoted are the characters of an address that apt writes as %xx in the name of a file it keeps (the Bad
-// characters of URItoFileName, apt-pkg/acquire.cc, and the % itself).
+// aptQuoted are the characters of an address that apt writes as %xx in the name of a file it keeps (the Bad characters of
+// URItoFileName, apt-pkg/contrib/strutl.cc:566, and the % itself, which QuoteString, 388-403, quotes always).
 const aptQuoted = "\\|{}[]<>\"^~_=!@#$%^&*"
 
-// releaseListName is the name apt gives the Release file it keeps of a suite of a source, without its _InRelease
-// or its _Release: the address with its scheme, its user and its password left out, then /dists/ and the suite,
-// quoted as apt quotes it, and every / a _ ("deb.debian.org_debian_dists_bookworm"). ok is false for what has no
-// such file: an address that is not an http, https or ftp one (a mirror list, a disc, a directory), one that has no
-// host, a flat repository (a suite that ends in /) and anything with a space or a control character in it.
-func releaseListName(uri, suite string) (name string, ok bool) {
-	if suite == "" || strings.HasSuffix(suite, "/") || strings.ContainsFunc(uri+suite, func(r rune) bool { return r <= ' ' || r >= 0x7f }) {
+// aptQuote is a string with the characters of bad, and the %, written as apt writes them: a % and their two hex digits, in
+// lower case (QuoteString, apt-pkg/contrib/strutl.cc:388-403). What is a control character, a space or not ASCII is never
+// given to it: releaseListName does not derive a name for those.
+func aptQuote(s, bad string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c == '%' || strings.IndexByte(bad, c) >= 0 {
+			fmt.Fprintf(&out, "%%%02x", c)
+		} else {
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}
+
+// aptPort is the port of an address as apt reads it (atoi, and written back as a number, so that 0080 is 80, and 0 or none is
+// no port); ok is false for what is not digits: that one is not derived.
+func aptPort(digits string) (port int, ok bool) {
+	if len(digits) > 9 {
+		return 0, false
+	}
+	for _, c := range digits {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	if digits == "" {
+		return 0, true
+	}
+	port, _ = strconv.Atoi(digits)
+	return port, true
+}
+
+// releaseListName is the name apt gives the Release file it keeps of a suite of a source, without its _InRelease or its
+// _Release ("deb.debian.org_debian_dists_bookworm"). apt makes it of the address as FixupURI of apt-pkg/sourcelist.cc
+// (80-95) writes it back (the architecture put in for $(ARCH), a / put at its end when it has none), and as URItoFileName of
+// apt-pkg/contrib/strutl.cc (557-569) writes it, with the code that reads and writes an address, URI::CopyFrom (1631-1742)
+// and URI::operator string (1747-1789). Those functions are the same, byte for byte, in apt 2.2.4 (Debian 11), 2.4.12 (Ubuntu
+// 22.04) and 2.6.1 (Debian 12); FixupURI of 2.2.4 does not write the address back (88-92), which makes no difference to
+// the names that were pinned, which were run on apt 2.6.1 only. The scheme and the user and the
+// password are left out (the user ends at the last @ of the authority that is not its first character), an IPv6 address is
+// written without its brackets, the port is a number that is not written when it is 0, the path is as it was written (its
+// slashes are all kept), the suite is quoted as a name in an address (+ and ~) and then, with the rest, as a name of a
+// file ([], ~, _, =, !, @ and the others of aptQuoted, and the % itself), and every / is a _. Each rule was checked
+// against apt's own output ("apt-get update --print-uris"), which the tests pin.
+//
+// ok is false for what has no such file, or what is not derived the same for both formats of the sources: an address that
+// is not an http, https or ftp one (a mirror list, a disc, a directory), one that has no host, one with a port that is not a
+// number or a bracket that does not close, a flat repository (a suite that ends in /), a suite that has a variable of its
+// own ($( ): a .sources file substitutes it and a .list one does not), a % or a quote (a .list file reads %xx as a byte
+// and a .sources one does not), and anything with a space or a control character in it. A name that is not derived is a
+// source that is not the distribution's.
+func releaseListName(uri, suite, arch string) (name string, ok bool) {
+	if suite == "" || strings.HasSuffix(suite, "/") || strings.Contains(suite, "$(") || strings.ContainsAny(uri+suite, "%\"") ||
+		strings.ContainsFunc(uri+suite, func(r rune) bool { return r <= ' ' || r >= 0x7f }) {
 		return "", false
 	}
-	scheme, rest, found := strings.Cut(uri, "://")
+	scheme, rest, found := strings.Cut(strings.ReplaceAll(uri, "$(ARCH)", arch), "://")
 	if !found || !slices.Contains([]string{"http", "https", "ftp"}, strings.ToLower(scheme)) {
 		return "", false
 	}
-	authority, path, _ := strings.Cut(rest, "/")
-	if i := strings.LastIndex(authority, "@"); i >= 0 {
-		authority = authority[i+1:]
-	}
-	if authority == "" {
-		return "", false
-	}
-	full := authority + strings.TrimRight("/"+path, "/") + "/dists/" + suite
-	var quoted strings.Builder
-	for i := 0; i < len(full); i++ {
-		switch c := full[i]; {
-		case c == '/':
-			quoted.WriteByte('_')
-		case strings.IndexByte(aptQuoted, c) >= 0:
-			fmt.Fprintf(&quoted, "%%%02x", c)
-		default:
-			quoted.WriteByte(c)
+	// the authority ends at the first / that is not between brackets
+	inBracket, end := false, 0
+	for ; end < len(rest) && (rest[end] != '/' || inBracket); end++ {
+		switch rest[end] {
+		case '[':
+			inBracket = true
+		case ']':
+			inBracket = false
 		}
 	}
-	return quoted.String(), true
+	authority, path := rest[:end], rest[end:]
+	if path == "" {
+		path = "/"
+	}
+	if i := strings.LastIndex(authority, "@"); i >= 1 {
+		authority = authority[i+1:]
+	}
+	// the brackets of the host are taken out wherever they are, and what follows the last of them is where a port may be
+	host, portAt := make([]byte, 0, len(authority)), 0
+	inBracket = false
+	for i := 0; i < len(authority); i++ {
+		switch c := authority[i]; {
+		case c == '[':
+			inBracket = true
+		case c == ']' && inBracket:
+			inBracket, portAt = false, len(host)
+		default:
+			host = append(host, c)
+		}
+	}
+	if inBracket {
+		return "", false
+	}
+	name = string(host)
+	if i := strings.LastIndex(name, ":"); i >= 0 && i >= portAt {
+		port, ok := aptPort(name[i+1:])
+		if !ok {
+			return "", false
+		}
+		name = name[:i]
+		if port != 0 {
+			name += ":" + strconv.Itoa(port)
+		}
+	}
+	if name == "" {
+		return "", false
+	}
+	if !strings.HasSuffix(path, "/") {
+		path += "/"
+	}
+	full := name + path + "dists/" + aptQuote(suite, "+~ ")
+	return strings.ReplaceAll(aptQuote(full, aptQuoted), "/", "_"), true
 }
 
 // The suffixes a suite of the distribution can have, longest first: "bullseye-backports-sloppy".

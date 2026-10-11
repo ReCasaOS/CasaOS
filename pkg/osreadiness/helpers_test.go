@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func TestInstalledPackagesAreTheOnesThatAreOnTheBox(t *testing.T) {
@@ -77,5 +80,27 @@ func TestMountInfoIsReadAsProcSaysIt(t *testing.T) {
 	}
 	if _, ok := rootMount(got[1:2]); ok {
 		t.Fatal("a root where there is none")
+	}
+}
+
+// The names of a list are made once each: a list of fifty thousand different packages, said twice, is not a list that is
+// searched for each name it is given.
+func TestTheNamesOfAListAreMadeOnceEachAndInTime(t *testing.T) {
+	var list []string
+	for i := 0; i < 50000; i++ {
+		list = append(list, "pkg"+strconv.Itoa(i))
+	}
+	list = append(list, list...)
+	list = append(list, "Not A Name", "")
+	started := time.Now()
+	got := names(list)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Errorf("names took %v", elapsed)
+	}
+	if len(got) != 50000 || !slices.IsSorted(got) || got[0] != "pkg0" {
+		t.Errorf("%d names, sorted %v, first %q", len(got), slices.IsSorted(got), got[0])
+	}
+	if got := names(nil); got == nil || len(got) != 0 {
+		t.Errorf("no names = %#v, want an empty list", got)
 	}
 }

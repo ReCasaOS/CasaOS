@@ -24,30 +24,29 @@ func init() {
 	)
 }
 
-// filesOf are the files of the entries that match, once each, sorted.
+// filesOf are the files of the entries that match, once each, sorted. What is collected is a set: a list that is searched
+// for each word it is given is the square of the number of them, and the words of a file of sources can be sixty thousand.
 func filesOf(entries []sourceEntry, match func(sourceEntry) bool) []string {
-	files := []string{}
+	files := map[string]struct{}{}
 	for _, e := range entries {
-		if match(e) && !slices.Contains(files, e.File) {
-			files = append(files, e.File)
+		if match(e) {
+			files[e.File] = struct{}{}
 		}
 	}
-	slices.Sort(files)
-	return files
+	return sortedKeys(files)
 }
 
-// suitesOf are the suites of the entries that match, for the ones that say so, once each, sorted.
+// suitesOf are the suites of the entries that match, for the ones that say so, once each, sorted (see filesOf).
 func suitesOf(entries []sourceEntry, match func(sourceEntry, string) bool) []string {
-	suites := []string{}
+	suites := map[string]struct{}{}
 	for _, e := range entries {
 		for _, suite := range e.Suites {
-			if match(e, suite) && !slices.Contains(suites, suite) {
-				suites = append(suites, suite)
+			if match(e, suite) {
+				suites[suite] = struct{}{}
 			}
 		}
 	}
-	slices.Sort(suites)
-	return suites
+	return sortedKeys(suites)
 }
 
 // unlessUnreadable is the Result of a check of the lines of the sources, or the pass of one that found
@@ -130,15 +129,14 @@ func checkSourcesThirdParty(ctx context.Context, p Probe) Result {
 		return unlessUnreadable(set, pass())
 	}
 	data := D{"files": files}
-	var hosts []string
+	hosts := map[string]struct{}{}
 	for _, e := range set.Entries {
-		if host := e.host(); other(e) && host != "" && !slices.Contains(hosts, host) {
-			hosts = append(hosts, host)
+		if host := e.host(); other(e) && host != "" {
+			hosts[host] = struct{}{}
 		}
 	}
-	slices.Sort(hosts)
 	if len(hosts) > 0 {
-		data["hosts"] = hosts
+		data["hosts"] = sortedKeys(hosts)
 	}
 	// Docker's is the one that is rewritten for the new release after the hop; the others stay off.
 	if docker := filesOf(set.Entries, func(e sourceEntry) bool { return other(e) && e.host() == "download.docker.com" }); len(docker) > 0 {

@@ -25,6 +25,22 @@ func after(changes ...func(*fakeProbe)) func(*fakeProbe) {
 	}
 }
 
+// the stanza of a mirror that is not Debian's own host, with the suites a Debian box lists, and the Release files apt kept of
+// them: Debian's say Origin: Debian of the archive and of its updates, and Origin: Debian Backports of the backports. The
+// mirror serves "stable", which moves to the next release by itself.
+func mirrorStanza(backports string) func(*fakeProbe) {
+	changes := []func(*fakeProbe){
+		sourcesFile("mirror.sources", "Types: deb", "URIs: https://mirror.example.edu/debian", "Suites: stable stable-updates stable-backports", "Components: main"),
+		inRelease("mirror.example.edu_debian_dists_stable", "Debian"),
+		inRelease("mirror.example.edu_debian_dists_stable-updates", "Debian"),
+	}
+	// "" is a stanza whose backports apt has no Release file of (it has not fetched them)
+	if backports != "" {
+		changes = append(changes, inRelease("mirror.example.edu_debian_dists_stable-backports", backports))
+	}
+	return after(changes...)
+}
+
 const (
 	dockerLine    = "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bullseye stable"
 	tailscaleLine = "deb [signed-by=/usr/share/keyrings/tailscale.gpg] https://pkgs.tailscale.com/stable/debian bullseye main"
@@ -91,6 +107,17 @@ func TestSourcesAlias(t *testing.T) {
 		{name: "an alias of a mirror that keeps the archive under the name of its host", setup: after(sourcesList("deb http://mirror.ovh.net/ftp.debian.org/debian oldstable main"), release("mirror.ovh.net_ftp.debian.org_debian_dists_oldstable", "Debian")), severity: Refuse},
 		{name: "an alias of a mirror at a path of its own that has no Release file", setup: sourcesList("deb http://mirror.hetzner.com/debian/packages stable main"), severity: OK},
 		{name: "an alias that is found in a file next to one that cannot be read", setup: after(sourcesList("rubbish"), sourcesFile("a.list", "deb http://deb.debian.org/debian testing main")), severity: Refuse, data: D{"files": []string{"a.list"}}},
+		// each suite of a stanza is judged by its own Release file: the backports of Debian say Origin: Debian Backports, and a
+		// stanza that has them is the distribution's all the same
+		{name: "the stanza of a mirror that has the backports too", setup: mirrorStanza("Debian Backports"), severity: Refuse,
+			data: D{"files": []string{"mirror.sources"}, "suites": []string{"stable", "stable-backports", "stable-updates"}}},
+		{name: "the same stanza, and the backports are not fetched: the alias is still refused", setup: mirrorStanza(""), severity: Refuse,
+			data: D{"files": []string{"mirror.sources"}, "suites": []string{"stable", "stable-updates"}}},
+		{name: "the same stanza, and the backports say an origin that only has the word Debian in it", setup: mirrorStanza("SomeDebianThing"), severity: Refuse,
+			data: D{"suites": []string{"stable", "stable-updates"}}},
+		{name: "a codename of the distribution next to an alias that is a vendor's own", setup: after(
+			sourcesFile("mixed.sources", "Types: deb", "URIs: https://mirror.example.edu/debian", "Suites: bullseye stable", "Components: main"),
+			inRelease("mirror.example.edu_debian_dists_bullseye", "Debian"), inRelease("mirror.example.edu_debian_dists_stable", "Vendor")), severity: OK},
 	})
 }
 
@@ -166,6 +193,16 @@ func TestSourcesThirdParty(t *testing.T) {
 		{name: "a disc is not a third party", setup: sourcesList("deb cdrom:[x]/ bullseye main"), severity: OK},
 		{name: "a third party that is commented out", setup: sourcesFile("docker.list", "# "+dockerLine), severity: OK},
 		{name: "the user and the password of an address are not shown", setup: sourcesFile("private.list", "deb https://user:secret@repo.example.org:8443/apt bullseye main"), severity: Warn, data: D{"hosts": []string{"repo.example.org"}}},
+		{name: "a host that is in two files, and twice in one, is said once", setup: after(
+			sourcesFile("a.list", "deb https://repo.example.org/apt bullseye main", "deb-src https://repo.example.org/apt bullseye main"),
+			sourcesFile("b.list", "deb https://repo.example.org/other bullseye main")), severity: Warn,
+			data: D{"files": []string{"a.list", "b.list"}, "hosts": []string{"repo.example.org"}}},
+		// the stanza of a mirror that has the backports too is Debian's, as far as each of its suites says so
+		{name: "a mirror's stanza, whose suites say Debian and whose backports say Debian Backports, is Debian's", setup: mirrorStanza("Debian Backports"), severity: OK},
+		{name: "the same stanza, and the backports are not fetched: that part of the file is a third party's", setup: mirrorStanza(""), severity: Warn,
+			data: D{"files": []string{"mirror.sources"}, "hosts": []string{"mirror.example.edu"}}},
+		{name: "the same stanza, and the backports say an origin that only has the word Debian in it", setup: mirrorStanza("SomeDebianThing"), severity: Warn, data: D{"files": []string{"mirror.sources"}}},
+		{name: "a vendor whose origin only has the word Debian in it", setup: after(sourcesFile("v.list", "deb https://repo.example.org/debian stable main"), inRelease("repo.example.org_debian_dists_stable", "SomeDebianThing")), severity: Warn},
 	})
 }
 
@@ -176,7 +213,12 @@ func TestSourcesBackports(t *testing.T) {
 		{name: "in a file of its own", setup: sourcesFile("backports.list", "deb http://deb.debian.org/debian bullseye-backports main contrib"), severity: Info, data: D{"files": []string{"backports.list"}}},
 		{name: "the sloppy ones", setup: sourcesFile("sloppy.list", "deb http://deb.debian.org/debian bullseye-backports-sloppy main"), severity: Info},
 		{name: "a third party's", setup: sourcesFile("x.list", "deb https://repo.example.org/apt bullseye-backports main"), severity: OK},
+		// Debian's own Release file of its backports says Origin: Debian Backports
+		{name: "a mirror's, whose Release file says Debian Backports", setup: after(sourcesFile("m.list", "deb http://mirror.hetzner.com/debian/packages bullseye-backports main"), inRelease("mirror.hetzner.com_debian_packages_dists_bullseye-backports", "Debian Backports")), severity: Info, data: D{"files": []string{"m.list"}}},
 		{name: "a mirror's, whose Release file says Debian", setup: after(sourcesFile("m.list", "deb http://mirror.hetzner.com/debian/packages bullseye-backports main"), inRelease("mirror.hetzner.com_debian_packages_dists_bullseye-backports", "Debian")), severity: Info, data: D{"files": []string{"m.list"}}},
+		{name: "a mirror's, whose Release file says another origin", setup: after(sourcesFile("m.list", "deb http://mirror.hetzner.com/debian/packages bullseye-backports main"), inRelease("mirror.hetzner.com_debian_packages_dists_bullseye-backports", "Somebody")), severity: OK},
+		{name: "the stanza of a mirror that has the backports too", setup: mirrorStanza("Debian Backports"), severity: Info, data: D{"files": []string{"mirror.sources"}}},
+		{name: "the same stanza, and the backports are not fetched", setup: mirrorStanza(""), severity: OK},
 		{name: "a mirror's, with no Release file of it, is a third party's backports", setup: sourcesFile("m.list", "deb http://mirror.hetzner.com/debian/packages bullseye-backports main"), severity: OK},
 		{name: "a vendor's, at a path of the distribution's name", setup: sourcesFile("v.list", "deb https://repos.influxdata.com/debian bullseye-backports main"), severity: OK},
 		{name: "a file that cannot be understood is not looked into", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
