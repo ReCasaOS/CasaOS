@@ -1019,23 +1019,28 @@ func TestDockerStatusSaysTheHoldsOfARunThatFailedAndOfOneThatGoesOn(t *testing.T
 	}
 }
 
-// The packages of a run that went ahead of a hold are on hold again when it is over, and apt refuses to
-// change a held package that it is not told it may: the command to put the engine back says so for such a
-// run, and is what it always was for one that held nothing.
+// The packages of a run that went ahead of a hold are on hold again when it is over, and the command that
+// puts the engine back drops the hold of every package dpkg unpacks, as the update did: the command to put
+// the engine back says apt may change what is held and ends by putting the hold back on the packages that
+// were held when the unit started, for such a run, and is what it always was for one that held nothing.
 func TestDockerStatusRollbackCommandOfARunThatWentAheadOfAHold(t *testing.T) {
 	const pins = "containerd.io=1.7.27-1 docker-ce=" + debian28 + " docker-ce-cli=" + debian28
 	plain := "sudo apt-get install --allow-downgrades " + pins
-	held := "sudo apt-get install --allow-downgrades --allow-change-held-packages " + pins
+	held := func(names string) string {
+		return "sudo apt-get install --allow-downgrades --allow-change-held-packages " + pins + " && sudo apt-mark hold " + names
+	}
 	failed := mark("FAILED", "2026-08-13T01:03:00Z", "daemon")
 	for _, c := range []struct {
 		name  string
 		lines []string
 		want  string
 	}{
-		{"a failed run that went ahead of a hold", heldRun("docker-ce docker-ce-cli", "docker-ce docker-ce-cli", failed), held},
-		{"... whose hold could not be put back", heldRun("docker-ce docker-ce-cli", "-", failed), held},
-		{"... whose unit did not say what it left", heldRun("docker-ce", "", failed), held},
-		{"a run whose unit is lost, that went ahead of a hold", heldRun("docker-ce", ""), held},
+		{"a failed run that went ahead of a hold", heldRun("docker-ce docker-ce-cli", "docker-ce docker-ce-cli", failed), held("docker-ce docker-ce-cli")},
+		{"... whose hold could not be put back", heldRun("docker-ce docker-ce-cli", "-", failed), held("docker-ce docker-ce-cli")},
+		{"... whose unit did not say what it left", heldRun("docker-ce", "", failed), held("docker-ce")},
+		{"a run whose unit is lost, that went ahead of a hold", heldRun("docker-ce", ""), held("docker-ce")},
+		{"all three held", heldRun("docker-ce docker-ce-cli containerd.io", "containerd.io docker-ce docker-ce-cli", failed), held("containerd.io docker-ce docker-ce-cli")},
+		{"only a sibling held", heldRun("containerd.io", "containerd.io", failed), held("containerd.io")},
 		{"a failed run that held nothing", heldRun("-", "-", failed), plain},
 		{"a failed run of a unit that said nothing of holds", ownersRun(mark("DAEMON", "29.8.0"), failed), plain},
 		{"a run that went well", heldRun("docker-ce", "docker-ce", mark("SUCCESS", "2026-08-13T01:05:00Z")), ""},

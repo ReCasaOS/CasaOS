@@ -197,18 +197,75 @@ func TestPolicyVersions(t *testing.T) {
 	}
 }
 
-func TestManualCommandHeldAllowsTheChange(t *testing.T) {
-	got := ManualCommandHeld(OriginDockerRepo, []string{"docker-ce"}, true)
-	if got != "sudo apt-get update && sudo apt-get install --only-upgrade --allow-change-held-packages docker-ce" {
-		t.Errorf("held command = %q", got)
+// On a box that has packages of the engine on hold, the command the owner types names every installed
+// package of the engine (apt fails when it is only told docker-ce and a held sibling has to move with it),
+// says apt may change what is held, and puts the hold back once it is done: dpkg drops the hold of every
+// package it unpacks. On a box that holds nothing it is the command it always was.
+func TestManualCommandHeldNamesTheWholeEngineAndPutsTheHoldBack(t *testing.T) {
+	const head = "sudo apt-get update && sudo apt-get install --only-upgrade "
+	const flag = "--allow-change-held-packages "
+	three := []string{"containerd.io", "docker-ce", "docker-ce-cli"}
+	five := []string{"containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin"}
+	for _, c := range []struct {
+		name                     string
+		origin                   Origin
+		pending, installed, held []string
+		want                     string
+	}{
+		{"all three held", OriginDockerRepo, []string{"docker-ce"}, three, three,
+			head + flag + "containerd.io docker-ce docker-ce-cli && sudo apt-mark hold containerd.io docker-ce docker-ce-cli"},
+		{"only a sibling held", OriginDockerRepo, []string{"docker-ce"}, three, []string{"containerd.io"},
+			head + flag + "containerd.io docker-ce docker-ce-cli && sudo apt-mark hold containerd.io"},
+		{"only docker-ce held", OriginDockerRepo, []string{"docker-ce"}, three, []string{"docker-ce"},
+			head + flag + "containerd.io docker-ce docker-ce-cli && sudo apt-mark hold docker-ce"},
+		{"two of the five held", OriginDockerRepo, []string{"docker-ce-cli", "docker-ce"}, five, []string{"docker-compose-plugin", "docker-ce"},
+			head + flag + "containerd.io docker-buildx-plugin docker-ce docker-ce-cli docker-compose-plugin && sudo apt-mark hold docker-ce docker-compose-plugin"},
+		// the list of what is installed is not trusted to hold what is held
+		{"a held package the installed list does not have", OriginDockerRepo, []string{"docker-ce"}, []string{"docker-ce"}, []string{"containerd.io"},
+			head + flag + "containerd.io docker-ce && sudo apt-mark hold containerd.io"},
+		{"held in no order, one twice", OriginDockerRepo, []string{"docker-ce"}, three, []string{"docker-ce-cli", "containerd.io", "docker-ce-cli"},
+			head + flag + "containerd.io docker-ce docker-ce-cli && sudo apt-mark hold containerd.io docker-ce-cli"},
+		{"the distribution's docker.io, held", OriginDistribution, []string{"docker.io"}, []string{"docker.io"}, []string{"docker.io"},
+			head + flag + "docker.io && sudo apt-mark hold docker.io"},
+		// nothing on hold: byte for byte what ManualCommand says
+		{"nothing held", OriginDockerRepo, []string{"docker-ce"}, three, nil, head + "docker-ce"},
+		{"nothing held, an empty list", OriginDockerRepo, []string{"docker-ce", "docker-ce-cli"}, three, []string{}, head + "docker-ce docker-ce-cli"},
+		{"nothing held and nothing pending", OriginDockerRepo, nil, three, nil,
+			head + "containerd.io docker-buildx-plugin docker-ce docker-ce-cli docker-compose-plugin"},
+		{"nothing held, the distribution's", OriginDistribution, nil, nil, nil, head + "docker.io"},
+	} {
+		if got := ManualCommandHeld(c.origin, c.pending, c.installed, c.held); got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+		if len(c.held) == 0 {
+			if got, want := ManualCommandHeld(c.origin, c.pending, c.installed, c.held), ManualCommand(c.origin, c.pending); got != want {
+				t.Errorf("%s: %q is not ManualCommand's %q", c.name, got, want)
+			}
+		}
 	}
-	if got := ManualCommandHeld(OriginDockerRepo, []string{"docker-ce"}, false); strings.Contains(got, "held") {
-		t.Errorf("a package that is not held got the held flag: %q", got)
-	}
-	if got := ManualCommandHeld(OriginSnap, nil, true); got != "sudo snap refresh docker" {
+	// no command to stand behind, held or not
+	if got := ManualCommandHeld(OriginSnap, nil, nil, []string{"docker-ce"}); got != "sudo snap refresh docker" {
 		t.Errorf("a snap's command = %q", got)
 	}
-	if got := ManualCommandHeld(OriginUnknown, nil, true); got != "" {
+	if got := ManualCommandHeld(OriginUnknown, nil, three, three); got != "" {
 		t.Errorf("an unknown origin's command = %q", got)
+	}
+}
+
+// Only the names of the Docker packages, as the box names them, reach the command: not what a
+// package manager printed, not a package of another architecture, not another package.
+func TestManualCommandHeldOnlyHasDockerPackageNames(t *testing.T) {
+	hostile := []string{"x; rm -rf /", "$(id)", "libc6", "-oAPT::Foo=1", "docker-ce:armhf", "docker-ce\nreboot", "docker-ce && reboot", "", "DOCKER-CE", "docker-ce "}
+	want := "sudo apt-get update && sudo apt-get install --only-upgrade --allow-change-held-packages containerd.io docker-ce && sudo apt-mark hold docker-ce"
+	got := ManualCommandHeld(OriginDockerRepo, append([]string{"docker-ce"}, hostile...), append([]string{"containerd.io", "docker-ce"}, hostile...), append([]string{"docker-ce"}, hostile...))
+	if got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+	if strings.ContainsAny(got, ";$`'\"\\<>()\n#*?!{}|") {
+		t.Errorf("the command holds a shell character: %q", got)
+	}
+	// nothing valid among the held names: no hold to put back, and no flag
+	if got := ManualCommandHeld(OriginDockerRepo, []string{"docker-ce"}, []string{"docker-ce"}, hostile); strings.Contains(got, "held") || strings.Contains(got, "apt-mark") {
+		t.Errorf("held names that are not names gave a held command: %q", got)
 	}
 }

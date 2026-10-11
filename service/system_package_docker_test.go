@@ -25,6 +25,7 @@ type aptBox struct {
 	dockerCE          string // the dpkg version of docker-ce, "" when it is not installed
 	dockerCEStatus    string // dpkg's abbreviation, "ii" unless set
 	dockerIO          string
+	dockerIOStatus    string // dpkg's abbreviation of docker.io, "ii" unless set
 	policy            string
 	snap              bool
 	// onInstallSimulation runs when the list is simulated: something else may start meanwhile.
@@ -127,7 +128,11 @@ func (b *aptBox) command(ctx context.Context, name string, args ...string) ([]by
 			return []byte(status + " \t" + b.dockerCE + "\n"), nil
 		}
 		if pkg == "docker.io" && b.dockerIO != "" {
-			return []byte("ii \t" + b.dockerIO + "\n"), nil
+			ioStatus := b.dockerIOStatus
+			if ioStatus == "" {
+				ioStatus = "ii"
+			}
+			return []byte(ioStatus + " \t" + b.dockerIO + "\n"), nil
 		}
 		if version, ok := b.packages[pkg]; ok {
 			status := b.statuses[pkg]
@@ -678,5 +683,23 @@ func TestSystemPackageCheckSaysNothingIsBehindWhenTheCandidateIsTheInstalledVers
 	got, err := updater.check()
 	if err != nil || got.Docker == nil || got.Docker.Candidate != "" || got.Docker.Held {
 		t.Fatalf("check() = %#v, %v: nothing is behind", got.Docker, err)
+	}
+}
+
+// The distribution's docker.io is not one of the engine's packages (dockerpkg.EngineNames), and a hold on it
+// is still a hold: the command the owner is shown for it carries the flag and puts the hold back, as the
+// one of the engine's packages does.
+func TestSystemPackageCheckManualCommandOfAHeldDistributionDocker(t *testing.T) {
+	const policy = "docker.io:\n  Installed: 26.1.5-0ubuntu1\n  Candidate: 26.1.6-0ubuntu1\n  Version table:\n     26.1.6-0ubuntu1 500\n        500 http://archive.ubuntu.com/ubuntu jammy-updates/universe amd64 Packages\n *** 26.1.5-0ubuntu1 100\n        100 /var/lib/dpkg/status\n"
+	for status, want := range map[string]string{
+		"hi": "sudo apt-get update && sudo apt-get install --only-upgrade --allow-change-held-packages docker.io && sudo apt-mark hold docker.io",
+		"ii": "sudo apt-get update && sudo apt-get install --only-upgrade docker.io",
+	} {
+		updater := newTestSystemPackageUpdater(t)
+		updater.command = (&aptBox{upgradeSimulation: simLibc, dockerIO: "26.1.5-0ubuntu1", dockerIOStatus: status, policy: policy}).command
+		got, err := updater.check()
+		if err != nil || got.Docker == nil || got.Docker.Candidate != "26.1.6" || got.Docker.Held != (status == "hi") || got.Docker.ManualCommand != want {
+			t.Errorf("status %q: check() = %#v, %v\nwant held %v and the command %q", status, got.Docker, err, status == "hi", want)
+		}
 	}
 }

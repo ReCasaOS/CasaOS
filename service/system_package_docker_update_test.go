@@ -1033,9 +1033,11 @@ func TestDockerUpdateOwnersHeldBox(t *testing.T) {
 	got := checkBox(t, box, nil)
 
 	// the line says what it said: a newer Docker exists, the package is on hold, and the command
-	if got.Docker == nil || got.Docker.Candidate != "29.8.0" || !got.Docker.Held ||
-		!strings.Contains(got.Docker.ManualCommand, "--only-upgrade --allow-change-held-packages ") {
-		t.Fatalf("Docker = %#v", got.Docker)
+	// ... the command names every package of the engine and puts the hold back: apt fails when it is only
+	// told docker-ce and a sibling has to move with it, and dpkg drops the hold of what it unpacks
+	const wantCommand = "sudo apt-get update && sudo apt-get install --only-upgrade --allow-change-held-packages containerd.io docker-ce docker-ce-cli && sudo apt-mark hold docker-ce"
+	if got.Docker == nil || got.Docker.Candidate != "29.8.0" || !got.Docker.Held || got.Docker.ManualCommand != wantCommand {
+		t.Fatalf("Docker = %#v, want the command %q", got.Docker, wantCommand)
 	}
 	update := got.Docker.Update
 	if update == nil || !update.Available || update.Refusal != "" || !update.Held || !reflect.DeepEqual(update.HeldPackages, []string{"docker-ce"}) {
@@ -1208,5 +1210,88 @@ func TestDockerUpdateDoesNotDragAHeldPackageThatIsNotDockersAlong(t *testing.T) 
 	box.upgradeSimulation = simLibc
 	if update := checkBox(t, box, nil).Docker.Update; update == nil || !update.Available || len(update.Packages) != 7 || !update.Held {
 		t.Errorf("update = %#v, want the new dependencies accepted", update)
+	}
+}
+
+// The command the owner is shown under the button names every installed package of the engine (the same
+// list the dashboard's plan is made of), with the flag, and puts the hold back on the packages that are on
+// hold, whichever of them it is: the held fact comes from all of the engine's packages and not from docker-ce
+// alone. A box that holds nothing gets the command it always got.
+func TestDockerCheckManualCommandOfABoxWithHeldPackages(t *testing.T) {
+	const head = "sudo apt-get update && sudo apt-get install --only-upgrade "
+	for _, c := range []struct {
+		name   string
+		held   []string
+		upsim  string
+		want   string
+		isHeld bool
+	}{
+		// the owner's own box: all three on hold, and apt's own upgrade leaves them all out
+		{"all three held", []string{"docker-ce", "docker-ce-cli", "containerd.io"}, simLibc,
+			head + "--allow-change-held-packages containerd.io docker-ce docker-ce-cli && sudo apt-mark hold containerd.io docker-ce docker-ce-cli", true},
+		// docker-ce 29 needs a newer containerd.io: with the sibling held, apt keeps docker-ce back too, and a
+		// command that names docker-ce alone fails
+		{"only a sibling held", []string{"containerd.io"}, simLibc + ownerCLI,
+			head + "--allow-change-held-packages containerd.io docker-ce docker-ce-cli && sudo apt-mark hold containerd.io", true},
+		{"only the client held", []string{"docker-ce-cli"}, simLibc + ownerContaind,
+			head + "--allow-change-held-packages containerd.io docker-ce docker-ce-cli && sudo apt-mark hold docker-ce-cli", true},
+		{"a plugin that no plan moves, held", []string{"docker-buildx-plugin"}, simLibc + ownerCLI + ownerContaind,
+			head + "--allow-change-held-packages containerd.io docker-buildx-plugin docker-ce docker-ce-cli && sudo apt-mark hold docker-buildx-plugin", true},
+		// nothing on hold, docker-ce kept back all the same: what it always was
+		{"nothing held, docker-ce kept back", nil, simLibc + ownerCLI + ownerContaind,
+			head + "containerd.io docker-ce docker-ce-cli", false},
+	} {
+		box := heldBox(t, c.held...)
+		if len(c.held) == 0 {
+			box = ownerBox(t)
+		}
+		box.upgradeSimulation = c.upsim
+		got := checkBox(t, box, nil).Docker
+		if got == nil || got.Candidate != "29.8.0" || got.Held != c.isHeld || got.ManualCommand != c.want {
+			t.Errorf("%s: Docker = %#v\nwant held %v and the command %q", c.name, got, c.isHeld, c.want)
+		}
+		if !c.isHeld && strings.Contains(got.ManualCommand, "held") {
+			t.Errorf("%s: a box that holds nothing got %q", c.name, got.ManualCommand)
+		}
+	}
+
+	// a package of the engine that is installed and not on hold, that no plan moves, is named all the same:
+	// the command is the dashboard's list
+	box := heldBox(t, "docker-ce", "docker-ce-cli", "containerd.io")
+	box.packages["docker-compose-plugin"] = "2.40.0-1~debian.11~bullseye"
+	box.upgradeSimulation = simLibc
+	want := head + "--allow-change-held-packages containerd.io docker-ce docker-ce-cli docker-compose-plugin && sudo apt-mark hold containerd.io docker-ce docker-ce-cli"
+	if got := checkBox(t, box, nil).Docker; got == nil || got.ManualCommand != want {
+		t.Errorf("a plugin that is installed and not held: Docker = %#v\nwant the command %q", got, want)
+	}
+}
+
+// When docker-ce is among what apt itself offers (it is not kept back), the line says what apt offers and
+// the command is the one for that, held siblings or not: nothing here changed.
+func TestDockerCheckManualCommandIsWhatItWasWhenAptOffersDockerCE(t *testing.T) {
+	box := ownerBox(t)
+	got := checkBox(t, box, nil).Docker
+	if got == nil || got.Held || got.Candidate != "" || got.ManualCommand != "sudo apt-get update && sudo apt-get install --only-upgrade containerd.io docker-ce docker-ce-cli" {
+		t.Errorf("Docker = %#v", got)
+	}
+}
+
+// heldForeign is sorted, whatever order apt prints the packages in (it varies with apt's version): a plan
+// that brings two new packages that are on hold gives their names in one order.
+func TestDockerUpdateNamesTwoHeldNewPackagesInOneOrder(t *testing.T) {
+	supported := systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get", systemdPath: "/usr/bin/systemd-run"}
+	const nftables = "Inst nftables (0.9.8-3.1 Debian:11/stable [amd64])\n"
+	const libedit = "Inst libedit2 (3.1-20191231-2+b1 Debian:11/stable [amd64])\n"
+	for name, printed := range map[string]string{"the later name first": nftables + libedit, "the earlier name first": libedit + nftables} {
+		box := heldBox(t, "docker-ce")
+		box.enginePlans["docker-ce-cli"] += printed
+		box.packages["nftables"], box.packages["libedit2"] = "0.9.8-3.1", "3.1-20191231-2+b1"
+		box.statuses["nftables"], box.statuses["libedit2"] = "hn", "hn"
+		updater := newTestSystemPackageUpdater(t)
+		updater.command = box.command
+		update, plan := updater.dockerUpdatePreflight(context.Background(), supported, true)
+		if update.Refusal != DockerRefusalPlan || update.Available || !reflect.DeepEqual(update.RefusalDetail, []string{"libedit2", "nftables"}) || len(plan.Packages) != 0 {
+			t.Errorf("%s: update = %#v, want the refusal plan with libedit2 and nftables, in that order", name, update)
+		}
 	}
 }

@@ -433,13 +433,18 @@ func RollbackCommand(previous []string) string {
 	return "sudo apt-get install --allow-downgrades " + strings.Join(pins, " ")
 }
 
-// RollbackCommandHeld is RollbackCommand for a run that went ahead of a hold (Run.Held is not empty):
-// the unit put the hold back when it ended, and apt refuses to change a package that is on hold unless
-// it is told it may. For a run that held nothing it is RollbackCommand, byte for byte.
-func RollbackCommandHeld(previous []string, held bool) string {
+// RollbackCommandHeld is RollbackCommand for a run that went ahead of a hold (held: Run.Held, the
+// packages that were on hold when the unit started, which it put back when it ended). The owner types it
+// as the update was run: with the flag of the terminal command (apt-get install with -y refuses to change
+// a package that is on hold unless it is told it may; without -y it only asks, and the flag is there to
+// say so), and since dpkg drops the hold of every package it unpacks, it ends by putting the hold back on
+// the packages that were held. For a run that held nothing it is RollbackCommand, byte for byte.
+func RollbackCommandHeld(previous, held []string) string {
 	command := RollbackCommand(previous)
-	if held && command != "" {
-		return strings.Replace(command, "--allow-downgrades ", "--allow-downgrades --allow-change-held-packages ", 1)
+	holds := holdNames(held)
+	if command == "" || len(holds) == 0 {
+		return command
 	}
-	return command
+	command = strings.Replace(command, "--allow-downgrades ", "--allow-downgrades "+allowHeldFlag+" ", 1)
+	return command + " && sudo apt-mark hold " + strings.Join(holds, " ")
 }

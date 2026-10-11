@@ -148,8 +148,9 @@ type SystemDockerUpdateStatus struct {
 	NotReturned []dockerpkg.NotReturned `json:"not_returned"`
 	// RollbackCommand is what to type to put the packages back, for a run that failed and was not
 	// a major jump; "" otherwise. For a run that went ahead of a hold it carries
-	// --allow-change-held-packages: the packages are on hold again, and apt refuses to change them
-	// without it.
+	// --allow-change-held-packages, as the update did, and ends with `&& sudo apt-mark hold` and the
+	// names of the packages that were on hold (HeldPackages): dpkg drops the hold of every package it
+	// unpacks, and this command unpacks them again.
 	RollbackCommand string `json:"rollback_command"`
 	// Log is the end of the unit's log, at most 128 KiB.
 	Log string `json:"log"`
@@ -468,7 +469,7 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 		status.State, status.Outcome = systemPackageUpdateStateFailed, systemDockerOutcomeFailed
 		status.ErrorCode = run.FailReason
 		status.Error = dockerFailMessages[run.FailReason]
-		status.RollbackCommand = dockerpkg.RollbackCommandHeld(run.Previous, status.Held)
+		status.RollbackCommand = dockerpkg.RollbackCommandHeld(run.Previous, status.HeldPackages)
 	case "":
 		switch {
 		case active:
@@ -487,7 +488,7 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 			status.ErrorCode = systemDockerErrorNoResult
 			status.Error = "The Docker update stopped before it reported a result."
 			// it stopped somewhere: what was there before is in the log
-			status.RollbackCommand = dockerpkg.RollbackCommandHeld(run.Previous, status.Held)
+			status.RollbackCommand = dockerpkg.RollbackCommandHeld(run.Previous, status.HeldPackages)
 		}
 	}
 	if status.MajorJump {
