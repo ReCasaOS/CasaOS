@@ -49,6 +49,52 @@ func TestMergedUsr(t *testing.T) {
 	})
 }
 
+// What the refusal says of the release: Debian's release notes say the upgrade to Debian 12 converts a system that is not
+// merged (5.1.14), so the refusal is ReCasaOS's own, for now, because it has not proven that conversion here, and it does not
+// say that the release needs the layout, nor that the upgrade does not convert it.
+func TestTheMergedUsrRefusalSaysWhatIsTrueOfTheRelease(t *testing.T) {
+	f := newBox(t)
+	f.remove("/bin")
+	f.set("/bin/sh", "x")
+	got := checkOn(t, f, "merged_usr")
+	if got.Severity != Refuse {
+		t.Fatalf("finding = %+v", got)
+	}
+	for _, claim := range []string{"needs the merged", "requires", "required", "does not convert it", "the upgrade does not"} {
+		if strings.Contains(got.Detail, claim) {
+			t.Errorf("the detail says %q, which Debian's notes contradict: %q", claim, got.Detail)
+		}
+	}
+	for _, say := range []string{"converts", "has not been proven", "usrmerge"} {
+		if !strings.Contains(got.Detail, say) {
+			t.Errorf("the detail does not say %q: %q", say, got.Detail)
+		}
+	}
+	if len(got.Detail) >= maxDetail-20 {
+		t.Errorf("the detail is %d bytes, and is cut at %d", len(got.Detail), maxDetail)
+	}
+}
+
+// The text of a variable of the Boot Loader Interface, as the checks read it: the four bytes of attributes are the least
+// there is, and a file that has less than them has no text and is not a panic.
+func TestTheTextOfAnEFIVariableNeedsItsFourBytesOfAttributes(t *testing.T) {
+	for n := 0; n <= 5; n++ {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("a variable of %d bytes made a panic: %v", n, r)
+				}
+			}()
+			if got := efiText(make([]byte, n)); got != "" {
+				t.Errorf("a variable of %d bytes has the text %q", n, got)
+			}
+		}()
+	}
+	if got := efiText([]byte(efiString("GRUB 2.12"))); got != "GRUB 2.12\x00" {
+		t.Errorf("text = %q", got)
+	}
+}
+
 func TestCgroup1(t *testing.T) {
 	cgroup := func(kind string, exit int) func(*fakeProbe) {
 		return func(f *fakeProbe) { f.on(kind, exit, argvCgroup...) }
@@ -140,6 +186,10 @@ func TestBootloader(t *testing.T) {
 		}), severity: Refuse, data: D{"kind": "systemd_boot"}},
 		{name: "a variable that is only its attributes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, "\x06\x00\x00\x00") }), severity: OK},
 		{name: "a variable that is shorter than its attributes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, "\x06") }), severity: OK},
+		// the attributes are four bytes: a file of two or three bytes has not all of them, and no text
+		{name: "a variable of no byte", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, "") }), severity: OK},
+		{name: "a variable of two bytes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, "\x06\x00") }), severity: OK},
+		{name: "a variable of three bytes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, "\x06\x00\x00") }), severity: OK},
 		{name: "a variable of an odd number of bytes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, efiString("GRUB 2.12")+"x") }), severity: OK},
 		{name: "systemd-boot's text in ASCII, with no attributes, is not what the firmware writes", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set(loaderInfoPath, "systemd-boot 252") }), severity: OK},
 		{name: "GRUB's variable and systemd-boot's package", setup: after(uefi, espMounted, func(f *fakeProbe) {

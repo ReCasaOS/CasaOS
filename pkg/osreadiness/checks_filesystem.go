@@ -37,10 +37,11 @@ const (
 	gibibyte = 1 << 30
 )
 
-// checkMergedUsr refuses a box whose /bin, /sbin or /lib are not links into /usr, on every hop. The release
-// notes of Debian 12 say that a system that is not merged is converted at the upgrade to it, so the refusal
-// for the hop from Debian 11 may be a false one (from 12 to 13 the layout is required). It is the spec's,
-// and the owner decides later whether the hop from 11 is to be let by.
+// checkMergedUsr refuses a box whose /bin, /sbin or /lib are not links into /usr, on every hop. The release notes of
+// Debian 12 (5.1.14) say that a system that is not merged is converted by the upgrade to it, and those of Debian 13 (5.1.25)
+// that the end of the merge needs the upgrade to 12 to have been made first: so the refusal is not what the release needs, it
+// is ReCasaOS's own, for now, because it has not proven that conversion here. It is the spec's, and the owner decides later
+// whether the hop from 11 is to be let by. What the refusal says is that, and nothing of what the release requires.
 func checkMergedUsr(ctx context.Context, p Probe) Result {
 	unmerged := []string{}
 	for _, dir := range []string{"/bin", "/sbin", "/lib"} {
@@ -68,7 +69,7 @@ func checkMergedUsr(ctx context.Context, p Probe) Result {
 	}
 	return Result{
 		Severity: Refuse, Title: "/bin, /sbin or /lib is not a link into /usr",
-		Detail: "The next release needs the merged /usr layout, where these directories are links to /usr/bin, /usr/sbin and /usr/lib. This system still has separate ones, and the upgrade does not convert it: do that first, with the usrmerge package.",
+		Detail: "The merged /usr layout has these directories as links to /usr/bin, /usr/sbin and /usr/lib, and this system still has separate ones. Debian's release notes say the upgrade to Debian 12 converts such a system itself, but that conversion has not been proven here, so ReCasaOS refuses for now: convert it first, with the usrmerge package.",
 		Data:   D{"directories": unmerged},
 	}
 }
