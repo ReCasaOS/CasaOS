@@ -113,7 +113,22 @@ func TestContainer(t *testing.T) {
 		{name: "systemd says something odd", setup: func(f *fakeProbe) { f.on("<b>x</b>\n", 0, argvContainer...) }, severity: Refuse, data: D{"kind": "container"}},
 		{name: "systemd says none, and does not fail", setup: func(f *fakeProbe) { f.on("none"+string(rune(10)), 0, argvContainer...) }, severity: OK},
 		{name: "systemd says none, and fails, as it does", setup: func(f *fakeProbe) { f.on("none\n", 1, argvContainer...) }, severity: OK},
-		{name: "systemd says nothing but names a kind in a failure", setup: func(f *fakeProbe) { f.on("docker\n", 1, argvContainer...) }, severity: OK},
+		// systemd-detect-virt exits 1 for "none", and for an error that it says in words: only the first is a
+		// machine, and the second is a tool that did not say
+		{name: "systemd names a kind in a failure: it is not an answer", setup: func(f *fakeProbe) { f.on("docker\n", 1, argvContainer...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd fails with words", setup: func(f *fakeProbe) {
+			f.on("Failed to detect virtualization: Permission denied\n", 1, argvContainer...)
+		}, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd fails with words, and a container that has no marker", setup: func(f *fakeProbe) {
+			f.on("Failed to detect virtualization: Permission denied\n", 1, argvContainer...)
+			f.set("/proc/1/cgroup", "0::/\n")
+		}, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd fails and says nothing", setup: func(f *fakeProbe) { f.on("", 1, argvContainer...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd exits with another status", setup: func(f *fakeProbe) { f.on("none\n", 2, argvContainer...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd exits with 127", setup: func(f *fakeProbe) { f.on("", 127, argvContainer...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd succeeds and says nothing", setup: func(f *fakeProbe) { f.on("", 0, argvContainer...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd says none on a line after another", setup: func(f *fakeProbe) { f.on("warning\nnone\n", 1, argvContainer...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd says none with a line after it", setup: func(f *fakeProbe) { f.on("none\nsomething else\n", 1, argvContainer...) }, severity: OK},
 		{name: "no systemd-detect-virt and a .dockerenv", setup: func(f *fakeProbe) {
 			f.onError(ErrToolMissing, argvContainer...)
 			f.set("/.dockerenv", "")
@@ -141,7 +156,16 @@ func TestXen(t *testing.T) {
 		{name: "a KVM guest", severity: OK},
 		{name: "no virtualization", setup: func(f *fakeProbe) { f.on("none\n", 1, argvVM...) }, severity: OK},
 		{name: "a Xen guest", setup: func(f *fakeProbe) { f.on("xen\n", 0, argvVM...) }, severity: Refuse},
-		{name: "xen in a failure is not a Xen guest", setup: func(f *fakeProbe) { f.on("xen\n", 1, argvVM...) }, severity: OK},
+		{name: "xen in a failure is not an answer", setup: func(f *fakeProbe) { f.on("xen\n", 1, argvVM...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd fails with words: a Xen guest passes nothing", setup: func(f *fakeProbe) {
+			f.on("Failed to detect virtualization: Permission denied\n", 1, argvVM...)
+			f.set("/sys/hypervisor/type", "xen\n")
+		}, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd fails and says nothing", setup: func(f *fakeProbe) { f.on("", 1, argvVM...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd exits with another status", setup: func(f *fakeProbe) { f.on("none\n", 2, argvVM...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "systemd succeeds and says nothing", setup: func(f *fakeProbe) { f.on("", 0, argvVM...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "another hypervisor with its status", setup: func(f *fakeProbe) { f.on("vmware\n", 0, argvVM...) }, severity: OK},
+		{name: "a hypervisor that is not a word", setup: func(f *fakeProbe) { f.on("<b>x</b>\n", 0, argvVM...) }, severity: OK},
 		{name: "no systemd-detect-virt, and the hypervisor says xen", setup: func(f *fakeProbe) {
 			f.onError(ErrToolMissing, argvVM...)
 			f.set("/sys/hypervisor/type", "xen\n")

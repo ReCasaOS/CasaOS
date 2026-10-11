@@ -57,7 +57,7 @@ func checkForeignArch(ctx context.Context, p Probe) Result {
 	return Result{
 		Severity: Refuse, Title: "Packages are installed from another architecture",
 		Detail: "The upgrade of the system's libraries does not go through with packages of another architecture installed: they have to be removed first.",
-		Data:   D{"architectures": archs, "packages": names(packages), "count": len(packages)}, Action: ActionReviewSources,
+		Data:   D{"architectures": archs, "packages": names(packages), "count": len(packages)}, Action: ActionNone,
 	}
 }
 
@@ -238,42 +238,88 @@ func defaultRouteInterface(ctx context.Context, p Probe) (string, error) {
 	return "", nil
 }
 
-// networkDrivers are the drivers of the network card the default route goes out by: of the cards
-// of the bridge, when it is a bridge's.
+// The bounds of a stack of devices that is followed to the hardware: a machine's is a few devices deep and
+// wide, and a ring (which sysfs does not make, and a hostile tree could) is left at the second visit.
+const (
+	maxStackDepth   = 6
+	maxStackDevices = 32
+)
+
+// blockName is the name of a block device as sysfs has it (sda2, dm-0, md127, nvme0n1p2).
+var blockName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// interfacesUnder are the interfaces an interface is built on: the ports of a bridge (brif), and the
+// lower_* links of sysfs, which are a bond's slaves, a VLAN's parent and what a bridge, a macvlan and the
+// like sit on.
+func interfacesUnder(ctx context.Context, p Probe, iface string) ([]string, error) {
+	var under []string
+	add := func(name string) {
+		if validName(interfaceName, name) && !slices.Contains(under, name) {
+			under = append(under, name)
+		}
+	}
+	members, err := p.ReadDir(ctx, netDir+iface+"/brif")
+	if err != nil && !isNotExist(err) {
+		return nil, err
+	}
+	for _, member := range members {
+		add(member)
+	}
+	entries, err := p.ReadDir(ctx, netDir+iface)
+	if err != nil && !isNotExist(err) {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if lower, ok := strings.CutPrefix(entry, "lower_"); ok {
+			add(lower)
+		}
+	}
+	return under, nil
+}
+
+// networkDrivers are the drivers of the network cards the default route goes out by: of the cards that
+// are under it, when it is a bridge, a bond or a VLAN, down to the ones that have nothing under them.
 func networkDrivers(ctx context.Context, p Probe) ([]string, error) {
 	iface, err := defaultRouteInterface(ctx, p)
 	if err != nil || iface == "" {
 		return nil, err
 	}
-	cards := []string{iface}
-	members, err := p.ReadDir(ctx, "/sys/class/net/"+iface+"/brif")
-	if err != nil && !isNotExist(err) {
-		return nil, err
-	}
-	if len(members) > 0 {
-		cards = nil
-		for _, member := range members {
-			if validName(interfaceName, member) {
-				cards = append(cards, member)
+	var drivers []string
+	seen := map[string]bool{}
+	var walk func(name string, depth int) error
+	walk = func(name string, depth int) error {
+		if seen[name] || len(seen) >= maxStackDevices {
+			return nil
+		}
+		seen[name] = true
+		under, err := interfacesUnder(ctx, p, name)
+		if err != nil {
+			return err
+		}
+		if len(under) == 0 || depth >= maxStackDepth {
+			driver, err := driverOf(ctx, p, netDir+name+"/device")
+			if err == nil && driver != "" && !slices.Contains(drivers, driver) {
+				drivers = append(drivers, driver)
+			}
+			return err
+		}
+		for _, lower := range under {
+			if err := walk(lower, depth+1); err != nil {
+				return err
 			}
 		}
+		return nil
 	}
-	var drivers []string
-	for _, card := range cards {
-		driver, err := driverOf(ctx, p, "/sys/class/net/"+card+"/device")
-		if err != nil {
-			return nil, err
-		}
-		if driver != "" && !slices.Contains(drivers, driver) {
-			drivers = append(drivers, driver)
-		}
+	if err := walk(iface, 0); err != nil {
+		return nil, err
 	}
 	return drivers, nil
 }
 
-// rootDrivers are the drivers of the controller the root filesystem's disk is on: the drivers of
-// every device on the way from the disk up to the bus, from /sys/dev/block/<major:minor>. A root
-// on a logical volume or a RAID has no such path, and none is said.
+// rootDrivers are the drivers of the controllers the root filesystem's disks are on: the drivers of
+// every device on the way from the disk up to the bus, from /sys/dev/block/<major:minor>. A root on a
+// logical volume or a RAID is followed down to the disks it is built on, through the slaves of its
+// sysfs directory.
 func rootDrivers(ctx context.Context, p Probe) ([]string, error) {
 	list, err := mounts(ctx, p)
 	if err != nil {
@@ -290,18 +336,55 @@ func rootDrivers(ctx context.Context, p Probe) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	full := path.Join("/sys/dev/block", target)
-	parts := strings.Split(strings.Trim(full, "/"), "/")
 	var drivers []string
-	// from /sys/devices/<root of the bus> down to the partition
-	for i := 3; i <= len(parts); i++ {
-		driver, err := driverOf(ctx, p, "/"+strings.Join(parts[:i], "/"))
+	seen := map[string]bool{}
+	var walk func(base, target string, depth int) error
+	walk = func(base, target string, depth int) error {
+		full := path.Join(base, target)
+		if seen[full] || len(seen) >= maxStackDevices {
+			return nil
+		}
+		seen[full] = true
+		parts := strings.Split(strings.Trim(full, "/"), "/")
+		// from /sys/devices/<root of the bus> down to the partition
+		for i := 3; i <= len(parts); i++ {
+			driver, err := driverOf(ctx, p, "/"+strings.Join(parts[:i], "/"))
+			if err != nil {
+				return err
+			}
+			if driver != "" && !slices.Contains(drivers, driver) {
+				drivers = append(drivers, driver)
+			}
+		}
+		if depth >= maxStackDepth {
+			return nil
+		}
+		slaves, err := p.ReadDir(ctx, full+"/slaves")
+		if isNotExist(err) {
+			return nil
+		}
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if driver != "" && !slices.Contains(drivers, driver) {
-			drivers = append(drivers, driver)
+		for _, slave := range slaves {
+			if !validName(blockName, slave) {
+				continue
+			}
+			lower, err := p.Readlink(ctx, "/sys/class/block/"+slave)
+			if isNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if err := walk("/sys/class/block", lower, depth+1); err != nil {
+				return err
+			}
 		}
+		return nil
+	}
+	if err := walk("/sys/dev/block", target, 0); err != nil {
+		return nil, err
 	}
 	return drivers, nil
 }
@@ -319,6 +402,60 @@ func builtFromSource(ctx context.Context, p Probe, driver string) (bool, error) 
 // secureBootVariable is the EFI variable that says whether Secure Boot is on: four bytes of
 // attributes, then 1 for on.
 const secureBootVariable = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+
+// The certificate dkms signs the modules with, for Secure Boot: where the dkms of the distribution puts
+// it, unless /etc/dkms/framework.conf (and the .conf files of framework.conf.d, which are read after it)
+// say another. Debian's dkms keeps it in /var/lib/dkms (mok.pub), and Ubuntu's in the key that shim-signed
+// made (MOK.der): both are the public half of a key, and neither says whether it was enrolled, which is
+// what mokutil would ask and the report does not run.
+const (
+	dkmsConfig            = "/etc/dkms/framework.conf"
+	dkmsConfigDir         = "/etc/dkms/framework.conf.d"
+	dkmsCertificateDebian = "/var/lib/dkms/mok.pub"
+	dkmsCertificateUbuntu = "/var/lib/shim-signed/mok/MOK.der"
+)
+
+var (
+	dkmsCertificateLine = regexp.MustCompile(`^\s*mok_certificate\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s#]+))\s*(?:#.*)?$`)
+	certificatePath     = regexp.MustCompile(`^/[A-Za-z0-9._/-]{1,200}$`)
+)
+
+// dkmsCertificateExists says whether the certificate dkms signs with is there.
+func dkmsCertificateExists(ctx context.Context, p Probe) (bool, error) {
+	certificate := dkmsCertificateDebian
+	if SessionOf(ctx).Identity.ID == "ubuntu" {
+		certificate = dkmsCertificateUbuntu
+	}
+	files := []string{dkmsConfig}
+	names, err := p.ReadDir(ctx, dkmsConfigDir)
+	if err != nil && !isNotExist(err) {
+		return false, err
+	}
+	for _, name := range names {
+		if strings.HasSuffix(name, ".conf") && validName(poolName, name) {
+			files = append(files, dkmsConfigDir+"/"+name)
+		}
+	}
+	for _, file := range files {
+		data, found, err := readOptional(ctx, p, file)
+		if err != nil {
+			return false, err
+		}
+		if !found {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if m := dkmsCertificateLine.FindStringSubmatch(strings.TrimRight(line, "\r")); m != nil {
+				certificate = m[1] + m[2] + m[3]
+			}
+		}
+	}
+	// a path that is not one is not a certificate that is there
+	if !certificatePath.MatchString(certificate) || slices.Contains(strings.Split(certificate, "/"), "..") {
+		return false, nil
+	}
+	return exists(ctx, p, certificate)
+}
 
 func checkDKMS(ctx context.Context, p Probe) Result {
 	modules, err := dkmsModules(ctx, p)
@@ -350,7 +487,7 @@ func checkDKMS(ctx context.Context, p Probe) Result {
 		return unknown(err)
 	}
 	secureBoot := found && len(state) == 5 && state[4] == 1
-	key, err := exists(ctx, p, "/var/lib/dkms/mok.pub")
+	key, err := dkmsCertificateExists(ctx, p)
 	if err != nil {
 		return unknown(err)
 	}

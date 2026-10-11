@@ -2,6 +2,8 @@ package osreadiness
 
 import (
 	"context"
+	"io/fs"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -17,7 +19,7 @@ func TestForeignArch(t *testing.T) {
 		{name: "no foreign architecture", severity: OK},
 		{name: "i386 is added and nothing is installed from it", setup: foreign("i386\n", pkg("libc6", "2.31-13")), severity: OK},
 		{name: "a package of i386 is installed", setup: foreign("i386\n", pkg("libc6", "2.31-13")+pkgArch("libc6", "i386", "2.31-13")), severity: Refuse,
-			data: D{"architectures": []string{"i386"}, "packages": []string{"libc6"}, "count": 1}, action: ActionReviewSources},
+			data: D{"architectures": []string{"i386"}, "packages": []string{"libc6"}, "count": 1}, action: ActionNone},
 		{name: "two architectures, sorted, with their packages", setup: foreign("i386\narmhf\n", pkgArch("zlib1g", "armhf", "1")+pkgArch("libc6", "i386", "2")+pkgArch("libc6", "armhf", "2")), severity: Refuse,
 			data: D{"architectures": []string{"armhf", "i386"}, "packages": []string{"libc6", "zlib1g"}, "count": 3}},
 		{name: "packages that were removed", setup: foreign("i386\n", "rc \tlibc6\ti386\t2.31\nun \tfoo\ti386\t1\n"), severity: OK},
@@ -204,6 +206,44 @@ func TestDKMS(t *testing.T) {
 		}), severity: Warn, data: D{"network": false}},
 		{name: "Secure Boot and a key", setup: after(dkmsBox, secureBoot(true), func(f *fakeProbe) { f.set("/var/lib/dkms/mok.pub", "key") }), severity: Warn, data: D{"secure_boot": true, "mok": true}},
 		{name: "Secure Boot and no key", setup: after(dkmsBox, secureBoot(true)), severity: Refuse, data: D{"secure_boot": true, "mok": false, "network": false, "disk": false}},
+		// the key is where the distribution's own dkms puts it: Debian's is /var/lib/dkms/mok.pub, Ubuntu's is
+		// /var/lib/shim-signed/mok/MOK.der, and either can be put somewhere else in /etc/dkms/framework.conf
+		{name: "Ubuntu, Secure Boot and the key shim-signed made", setup: after(ubuntu2204, dkmsBox, secureBoot(true), func(f *fakeProbe) { f.set("/var/lib/shim-signed/mok/MOK.der", "key") }), severity: Warn, data: D{"secure_boot": true, "mok": true}},
+		{name: "Ubuntu, Secure Boot and no key", setup: after(ubuntu2204, dkmsBox, secureBoot(true)), severity: Refuse, data: D{"secure_boot": true, "mok": false}},
+		{name: "Ubuntu, and the key is Debian's place for it", setup: after(ubuntu2204, dkmsBox, secureBoot(true), func(f *fakeProbe) { f.set("/var/lib/dkms/mok.pub", "key") }), severity: Refuse, data: D{"mok": false}},
+		{name: "Debian, and the key is Ubuntu's place for it", setup: after(dkmsBox, secureBoot(true), func(f *fakeProbe) { f.set("/var/lib/shim-signed/mok/MOK.der", "key") }), severity: Refuse, data: D{"mok": false}},
+		{name: "Ubuntu 24.04 too", setup: after(ubuntu2404, dkmsBox, secureBoot(true), func(f *fakeProbe) { f.set("/var/lib/shim-signed/mok/MOK.der", "key") }), severity: Warn, data: D{"mok": true}},
+		{name: "a certificate that framework.conf names", setup: after(dkmsBox, secureBoot(true), func(f *fakeProbe) {
+			f.set("/etc/dkms/framework.conf", "# dkms\nmok_signing_key=\"/etc/keys/mok.key\"\nmok_certificate=\"/etc/keys/mok.der\"\n")
+			f.set("/etc/keys/mok.der", "key")
+		}), severity: Warn, data: D{"mok": true}},
+		{name: "a certificate that framework.conf names and is not there, with the default one there", setup: after(dkmsBox, secureBoot(true), func(f *fakeProbe) {
+			f.set("/etc/dkms/framework.conf", "mok_certificate=/etc/keys/mok.der\n")
+			f.set("/var/lib/dkms/mok.pub", "key")
+		}), severity: Refuse, data: D{"mok": false}},
+		{name: "a certificate named in a file of framework.conf.d, the last word wins", setup: after(ubuntu2204, dkmsBox, secureBoot(true), func(f *fakeProbe) {
+			f.set("/etc/dkms/framework.conf", "mok_certificate=\"/etc/keys/first.der\"\n")
+			f.set("/etc/dkms/framework.conf.d/10-local.conf", "# local\nmok_certificate='/etc/keys/second.der'\n")
+			f.set("/etc/dkms/framework.conf.d/readme.txt", "mok_certificate=/etc/keys/ignored.der\n")
+			f.set("/etc/keys/second.der", "key")
+		}), severity: Warn, data: D{"mok": true}},
+		{name: "a certificate that is commented out is not named", setup: after(dkmsBox, secureBoot(true), func(f *fakeProbe) {
+			f.set("/etc/dkms/framework.conf", "#mok_certificate=\"/etc/keys/mok.der\"\n")
+			f.set("/var/lib/dkms/mok.pub", "key")
+		}), severity: Warn, data: D{"mok": true}},
+		{name: "a certificate that is named by a path that goes back up", setup: after(dkmsBox, secureBoot(true), func(f *fakeProbe) {
+			f.set("/etc/dkms/framework.conf", "mok_certificate=\"/etc/../var/lib/dkms/mok.pub\"\n")
+			f.set("/etc/../var/lib/dkms/mok.pub", "key")
+			f.set("/var/lib/dkms/mok.pub", "key")
+		}), severity: Refuse, data: D{"mok": false}},
+		{name: "a certificate that is named by a path that is not one", setup: after(dkmsBox, secureBoot(true), func(f *fakeProbe) {
+			f.set("/etc/dkms/framework.conf", "mok_certificate=\"relative/mok.der\"\n")
+			f.set("relative/mok.der", "key")
+			f.set("/var/lib/dkms/mok.pub", "key")
+		}), severity: Refuse, data: D{"mok": false}},
+		{name: "a framework.conf that cannot be read", setup: after(dkmsBox, secureBoot(true), func(f *fakeProbe) {
+			f.fail("/etc/dkms/framework.conf", &fs.PathError{Op: "open", Path: "x", Err: fs.ErrPermission})
+		}), severity: Refuse, unknown: ReasonUnreadable},
 		{name: "Secure Boot off and no key", setup: after(dkmsBox, secureBoot(false)), severity: Warn, data: D{"secure_boot": false}},
 		{name: "an EFI variable that is not one", setup: after(dkmsBox, func(f *fakeProbe) { f.set(secureBootVariable, "\x07\x00") }), severity: Warn, data: D{"secure_boot": false}},
 		{name: "no default route", setup: after(dkmsBox, func(f *fakeProbe) {
@@ -275,6 +315,165 @@ func TestNotOffered(t *testing.T) {
 			if finding.Code == "not_offered" {
 				t.Fatal("not_offered ran on a Debian")
 			}
+		}
+	}
+}
+
+// The network card and the disk of a machine are not always the device that is named by the route and by
+// the mount: a bond, a VLAN, a bridge, a logical volume and a RAID are built on the hardware, and it is the
+// hardware that has the driver.
+func TestDKMSFollowsTheStackToTheHardware(t *testing.T) {
+	built := func(driver string) func(*fakeProbe) {
+		return func(f *fakeProbe) {
+			f.on("/lib/modules/5.10.0-35-amd64/updates/dkms/"+driver+".ko\n", 0, "modinfo", "-n", driver)
+		}
+	}
+	// the card of a stack: the physical card has the driver r8168, which is built from source
+	r8168 := func(f *fakeProbe) {
+		f.link("/sys/class/net/enp3s0/device/driver", "../../../bus/pci/drivers/r8168")
+		built("r8168")(f)
+	}
+	route := func(iface string) func(*fakeProbe) {
+		return func(f *fakeProbe) {
+			f.set("/proc/net/route", "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n"+iface+"\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\n")
+		}
+	}
+	lower := func(upper, card string) func(*fakeProbe) {
+		return func(f *fakeProbe) { f.link("/sys/class/net/"+upper+"/lower_"+card, "../"+card) }
+	}
+	runScenarios(t, "dkms", []scenario{
+		{name: "a bond of two cards, one of them is the one", setup: after(dkmsBox, route("bond0"), lower("bond0", "enp3s0"), lower("bond0", "enp4s0"), r8168), severity: Refuse, data: D{"network": true, "disk": false}},
+		{name: "a bond of cards whose drivers are the kernel's", setup: after(dkmsBox, route("bond0"), lower("bond0", "enp3s0")), severity: Warn, data: D{"network": false}},
+		{name: "a VLAN on a card", setup: after(dkmsBox, route("enp3s0.100"), lower("enp3s0.100", "enp3s0"), r8168), severity: Refuse, data: D{"network": true}},
+		{name: "a VLAN on a bond on a card", setup: after(dkmsBox, route("bond0.100"), lower("bond0.100", "bond0"), lower("bond0", "enp3s0"), r8168), severity: Refuse, data: D{"network": true}},
+		{name: "a bridge on a VLAN on a card", setup: after(dkmsBox, route("br0"), func(f *fakeProbe) {
+			f.set("/sys/class/net/br0/brif/enp3s0.100/ifindex", "5")
+		}, lower("enp3s0.100", "enp3s0"), r8168), severity: Refuse, data: D{"network": true}},
+		{name: "a bridge on a card, which also has a lower link", setup: after(dkmsBox, route("br0"), func(f *fakeProbe) {
+			f.set("/sys/class/net/br0/brif/enp3s0/ifindex", "2")
+		}, lower("br0", "enp3s0"), r8168), severity: Refuse, data: D{"network": true}},
+		{name: "a card that is the lower one of itself, and one of another", setup: after(dkmsBox, route("bond0"), lower("bond0", "bond0"), lower("bond0", "enp3s0"), r8168), severity: Refuse, data: D{"network": true}},
+		{name: "a stack that is a ring", setup: after(dkmsBox, route("a0"), lower("a0", "b0"), lower("b0", "a0")), severity: Warn, data: D{"network": false}},
+		{name: "a lower link whose name is not a card's", setup: after(dkmsBox, route("bond0"), func(f *fakeProbe) {
+			f.link("/sys/class/net/bond0/lower_..", "../enp3s0")
+			f.link("/sys/class/net/bond0/lower_a b", "../enp3s0")
+			f.link("/sys/class/net/a b/device/driver", "../../../bus/pci/drivers/r8168")
+		}, r8168, func(f *fakeProbe) { f.link("/sys/class/net/enp3s0/device/driver", "../../../bus/pci/drivers/e1000e") }), severity: Warn, data: D{"network": false}},
+		{name: "a stack of cards deeper than a machine's, whose bottom is built from source", setup: after(dkmsBox, route("i0"), func(f *fakeProbe) {
+			for i := 0; i < 9; i++ {
+				f.link("/sys/class/net/i"+strconv.Itoa(i)+"/lower_i"+strconv.Itoa(i+1), "../x")
+			}
+			f.link("/sys/class/net/i9/device/driver", "../../../bus/pci/drivers/r8168")
+		}, built("r8168")), severity: Warn, data: D{"network": false}},
+		{name: "a stack of cards that is as deep as one is, whose bottom is built from source", setup: after(dkmsBox, route("i0"), func(f *fakeProbe) {
+			for i := 0; i < 4; i++ {
+				f.link("/sys/class/net/i"+strconv.Itoa(i)+"/lower_i"+strconv.Itoa(i+1), "../x")
+			}
+			f.link("/sys/class/net/i4/device/driver", "../../../bus/pci/drivers/r8168")
+		}, built("r8168")), severity: Refuse, data: D{"network": true}},
+		{name: "the links of a card that cannot be listed", setup: after(dkmsBox, route("bond0"), func(f *fakeProbe) {
+			f.fail("/sys/class/net/bond0", &fs.PathError{Op: "open", Path: "x", Err: fs.ErrPermission})
+		}), severity: Refuse, unknown: ReasonUnreadable},
+
+		{name: "a root on LVM on a disk whose controller is built from source", setup: after(dkmsBox, lvmRoot("sda2"), built("ahci")), severity: Refuse, data: D{"disk": true, "network": false}},
+		{name: "a root on LVM on a disk whose controller is the kernel's", setup: after(dkmsBox, lvmRoot("sda2")), severity: Warn, data: D{"disk": false}},
+		{name: "a root on LVM on an encrypted volume on a disk", setup: after(dkmsBox, lvmRoot("dm-1"), func(f *fakeProbe) {
+			f.link("/sys/class/block/dm-1", "../../devices/virtual/block/dm-1")
+			f.link("/sys/devices/virtual/block/dm-1/slaves/sda2", "../../../../pci0000:00/x/block/sda/sda2")
+		}, built("ahci")), severity: Refuse, data: D{"disk": true}},
+		{name: "a root on a RAID of two disks, one of the controllers is built from source", setup: after(dkmsBox, raidRoot("sda1", "sdb1"), func(f *fakeProbe) {
+			f.link("/sys/class/block/sdb1", "../../devices/pci0000:00/0000:00:18.0/ata2/host1/target1:0:0/1:0:0:0/block/sdb/sdb1")
+			f.link("/sys/devices/pci0000:00/0000:00:18.0/driver", "../../../bus/pci/drivers/mpt3sas")
+			f.on("/lib/modules/5.10.0-35-amd64/kernel/drivers/scsi/mpt3sas/mpt3sas.ko\n", 0, "modinfo", "-n", "mpt3sas")
+		}, built("mpt3sas")), severity: Refuse, data: D{"disk": true}},
+		{name: "a root on a RAID whose controllers are the kernel's", setup: after(dkmsBox, raidRoot("sda1")), severity: Warn, data: D{"disk": false}},
+		{name: "a logical volume with no slaves", setup: after(dkmsBox, func(f *fakeProbe) {
+			f.link("/sys/dev/block/8:1", "../../devices/virtual/block/dm-0")
+			f.dirs["/sys/devices/virtual/block/dm-0"] = true
+		}), severity: Warn, data: D{"disk": false}},
+		{name: "a slave whose name is not a device's", setup: after(dkmsBox, func(f *fakeProbe) {
+			f.link("/sys/dev/block/8:1", "../../devices/virtual/block/dm-0")
+			f.link("/sys/devices/virtual/block/dm-0/slaves/..", "../../../../x")
+			f.link("/sys/class/block/..", "../../devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda/sda1")
+		}, built("ahci")), severity: Warn, data: D{"disk": false}},
+		{name: "a stack of devices deeper than a machine's, whose bottom is on a controller built from source", setup: after(dkmsBox, func(f *fakeProbe) {
+			f.link("/sys/dev/block/8:1", "../../devices/virtual/block/dm-0")
+			for i := 0; i < 9; i++ {
+				f.link("/sys/devices/virtual/block/dm-"+strconv.Itoa(i)+"/slaves/dm-"+strconv.Itoa(i+1), "x")
+				f.link("/sys/class/block/dm-"+strconv.Itoa(i+1), "../../devices/virtual/block/dm-"+strconv.Itoa(i+1))
+			}
+			f.link("/sys/devices/virtual/block/dm-9/slaves/sda1", "x")
+			f.link("/sys/class/block/sda1", "../../devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda/sda1")
+		}, built("ahci")), severity: Warn, data: D{"disk": false}},
+		{name: "a stack of devices as deep as one is, whose bottom is on a controller built from source", setup: after(dkmsBox, func(f *fakeProbe) {
+			f.link("/sys/dev/block/8:1", "../../devices/virtual/block/dm-0")
+			for i := 0; i < 4; i++ {
+				f.link("/sys/devices/virtual/block/dm-"+strconv.Itoa(i)+"/slaves/dm-"+strconv.Itoa(i+1), "x")
+				f.link("/sys/class/block/dm-"+strconv.Itoa(i+1), "../../devices/virtual/block/dm-"+strconv.Itoa(i+1))
+			}
+			f.link("/sys/devices/virtual/block/dm-4/slaves/sda1", "x")
+			f.link("/sys/class/block/sda1", "../../devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda/sda1")
+		}, built("ahci")), severity: Refuse, data: D{"disk": true}},
+		{name: "a link to a device that cannot be read", setup: after(dkmsBox, lvmRoot("sda2"), func(f *fakeProbe) {
+			f.fail("/sys/class/block/sda2", &fs.PathError{Op: "readlink", Path: "x", Err: fs.ErrPermission})
+		}), severity: Refuse, unknown: ReasonUnreadable},
+		{name: "a stack of devices that is a ring", setup: after(dkmsBox, func(f *fakeProbe) {
+			f.link("/sys/dev/block/8:1", "../../devices/virtual/block/dm-0")
+			f.link("/sys/devices/virtual/block/dm-0/slaves/dm-1", "x")
+			f.link("/sys/class/block/dm-1", "../../devices/virtual/block/dm-1")
+			f.link("/sys/devices/virtual/block/dm-1/slaves/dm-0", "x")
+			f.link("/sys/class/block/dm-0", "../../devices/virtual/block/dm-0")
+		}), severity: Warn, data: D{"disk": false}},
+		{name: "the slaves of a device that cannot be listed", setup: after(dkmsBox, lvmRoot("sda2"), func(f *fakeProbe) {
+			f.fail("/sys/devices/virtual/block/dm-0/slaves", &fs.PathError{Op: "open", Path: "x", Err: fs.ErrPermission})
+		}), severity: Refuse, unknown: ReasonUnreadable},
+	})
+}
+
+// lvmRoot is a root on a logical volume (dm-0, 253:0) that is on the slave, a partition of the disk sda.
+func lvmRoot(slave string) func(*fakeProbe) {
+	return func(f *fakeProbe) {
+		f.set("/proc/self/mountinfo", "22 1 253:0 / / rw,relatime shared:1 - ext4 /dev/mapper/vg-root rw\n")
+		f.link("/sys/dev/block/253:0", "../../devices/virtual/block/dm-0")
+		f.link("/sys/devices/virtual/block/dm-0/slaves/"+slave, "../../../../pci0000:00/x/block/sda/"+slave)
+		f.link("/sys/class/block/sda2", "../../devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda/sda2")
+	}
+}
+
+// raidRoot is a root on a RAID (md0, 9:0) of the partitions: the first is on the disk of dkmsBox.
+func raidRoot(slaves ...string) func(*fakeProbe) {
+	return func(f *fakeProbe) {
+		f.set("/proc/self/mountinfo", "22 1 9:0 / / rw,relatime shared:1 - ext4 /dev/md0 rw\n")
+		f.link("/sys/dev/block/9:0", "../../devices/virtual/block/md0")
+		for _, slave := range slaves {
+			f.link("/sys/devices/virtual/block/md0/slaves/"+slave, "../../../../x/block/"+slave)
+		}
+		f.link("/sys/class/block/sda1", "../../devices/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0/block/sda/sda1")
+	}
+}
+
+// A ring of interfaces, or of devices, is walked once: each one is asked what is under it a single time.
+func TestAStackThatIsARingIsWalkedOnce(t *testing.T) {
+	f := newBox(t)
+	dkmsBox(f)
+	f.set("/proc/net/route", "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\na0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\n")
+	f.link("/sys/class/net/a0/lower_b0", "../b0")
+	f.link("/sys/class/net/b0/lower_a0", "../a0")
+	f.link("/sys/dev/block/8:1", "../../devices/virtual/block/dm-0")
+	f.link("/sys/devices/virtual/block/dm-0/slaves/dm-1", "x")
+	f.link("/sys/class/block/dm-1", "../../devices/virtual/block/dm-1")
+	f.link("/sys/devices/virtual/block/dm-1/slaves/dm-0", "x")
+	f.link("/sys/class/block/dm-0", "../../devices/virtual/block/dm-0")
+	if got := checkOn(t, f, "dkms"); got.Severity != Warn || got.Data["network"] != false || got.Data["disk"] != false {
+		t.Fatalf("finding = %+v", got)
+	}
+	asked := map[string]int{}
+	for _, read := range f.readPaths() {
+		asked[read]++
+	}
+	for _, read := range []string{"readdir /sys/class/net/a0", "readdir /sys/class/net/b0", "readdir /sys/devices/virtual/block/dm-0/slaves", "readdir /sys/devices/virtual/block/dm-1/slaves"} {
+		if asked[read] != 1 {
+			t.Errorf("%s was asked %d times, want once", read, asked[read])
 		}
 	}
 }

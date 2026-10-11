@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io/fs"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestBusy(t *testing.T) {
@@ -133,6 +135,23 @@ func TestBrokenDpkg(t *testing.T) {
 		{name: "apt-get check failing for the sources is not a statement about dpkg", setup: func(f *fakeProbe) {
 			f.on("E: Malformed entry 1 in list file /etc/apt/sources.list (Component)\nE: The list of sources could not be read.\n", 100, aptCheckArgs...)
 		}, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		// what the audit and the journal found is said whatever becomes of apt-get check: it is the owner's way
+		// to the repair, and the check says that apt-get check could not be read
+		{name: "dpkg --audit prints, and apt-get check fails for the sources", setup: func(f *fakeProbe) {
+			f.on("libc6 2.31-13 half configured\n", 0, argvAudit...)
+			f.on("E: Malformed entry 1 in list file /etc/apt/sources.list (Component)\n", 100, aptCheckArgs...)
+		}, severity: Refuse, data: D{"audit": true}, action: ActionFinishDpkg},
+		{name: "the journal has an operation, and apt-get check does not answer", setup: func(f *fakeProbe) {
+			f.set("/var/lib/dpkg/updates/0001", "")
+			f.onError(context.DeadlineExceeded, aptCheckArgs...)
+		}, severity: Refuse, data: D{"updates": 1}, action: ActionFinishDpkg},
+		{name: "the audit prints, and there is no apt-get", setup: func(f *fakeProbe) {
+			f.on("libc6 half configured\n", 0, argvAudit...)
+			f.onError(ErrToolMissing, aptCheckArgs...)
+		}, severity: Refuse, data: D{"audit": true}, action: ActionFinishDpkg},
+		{name: "apt-get check that fails for the lists, and nothing else is wrong", setup: func(f *fakeProbe) {
+			f.on("E: Could not open file /var/lib/apt/lists/deb.debian.org_debian_dists_bullseye_main_binary-amd64_Packages - open (2: No such file or directory)\n", 100, aptCheckArgs...)
+		}, severity: Refuse, unknown: ReasonUnexpectedOutput},
 		{name: "dpkg --audit that fails without a word", setup: func(f *fakeProbe) { f.on("", 2, argvAudit...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "no dpkg", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvAudit...) }, severity: Refuse, unknown: ReasonToolMissing},
 		{name: "no apt-get", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, aptCheckArgs...) }, severity: Refuse, unknown: ReasonToolMissing},
@@ -167,9 +186,24 @@ func TestHeld(t *testing.T) {
 		{name: "once for each architecture", setup: func(f *fakeProbe) {
 			f.on(held("libc6")+strings.Replace(held("libc6"), "amd64", "i386", 1), 0, argvQuery()...)
 		}, severity: Refuse, data: D{"packages": []string{"libc6"}, "count": 1}},
-		{name: "a hold on a package that is not installed does nothing", setup: func(f *fakeProbe) {
-			f.on(strings.Replace(held("libc6"), "hi ", "hn ", 1), 0, argvQuery()...)
+		// "apt-mark showhold" lists every package whose selection is hold, installed or not (the idiom after
+		// a purge of snapd on Ubuntu Server: apt-get purge snapd, then apt-mark hold snapd), and a hold stops apt
+		// from installing the package when something of the new release depends on it
+		{name: "a hold on a package that is not installed is still a hold", setup: func(f *fakeProbe) {
+			f.on(strings.Replace(held("snapd"), "hi ", "hn ", 1), 0, argvQuery()...)
+		}, severity: Refuse, data: D{"packages": []string{"snapd"}, "count": 1}, action: ActionReleaseHolds},
+		{name: "a hold on a package that has only its configuration files", setup: func(f *fakeProbe) {
+			f.on(strings.Replace(held("snapd"), "hi ", "hc ", 1), 0, argvQuery()...)
+		}, severity: Refuse, data: D{"packages": []string{"snapd"}}},
+		{name: "a hold, whatever the state letter", setup: func(f *fakeProbe) {
+			f.on(strings.Replace(held("a1"), "hi ", "hF ", 1)+strings.Replace(held("b1"), "hi ", "hH ", 1)+strings.Replace(held("c1"), "hi ", "ht ", 1), 0, argvQuery()...)
+		}, severity: Refuse, data: D{"packages": []string{"a1", "b1", "c1"}, "count": 3}},
+		{name: "a package that is not installed and not held", setup: func(f *fakeProbe) {
+			f.on("un \tsnapd\tamd64\t\nrc \tfoo\tamd64\t1\npn \tbar\tamd64\t1\n", 0, argvQuery()...)
 		}, severity: OK},
+		{name: "a hold of a package with no version, as dpkg-query prints one that is not installed", setup: func(f *fakeProbe) {
+			f.on("hn \tsnapd\t\t\n", 0, argvQuery()...)
+		}, severity: Refuse, data: D{"packages": []string{"snapd"}}},
 		{name: "a package that is installed and wanted, and not held", setup: func(f *fakeProbe) { f.on(pkg("libc6", "2.31"), 0, argvQuery()...) }, severity: OK},
 		{name: "what is not a package name is not a hold", setup: holds("LIBC6", "<script>", "a b"), severity: OK},
 		{name: "dpkg-query that fails", setup: func(f *fakeProbe) { f.on("dpkg-query: error", 2, argvQuery()...) }, severity: Refuse, unknown: ReasonFailed},
@@ -184,6 +218,95 @@ func TestHeldDocker(t *testing.T) {
 		{name: "another package is", setup: holds("libc6"), severity: OK},
 		{name: "Docker's engine is", setup: holds("docker-ce"), severity: Info, data: D{"packages": []string{"docker-ce"}}, action: ActionNone},
 		{name: "the family, sorted", setup: holds("docker-compose-plugin", "containerd.io", "libc6", "docker-ce-cli"), severity: Info, data: D{"packages": []string{"containerd.io", "docker-ce-cli", "docker-compose-plugin"}}},
+		{name: "Docker's engine on hold and not installed is still on hold", setup: func(f *fakeProbe) {
+			f.on("hn \tdocker-ce\tamd64\t\n", 0, argvQuery()...)
+		}, severity: Info, data: D{"packages": []string{"docker-ce"}}},
 		{name: "dpkg-query that fails", setup: func(f *fakeProbe) { f.on("", 2, argvQuery()...) }, severity: Refuse, unknown: ReasonFailed},
 	})
+}
+
+// A check that has what the audit and the journal found says so when apt-get check cannot be read, and says
+// that it could not be read.
+func TestBrokenDpkgSaysThatAptGetCheckCouldNotBeRead(t *testing.T) {
+	for name, setup := range map[string]func(*fakeProbe){
+		"it fails for the sources": func(f *fakeProbe) { f.on("E: The list of sources could not be read.\n", 100, aptCheckArgs...) },
+		"it does not answer":       func(f *fakeProbe) { f.onError(context.DeadlineExceeded, aptCheckArgs...) },
+		"it is not there":          func(f *fakeProbe) { f.onError(ErrToolMissing, aptCheckArgs...) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newBox(t)
+			f.on("libc6 half configured\n", 0, argvAudit...)
+			setup(f)
+			got := checkOn(t, f, "broken_dpkg")
+			if got.Severity != Refuse || got.Data["unknown"] != false || got.Data["audit"] != true || got.Action != ActionFinishDpkg {
+				t.Fatalf("finding = %+v", got)
+			}
+			if !strings.Contains(got.Detail, "audit") || !strings.Contains(got.Detail, "apt-get check could not be read") {
+				t.Fatalf("detail = %q", got.Detail)
+			}
+			if _, has := got.Data["apt_check"]; has {
+				t.Fatalf("data = %v: apt-get check said nothing", got.Data)
+			}
+		})
+	}
+	// and when it says something, the detail does not say it could not
+	f := newBox(t)
+	f.on("libc6 half configured\n", 0, argvAudit...)
+	f.on("E: Unmet dependencies.\n", 100, aptCheckArgs...)
+	if got := checkOn(t, f, "broken_dpkg"); strings.Contains(got.Detail, "could not be read") || got.Data["apt_check"] != true {
+		t.Fatalf("finding = %+v", got)
+	}
+}
+
+// aptEndsAt is a machine that says the time that apt-get check was given.
+type aptEndsAt struct {
+	*fakeProbe
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func (p *aptEndsAt) Run(ctx context.Context, argv ...string) (Output, error) {
+	if argv[0] == "apt-get" {
+		p.mu.Lock()
+		p.deadline, _ = ctx.Deadline()
+		p.mu.Unlock()
+	}
+	return p.fakeProbe.Run(ctx, argv...)
+}
+
+// endsAfter is how long after the start the time given to apt-get check is over.
+func (p *aptEndsAt) endsAfter(started time.Time) time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.deadline.Sub(started)
+}
+
+// apt-get check is asked with less time than the check has, so that the check is there to say what the
+// audit found when apt does not answer: the end of the check's own time would turn what it found into
+// "did not answer".
+func TestBrokenDpkgIsStillThereWhenAptGetCheckRunsOutOfItsTime(t *testing.T) {
+	f := newBox(t)
+	f.on("libc6 half configured\n", 0, argvAudit...)
+	f.hang(aptCheckArgs)
+	check := checkNamed(t, "broken_dpkg")
+	check.Timeout = 2 * time.Second
+	timed := &aptEndsAt{fakeProbe: f}
+	started := time.Now()
+	report := Run(context.Background(), timed, Options{Checks: []Check{check}})
+	got := findingOf(t, report, "broken_dpkg")
+	if got.Severity != Refuse || got.Data["unknown"] != false || got.Data["audit"] != true {
+		t.Fatalf("finding = %+v", got)
+	}
+	// apt-get was given most of the time of the check, and not all of it: an eighth of what was left stays
+	// with the check
+	if ends := timed.endsAfter(started); ends > 1900*time.Millisecond || ends < 1500*time.Millisecond {
+		t.Fatalf("apt-get check was given until %v of the 2s of the check", ends)
+	}
+	// and with nothing found, it is the check that did not answer
+	g := newBox(t)
+	g.hang(aptCheckArgs)
+	got = findingOf(t, Run(context.Background(), g, Options{Checks: []Check{check}}), "broken_dpkg")
+	if got.Data["unknown"] != true || got.Data["reason"] != ReasonTimeout {
+		t.Fatalf("finding = %+v", got)
+	}
 }

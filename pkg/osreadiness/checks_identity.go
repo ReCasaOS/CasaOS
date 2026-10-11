@@ -146,6 +146,21 @@ func checkArch(ctx context.Context, p Probe) Result {
 	return pass()
 }
 
+// virtAnswer is what systemd-detect-virt says: the kind it found, or "none". It exits with 0 when it found
+// one, and with 1 when there is none and says "none"; it exits with 1 as well when it could not tell, and
+// says so in words ("Failed to detect virtualization: ..."): that is not "none", it is no answer. Any
+// other end (another status, no word, a word that is not on the first line) is no answer either.
+func virtAnswer(out Output) (string, error) {
+	kind := firstLine(out.Text)
+	switch {
+	case kind == "none" && (out.ExitCode == 0 || out.ExitCode == 1):
+		return "none", nil
+	case kind != "" && kind != "none" && out.ExitCode == 0:
+		return kind, nil
+	}
+	return "", errUnexpectedOutput
+}
+
 var containerKind = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
 // containerCgroupHints are what the control group of PID 1 holds in a container, and does not on a
@@ -166,7 +181,11 @@ func checkContainer(ctx context.Context, p Probe) Result {
 	out, err := p.Run(ctx, "systemd-detect-virt", "--container")
 	switch {
 	case err == nil:
-		if kind := firstLine(out.Text); out.ExitCode == 0 && kind != "" && kind != "none" {
+		kind, err := virtAnswer(out)
+		if err != nil {
+			return unknownFor(err)
+		}
+		if kind != "none" {
 			return refuse(kind)
 		}
 	case !errors.Is(err, ErrToolMissing):
@@ -214,7 +233,11 @@ func checkXen(ctx context.Context, p Probe) Result {
 	out, err := p.Run(ctx, "systemd-detect-virt", "--vm")
 	switch {
 	case err == nil:
-		if out.ExitCode == 0 && firstLine(out.Text) == "xen" {
+		kind, err := virtAnswer(out)
+		if err != nil {
+			return unknownFor(err)
+		}
+		if kind == "xen" {
 			return refuse
 		}
 		return pass()
