@@ -257,6 +257,24 @@ func GetSystemOS(ctx echo.Context) error {
 	})
 }
 
+// @Summary  whether this machine could be upgraded to the next release of its operating system
+// @Description A report that changes nothing on the machine: the state (ready, attention, blocked, latest, unsupported), the checks by code with their severity, and the same as plain text. It takes up to twenty seconds.
+// @Produce  application/json
+// @Accept application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /sys/os/readiness [get]
+func GetSystemOSReadiness(ctx echo.Context) error {
+	// the answer is about the box as it is now: nothing is kept
+	ctx.Response().Header().Set(echo.HeaderCacheControl, "no-store")
+	return ctx.JSON(http.StatusOK, model.Result{
+		Success: common_err.SUCCESS,
+		Message: common_err.GetMsg(common_err.SUCCESS),
+		Data:    service.MyService.System().GetSystemOSReadiness(),
+	})
+}
+
 // @Summary  get logs
 // @Produce  application/json
 // @Accept application/json
