@@ -20,7 +20,7 @@ func TestTheProbeCannotWrite(t *testing.T) {
 	for i := 0; i < probe.NumMethod(); i++ {
 		methods = append(methods, probe.Method(i).Name)
 	}
-	want := []string{"AppOperations", "Arch", "EUID", "FreeBytes", "Lstat", "MaintenanceBusy", "Now", "ReadDir", "ReadFile", "Readlink", "Run", "Stat"}
+	want := []string{"AppOperations", "Arch", "EUID", "FreeBytes", "Lstat", "MaintenanceBusy", "Now", "ReadDir", "ReadFile", "ReadHead", "Readlink", "Run", "Stat"}
 	slices.Sort(methods)
 	if !slices.Equal(methods, want) {
 		t.Fatalf("the Probe has the methods %v, want %v: a new method is a new thing the report may do to the machine, and says why in this list", methods, want)

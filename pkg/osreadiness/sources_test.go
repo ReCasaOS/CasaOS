@@ -126,10 +126,10 @@ func TestAStanzaThatIsNotASourceIsNotUnderstood(t *testing.T) {
 
 func TestWhereASourceComesFrom(t *testing.T) {
 	for _, tc := range []struct {
-		uri    string
-		host   string
-		distro bool
-		local  bool
+		uri      string
+		host     string
+		official bool
+		local    bool
 	}{
 		{"http://deb.debian.org/debian", "deb.debian.org", true, false},
 		{"https://security.debian.org/debian-security", "security.debian.org", true, false},
@@ -140,29 +140,20 @@ func TestWhereASourceComesFrom(t *testing.T) {
 		{"https://esm.ubuntu.com/apps/ubuntu", "esm.ubuntu.com", true, false},
 		{"mirror+http://mirrors.ubuntu.com/mirrors.txt", "mirrors.ubuntu.com", true, false},
 		{"http://user:secret@DEB.Debian.ORG:8080/debian", "deb.debian.org", true, false},
-		{"https://mirror.example.edu/debian", "mirror.example.edu", true, false},
-		{"https://mirror.example.edu/debian/", "mirror.example.edu", true, false},
-		{"https://mirror.example.edu/ubuntu", "mirror.example.edu", true, false},
-		// a mirror keeps the archive under a name of the archive, and what the host serves besides is its own
-		{"http://mirror.hetzner.com/debian/packages", "mirror.hetzner.com", true, false},
-		{"http://mirror.hetzner.com/debian/security", "mirror.hetzner.com", true, false},
-		{"http://mirror.hetzner.com/ubuntu/packages", "mirror.hetzner.com", true, false},
-		{"https://mirror.example.edu/ubuntu-ports", "mirror.example.edu", true, false},
-		{"https://mirror.example.edu/debian-security/", "mirror.example.edu", true, false},
-		{"https://ftp.example.ac.jp/pub/debian", "ftp.example.ac.jp", true, false},
-		{"https://ftp.example.ac.jp/pub/ubuntu-ports/", "ftp.example.ac.jp", true, false},
-		{"http://mirror.ovh.net/ftp.debian.org/debian", "mirror.ovh.net", true, false},
-		{"http://mirror.ovh.net/archive.ubuntu.com/ubuntu", "mirror.ovh.net", true, false},
+		// the path of an address says nothing: a mirror is told by the Release file apt kept of it, and a vendor that
+		// serves its repository at /debian or at /ubuntu is a third party whatever the path is
+		{"https://mirror.example.edu/debian", "mirror.example.edu", false, false},
+		{"https://mirror.example.edu/debian/", "mirror.example.edu", false, false},
+		{"https://mirror.example.edu/ubuntu", "mirror.example.edu", false, false},
+		{"http://mirror.hetzner.com/debian/packages", "mirror.hetzner.com", false, false},
+		{"https://ftp.example.ac.jp/pub/debian", "ftp.example.ac.jp", false, false},
+		{"http://mirror.ovh.net/ftp.debian.org/debian", "mirror.ovh.net", false, false},
+		{"https://repos.influxdata.com/debian", "repos.influxdata.com", false, false},
+		{"https://packages.microsoft.com/debian/11/prod", "packages.microsoft.com", false, false},
+		{"https://packages.element.io/debian/", "packages.element.io", false, false},
+		{"https://repo.protonvpn.com/debian", "repo.protonvpn.com", false, false},
 		{"https://download.docker.com/linux/debian", "download.docker.com", false, false},
 		{"https://pkgs.tailscale.com/stable/debian", "pkgs.tailscale.com", false, false},
-		// a vendor's own tree that has the name of the distribution in it somewhere is not the archive's mirror
-		{"https://repo.example.org/stable/debian", "repo.example.org", false, false},
-		{"https://example.org/linux/ubuntu", "example.org", false, false},
-		{"https://example.org/pub/stable/debian", "example.org", false, false},
-		{"https://example.org/x/debian-security", "example.org", false, false},
-		{"https://example.org/debianish", "example.org", false, false},
-		{"https://example.org/ftp.example.org/debian", "example.org", false, false},
-		{"https://packages.microsoft.com/repos/code", "packages.microsoft.com", false, false},
 		{"https://ppa.launchpadcontent.net/x/y/ubuntu", "ppa.launchpadcontent.net", false, false},
 		{"http://notdebian.org/debian-fake", "notdebian.org", false, false},
 		{"http://debian.org.evil.example/x", "debian.org.evil.example", false, false},
@@ -176,11 +167,15 @@ func TestWhereASourceComesFrom(t *testing.T) {
 		if got := e.host(); got != tc.host {
 			t.Errorf("host(%q) = %q, want %q", tc.uri, got, tc.host)
 		}
-		if got := e.distro(); got != tc.distro {
-			t.Errorf("distro(%q) = %v, want %v", tc.uri, got, tc.distro)
+		if got := e.official(); got != tc.official {
+			t.Errorf("official(%q) = %v, want %v", tc.uri, got, tc.official)
 		}
 		if got := e.local(); got != tc.local {
 			t.Errorf("local(%q) = %v, want %v", tc.uri, got, tc.local)
+		}
+		// an entry that was not looked at is not the distribution's: only what the report decided is
+		if e.distro() {
+			t.Errorf("distro(%q) is true before the sources were looked at", tc.uri)
 		}
 	}
 }

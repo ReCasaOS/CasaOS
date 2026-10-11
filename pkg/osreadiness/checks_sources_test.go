@@ -69,7 +69,16 @@ func TestSourcesAlias(t *testing.T) {
 		{name: "unstable", setup: sourcesList("deb http://ftp.us.debian.org/debian unstable main"), severity: Refuse},
 		{name: "devel on Ubuntu", setup: after(ubuntu2204, sourcesList("deb http://archive.ubuntu.com/ubuntu devel main")), severity: Refuse},
 		{name: "in a .sources file", setup: sourcesFile("debian.sources", "Types: deb", "URIs: http://deb.debian.org/debian", "Suites: bookworm stable", "Components: main"), severity: Refuse, data: D{"suites": []string{"stable"}}},
-		{name: "a mirror of the archive", setup: sourcesList("deb http://mirror.example.edu/debian stable main"), severity: Refuse},
+		// a mirror is the archive's when apt kept a Release file of it that says Debian or Ubuntu: nothing else about its
+		// address says so, and a vendor's own repository at /debian is a third party whatever its suite is called
+		{name: "a mirror of the archive, whose Release file says Debian", setup: after(sourcesList("deb http://mirror.example.edu/debian stable main"), inRelease("mirror.example.edu_debian_dists_stable", "Debian")), severity: Refuse},
+		{name: "a mirror of the archive, and no Release file of it", setup: sourcesList("deb http://mirror.example.edu/debian stable main"), severity: OK},
+		{name: "a mirror of the archive, whose Release file is another's", setup: after(sourcesList("deb http://mirror.example.edu/debian stable main"), inRelease("mirror.example.edu_debian_dists_stable", "Somebody")), severity: OK},
+		{name: "InfluxData's repository, whose suite is stable", setup: after(sourcesFile("influx.list", "deb https://repos.influxdata.com/debian stable main"), inRelease("repos.influxdata.com_debian_dists_stable", "InfluxData")), severity: OK},
+		{name: "InfluxData's repository, and no Release file", setup: sourcesFile("influx.list", "deb https://repos.influxdata.com/debian stable main"), severity: OK},
+		{name: "Microsoft's", setup: sourcesFile("microsoft.list", "deb [arch=amd64] https://packages.microsoft.com/debian/11/prod bullseye main"), severity: OK},
+		{name: "Element's", setup: sourcesFile("element-io.list", "deb [signed-by=/usr/share/keyrings/element-io-archive-keyring.gpg] https://packages.element.io/debian/ default main"), severity: OK},
+		{name: "ProtonVPN's", setup: sourcesFile("protonvpn-stable.list", "deb [signed-by=/usr/share/keyrings/proton-vpn-stable-archive-keyring.gpg] https://repo.protonvpn.com/debian stable main"), severity: OK},
 		// the vendor's own suite named stable: not the archive's alias
 		{name: "a third party's stable", setup: sourcesFile("code.list", "deb https://packages.microsoft.com/repos/code stable main"), severity: OK},
 		{name: "a third party's stable at a path that ends in debian", setup: sourcesFile("x.list", "deb https://repo.example.org/stable/debian stable main"), severity: OK},
@@ -77,9 +86,10 @@ func TestSourcesAlias(t *testing.T) {
 		// a file that was not understood may hold what this looks for: it is not a pass for the others, and
 		// sources_format says what is wrong with the file
 		{name: "a file that cannot be understood is not looked into", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
-		{name: "an alias of a mirror at a path of its own", setup: sourcesList("deb http://mirror.hetzner.com/debian/packages stable main"), severity: Refuse, data: D{"files": []string{"sources.list"}, "suites": []string{"stable"}}},
-		{name: "an alias of a mirror's security archive", setup: sourcesFile("sec.list", "deb http://mirror.hetzner.com/debian/security stable-security main"), severity: Refuse, data: D{"suites": []string{"stable-security"}}},
-		{name: "an alias of a mirror that keeps the archive under the name of its host", setup: sourcesList("deb http://mirror.ovh.net/ftp.debian.org/debian oldstable main"), severity: Refuse},
+		{name: "an alias of a mirror at a path of its own", setup: after(sourcesList("deb http://mirror.hetzner.com/debian/packages stable main"), inRelease("mirror.hetzner.com_debian_packages_dists_stable", "Debian")), severity: Refuse, data: D{"files": []string{"sources.list"}, "suites": []string{"stable"}}},
+		{name: "an alias of a mirror's security archive", setup: after(sourcesFile("sec.list", "deb http://mirror.hetzner.com/debian/security stable-security main"), inRelease("mirror.hetzner.com_debian_security_dists_stable-security", "Debian")), severity: Refuse, data: D{"suites": []string{"stable-security"}}},
+		{name: "an alias of a mirror that keeps the archive under the name of its host", setup: after(sourcesList("deb http://mirror.ovh.net/ftp.debian.org/debian oldstable main"), release("mirror.ovh.net_ftp.debian.org_debian_dists_oldstable", "Debian")), severity: Refuse},
+		{name: "an alias of a mirror at a path of its own that has no Release file", setup: sourcesList("deb http://mirror.hetzner.com/debian/packages stable main"), severity: OK},
 		{name: "an alias that is found in a file next to one that cannot be read", setup: after(sourcesList("rubbish"), sourcesFile("a.list", "deb http://deb.debian.org/debian testing main")), severity: Refuse, data: D{"files": []string{"a.list"}}},
 	})
 }
@@ -90,7 +100,8 @@ func TestSourcesProposed(t *testing.T) {
 		{name: "Debian's", setup: sourcesList("deb http://deb.debian.org/debian bullseye-proposed-updates main"), severity: Refuse, data: D{"files": []string{"sources.list"}, "suites": []string{"bullseye-proposed-updates"}}, action: ActionReviewSources},
 		{name: "Ubuntu's", setup: after(ubuntu2204, sourcesList("deb http://archive.ubuntu.com/ubuntu jammy-proposed main")), severity: Refuse, data: D{"suites": []string{"jammy-proposed"}}},
 		{name: "in a .sources file", setup: sourcesFile("p.sources", "Types: deb", "URIs: http://deb.debian.org/debian", "Suites: bullseye-proposed-updates", "Components: main"), severity: Refuse},
-		{name: "a mirror's, at a path of its own", setup: sourcesList("deb http://mirror.hetzner.com/debian/packages bullseye-proposed-updates main"), severity: Refuse, data: D{"suites": []string{"bullseye-proposed-updates"}}},
+		{name: "a mirror's, whose Release file says Debian", setup: after(sourcesList("deb http://mirror.hetzner.com/debian/packages bullseye-proposed-updates main"), inRelease("mirror.hetzner.com_debian_packages_dists_bullseye-proposed-updates", "Debian")), severity: Refuse, data: D{"suites": []string{"bullseye-proposed-updates"}}},
+		{name: "a mirror's that apt has no file of", setup: sourcesList("deb http://mirror.hetzner.com/debian/packages bullseye-proposed-updates main"), severity: OK},
 		{name: "a file that cannot be understood is not looked into", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
 		{name: "the proposed suites of a third party's own are not said with the archive's", setup: sourcesList("deb http://deb.debian.org/debian bullseye-proposed-updates main", "deb https://repo.example.org/apt jammy-proposed main"), severity: Refuse, data: D{"suites": []string{"bullseye-proposed-updates"}}},
 		{name: "a third party's suite of that name", setup: sourcesFile("x.list", "deb https://repo.example.org/apt jammy-proposed main"), severity: OK},
@@ -138,8 +149,17 @@ func TestSourcesThirdParty(t *testing.T) {
 		{name: "another, not Docker's", setup: sourcesFile("tailscale.list", tailscaleLine), severity: Warn, data: D{"files": []string{"tailscale.list"}}},
 		{name: "in a .sources file", setup: sourcesFile("syncthing.sources", "Types: deb", "URIs: https://apt.syncthing.net/", "Suites: syncthing", "Components: stable"), severity: Warn, data: D{"files": []string{"syncthing.sources"}}},
 		{name: "a PPA", setup: after(ubuntu2204, sourcesFile("ppa.list", "deb https://ppa.launchpadcontent.net/x/y/ubuntu jammy main")), severity: Warn},
-		{name: "a mirror of the archive is Debian's", setup: sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), severity: OK},
-		{name: "a mirror that has the archive under a path of its own is Debian's", setup: after(sourcesFile("hetzner.list", "deb http://mirror.hetzner.com/debian/packages bullseye main"), sourcesFile("sec.list", "deb http://mirror.hetzner.com/debian/security bullseye-security main")), severity: OK},
+		{name: "a mirror of the archive that apt has a Release file of, that says Debian, is Debian's", setup: after(sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), inRelease("mirror.example.edu_debian_dists_bullseye", "Debian")), severity: OK},
+		{name: "a mirror that has the archive under a path of its own is Debian's, by its Release files", setup: after(sourcesFile("hetzner.list", "deb http://mirror.hetzner.com/debian/packages bullseye main"), sourcesFile("sec.list", "deb http://mirror.hetzner.com/debian/security bullseye-security main"),
+			inRelease("mirror.hetzner.com_debian_packages_dists_bullseye", "Debian"), release("mirror.hetzner.com_debian_security_dists_bullseye-security", "Debian")), severity: OK},
+		{name: "a mirror that apt has no Release file of is a third party's, and is said", setup: sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), severity: Warn, data: D{"files": []string{"mirror.list"}, "hosts": []string{"mirror.example.edu"}}},
+		{name: "a mirror whose Release file says another origin is a third party's", setup: after(sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), inRelease("mirror.example.edu_debian_dists_bullseye", "Raspbian")), severity: Warn},
+		// the repositories of vendors that serve their own at the root of their host under the name of the distribution
+		{name: "InfluxData's is a third party's, and is said", setup: after(sourcesFile("influxdata.list", "deb https://repos.influxdata.com/debian stable main"), inRelease("repos.influxdata.com_debian_dists_stable", "InfluxData")), severity: Warn, data: D{"files": []string{"influxdata.list"}, "hosts": []string{"repos.influxdata.com"}}},
+		{name: "Microsoft's is a third party's, and is said", setup: sourcesFile("microsoft-prod.list", "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/11/prod bullseye main"), severity: Warn, data: D{"hosts": []string{"packages.microsoft.com"}}},
+		{name: "Element's is a third party's, and is said", setup: sourcesFile("element-io.list", "deb [signed-by=/usr/share/keyrings/element-io-archive-keyring.gpg] https://packages.element.io/debian/ default main"), severity: Warn, data: D{"hosts": []string{"packages.element.io"}}},
+		{name: "ProtonVPN's is a third party's, and is said", setup: sourcesFile("protonvpn-stable.list", "deb https://repo.protonvpn.com/debian stable main"), severity: Warn, data: D{"hosts": []string{"repo.protonvpn.com"}}},
+		{name: "a third party's, a mirror's with no file and Debian's together are each judged by themselves", setup: after(sourcesFile("a.list", "deb https://repos.influxdata.com/debian stable main"), sourcesFile("b.list", "deb http://mirror.example.edu/debian bullseye main"), sourcesFile("c.list", "deb http://deb.debian.org/debian bullseye main")), severity: Warn, data: D{"files": []string{"a.list", "b.list"}}},
 		{name: "a file that cannot be understood may hide a source that is not Debian's", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
 		{name: "a third party is said whatever else cannot be read", setup: after(sourcesList("rubbish"), sourcesFile("docker.list", dockerLine)), severity: Warn, data: D{"files": []string{"docker.list"}}},
 		{name: "Ubuntu's own", setup: after(ubuntu2204, sourcesList("deb http://archive.ubuntu.com/ubuntu jammy main", "deb http://security.ubuntu.com/ubuntu jammy-security main"), sourcesFile("esm.list", "deb https://esm.ubuntu.com/infra/ubuntu jammy-infra-security main")), severity: OK},
@@ -156,7 +176,9 @@ func TestSourcesBackports(t *testing.T) {
 		{name: "in a file of its own", setup: sourcesFile("backports.list", "deb http://deb.debian.org/debian bullseye-backports main contrib"), severity: Info, data: D{"files": []string{"backports.list"}}},
 		{name: "the sloppy ones", setup: sourcesFile("sloppy.list", "deb http://deb.debian.org/debian bullseye-backports-sloppy main"), severity: Info},
 		{name: "a third party's", setup: sourcesFile("x.list", "deb https://repo.example.org/apt bullseye-backports main"), severity: OK},
-		{name: "a mirror's, at a path of its own", setup: sourcesFile("m.list", "deb http://mirror.hetzner.com/debian/packages bullseye-backports main"), severity: Info, data: D{"files": []string{"m.list"}}},
+		{name: "a mirror's, whose Release file says Debian", setup: after(sourcesFile("m.list", "deb http://mirror.hetzner.com/debian/packages bullseye-backports main"), inRelease("mirror.hetzner.com_debian_packages_dists_bullseye-backports", "Debian")), severity: Info, data: D{"files": []string{"m.list"}}},
+		{name: "a mirror's, with no Release file of it, is a third party's backports", setup: sourcesFile("m.list", "deb http://mirror.hetzner.com/debian/packages bullseye-backports main"), severity: OK},
+		{name: "a vendor's, at a path of the distribution's name", setup: sourcesFile("v.list", "deb https://repos.influxdata.com/debian bullseye-backports main"), severity: OK},
 		{name: "a file that cannot be understood is not looked into", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
 	})
 }

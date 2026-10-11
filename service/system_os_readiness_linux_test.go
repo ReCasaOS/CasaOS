@@ -62,4 +62,17 @@ func TestAFileThatIsNotARegularOneIsNotOpened(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("the read of a FIFO waits")
 	}
+	// nor is its start
+	go func() {
+		_, err := probe.ReadHead(context.Background(), fifo, 10)
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		if err == nil {
+			t.Fatal("the start of a FIFO was read as a file")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the read of the start of a FIFO waits")
+	}
 }

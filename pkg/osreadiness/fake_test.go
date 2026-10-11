@@ -174,6 +174,18 @@ func (f *fakeProbe) ReadFile(ctx context.Context, p string) ([]byte, error) {
 	return nil, notExist("open", p)
 }
 
+// ReadHead is ReadFile cut to its first max bytes: it is what a file as large as a Release file is read with.
+func (f *fakeProbe) ReadHead(ctx context.Context, p string, max int) ([]byte, error) {
+	data, err := f.ReadFile(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > max {
+		data = data[:max]
+	}
+	return data, nil
+}
+
 func (f *fakeProbe) ReadDir(ctx context.Context, p string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

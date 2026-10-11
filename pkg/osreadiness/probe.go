@@ -72,6 +72,10 @@ type Probe interface {
 	// ReadFile is the content of a file, at most MaxFileBytes (ErrTooLarge beyond), of a regular
 	// file only.
 	ReadFile(ctx context.Context, path string) ([]byte, error)
+	// ReadHead is the first max bytes of a regular file (all of it when it is shorter, and never more than
+	// MaxFileBytes), with no error for a file that is larger: what a file as large as a Release file says at its
+	// start (its Origin) is read without reading the file.
+	ReadHead(ctx context.Context, path string, max int) ([]byte, error)
 	// ReadDir is the names of the entries of a directory, sorted.
 	ReadDir(ctx context.Context, path string) ([]string, error)
 	// Stat describes a path, following symbolic links; Lstat does not follow them.

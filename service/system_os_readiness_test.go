@@ -264,6 +264,52 @@ func TestFilesAreReadWithinTheirBounds(t *testing.T) {
 	}
 }
 
+// The start of a file is read without reading the file: what a Release file says of its origin is at its start, and
+// the file may be as large as a package index.
+func TestTheStartOfAFileIsReadAndNoMoreOfIt(t *testing.T) {
+	probe, _ := readinessProbe(t)
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	ctx := context.Background()
+	if data, err := probe.ReadHead(ctx, write("short", "Origin: Debian\n"), 8192); err != nil || string(data) != "Origin: Debian\n" {
+		t.Fatalf("a file that is shorter than the start: %q, %v", data, err)
+	}
+	if data, err := probe.ReadHead(ctx, write("long", "0123456789abcdef"), 10); err != nil || string(data) != "0123456789" {
+		t.Fatalf("a file that is longer: %q, %v", data, err)
+	}
+	if data, err := probe.ReadHead(ctx, write("exact", "0123456789"), 10); err != nil || string(data) != "0123456789" {
+		t.Fatalf("a file that is the start: %q, %v", data, err)
+	}
+	// a file larger than a file can be is read at its start all the same, and the start is no more than a file can be
+	large := write("large", strings.Repeat("a", osreadiness.MaxFileBytes+100))
+	if data, err := probe.ReadHead(ctx, large, 8192); err != nil || len(data) != 8192 {
+		t.Fatalf("a file larger than the bound: %d bytes, %v", len(data), err)
+	}
+	if data, err := probe.ReadHead(ctx, large, 1<<30); err != nil || len(data) != osreadiness.MaxFileBytes {
+		t.Fatalf("a start larger than the bound: %d bytes, %v", len(data), err)
+	}
+	if data, err := probe.ReadHead(ctx, write("empty", ""), 10); err != nil || len(data) != 0 {
+		t.Fatalf("an empty file: %q, %v", data, err)
+	}
+	if _, err := probe.ReadHead(ctx, filepath.Join(dir, "missing"), 10); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a file that is not there: err = %v", err)
+	}
+	if _, err := probe.ReadHead(ctx, dir, 10); err == nil {
+		t.Fatal("a directory was read as a file")
+	}
+	ended, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := probe.ReadHead(ended, write("late", "x"), 10); !errors.Is(err, context.Canceled) {
+		t.Fatalf("after the end of the time: err = %v", err)
+	}
+}
+
 // Every look at the machine that has a context is given it first: one that has ended is not asked.
 func TestWhatTheProbeLooksAtIsNotLookedAtAfterTheEndOfItsTime(t *testing.T) {
 	probe, _ := readinessProbe(t)

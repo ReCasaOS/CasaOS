@@ -52,11 +52,12 @@ type osReadinessProbe struct {
 
 var _ osreadiness.Probe = osReadinessProbe{}
 
-func (osReadinessProbe) ReadFile(ctx context.Context, path string) ([]byte, error) {
+// openRegular opens a file to read it: a file that is not a regular one (a FIFO, a device) is not opened, since
+// opening one can wait for ever.
+func openRegular(ctx context.Context, path string) (*os.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// a file that is not a regular one (a FIFO, a device) is not read: opening one can wait for ever
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -64,7 +65,11 @@ func (osReadinessProbe) ReadFile(ctx context.Context, path string) ([]byte, erro
 	if !info.Mode().IsRegular() {
 		return nil, &fs.PathError{Op: "read", Path: path, Err: errors.New("not a regular file")}
 	}
-	file, err := os.Open(path)
+	return os.Open(path)
+}
+
+func (osReadinessProbe) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	file, err := openRegular(ctx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +83,16 @@ func (osReadinessProbe) ReadFile(ctx context.Context, path string) ([]byte, erro
 		return nil, osreadiness.ErrTooLarge
 	}
 	return data, nil
+}
+
+// ReadHead is the start of a file: the bytes asked for, and no more of it is read.
+func (osReadinessProbe) ReadHead(ctx context.Context, path string, max int) ([]byte, error) {
+	file, err := openRegular(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(io.LimitReader(file, int64(min(max, osreadiness.MaxFileBytes))))
 }
 
 func (osReadinessProbe) ReadDir(ctx context.Context, path string) ([]string, error) {

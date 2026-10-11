@@ -77,13 +77,15 @@ func TestAFileOfTheSourcesThatIsNotARegularOneIsLeftAsAptLeavesIt(t *testing.T) 
 // apt reads "Enabled" with StringToBool: no, false, without, off, disable and the number 0 are false, and
 // anything it does not understand is the default, which is true.
 func TestEnabledIsReadAsAptReadsABoolean(t *testing.T) {
-	for _, value := range []string{"no", "No", "NO", "false", "FALSE", "without", "Without", "off", "OFF", "disable", "Disable", "0", "00", "-0", "+0", "0x0", "0X00", " off "} {
+	for _, value := range []string{"no", "No", "NO", "false", "FALSE", "without", "Without", "off", "OFF", "disable", "Disable", "0", "00", "000", "-0", "+0", "-00", "0x0", "0X00", "0x000", "-0x0", "+0X0", " off "} {
 		entries, ok := parseDeb822("x.sources", "Types: deb\nURIs: http://x\nSuites: a\nEnabled: "+value+"\n")
 		if !ok || len(entries) != 0 {
 			t.Errorf("Enabled: %q is read as enabled: %v %v", value, entries, ok)
 		}
 	}
-	for _, value := range []string{"yes", "true", "1", "2", "on", "enable", "with", "", "08", "0x", "maybe", "x0", "-1", "00x0", "off now", "nope"} {
+	// strtol reads 01 as 1, 07 as 7 and 010 as 8 (base 0: a leading 0 is octal), so apt keeps the source; 08 and 09 are not
+	// numbers of base 8 (apt does not understand them, and keeps the source too)
+	for _, value := range []string{"yes", "true", "1", "2", "on", "enable", "with", "", "01", "07", "010", "-01", "+07", "0001", "00010", "0x1", "0x10", "0x01", "0X0f", "-0x1", "08", "09", "0x", "maybe", "x0", "-1", "00x0", "off now", "nope"} {
 		entries, ok := parseDeb822("x.sources", "Types: deb\nURIs: http://x\nSuites: a\nEnabled: "+value+"\n")
 		if !ok || len(entries) != 1 {
 			t.Errorf("Enabled: %q is read as disabled: %v %v", value, entries, ok)
@@ -112,7 +114,8 @@ func TestAFieldOfManyLinesIsReadInLinearTime(t *testing.T) {
 	}()
 	select {
 	case got := <-done:
-		if got.entries != 1 || got.components != 340000 {
+		// 340000 lines of the same word are one word
+		if got.entries != 1 || got.components != 1 {
 			t.Fatalf("entries = %d, components = %d", got.entries, got.components)
 		}
 	case <-time.After(5 * time.Second):

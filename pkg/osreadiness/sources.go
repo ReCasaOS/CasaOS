@@ -3,6 +3,7 @@ package osreadiness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"regexp"
 	"slices"
@@ -19,6 +20,9 @@ type sourceEntry struct {
 	URI        string
 	Suites     []string
 	Components []string
+	// Distro says that the source is the distribution's own archive. It is decided once for the report, by
+	// markDistro (see distro).
+	Distro bool
 }
 
 // aptSourceName is a name apt reads in sources.list.d (GetListOfFilesInDir of apt 2.2.4 and 2.6.1, Debian
@@ -30,9 +34,23 @@ var aptSourceName = regexp.MustCompile(`^[A-Za-z0-9_:-][A-Za-z0-9_:.-]*\.(?:list
 // than a machine has is one that is not understood (sources_format says so), and more files than that
 // are an answer that is too large.
 const (
-	maxSourceFiles   = 500
+	maxSourceFiles = 500
+	// maxSourceEntries is the most sources of a file, and of all the files together
 	maxSourceEntries = 2000
+	// maxSourceSuites and maxSourceComponents are the most different suites and components of one source: a
+	// stanza of more is a file that is not understood, and not one that is multiplied by them
+	maxSourceSuites     = 64
+	maxSourceComponents = 64
+	// maxReleaseLookups is how many Release files are looked at, in all, to tell the mirrors of the
+	// distribution from the others; releaseHeadBytes is how much of each is read, and maxOriginLen the longest
+	// Origin that is one
+	maxReleaseLookups = 64
+	releaseHeadBytes  = 8 << 10
+	maxOriginLen      = 64
 )
+
+// listsDir is where apt keeps the Release files it has fetched of each source.
+const listsDir = "/var/lib/apt/lists/"
 
 // sourcesSet is what apt would read of its sources: the entries of the files it understands, and
 // the files it would not (which the rewriter of the plan could not read either).
@@ -146,8 +164,17 @@ func loadSources(ctx context.Context, p Probe) (sourcesSet, error) {
 			set.Unreadable = append(set.Unreadable, file.name)
 			continue
 		}
+		// more sources in all than a machine has are as many as a file of them
+		if len(set.Entries)+len(entries) > maxSourceEntries {
+			return set, ErrTooLarge
+		}
 		set.Entries = append(set.Entries, entries...)
 	}
+	marked, err := markDistro(ctx, p, set.Entries)
+	if err != nil {
+		return set, err
+	}
+	set.Entries = marked
 	return set, nil
 }
 
@@ -209,13 +236,18 @@ func parseOneLine(file, text string) (entries []sourceEntry, ok bool) {
 		if len(entries) >= maxSourceEntries {
 			return nil, false
 		}
-		entries = append(entries, sourceEntry{File: file, Kind: words[0], URI: rest[0], Suites: []string{rest[1]}, Components: rest[2:]})
+		components := unique(rest[2:])
+		if len(components) > maxSourceComponents {
+			return nil, false
+		}
+		entries = append(entries, sourceEntry{File: file, Kind: words[0], URI: rest[0], Suites: []string{rest[1]}, Components: components})
 	}
 	return entries, true
 }
 
-// aptZero is the number 0 as strtol reads it with base 0: 0, 00, -0, 0x0.
-var aptZero = regexp.MustCompile(`^[+-]?(?:0[xX]0+|0[0-7]*)$`)
+// aptZero is the number 0 as strtol reads it with base 0 (a leading 0 is octal, 0x is hex), and nothing else: 0, 00,
+// -0, 0x0, 0X00. A number with a digit that is not 0 is not zero, whatever its base says (01 is 1, 07 is 7 and 010 is 8).
+var aptZero = regexp.MustCompile(`^[+-]?(?:0[xX]0+|0+)$`)
 
 // aptFalse is what apt's StringToBool reads as false (apt-pkg/contrib/strutl.cc): no, false, without, off
 // and disable, in any case, and the number 0. What it does not understand is its default, which is true.
@@ -270,14 +302,17 @@ func parseDeb822(file, text string) (entries []sourceEntry, ok bool) {
 		if enabled, set := fields["enabled"]; set && aptFalse(strings.Join(enabled, " ")) {
 			return true
 		}
-		kinds, uris, suites := unique(fieldWords(fields["types"])), unique(fieldWords(fields["uris"])), fieldWords(fields["suites"])
+		kinds, uris, suites := unique(fieldWords(fields["types"])), unique(fieldWords(fields["uris"])), unique(fieldWords(fields["suites"]))
 		if len(kinds) == 0 || len(uris) == 0 || len(suites) == 0 {
 			return false
 		}
-		if len(entries)+len(kinds)*len(uris) > maxSourceEntries {
+		if len(entries)+len(kinds)*len(uris) > maxSourceEntries || len(suites) > maxSourceSuites {
 			return false
 		}
-		components := fieldWords(fields["components"])
+		components := unique(fieldWords(fields["components"]))
+		if len(components) > maxSourceComponents {
+			return false
+		}
 		for _, kind := range kinds {
 			if kind != "deb" && kind != "deb-src" {
 				return false
@@ -351,45 +386,150 @@ func officialHost(host string) bool {
 		host == "ubuntu.com" || strings.HasSuffix(host, ".ubuntu.com")
 }
 
-// mirrorRoots are the names a mirror keeps the archive under: Debian's, its security archive's, Ubuntu's
-// and its ports'.
-var mirrorRoots = []string{"debian", "debian-security", "ubuntu", "ubuntu-ports"}
-
-// mirrorPath says whether the path of a source is that of a mirror of the archive: it is the root of the
-// archive ("/debian") with whatever is below it ("/debian/packages", a hosting provider's own), and the
-// root is the first step of the path, or the one after "pub", or after the name of the archive's own host
-// ("/ftp.debian.org/debian", which a mirror of a mirror says). A step called debian in the middle of
-// another path is a vendor's own tree and not a mirror ("/linux/debian" is Docker's, "/stable/debian"
-// is Tailscale's). The ceiling: a vendor that serves its own repository at the root of its host under the
-// name of the distribution (Jellyfin's /debian) is told from a mirror by nothing in the line.
-func mirrorPath(path string) bool {
-	steps := strings.Split(strings.Trim(path, "/"), "/")
-	for i := 0; i < len(steps) && i < 2; i++ {
-		if !slices.Contains(mirrorRoots, steps[i]) {
-			continue
-		}
-		if i == 0 || steps[0] == "pub" || officialHost(strings.ToLower(steps[0])) {
-			return true
-		}
-	}
-	return false
+// official says whether the source is on a host of the distribution's own (see officialHost).
+func (e sourceEntry) official() bool {
+	return !e.local() && officialHost(e.host())
 }
 
-// distro says whether the source is the distribution's own archive: Debian's or Ubuntu's host, or a
-// mirror, which is told by its path (mirrorPath). A source under another path is a third-party one here,
-// and is warned of as one.
-func (e sourceEntry) distro() bool {
-	if e.local() {
-		return false
+// distro says whether the source is the distribution's own archive: Debian's or Ubuntu's host, or a mirror of
+// the archive that apt has a Release file of that says so (markDistro). It is a fact the report decided, once,
+// for the sources it read: an entry that was not looked at is not the distribution's. Every other source is a
+// third party's, and is warned of as one: the refusals of the aliases, of the proposed updates and of the
+// backports are about the distribution's archive and do not apply to it.
+func (e sourceEntry) distro() bool { return e.Distro }
+
+// markDistro says, for each source, whether it is the distribution's own archive. The official hosts are, and a
+// disc or a directory is not: the address decides. Any other host is when apt keeps a Release file for every
+// suite of the source that says Origin: Debian or Origin: Ubuntu (a vendor that serves its repository at /debian,
+// and names its suite stable, says its own name); no file, a file that cannot be read and a Release file of
+// another origin are all "not the distribution's". It looks at the files that apt names, and at no more than
+// maxReleaseLookups of them in all, each once.
+func markDistro(ctx context.Context, p Probe, entries []sourceEntry) ([]sourceEntry, error) {
+	marked := make([]sourceEntry, len(entries))
+	looked := map[string]bool{}
+	for i, e := range entries {
+		switch {
+		case e.local():
+			e.Distro = false
+		case e.official():
+			e.Distro = true
+		default:
+			ok, err := releasesSayDistro(ctx, p, e, looked)
+			if err != nil {
+				return nil, err
+			}
+			e.Distro = ok
+		}
+		marked[i] = e
 	}
-	if officialHost(e.host()) {
-		return true
+	return marked, nil
+}
+
+// releasesSayDistro says whether the Release file of every suite of a source says it is the distribution's own;
+// looked has the answers of the files already asked for, and says how many have been.
+func releasesSayDistro(ctx context.Context, p Probe, e sourceEntry, looked map[string]bool) (bool, error) {
+	if len(e.Suites) == 0 {
+		return false, nil
 	}
-	u, err := url.Parse(e.URI)
-	if err != nil {
-		return false
+	for _, suite := range e.Suites {
+		name, ok := releaseListName(e.URI, suite)
+		if !ok {
+			return false, nil
+		}
+		says, known := looked[name]
+		if !known {
+			if len(looked) >= maxReleaseLookups {
+				return false, nil
+			}
+			var err error
+			if says, err = releaseSaysDistro(ctx, p, name); err != nil {
+				return false, err
+			}
+			looked[name] = says
+		}
+		if !says {
+			return false, nil
+		}
 	}
-	return mirrorPath(u.Path)
+	return true, nil
+}
+
+// releaseSaysDistro reads the start of the InRelease file apt kept under a name (the Release file, when there is no
+// InRelease: apt prefers the first) and says whether its Origin is Debian's or Ubuntu's. A file that is not there,
+// or cannot be read, says nothing; only the end of the time is an error.
+func releaseSaysDistro(ctx context.Context, p Probe, name string) (bool, error) {
+	for _, suffix := range []string{"_InRelease", "_Release"} {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		data, err := p.ReadHead(ctx, listsDir+name+suffix, releaseHeadBytes)
+		switch {
+		case err == nil:
+			origin := releaseOrigin(data)
+			return origin == "Debian" || origin == "Ubuntu", nil
+		case isNotExist(err):
+			continue
+		case ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+			return false, err
+		}
+		return false, nil
+	}
+	return false, nil
+}
+
+// releaseOrigin is the Origin of a Release file: the value of the first line that starts with "Origin:". Only the
+// lines that are whole are read (the start of a large file ends in the middle of one), and an Origin that is
+// longer than a name is no Origin.
+func releaseOrigin(data []byte) string {
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines[:len(lines)-1] {
+		if value, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "Origin:"); ok {
+			if value = strings.TrimSpace(value); len(value) <= maxOriginLen {
+				return value
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// aptQuoted are the characters of an address that apt writes as %xx in the name of a file it keeps (the Bad
+// characters of URItoFileName, apt-pkg/acquire.cc, and the % itself).
+const aptQuoted = "\\|{}[]<>\"^~_=!@#$%^&*"
+
+// releaseListName is the name apt gives the Release file it keeps of a suite of a source, without its _InRelease
+// or its _Release: the address with its scheme, its user and its password left out, then /dists/ and the suite,
+// quoted as apt quotes it, and every / a _ ("deb.debian.org_debian_dists_bookworm"). ok is false for what has no
+// such file: an address that is not an http, https or ftp one (a mirror list, a disc, a directory), one that has no
+// host, a flat repository (a suite that ends in /) and anything with a space or a control character in it.
+func releaseListName(uri, suite string) (name string, ok bool) {
+	if suite == "" || strings.HasSuffix(suite, "/") || strings.ContainsFunc(uri+suite, func(r rune) bool { return r <= ' ' || r >= 0x7f }) {
+		return "", false
+	}
+	scheme, rest, found := strings.Cut(uri, "://")
+	if !found || !slices.Contains([]string{"http", "https", "ftp"}, strings.ToLower(scheme)) {
+		return "", false
+	}
+	authority, path, _ := strings.Cut(rest, "/")
+	if i := strings.LastIndex(authority, "@"); i >= 0 {
+		authority = authority[i+1:]
+	}
+	if authority == "" {
+		return "", false
+	}
+	full := authority + strings.TrimRight("/"+path, "/") + "/dists/" + suite
+	var quoted strings.Builder
+	for i := 0; i < len(full); i++ {
+		switch c := full[i]; {
+		case c == '/':
+			quoted.WriteByte('_')
+		case strings.IndexByte(aptQuoted, c) >= 0:
+			fmt.Fprintf(&quoted, "%%%02x", c)
+		default:
+			quoted.WriteByte(c)
+		}
+	}
+	return quoted.String(), true
 }
 
 // The suffixes a suite of the distribution can have, longest first: "bullseye-backports-sloppy".
