@@ -1205,12 +1205,13 @@ func TestTheUnitSaysWhenAHoldCouldNotBePutBack(t *testing.T) {
 	if r.run.HoldsKept() || len(r.run.Held) != 2 || r.run.Holds == nil || len(r.run.Holds) != 0 {
 		t.Errorf("held = %v, holds = %v, kept = %v", r.run.Held, r.run.Holds, r.run.HoldsKept())
 	}
-	// it tried ten times, three seconds apart, and let go, without a word of its own in the log
-	if n := r.called("apt-mark hold docker-ce docker-ce-cli"); n != 10 || len(r.holdCalls()) != 10 {
-		t.Errorf("apt-mark was called %d times (%v), want ten tries", n, r.holdCalls())
+	// it tried ten times right after the install and ten times once more before saying the holds, three
+	// seconds apart, and let go, without a word of its own in the log
+	if n := r.called("apt-mark hold docker-ce docker-ce-cli"); n != 20 || len(r.holdCalls()) != 20 {
+		t.Errorf("apt-mark was called %d times (%v), want twenty tries", n, r.holdCalls())
 	}
-	if n := r.called("sleep 3"); n != 9 {
-		t.Errorf("the unit paused %d times between the tries, want 9", n)
+	if n := r.called("sleep 3"); n != 18 {
+		t.Errorf("the unit paused %d times between the tries, want 18", n)
 	}
 	if strings.Contains(r.log, "lock-frontend") || strings.Contains(r.log, "apt-mark") {
 		t.Errorf("the log says what apt-mark said:\n%s", r.log)
@@ -1619,5 +1620,128 @@ func TestTheUnitSaysHoldsOnlyAsNamesThatAreItsOwn(t *testing.T) {
 	}
 	if !r.run.HoldsKept() || !reflect.DeepEqual(r.run.Held, []string{"docker-ce"}) {
 		t.Errorf("held = %v, holds = %v", r.run.Held, r.run.Holds)
+	}
+}
+
+// The put back that was made right after the install may not have worked (dpkg was locked for longer than
+// ten tries). The daemon and the containers are waited for next, which takes as long as it takes, and a run
+// that fails has a second go at the hold from fail: a run that goes through has one too, just before it says
+// the holds, or the owner's hold is lost for good on a run that is reported a success.
+func TestTheUnitPutsTheHoldBackOnceMoreBeforeItSaysTheHoldsOfARunThatWentThrough(t *testing.T) {
+	b := newScriptBox(t)
+	b.goAheadOfHolds("docker-ce", "docker-ce-cli")
+	b.set("apt-mark.fails", "10")
+	r := b.run()
+	checkLogShape(t, r.log)
+	if r.exit != 0 || r.run.Terminal != dockerpkg.TerminalSuccess || r.run.DaemonVersion != "29.8.0" {
+		t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+	}
+	// the ten tries that failed after the install, and the one of the end of the run that did not
+	hold := "apt-mark hold docker-ce docker-ce-cli"
+	if n := len(r.holdCalls()); n != 11 || r.called(hold) != 11 {
+		t.Errorf("apt-mark was called %d times (%v), want the ten that failed and the one that worked", n, r.holdCalls())
+	}
+	if n := r.called("sleep 3"); n != 9 {
+		t.Errorf("the unit paused %d times between the tries, want 9: the second go is not made again after it worked", n)
+	}
+	// the last one comes after the containers were waited for, and the holds are said after it
+	if last, looked := r.indexOfCall("apt-mark", true), r.indexOfCall("docker ps --format", true); last < looked {
+		t.Errorf("the last put back (call %d) was before the containers were looked at (call %d): %v", last, looked, r.calls)
+	}
+	if got, want := strings.Join(markerKinds(r.log), " "), "STARTED HELD PREVIOUS DOWNLOADED INSTALLED DAEMON NOTRETURNED HOLDS SUCCESS"; got != want {
+		t.Errorf("markers = %s, want %s", got, want)
+	}
+	if !strings.Contains(r.log, "\n"+holdLine("HOLDS", "docker-ce docker-ce-cli")+"\n") {
+		t.Errorf("the log does not say the holds are back:\n%s", r.log)
+	}
+	if !r.run.HoldsKept() || b.dpkgSays("docker-ce") != "hi" || b.dpkgSays("docker-ce-cli") != "hi" {
+		t.Errorf("held = %v, holds = %v, dpkg says %q and %q", r.run.Held, r.run.Holds, b.dpkgSays("docker-ce"), b.dpkgSays("docker-ce-cli"))
+	}
+}
+
+// The flag is global to the three calls of apt: it lets apt change every package among the names that is on
+// hold, and dpkg drops the hold of each one it unpacks. A package that is on hold and that the core did not
+// list (the owner held it between the check and the start) is one the unit would not put back, and would
+// not say: the run is refused, before apt is asked for anything, and the log says nothing of holds.
+func TestTheUnitRefusesToGoAheadOfAHoldItWouldNotPutBack(t *testing.T) {
+	notListed := func(b *scriptBox, held []string, listed string) {
+		b.hold(held...)
+		b.env["CASAOS_DU_HELD"] = listed
+		b.env["CASAOS_DU_ALLOW_HELD"] = "1"
+	}
+	cases := map[string]func(*scriptBox){
+		"a pinned package on hold, and not listed": func(b *scriptBox) { notListed(b, []string{"docker-ce", "docker-ce-cli"}, "docker-ce") },
+		"the one that is listed is not the one on hold": func(b *scriptBox) {
+			notListed(b, []string{"docker-ce-cli"}, "docker-ce")
+		},
+		"the listed package is not on hold, a pinned one is": func(b *scriptBox) {
+			notListed(b, []string{"docker-ce"}, "containerd.io")
+		},
+		"a new dependency that is installed, on hold, and not listed": func(b *scriptBox) {
+			b.set("plan.txt", ownerNewDependencies+ownerContaind+ownerDockerCE+ownerCLI)
+			b.env["CASAOS_DU_NAMES"] = depsNames
+			b.set("dpkg/nftables", "nftables=0.9.8-3.1\n")
+			notListed(b, []string{"docker-ce", "nftables"}, "docker-ce")
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newScriptBox(t)
+			setup(b)
+			r := b.run()
+			checkLogShape(t, r.log)
+			if r.exit != 1 || r.run.Terminal != dockerpkg.TerminalFailed || r.run.FailReason != dockerpkg.FailGuard {
+				t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+			}
+			if got, want := strings.Join(markerKinds(r.log), " "), "STARTED GUARD FAILED"; got != want {
+				t.Errorf("markers = %s, want %s: a run refused before it says the holds says none", got, want)
+			}
+			if !strings.Contains(r.log, "\nCASAOS_DOCKER_UPDATE_GUARD "+scriptNonce+" plan\n") {
+				t.Errorf("no GUARD marker:\n%s", r.log)
+			}
+			if r.called("apt-get") != 0 || r.called("apt-mark") != 0 || r.called("docker") != 0 || r.called("systemctl") != 0 {
+				t.Errorf("the unit asked apt, docker or systemd for something: %v", r.calls)
+			}
+			if _, err := os.Stat(filepath.Join(b.dir, "installed")); err == nil {
+				t.Error("something was installed")
+			}
+			if got := b.dpkgSays("docker-ce"); got != "hi" && got != "" {
+				t.Errorf("dpkg says %q of docker-ce: the hold was touched", got)
+			}
+		})
+	}
+}
+
+// The other side of it: the unit goes ahead when every package among the names that is on hold (and
+// installed) is one the core listed, whatever else the box holds.
+func TestTheUnitGoesAheadWhenEveryHoldAmongTheNamesIsListed(t *testing.T) {
+	cases := map[string]func(*scriptBox){
+		"all of them, all of them listed": func(b *scriptBox) { b.goAheadOfHolds("containerd.io", "docker-ce", "docker-ce-cli") },
+		"one of them, listed with one that is not on hold": func(b *scriptBox) {
+			b.hold("docker-ce")
+			b.env["CASAOS_DU_HELD"] = "containerd.io docker-ce"
+			b.env["CASAOS_DU_ALLOW_HELD"] = "1"
+		},
+		// not installed is not a hold the update can lose
+		"one that is on hold and not installed": func(b *scriptBox) {
+			b.set("status/docker-ce-cli", "hn\n")
+			b.goAheadOfHolds("docker-ce")
+		},
+		// a package the plan does not name is not changed by it, on hold or not
+		"a package that is not among the names, on hold": func(b *scriptBox) {
+			b.hold("libc6", "docker-buildx-plugin")
+			b.goAheadOfHolds("docker-ce")
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newScriptBox(t)
+			setup(b)
+			r := b.run()
+			checkLogShape(t, r.log)
+			if r.exit != 0 || r.run.Terminal != dockerpkg.TerminalSuccess || !r.run.HoldsKept() {
+				t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+			}
+		})
 	}
 }

@@ -78,25 +78,31 @@ engine_name() {
 	return 1
 }
 
-# held_lines prints, one to a line, the packages among those the core saw on hold (held_names) that
-# dpkg has on hold and installed: its abbreviation of a package's state starts with an "h", and is not
-# the "hn" of a package that is held and not installed, or the "hc" of one that only has its
-# configuration left. dpkg-query is asked for those names alone, and only a name of that list is taken
-# from what it prints. With no name it is not asked at all: it would list every package there is.
-held_lines() {
-	[ -n "$held_names" ] || return 0
-	dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' $held_names 2>/dev/null | while read -r st pkg; do
+# held_among prints, one to a line, the packages among the names it is given that dpkg has on hold and
+# installed: its abbreviation of a package's state starts with an "h", and is not the "hn" of a package
+# that is held and not installed, or the "hc" of one that only has its configuration left. dpkg-query is
+# asked for those names alone, and only a name of that list is taken from what it prints (and only text of
+# the shape of a package's name: a line that holds two names of the list is not one of them). It is given at
+# least one: with none it would list every package there is.
+held_among() {
+	dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' "$@" 2>/dev/null | while read -r st pkg; do
 		case $st in
 		h[!nc]*)
-			case " $held_names " in *" $pkg "*) printf '%s\n' "$pkg" ;; esac
+			case " $* " in *" $pkg "*) printf '%s\n' "$pkg" ;; esac
 			;;
 		esac
-	done
+	done | grep -E '^[a-z0-9][a-z0-9+.-]*$'
+}
+
+# held_lines is that, for the packages the core saw on hold (held_names): the ones that are put back.
+held_lines() {
+	[ -n "$held_names" ] || return 0
+	held_among $held_names
 }
 
 # held_list is those names on one line, or - for none: what the HELD and HOLDS markers say.
 held_list() {
-	list=$(held_lines | grep -E '^[a-z0-9][a-z0-9+.-]*$' | tr '\n' ' ')
+	list=$(held_lines | tr '\n' ' ')
 	list=${list% }
 	printf '%s' "${list:--}"
 }
@@ -106,7 +112,8 @@ held_list() {
 # it. It holds the packages that were on hold when the unit started (held_start) and no others, with the
 # tool the owner holds with, and without the flag. dpkg may be locked for a moment when the install
 # returns: up to ten tries, three seconds apart. It says nothing: HOLDS says whether it worked, and it
-# does not fail the run. It is done once it worked; a try that did not is made again by fail.
+# does not fail the run. It is done once it worked; a try that did not is made again once the run is
+# over, by fail for a run that fails and just before the holds are said for one that goes through.
 restore_holds() {
 	[ -n "$install_ran" ] || return 0
 	[ -z "$holds_back" ] || return 0
@@ -181,6 +188,21 @@ esac
 if [ -n "$bad" ]; then
 	mark GUARD plan
 	fail guard
+fi
+
+# The flag is global to the three calls of apt: it lets apt change every package among the names that is on
+# hold, and dpkg drops the hold of each one it unpacks. The unit puts back the holds of the packages the core
+# listed and no others, so a package among the names that is on hold now and that is not one of them (the
+# owner held it after the core looked) is a hold it would lose without a word: the run is refused, and
+# nothing has been asked of apt yet.
+if [ -n "$hold_flag" ]; then
+	for name in $(held_among $CASAOS_DU_NAMES); do
+		case " $held_names " in *" $name "*) ;; *) bad=1 ;; esac
+	done
+	if [ -n "$bad" ]; then
+		mark GUARD plan
+		fail guard
+	fi
 fi
 
 # What is on hold now, said here and again before the end, so that the log shows whether the holds are
@@ -297,6 +319,9 @@ for pair in $missing; do
 	mark NOTRETURNED "$name${policy:+ $policy}"
 done
 
+# the put back that was made right after the install may not have worked, and the waits above took as long
+# as they took: once more before the holds are said (nothing, when it worked)
+restore_holds
 mark HOLDS "$(held_list)"
 mark "$outcome" "$(ts)"
 exit 0
