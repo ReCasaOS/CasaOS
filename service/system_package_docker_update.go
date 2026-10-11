@@ -29,8 +29,9 @@ const (
 	DockerRefusalOrigin = "origin"
 	// DockerRefusalHeld is docker-ce, or another package of the engine, on hold, when the owner
 	// has not said that the update may go ahead of the hold. The hold is the owner's: the update
-	// goes ahead of it as the terminal command with --allow-change-held-packages does, and
-	// leaves it where it is.
+	// goes ahead of it as the terminal command with --allow-change-held-packages does, which drops
+	// the hold of the packages dpkg unpacks, and the unit puts it back and says whether it did
+	// (HOLDS, holds_kept).
 	DockerRefusalHeld = "held"
 	// DockerRefusalDpkg is a package operation that was interrupted and left unfinished (a power
 	// cut in the middle of an install): the simulations take no lock, so they pass, and the first
@@ -113,8 +114,9 @@ type SystemPackageDockerUpdate struct {
 // The check gives it: it is what the page is to confirm, and says the hold. The start gives what the
 // owner sent, and a hold with no word is the refusal DockerRefusalHeld, in its place in the order
 // and before the plan is simulated. With it the plan is the one apt makes when it is told it may
-// change what is held (Plan.Held says which are), as the terminal command would; and it must not
-// make a plan that changes a held package that is not the engine's.
+// change what is held (Plan.Held says which are), as the terminal command would, which drops the hold
+// of what dpkg unpacks (the unit puts it back); and it must not make a plan that changes a held
+// package that is not the engine's.
 //
 // The plan is returned only when it is within bounds, whether or not a later reason (the
 // disk) refuses: it is the zero Plan otherwise, and for a plan with nothing to upgrade (new
@@ -230,6 +232,12 @@ func (u *systemPackageUpdater) enginePackages(ctx context.Context) (installed, h
 // heldForeign are the packages of the plan that are not the engine's and that dpkg has on hold,
 // sorted: the new ones, since an upgrade of a package that is not the engine's is refused before this.
 // The names have passed dockerpkg.Plan.Offending.
+//
+// It is defence in depth. Real apt does not get here for such a package: it marks a package that
+// is not named on the command line as a dependency, and a held package is not changed by a dependency
+// even with --allow-change-held-packages, so a held new dependency, or a held foreign dependency, makes
+// the simulation itself fail before apt prints a plan. That is the refusal DockerRefusalPlan, without
+// names, from enginePlan's error.
 func (u *systemPackageUpdater) heldForeign(ctx context.Context, plan dockerpkg.Plan) []string {
 	var names []string
 	for _, pkg := range plan.Packages {

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -136,10 +138,16 @@ func TestStartDockerUpdateOwnersCase(t *testing.T) {
 	if !reflect.DeepEqual(s.started.args, wantArgs) {
 		t.Errorf("systemd-run arguments:\n%s\nwant:\n%s", strings.Join(s.started.args, "\n"), strings.Join(wantArgs, "\n"))
 	}
-	// nothing that varies is in the script's text
+	// nothing that varies is in the script's text: not the nonce, a version, a path, nor the name of a
+	// package, except in engine_name, which is the engine's own list of names (the unit checks the names of
+	// the holds it is given against it, and a test holds that list to dockerpkg.EngineNames)
 	script := s.started.args[len(s.started.args)-1]
+	bare := regexp.MustCompile(`(?s)engine_name\(\) \{.*?\n\}\n`).ReplaceAllString(script, "")
+	if bare == script {
+		t.Error("the script has no engine_name")
+	}
 	for _, data := range []string{run.Nonce, debian28, debian29, "29.8.0", "docker-ce", "containerd", s.updater.dockerLogPath(), "/usr/bin/apt-get"} {
-		if strings.Contains(script, data) {
+		if strings.Contains(bare, data) {
 			t.Errorf("the script holds %q", data)
 		}
 	}
@@ -821,15 +829,15 @@ func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 	nonce := "0123456789abcdef0123456789abcdef"
 	pins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
 	names := []string{"containerd.io", "docker-ce", "docker-ce-cli"}
-	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", false); err != nil {
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", nil); err != nil {
 		t.Fatalf("valid arguments: %v", err)
 	}
-	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins[:1], names[:1], "", false); err != nil {
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins[:1], names[:1], "", nil); err != nil {
 		t.Fatalf("no docker-ce in the plan: %v", err)
 	}
 	// the new packages are names and no pins
 	withNew := append(append([]string{}, names...), "libedit2", "libjansson4", "libnftables1", "nftables")
-	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, withNew, "29.8.0", false)
+	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, withNew, "29.8.0", nil)
 	if err != nil {
 		t.Fatalf("new packages: %v", err)
 	}
@@ -850,12 +858,12 @@ func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 	for i := 1; i <= dockerpkg.MaxNewPackages; i++ {
 		ten = append(ten, fmt.Sprintf("libdep%d", i))
 	}
-	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, ten, "29.8.0", false); err != nil {
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, ten, "29.8.0", nil); err != nil {
 		t.Fatalf("ten new packages: %v", err)
 	}
 	allSeven := []string{"containerd.io=2.1.4-1", "docker-buildx-plugin=0.30.1-1", "docker-ce-cli=" + debian29, "docker-ce-rootless-extras=" + debian29, "docker-ce=" + debian29, "docker-compose-plugin=5.0.0-1", "docker-model-plugin=1.0.0-1"}
 	sevenNames := []string{"containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-ce-rootless-extras", "docker-compose-plugin", "docker-model-plugin"}
-	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", allSeven, append(append([]string{}, sevenNames...), ten[len(names):]...), "29.8.0", false); err != nil {
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", allSeven, append(append([]string{}, sevenNames...), ten[len(names):]...), "29.8.0", nil); err != nil {
 		t.Fatalf("seven upgrades and ten new packages: %v", err)
 	}
 	for name, c := range map[string]struct {
@@ -899,7 +907,7 @@ func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 		"a pin that is not among the names":   {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, []string{"containerd.io", "docker-ce", "nftables"}},
 		"names and no pin":                    {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", nil, []string{"nftables"}},
 	} {
-		if args, err := dockerUpdateArgs(c.nonce, c.log, c.apt, c.pins, c.names, c.to, false); err == nil {
+		if args, err := dockerUpdateArgs(c.nonce, c.log, c.apt, c.pins, c.names, c.to, nil); err == nil {
 			t.Errorf("%s: dockerUpdateArgs() = %v, want an error", name, args)
 		}
 	}
@@ -999,7 +1007,7 @@ func TestStartDockerUpdateWritesThePlanOfWhatItStarts(t *testing.T) {
 
 // ---- packages on hold ------------------------------------------------------------------------
 
-const heldReason = "Docker's packages are on hold. Confirm that the update may go ahead anyway; the hold stays."
+const heldReason = "Docker's packages are on hold. Confirm that the update may go ahead anyway; the hold is put back afterwards."
 
 // newHeldStartBox is the owner's box with those packages of the engine on hold, and the plan the
 // page confirmed: the one its check gave, which says the hold.
@@ -1051,8 +1059,13 @@ func TestStartDockerUpdateRefusesAHeldPlanUntilTheOwnerAllowsIt(t *testing.T) {
 	if got := s.env("CASAOS_DU_ALLOW_HELD"); got != "1" {
 		t.Errorf("CASAOS_DU_ALLOW_HELD = %q, want 1", got)
 	}
-	// the unit's own environment is the rest of what it always was, in the same order, with the word added
-	wantEnv := []string{"DEBIAN_FRONTEND", "CASAOS_DU_NONCE", "CASAOS_DU_LOG", "CASAOS_DU_APT", "CASAOS_DU_PINS", "CASAOS_DU_NAMES", "CASAOS_DU_TO", "CASAOS_DU_ALLOW_HELD", "CASAOS_DU_DAEMON_TIMEOUT", "CASAOS_DU_RETURN_TIMEOUT", "CASAOS_DU_POLL"}
+	// the unit is told which packages are on hold: it puts the hold back on those
+	if got := s.env("CASAOS_DU_HELD"); got != "docker-ce docker-ce-cli" {
+		t.Errorf("CASAOS_DU_HELD = %q, want the names that are held, sorted", got)
+	}
+	// the unit's own environment is the rest of what it always was, in the same order, with the names and
+	// the word added
+	wantEnv := []string{"DEBIAN_FRONTEND", "CASAOS_DU_NONCE", "CASAOS_DU_LOG", "CASAOS_DU_APT", "CASAOS_DU_PINS", "CASAOS_DU_NAMES", "CASAOS_DU_TO", "CASAOS_DU_HELD", "CASAOS_DU_ALLOW_HELD", "CASAOS_DU_DAEMON_TIMEOUT", "CASAOS_DU_RETURN_TIMEOUT", "CASAOS_DU_POLL"}
 	var gotEnv []string
 	for _, arg := range s.started.args {
 		if setenv, ok := strings.CutPrefix(arg, "--setenv="); ok {
@@ -1084,7 +1097,7 @@ func TestStartDockerUpdateIgnoresTheOwnersWordWhenNothingIsHeld(t *testing.T) {
 	}
 	// no word is given to the unit that nothing needs it for: apt is not told it may change what is held
 	for _, arg := range s.started.args[:len(s.started.args)-1] {
-		if strings.Contains(arg, "ALLOW_HELD") || strings.Contains(arg, "allow-change-held") {
+		if strings.Contains(arg, "ALLOW_HELD") || strings.Contains(arg, "CASAOS_DU_HELD") || strings.Contains(arg, "allow-change-held") {
 			t.Errorf("the unit was given %q", arg)
 		}
 	}
@@ -1178,34 +1191,149 @@ func TestStartDockerUpdateIsTheSameThroughTheServiceWithAHold(t *testing.T) {
 	}
 }
 
-func TestDockerUpdateArgsCarryTheOwnersWordOnlyWhenItIsGiven(t *testing.T) {
+func TestDockerUpdateArgsCarryTheHeldNamesAndTheOwnersWordTogetherOrNotAtAll(t *testing.T) {
 	nonce := "0123456789abcdef0123456789abcdef"
 	pins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
 	names := []string{"containerd.io", "docker-ce", "docker-ce-cli"}
-	plain, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	allowed, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, arg := range plain[:len(plain)-1] { // the script is the last, and names the variable
-		if strings.Contains(arg, "ALLOW_HELD") {
-			t.Errorf("the arguments of a start that is not allowed to go ahead of a hold hold %q", arg)
+	for _, none := range [][]string{nil, {}} {
+		plain, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", none)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, arg := range plain[:len(plain)-1] { // the script is the last, and names the variables
+			if strings.Contains(arg, "ALLOW_HELD") || strings.Contains(arg, "CASAOS_DU_HELD") {
+				t.Errorf("the arguments of a start that has nothing on hold hold %q", arg)
+			}
 		}
 	}
-	// the same arguments, and one more
-	var without []string
-	for _, arg := range allowed {
-		if arg != "--setenv=CASAOS_DU_ALLOW_HELD=1" {
-			without = append(without, arg)
+	plain, _ := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", nil)
+
+	// the names, and the word that goes with them, are there exactly when something is held; sorted, whatever
+	// the order they were given in; and the arguments are the same ones otherwise, in the same order
+	for _, held := range [][]string{{"docker-ce"}, {"docker-ce-cli", "containerd.io", "docker-ce"}, {"docker-buildx-plugin"}} {
+		allowed, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", held)
+		if err != nil {
+			t.Fatalf("%v: %v", held, err)
+		}
+		sorted := append([]string{}, held...)
+		sort.Strings(sorted)
+		wantNames := "--setenv=CASAOS_DU_HELD=" + strings.Join(sorted, " ")
+		var without []string
+		for _, arg := range allowed {
+			if arg != wantNames && arg != "--setenv=CASAOS_DU_ALLOW_HELD=1" {
+				without = append(without, arg)
+			}
+		}
+		if len(allowed) != len(plain)+2 || !reflect.DeepEqual(without, plain) {
+			t.Errorf("%v: allowed:\n%s\nplain:\n%s", held, strings.Join(allowed, "\n"), strings.Join(plain, "\n"))
+		}
+		i, j, to := indexOf(allowed, wantNames), indexOf(allowed, "--setenv=CASAOS_DU_ALLOW_HELD=1"), indexOf(allowed, "--setenv=CASAOS_DU_TO=29.8.0")
+		if to < 0 || i != to+1 || j != i+1 {
+			t.Errorf("%v: the names and the word are not after CASAOS_DU_TO, in that order: %v", held, allowed)
 		}
 	}
-	if len(allowed) != len(plain)+1 || !reflect.DeepEqual(without, plain) {
-		t.Errorf("allowed:\n%s\nplain:\n%s", strings.Join(allowed, "\n"), strings.Join(plain, "\n"))
+	// the caller's list is not reordered
+	given := []string{"docker-ce-cli", "containerd.io"}
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", given); err != nil || !reflect.DeepEqual(given, []string{"docker-ce-cli", "containerd.io"}) {
+		t.Errorf("error = %v, the list of the holds is now %v", err, given)
 	}
-	if i := indexOf(allowed, "--setenv=CASAOS_DU_ALLOW_HELD=1"); i < 0 || allowed[i-1] != "--setenv=CASAOS_DU_TO=29.8.0" {
-		t.Errorf("the word is not after CASAOS_DU_TO: %v", allowed)
+	// all seven are the most there are
+	all := append([]string{}, dockerpkg.EngineNames...)
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", all); err != nil {
+		t.Errorf("seven packages on hold: %v", err)
 	}
+}
+
+// The names of the holds are put in a root shell's environment, and the unit takes them for the names of
+// packages it holds: this is the last stop before it.
+func TestDockerUpdateArgsRefuseHeldNamesThatAreNotTheEngines(t *testing.T) {
+	nonce := "0123456789abcdef0123456789abcdef"
+	pins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
+	names := []string{"containerd.io", "docker-ce", "docker-ce-cli"}
+	seven := append([]string{}, dockerpkg.EngineNames...)
+	for name, held := range map[string][]string{
+		"a package that is not the engine's":         {"libc6"},
+		"a package that is the engine's and another": {"docker-ce", "libc6"},
+		"a new dependency":                           {"nftables"},
+		"a distribution's docker":                    {"docker.io"},
+		"a name that is a command":                   {"docker-ce;reboot"},
+		"a name with a substitution":                 {"docker-ce$(reboot)"},
+		"a name with a space":                        {"docker-ce docker-ce-cli"},
+		"a name with a new line":                     {"docker-ce\ndocker-ce-cli"},
+		"a name with a glob":                         {"docker-*"},
+		"a flag":                                     {"--help"},
+		"a name in upper case":                       {"Docker-CE"},
+		"an empty name":                              {""},
+		"a name with an architecture":                {"containerd.io:armhf"},
+		"a pin":                                      {"docker-ce=5:29.8.0"},
+		"a name twice":                               {"docker-ce", "docker-ce"},
+		"a name twice, in two spellings":             {"docker-ce", "docker-ce:amd64"},
+		"eight, which is more than the engine has":   append(append([]string{}, seven...), "containerd.io:armhf"),
+		"eight, with the same one twice":             append(append([]string{}, seven...), "docker-ce"),
+		"eight, with one that is not the engine's":   append(append([]string{}, seven...), "libc6"),
+	} {
+		if args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", held); err == nil {
+			t.Errorf("%s: dockerUpdateArgs() = %v, want an error", name, args)
+		}
+	}
+}
+
+// A held package that the plan does not touch is still on hold, and the check says so: the unit is told of
+// it too, so that HELD, HOLDS, the status and the check describe the same packages.
+func TestStartDockerUpdateGivesTheUnitEveryHeldPackageOfTheEngineAndNotOnlyThePlans(t *testing.T) {
+	s := newHeldStartBox(t, "docker-buildx-plugin", "docker-ce")
+	if _, err := s.updater.startDockerUpdate(s.planID, true); err != nil || s.started.count != 1 {
+		t.Fatalf("error = %v, started %d", err, s.started.count)
+	}
+	// docker-buildx-plugin has no update in the plan: it is not among the names the unit may touch
+	if got := s.env("CASAOS_DU_HELD"); got != "docker-buildx-plugin docker-ce" {
+		t.Errorf("CASAOS_DU_HELD = %q", got)
+	}
+	if got := s.env("CASAOS_DU_NAMES"); got != "containerd.io docker-ce docker-ce-cli" {
+		t.Errorf("CASAOS_DU_NAMES = %q: the held package that the plan does not touch is not one to touch", got)
+	}
+	if got := s.env("CASAOS_DU_ALLOW_HELD"); got != "1" {
+		t.Errorf("CASAOS_DU_ALLOW_HELD = %q", got)
+	}
+}
+
+// What the page reads of the status is a list, never null, whichever way the status gets to it: the 200
+// body of the start, the 501 of a host that cannot update, and the 500 of a start that failed on the box
+// before the log had a nonce.
+func TestTheStatusThatReachesThePageHasNoNullHeldPackages(t *testing.T) {
+	check := func(name string, status SystemDockerUpdateStatus) {
+		t.Helper()
+		encoded, err := json.Marshal(status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"held":false,"held_packages":[],"holds_kept":false`, `"not_returned":[]`} {
+			if !strings.Contains(string(encoded), want) {
+				t.Errorf("%s: the status is %s, want it to hold %s", name, encoded, want)
+			}
+		}
+	}
+
+	s := newStartBox(t, nil)
+	status, err := s.updater.startDockerUpdate(s.planID, false)
+	if err != nil || status.State != "running" {
+		t.Fatalf("error = %v, status = %#v", err, status)
+	}
+	check("the 200 body of the start", status)
+
+	s = newStartBox(t, nil)
+	s.updater.getEUID = func() int { return 1000 }
+	status, err = s.updater.startDockerUpdate(s.planID, false)
+	if !errors.Is(err, ErrSystemPackageUpdatesUnsupported) || status.ErrorCode != "unsupported" {
+		t.Fatalf("error = %v, status = %#v", err, status)
+	}
+	check("the 501 status of a host that cannot update", status)
+
+	s = newStartBox(t, nil)
+	s.updater.writeFile = func(string, []byte, os.FileMode) error { return errors.New("read-only file system") }
+	status, err = s.updater.startDockerUpdate(s.planID, false)
+	if err == nil || status.State != "failed" || !strings.Contains(status.Error, "read-only") {
+		t.Fatalf("error = %v, status = %#v", err, status)
+	}
+	check("the 500 status of a start that failed before it had a nonce", status)
 }

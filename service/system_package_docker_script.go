@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -17,7 +18,11 @@ import (
 // data: it is quoted, or split into the words it was validated to be made of, and never eval'd.
 //
 // The owner's word to go ahead of a hold on the engine's packages travels the same way
-// (CASAOS_DU_ALLOW_HELD, 1 or nothing), and is the only thing that puts apt's flag on a call.
+// (CASAOS_DU_ALLOW_HELD, 1 or nothing), and is the only thing that puts apt's flag on a call. It comes
+// with the names of the engine's packages that the core saw on hold (CASAOS_DU_HELD), and never
+// without them: the flag lets apt change a held package, and dpkg then drops the hold of every package it
+// unpacks (apt passes it nothing of the holds, and dpkg sets the selection of a package it unpacks back
+// to install, flag or no flag), so the unit puts the hold back, for those names and no others.
 //
 // Two lists travel: the pins (name=version) of the packages to upgrade, which are all the
 // script names to apt, and the names of every package apt may install, which are the pins' and
@@ -51,24 +56,39 @@ daemon_timeout=${CASAOS_DU_DAEMON_TIMEOUT:-300}
 return_timeout=${CASAOS_DU_RETURN_TIMEOUT:-90}
 
 hold_marked=
+held_names=
+held_start=-
+install_ran=
+holds_back=
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 mark() { printf 'CASAOS_DOCKER_UPDATE_%s %s%s\n' "$1" "$CASAOS_DU_NONCE" "${2:+ $2}"; }
-# Once the holds are told at the start they are told at the end, whatever the end is.
-fail() { [ -z "$hold_marked" ] || mark HOLDS "$(held_list)"; mark FAILED "$(ts) $1"; exit 1; }
+# Once the install was started the holds are put back, and once the holds are told at the start they
+# are told at the end, whatever the end is.
+fail() { restore_holds; [ -z "$hold_marked" ] || mark HOLDS "$(held_list)"; mark FAILED "$(ts) $1"; exit 1; }
 # A docker command waits for ever on a socket whose service will not start: bound them all.
 bound() { n=$1; shift; if command -v timeout >/dev/null 2>&1; then timeout "$n" "$@"; else "$@"; fi; }
 
-# held_lines prints, one to a line, the packages among those the unit may touch (CASAOS_DU_NAMES)
-# that dpkg has on hold and installed: its abbreviation of a package's state starts with an "h", and
-# is not the "hn" of a package that is held and not installed, or the "hc" of one that only has its
-# configuration left. dpkg-query is asked for those names alone, and only a name of that list is
-# taken from what it prints.
+# engine_name says whether a name is one of the engine's packages (dockerpkg.EngineNames, which a test
+# holds this list to).
+engine_name() {
+	case $1 in
+	containerd.io | docker-buildx-plugin | docker-ce | docker-ce-cli | docker-ce-rootless-extras | docker-compose-plugin | docker-model-plugin) return 0 ;;
+	esac
+	return 1
+}
+
+# held_lines prints, one to a line, the packages among those the core saw on hold (held_names) that
+# dpkg has on hold and installed: its abbreviation of a package's state starts with an "h", and is not
+# the "hn" of a package that is held and not installed, or the "hc" of one that only has its
+# configuration left. dpkg-query is asked for those names alone, and only a name of that list is taken
+# from what it prints. With no name it is not asked at all: it would list every package there is.
 held_lines() {
-	dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' $CASAOS_DU_NAMES 2>/dev/null | while read -r st pkg; do
+	[ -n "$held_names" ] || return 0
+	dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' $held_names 2>/dev/null | while read -r st pkg; do
 		case $st in
 		h[!nc]*)
-			case " $CASAOS_DU_NAMES " in *" $pkg "*) printf '%s\n' "$pkg" ;; esac
+			case " $held_names " in *" $pkg "*) printf '%s\n' "$pkg" ;; esac
 			;;
 		esac
 	done
@@ -79,6 +99,28 @@ held_list() {
 	list=$(held_lines | grep -E '^[a-z0-9][a-z0-9+.-]*$' | tr '\n' ' ')
 	list=${list% }
 	printf '%s' "${list:--}"
+}
+
+# restore_holds puts the holds back once the install was started: dpkg drops the hold of every package it
+# unpacks, with or without the flag, and the owner's hold is on Docker's packages until the owner lifts
+# it. It holds the packages that were on hold when the unit started (held_start) and no others, with the
+# tool the owner holds with, and without the flag. dpkg may be locked for a moment when the install
+# returns: up to ten tries, three seconds apart. It says nothing: HOLDS says whether it worked, and it
+# does not fail the run. It is done once it worked; a try that did not is made again by fail.
+restore_holds() {
+	[ -n "$install_ran" ] || return 0
+	[ -z "$holds_back" ] || return 0
+	[ "$held_start" != - ] || return 0
+	tries=0
+	while :; do
+		if apt-mark hold $held_start >/dev/null 2>&1; then
+			holds_back=1
+			return 0
+		fi
+		tries=$((tries + 1))
+		[ "$tries" -lt 10 ] || return 0
+		sleep 3
+	done
 }
 
 # wait_daemon sets $running to the version the daemon reports; it fails after the timeout.
@@ -107,23 +149,45 @@ if [ -z "$pins" ] || [ -z "$names" ]; then
 	fail guard
 fi
 
-# The owner's word, given in the page's confirmation, that apt may go ahead of a hold on these
-# packages: 1, or nothing. The flag is the terminal command's, and is on the three calls of apt below
-# that look at or change what is held, and on no other. Anything else than 1 or nothing is a unit that
-# the core did not make.
+# The owner's word, given in the page's confirmation, that apt may go ahead of a hold on the engine's
+# packages: 1, or nothing, and with it the names of those the core saw on hold, which are the engine's, and
+# never one without the other. The flag is the terminal command's, and is on the three calls of apt
+# below that look at or change what is held, and on no other. Anything else is a unit that the core did
+# not make: a word that is not 1, a word without names or names without the word, a name that is not
+# made of what a package's name is, one twice, or one that is neither among the names the unit may touch
+# nor one of the engine's packages (the names are put on the command line of dpkg-query, and of apt-mark
+# when the holds are put back). The names are kept as the words they were validated to be.
+bad=
+case $(printf '%s' "$CASAOS_DU_HELD" | tr -d ' ') in *[!a-z0-9+.-]*) bad=1 ;; esac
+seen=' '
+held_names=
+for name in $CASAOS_DU_HELD; do
+	case $name in [!a-z0-9]*) bad=1 ;; esac
+	case $seen in *" $name "*) bad=1 ;; esac
+	seen="$seen$name "
+	case " $CASAOS_DU_NAMES " in *" $name "*) ;; *) engine_name "$name" || bad=1 ;; esac
+	held_names="$held_names $name"
+done
+held_names=${held_names# }
 hold_flag=
 case ${CASAOS_DU_ALLOW_HELD:-} in
-'') ;;
-1) hold_flag=--allow-change-held-packages ;;
-*)
+'') [ -z "$held_names" ] || bad=1 ;;
+1)
+	hold_flag=--allow-change-held-packages
+	[ -n "$held_names" ] || bad=1
+	;;
+*) bad=1 ;;
+esac
+if [ -n "$bad" ]; then
 	mark GUARD plan
 	fail guard
-	;;
-esac
+fi
 
-# What is on hold now, said here and again before the end, so that the log shows whether the update
-# left the holds as they were. A hold is the owner's: nothing here releases one.
-mark HELD "$(held_list)"
+# What is on hold now, said here and again before the end, so that the log shows whether the holds are
+# in place again. They are the ones put back after the install: the packages dpkg drops the hold of
+# are those it unpacks, and the owner's hold is on Docker's packages until the owner lifts it.
+held_start=$(held_list)
+mark HELD "$held_start"
 hold_marked=1
 
 # What is installed now (what a rollback would put back) and what runs now. Only text of the
@@ -182,7 +246,13 @@ fi
 "$CASAOS_DU_APT" -y --no-remove --download-only -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends $hold_flag $CASAOS_DU_PINS || fail download
 mark DOWNLOADED "$(ts)"
 
-if ! "$CASAOS_DU_APT" -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends $hold_flag $CASAOS_DU_PINS; then
+install_ran=1
+"$CASAOS_DU_APT" -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends $hold_flag $CASAOS_DU_PINS
+install_rc=$?
+# whatever the install did, the first thing after it is the hold: dpkg dropped it from every package it
+# unpacked, and a failure may have unpacked some
+restore_holds
+if [ "$install_rc" -ne 0 ]; then
 	# dpkg may have stopped the daemon and left it down: one bounded try to bring it back
 	bound 120 systemctl start docker.socket docker.service
 	wait_daemon
@@ -255,9 +325,12 @@ var (
 // needs goes in as --setenv, and is checked here first: the nonce, the paths, the pins (the
 // upgrades, of the engine's packages) and the names (the pins' and the new packages', which
 // dockerpkg already vetted: this asks again, since it is the last stop before a root shell),
-// and the engine version expected. allowHeld is the owner's word that apt may go ahead of a hold: it
-// is an environment variable of its own, there only when it is given, and the script checks it again.
-func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to string, allowHeld bool) ([]string, error) {
+// and the engine version expected. held are the engine's packages the core saw on hold, which the
+// owner allowed the update to go ahead of: there are none for a plan that has no hold to go ahead of.
+// They are an environment variable of their own, sorted, and so is the word that goes with them
+// (CASAOS_DU_ALLOW_HELD, which is there exactly when they are): the unit holds them again when the
+// install is over. The script checks both again.
+func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to string, held []string) ([]string, error) {
 	switch {
 	case !dockerpkg.ValidNonce(nonce):
 		return nil, errors.New("the Docker update's nonce is not a nonce")
@@ -271,6 +344,16 @@ func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to s
 		return nil, errors.New("the Docker update has no packages to upgrade")
 	case len(names) > len(dockerpkg.EngineNames)+dockerpkg.MaxNewPackages:
 		return nil, errors.New("the Docker update has more packages than it allows")
+	}
+	// a hold is on one of the engine's packages, named as the box has it (the unit takes no other
+	// shape, and no architecture: IsEngineName alone would let containerd.io:armhf through), once each,
+	// which is at most one for each of dockerpkg.EngineNames
+	heldSeen := map[string]bool{}
+	for _, name := range held {
+		if strings.Contains(name, ":") || !dockerpkg.IsEngineName(name) || heldSeen[name] {
+			return nil, fmt.Errorf("%q is not a package of the engine that can be on hold", name)
+		}
+		heldSeen[name] = true
 	}
 	pinned := map[string]bool{}
 	for _, pin := range pins {
@@ -315,8 +398,10 @@ func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to s
 		"--setenv=CASAOS_DU_NAMES=" + strings.Join(names, " "),
 		"--setenv=CASAOS_DU_TO=" + to,
 	}
-	if allowHeld {
-		args = append(args, "--setenv=CASAOS_DU_ALLOW_HELD=1")
+	if len(held) > 0 {
+		sorted := append([]string{}, held...)
+		sort.Strings(sorted)
+		args = append(args, "--setenv=CASAOS_DU_HELD="+strings.Join(sorted, " "), "--setenv=CASAOS_DU_ALLOW_HELD=1")
 	}
 	return append(args,
 		"--setenv=CASAOS_DU_DAEMON_TIMEOUT="+strconv.Itoa(systemDockerDaemonTimeout),

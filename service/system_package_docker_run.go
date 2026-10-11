@@ -54,7 +54,7 @@ func (r *DockerUpdateRefusal) Error() string { return r.Reason }
 
 var dockerRefusalReasons = map[string]string{
 	DockerRefusalOrigin:      "Docker was not installed from Docker's own repository, so it cannot be updated from here.",
-	DockerRefusalHeld:        "Docker's packages are on hold. Confirm that the update may go ahead anyway; the hold stays.",
+	DockerRefusalHeld:        "Docker's packages are on hold. Confirm that the update may go ahead anyway; the hold is put back afterwards.",
 	DockerRefusalDaemon:      "Docker does not answer, so there is nothing to check the update against.",
 	DockerRefusalSwarm:       "This node is part of a Docker swarm, which this update does not handle.",
 	DockerRefusalPlan:        "The update would do more than upgrade Docker's own packages and install what they need.",
@@ -136,16 +136,20 @@ type SystemDockerUpdateStatus struct {
 	// themselves: no RollbackCommand is given.
 	MajorJump bool `json:"major_jump"`
 	// Held is whether the unit saw packages of the engine on hold when it started, and HeldPackages
-	// which, sorted; never null. HoldsKept is true only when the unit said, at its end, that every one
-	// of them is still on hold: false for a run that held nothing, and for one that did not say (a unit
-	// that was lost), which the page tells apart by Held.
+	// which, sorted; never null. The update went ahead of that hold, as the terminal command with
+	// --allow-change-held-packages does, and dpkg drops the hold of every package it unpacks: the unit
+	// puts it back, and HoldsKept is true only when it said, at its end, that every one of them is on hold
+	// again. It is false for a run that held nothing, for one whose hold could not be put back, and for one
+	// that did not say (a unit that was lost), which the page tells apart by Held.
 	Held         bool     `json:"held"`
 	HeldPackages []string `json:"held_packages"`
 	HoldsKept    bool     `json:"holds_kept"`
 	// NotReturned are the containers that were running before and were not after.
 	NotReturned []dockerpkg.NotReturned `json:"not_returned"`
 	// RollbackCommand is what to type to put the packages back, for a run that failed and was not
-	// a major jump; "" otherwise.
+	// a major jump; "" otherwise. For a run that went ahead of a hold it carries
+	// --allow-change-held-packages: the packages are on hold again, and apt refuses to change them
+	// without it.
 	RollbackCommand string `json:"rollback_command"`
 	// Log is the end of the unit's log, at most 128 KiB.
 	Log string `json:"log"`
@@ -220,10 +224,12 @@ func (u *systemPackageUpdater) dockerBlocked(support systemPackageSupport) (Syst
 // log, and returns as soon as systemd has the unit.
 //
 // allowHeld is the owner's word, from the page's confirmation, that the update may go ahead of a hold
-// on the engine's packages. Without it a hold is the refusal DockerRefusalHeld, and with it, or with
-// no hold, the plan is the one that was confirmed or the refusal DockerRefusalChanged: a hold that was
-// set, removed or moved since is another plan. The unit is given the word only for a plan that has a
-// hold to go ahead of, whatever the owner sent.
+// on the engine's packages, as the terminal command with --allow-change-held-packages does: dpkg drops
+// the hold of the packages it unpacks, and the unit puts it back and says whether it did (HOLDS).
+// Without the word a hold is the refusal DockerRefusalHeld, and with it, or with no hold, the plan is
+// the one that was confirmed or the refusal DockerRefusalChanged: a hold that was set, removed or moved
+// since is another plan. The unit is given the word, and the names that are held, only for a plan that
+// has a hold to go ahead of, whatever the owner sent.
 func (u *systemPackageUpdater) startDockerUpdate(planID string, allowHeld bool) (SystemDockerUpdateStatus, error) {
 	if !dockerPlanIDPattern.MatchString(planID) {
 		return SystemDockerUpdateStatus{State: systemPackageUpdateStateIdle, NotReturned: []dockerpkg.NotReturned{}, HeldPackages: []string{}}, ErrDockerUpdateBadPlanID
@@ -275,8 +281,9 @@ func (u *systemPackageUpdater) startDockerUpdate(planID string, allowHeld bool) 
 	if err != nil {
 		return u.dockerFailedToStart(support, "", fmt.Sprintf("prepare Docker update: %v", err), err)
 	}
-	// a plan that has holds here is one the owner allowed: the preflight refuses it otherwise
-	args, err := dockerUpdateArgs(nonce, u.dockerLogPath(), support.aptPath, plan.Pins(), plan.Names(), to, len(plan.Held) > 0)
+	// a plan that has holds here is one the owner allowed (the preflight refuses it otherwise), and the
+	// unit is told which: it goes ahead of them, and puts them back
+	args, err := dockerUpdateArgs(nonce, u.dockerLogPath(), support.aptPath, plan.Pins(), plan.Names(), to, plan.Held)
 	if err != nil {
 		// the plan passed Offending, so this is a bug; the unit would run as root
 		return u.dockerRefused(support, DockerRefusalPlan, nil, "")
@@ -431,8 +438,8 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 
 	status.StartedAt = formatDockerTime(run.StartedAt, run.QueuedAt)
 	status.NotReturned = append(status.NotReturned, run.NotReturned...)
-	// the holds as the unit saw them: the ones at its start, and whether they are all still there at
-	// its end (which a unit that was lost never said)
+	// the holds as the unit saw them: the ones at its start, and whether they are all on hold again at
+	// its end, once it put them back (which a unit that was lost never said)
 	status.Held, status.HoldsKept = len(run.Held) > 0, run.HoldsKept()
 	status.HeldPackages = append(status.HeldPackages, run.Held...)
 	// The plan's versions, until the unit's own say otherwise: what it saw installed is where the
@@ -461,7 +468,7 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 		status.State, status.Outcome = systemPackageUpdateStateFailed, systemDockerOutcomeFailed
 		status.ErrorCode = run.FailReason
 		status.Error = dockerFailMessages[run.FailReason]
-		status.RollbackCommand = dockerpkg.RollbackCommand(run.Previous)
+		status.RollbackCommand = dockerpkg.RollbackCommandHeld(run.Previous, status.Held)
 	case "":
 		switch {
 		case active:
@@ -480,7 +487,7 @@ func (u *systemPackageUpdater) dockerRun() (SystemDockerUpdateStatus, string) {
 			status.ErrorCode = systemDockerErrorNoResult
 			status.Error = "The Docker update stopped before it reported a result."
 			// it stopped somewhere: what was there before is in the log
-			status.RollbackCommand = dockerpkg.RollbackCommand(run.Previous)
+			status.RollbackCommand = dockerpkg.RollbackCommandHeld(run.Previous, status.Held)
 		}
 	}
 	if status.MajorJump {

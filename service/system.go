@@ -48,8 +48,9 @@ type SystemService interface {
 	// GetSystemDockerContainers lists the running containers, which an update of Docker stops.
 	GetSystemDockerContainers() SystemDockerContainers
 	// StartDockerUpdate updates the Docker engine to the plan the owner confirmed (its id), going ahead
-	// of a hold on the engine's packages only if allowHeld, the owner's word. A *DockerUpdateRefusal
-	// says why it did not start; the status comes with the error.
+	// of a hold on the engine's packages only if allowHeld, the owner's word (dpkg drops the hold of
+	// the packages it unpacks: the unit puts it back). A *DockerUpdateRefusal says why it did not
+	// start; the status comes with the error.
 	StartDockerUpdate(planID string, allowHeld bool) (SystemDockerUpdateStatus, error)
 	// DockerUpdateStatus says how the update of Docker is going, or how it went.
 	DockerUpdateStatus() SystemDockerUpdateStatus
