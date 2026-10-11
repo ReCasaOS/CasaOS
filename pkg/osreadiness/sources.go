@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // sourceEntry is one repository of apt's sources: a "deb" line, or one type and one URI of a
@@ -20,9 +21,18 @@ type sourceEntry struct {
 	Components []string
 }
 
-// aptSourceName is a name apt reads in sources.list.d: letters, digits, "_", "-" and ".", and the
-// extension .list or .sources. apt ignores every other name, and so does this.
-var aptSourceName = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.(?:list|sources)$`)
+// aptSourceName is a name apt reads in sources.list.d (GetListOfFilesInDir of apt 2.2.4 and 2.6.1, Debian
+// 11 and 12): letters, digits, "_", "-" and ":", and "." since the extension is required, .list or
+// .sources, and not a name that starts with a dot. apt ignores every other name, and so does this.
+var aptSourceName = regexp.MustCompile(`^[A-Za-z0-9_:-][A-Za-z0-9_:.-]*\.(?:list|sources)$`)
+
+// maxSourceFiles and maxSourceEntries bound what a machine's sources can cost: a file of more sources
+// than a machine has is one that is not understood (sources_format says so), and more files than that
+// are an answer that is too large.
+const (
+	maxSourceFiles   = 500
+	maxSourceEntries = 2000
+)
 
 // sourcesSet is what apt would read of its sources: the entries of the files it understands, and
 // the files it would not (which the rewriter of the plan could not read either).
@@ -32,10 +42,72 @@ type sourcesSet struct {
 	Unreadable []string
 }
 
+// sourcesMemo is the sources of one report, read once: the checks of the sources are eight and ask for
+// the same files, and reading and understanding each file eight times is eight times the work of a file
+// that may be as large as a file can be. It is read in the time of the report, and each check that asks
+// waits for it only for its own time.
+type sourcesMemo struct {
+	ctx  context.Context
+	p    Probe
+	once sync.Once
+	done chan struct{}
+	set  sourcesSet
+	err  error
+}
+
+func newSourcesMemo(ctx context.Context, p Probe) *sourcesMemo {
+	return &sourcesMemo{ctx: ctx, p: p, done: make(chan struct{})}
+}
+
+func (m *sourcesMemo) get(ctx context.Context) (sourcesSet, error) {
+	m.once.Do(func() {
+		go func() {
+			defer close(m.done)
+			defer func() {
+				if recover() != nil {
+					m.set, m.err = sourcesSet{}, errPanicked
+				}
+			}()
+			m.set, m.err = loadSources(m.ctx, m.p)
+		}()
+	})
+	select {
+	case <-m.done:
+		return m.set, m.err
+	case <-ctx.Done():
+		return sourcesSet{}, ctx.Err()
+	}
+}
+
+// sourcesOf is the sources of the report a check runs in, read once for all the checks; a check that is
+// run alone, with no report, reads them itself.
+func sourcesOf(ctx context.Context, p Probe) (sourcesSet, error) {
+	if m := SessionOf(ctx).sources; m != nil {
+		return m.get(ctx)
+	}
+	return loadSources(ctx, p)
+}
+
+// readRegular is the content of a file that may not be there, as apt reads a file of a directory: only
+// a regular one is read, and one that is not (a directory, a device: ln -s /dev/null x.list is how a
+// package's source is kept from coming back) is as if it were not there. found is false for both.
+func readRegular(ctx context.Context, p Probe, path string) (data []byte, found bool, err error) {
+	info, err := p.Stat(ctx, path)
+	switch {
+	case isNotExist(err):
+		return nil, false, nil
+	case err != nil:
+		return nil, false, err
+	case !info.Mode.IsRegular():
+		return nil, false, nil
+	}
+	return readOptional(ctx, p, path)
+}
+
 // loadSources reads the sources the way apt finds them: /etc/apt/sources.list and the .list and
-// .sources files of /etc/apt/sources.list.d. It reads files; nothing is fetched. A file that is
-// not there is nothing; one that is there and cannot be understood is Unreadable; only a question
-// that was not answered is an error.
+// .sources files of /etc/apt/sources.list.d. It reads files; nothing is fetched. A file that is not
+// there, or is not a regular one, is nothing; one that is there and cannot be understood is Unreadable;
+// only a question that was not answered is an error.
 func loadSources(ctx context.Context, p Probe) (sourcesSet, error) {
 	var set sourcesSet
 	files := []struct{ name, path string }{{"sources.list", "/etc/apt/sources.list"}}
@@ -48,16 +120,19 @@ func loadSources(ctx context.Context, p Probe) (sourcesSet, error) {
 			files = append(files, struct{ name, path string }{name, "/etc/apt/sources.list.d/" + name})
 		}
 	}
+	if len(files) > maxSourceFiles {
+		return set, ErrTooLarge
+	}
 	for _, file := range files {
-		data, found, err := readOptional(ctx, p, file.path)
+		data, found, err := readRegular(ctx, p, file.path)
 		if err != nil && (ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
 			return set, err
 		}
 		if err == nil && !found {
 			continue
 		}
-		// a file that is there and cannot be read (too large, not a regular file) is a file the
-		// rewriter could not read either
+		// a file that is there and cannot be read (too large, no right to it) is a file the rewriter
+		// could not read either
 		var entries []sourceEntry
 		ok := err == nil
 		if ok {
@@ -131,16 +206,60 @@ func parseOneLine(file, text string) (entries []sourceEntry, ok bool) {
 		if len(rest) < 2 {
 			return nil, false
 		}
+		if len(entries) >= maxSourceEntries {
+			return nil, false
+		}
 		entries = append(entries, sourceEntry{File: file, Kind: words[0], URI: rest[0], Suites: []string{rest[1]}, Components: rest[2:]})
 	}
 	return entries, true
 }
 
+// aptZero is the number 0 as strtol reads it with base 0: 0, 00, -0, 0x0.
+var aptZero = regexp.MustCompile(`^[+-]?(?:0[xX]0+|0[0-7]*)$`)
+
+// aptFalse is what apt's StringToBool reads as false (apt-pkg/contrib/strutl.cc): no, false, without, off
+// and disable, in any case, and the number 0. What it does not understand is its default, which is true.
+// An empty value is not taken for false here: a source that is kept is a refusal that may be wrong, and
+// one that is dropped is one nobody looked at.
+func aptFalse(value string) bool {
+	value = strings.TrimSpace(value)
+	switch strings.ToLower(value) {
+	case "no", "false", "without", "off", "disable":
+		return true
+	}
+	return aptZero.MatchString(value)
+}
+
+// fieldWords are the words of the lines of a field of a .sources file: its first line, and the lines that
+// go on from it.
+func fieldWords(lines []string) []string {
+	var out []string
+	for _, line := range lines {
+		out = append(out, strings.Fields(line)...)
+	}
+	return out
+}
+
+// unique is the words once each, in the order they came.
+func unique(list []string) []string {
+	seen := make(map[string]struct{}, len(list))
+	out := make([]string, 0, len(list))
+	for _, word := range list {
+		if _, ok := seen[word]; !ok {
+			seen[word] = struct{}{}
+			out = append(out, word)
+		}
+	}
+	return out
+}
+
 // parseDeb822 reads a .sources file: stanzas separated by blank lines, with the fields Types, URIs
 // and Suites (and Components, Enabled), whose values may go on to the lines that follow. A stanza
-// that has not the three is not understood; one that says "Enabled: no" is read and left out.
+// that has not the three is not understood; one that is not enabled is read and left out. What it costs
+// is the size of the file: the lines of a field are kept as lines and read once at the end of the stanza,
+// and a file that has more sources than a machine has is not understood.
 func parseDeb822(file, text string) (entries []sourceEntry, ok bool) {
-	var stanza map[string]string
+	var stanza map[string][]string
 	var last string
 	flush := func() bool {
 		if stanza == nil {
@@ -148,19 +267,23 @@ func parseDeb822(file, text string) (entries []sourceEntry, ok bool) {
 		}
 		fields := stanza
 		stanza, last = nil, ""
-		if enabled, set := fields["enabled"]; set && slices.Contains([]string{"no", "false", "0"}, strings.ToLower(strings.TrimSpace(enabled))) {
+		if enabled, set := fields["enabled"]; set && aptFalse(strings.Join(enabled, " ")) {
 			return true
 		}
-		kinds, uris, suites := strings.Fields(fields["types"]), strings.Fields(fields["uris"]), strings.Fields(fields["suites"])
+		kinds, uris, suites := unique(fieldWords(fields["types"])), unique(fieldWords(fields["uris"])), fieldWords(fields["suites"])
 		if len(kinds) == 0 || len(uris) == 0 || len(suites) == 0 {
 			return false
 		}
+		if len(entries)+len(kinds)*len(uris) > maxSourceEntries {
+			return false
+		}
+		components := fieldWords(fields["components"])
 		for _, kind := range kinds {
 			if kind != "deb" && kind != "deb-src" {
 				return false
 			}
 			for _, uri := range uris {
-				entries = append(entries, sourceEntry{File: file, Kind: kind, URI: uri, Suites: suites, Components: strings.Fields(fields["components"])})
+				entries = append(entries, sourceEntry{File: file, Kind: kind, URI: uri, Suites: suites, Components: components})
 			}
 		}
 		return true
@@ -178,17 +301,17 @@ func parseDeb822(file, text string) (entries []sourceEntry, ok bool) {
 			if last == "" {
 				return nil, false
 			}
-			stanza[last] += " " + strings.TrimSpace(line)
+			stanza[last] = append(stanza[last], strings.TrimSpace(line))
 		default:
 			key, value, found := strings.Cut(line, ":")
 			if !found || strings.TrimSpace(key) == "" {
 				return nil, false
 			}
 			if stanza == nil {
-				stanza = map[string]string{}
+				stanza = map[string][]string{}
 			}
 			last = strings.ToLower(strings.TrimSpace(key))
-			stanza[last] = strings.TrimSpace(value)
+			stanza[last] = []string{strings.TrimSpace(value)}
 		}
 	}
 	if !flush() {
@@ -228,9 +351,33 @@ func officialHost(host string) bool {
 		host == "ubuntu.com" || strings.HasSuffix(host, ".ubuntu.com")
 }
 
-// distro says whether the source is the distribution's own archive: Debian's or Ubuntu's host, or
-// a mirror, which is told by its path being the root of the archive ("/debian", "/ubuntu"). A
-// mirror under another path is a third-party source here, and is warned of as one.
+// mirrorRoots are the names a mirror keeps the archive under: Debian's, its security archive's, Ubuntu's
+// and its ports'.
+var mirrorRoots = []string{"debian", "debian-security", "ubuntu", "ubuntu-ports"}
+
+// mirrorPath says whether the path of a source is that of a mirror of the archive: it is the root of the
+// archive ("/debian") with whatever is below it ("/debian/packages", a hosting provider's own), and the
+// root is the first step of the path, or the one after "pub", or after the name of the archive's own host
+// ("/ftp.debian.org/debian", which a mirror of a mirror says). A step called debian in the middle of
+// another path is a vendor's own tree and not a mirror ("/linux/debian" is Docker's, "/stable/debian"
+// is Tailscale's). The ceiling: a vendor that serves its own repository at the root of its host under the
+// name of the distribution (Jellyfin's /debian) is told from a mirror by nothing in the line.
+func mirrorPath(path string) bool {
+	steps := strings.Split(strings.Trim(path, "/"), "/")
+	for i := 0; i < len(steps) && i < 2; i++ {
+		if !slices.Contains(mirrorRoots, steps[i]) {
+			continue
+		}
+		if i == 0 || steps[0] == "pub" || officialHost(strings.ToLower(steps[0])) {
+			return true
+		}
+	}
+	return false
+}
+
+// distro says whether the source is the distribution's own archive: Debian's or Ubuntu's host, or a
+// mirror, which is told by its path (mirrorPath). A source under another path is a third-party one here,
+// and is warned of as one.
 func (e sourceEntry) distro() bool {
 	if e.local() {
 		return false
@@ -242,11 +389,7 @@ func (e sourceEntry) distro() bool {
 	if err != nil {
 		return false
 	}
-	switch strings.Trim(u.Path, "/") {
-	case "debian", "debian-security", "ubuntu":
-		return true
-	}
-	return false
+	return mirrorPath(u.Path)
 }
 
 // The suffixes a suite of the distribution can have, longest first: "bullseye-backports-sloppy".

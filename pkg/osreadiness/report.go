@@ -66,6 +66,7 @@ func Run(ctx context.Context, p Probe, opts Options) Report {
 
 	report := Report{CheckedAt: p.Now().UTC().Truncate(time.Second), Checks: []Finding{}}
 	session := identifyWithin(ctx, p, opts.IdentityTimeout)
+	session.sources = newSourcesMemo(ctx, p)
 	ctx = withSession(ctx, session)
 
 	var gates, rest []Check

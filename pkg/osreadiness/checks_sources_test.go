@@ -40,6 +40,15 @@ func TestSourcesCDROM(t *testing.T) {
 		{name: "in a .sources file", setup: sourcesFile("local.sources", "Types: deb", "URIs: file:///srv/mirror", "Suites: bullseye", "Components: main"), severity: Refuse, data: D{"files": []string{"local.sources"}}},
 		{name: "a disc that is commented out", setup: sourcesList("# deb cdrom:[Debian 11]/ bullseye main", "deb http://deb.debian.org/debian bullseye main"), severity: OK},
 		{name: "a disc that is not enabled", setup: sourcesFile("local.sources", "Types: deb", "URIs: file:///srv/mirror", "Suites: bullseye", "Enabled: no"), severity: OK},
+		{name: "a disc that is switched off the other ways apt reads it", setup: after(sourcesFile("a.sources", "Types: deb", "URIs: file:///srv/a", "Suites: bullseye", "Enabled: off"), sourcesFile("b.sources", "Types: deb", "URIs: file:///srv/b", "Suites: bullseye", "Enabled: without")), severity: OK},
+		{name: "a source in a file that has a colon in its name, which apt reads", setup: sourcesFile("local:mirror.list", "deb file:/srv/mirror/debian bullseye main"), severity: Refuse, data: D{"files": []string{"local:mirror.list"}}},
+		{name: "a file that starts with a dot, which apt does not read", setup: sourcesFile(".local.list", "deb file:/srv/mirror/debian bullseye main"), severity: OK},
+		{name: "a file turned off with a link to /dev/null, as people do", setup: func(f *fakeProbe) {
+			f.device("/dev/null")
+			f.link("/etc/apt/sources.list.d/local.list", "/dev/null")
+		}, severity: OK},
+		{name: "a file that cannot be understood is not looked into", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
+		{name: "a disc next to a file that cannot be understood is still said", setup: after(sourcesList("rubbish"), sourcesFile("cd.list", "deb cdrom:[x]/ bullseye main")), severity: Refuse, data: D{"files": []string{"cd.list"}}},
 		{name: "two files, once each", setup: after(sourcesList("deb cdrom:[x]/ bullseye main", "deb cdrom:[y]/ bullseye main"), sourcesFile("a.list", "deb file:/x bullseye main")), severity: Refuse, data: D{"files": []string{"a.list", "sources.list"}}},
 		{name: "a file that cannot be read", setup: func(f *fakeProbe) {
 			f.fail("/etc/apt/sources.list.d", &fs.PathError{Op: "open", Path: "x", Err: fs.ErrPermission})
@@ -65,7 +74,13 @@ func TestSourcesAlias(t *testing.T) {
 		{name: "a third party's stable", setup: sourcesFile("code.list", "deb https://packages.microsoft.com/repos/code stable main"), severity: OK},
 		{name: "a third party's stable at a path that ends in debian", setup: sourcesFile("x.list", "deb https://repo.example.org/stable/debian stable main"), severity: OK},
 		{name: "an alias that is commented out", setup: sourcesList("#deb http://deb.debian.org/debian stable main", "deb http://deb.debian.org/debian bullseye main"), severity: OK},
-		{name: "a file that cannot be understood is for sources_format", setup: sourcesList("rubbish"), severity: OK},
+		// a file that was not understood may hold what this looks for: it is not a pass for the others, and
+		// sources_format says what is wrong with the file
+		{name: "a file that cannot be understood is not looked into", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
+		{name: "an alias of a mirror at a path of its own", setup: sourcesList("deb http://mirror.hetzner.com/debian/packages stable main"), severity: Refuse, data: D{"files": []string{"sources.list"}, "suites": []string{"stable"}}},
+		{name: "an alias of a mirror's security archive", setup: sourcesFile("sec.list", "deb http://mirror.hetzner.com/debian/security stable-security main"), severity: Refuse, data: D{"suites": []string{"stable-security"}}},
+		{name: "an alias of a mirror that keeps the archive under the name of its host", setup: sourcesList("deb http://mirror.ovh.net/ftp.debian.org/debian oldstable main"), severity: Refuse},
+		{name: "an alias that is found in a file next to one that cannot be read", setup: after(sourcesList("rubbish"), sourcesFile("a.list", "deb http://deb.debian.org/debian testing main")), severity: Refuse, data: D{"files": []string{"a.list"}}},
 	})
 }
 
@@ -75,6 +90,8 @@ func TestSourcesProposed(t *testing.T) {
 		{name: "Debian's", setup: sourcesList("deb http://deb.debian.org/debian bullseye-proposed-updates main"), severity: Refuse, data: D{"files": []string{"sources.list"}, "suites": []string{"bullseye-proposed-updates"}}, action: ActionReviewSources},
 		{name: "Ubuntu's", setup: after(ubuntu2204, sourcesList("deb http://archive.ubuntu.com/ubuntu jammy-proposed main")), severity: Refuse, data: D{"suites": []string{"jammy-proposed"}}},
 		{name: "in a .sources file", setup: sourcesFile("p.sources", "Types: deb", "URIs: http://deb.debian.org/debian", "Suites: bullseye-proposed-updates", "Components: main"), severity: Refuse},
+		{name: "a mirror's, at a path of its own", setup: sourcesList("deb http://mirror.hetzner.com/debian/packages bullseye-proposed-updates main"), severity: Refuse, data: D{"suites": []string{"bullseye-proposed-updates"}}},
+		{name: "a file that cannot be understood is not looked into", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
 		{name: "the proposed suites of a third party's own are not said with the archive's", setup: sourcesList("deb http://deb.debian.org/debian bullseye-proposed-updates main", "deb https://repo.example.org/apt jammy-proposed main"), severity: Refuse, data: D{"suites": []string{"bullseye-proposed-updates"}}},
 		{name: "a third party's suite of that name", setup: sourcesFile("x.list", "deb https://repo.example.org/apt jammy-proposed main"), severity: OK},
 		{name: "backports are not proposed", setup: sourcesList("deb http://deb.debian.org/debian bullseye-backports main"), severity: OK},
@@ -94,6 +111,12 @@ func TestSourcesFormat(t *testing.T) {
 			f.fail("/etc/apt/sources.list.d/locked.list", &fs.PathError{Op: "open", Path: "x", Err: fs.ErrPermission})
 		}, severity: Refuse, data: D{"files": []string{"locked.list"}}},
 		{name: "a file that apt ignores, whatever is in it", setup: sourcesFile("old.list.save", "rubbish"), severity: OK},
+		{name: "a file that apt reads, with a colon in its name, and that cannot be understood", setup: sourcesFile("a:b.list", "rubbish"), severity: Refuse, data: D{"files": []string{"a:b.list"}}},
+		{name: "a file that is a link to /dev/null is not a file that cannot be read", setup: func(f *fakeProbe) {
+			f.device("/dev/null")
+			f.link("/etc/apt/sources.list.d/google-chrome.list", "/dev/null")
+		}, severity: OK},
+		{name: "a directory with the name of a source is no source", setup: func(f *fakeProbe) { f.dirs["/etc/apt/sources.list.d/dir.list"] = true }, severity: OK},
 		{name: "no sources.list, as on Debian 13", setup: func(f *fakeProbe) {
 			f.remove("/etc/apt/sources.list")
 			sourcesFile("debian.sources", "Types: deb", "URIs: http://deb.debian.org/debian", "Suites: bullseye", "Components: main")(f)
@@ -105,14 +128,20 @@ func TestSourcesFormat(t *testing.T) {
 func TestSourcesThirdParty(t *testing.T) {
 	runScenarios(t, "sources_third_party", []scenario{
 		{name: "Debian's archives only", severity: OK},
+		// no action fits: Docker's source is on every machine of ReCasaOS and is handled by the hop, and checking
+		// again never makes it go
 		{name: "Docker's", setup: sourcesFile("docker.list", dockerLine), severity: Warn,
-			data: D{"files": []string{"docker.list"}, "hosts": []string{"download.docker.com"}, "docker_files": []string{"docker.list"}}, action: ActionReviewSources},
+			data: D{"files": []string{"docker.list"}, "hosts": []string{"download.docker.com"}, "docker_files": []string{"docker.list"}}, action: ActionNone},
+		{name: "another has no action either", setup: sourcesFile("tailscale.list", tailscaleLine), severity: Warn, action: ActionNone},
 		{name: "Docker's, and another", setup: after(sourcesFile("docker.list", dockerLine), sourcesFile("tailscale.list", tailscaleLine)), severity: Warn,
 			data: D{"files": []string{"docker.list", "tailscale.list"}, "hosts": []string{"download.docker.com", "pkgs.tailscale.com"}, "docker_files": []string{"docker.list"}}},
 		{name: "another, not Docker's", setup: sourcesFile("tailscale.list", tailscaleLine), severity: Warn, data: D{"files": []string{"tailscale.list"}}},
 		{name: "in a .sources file", setup: sourcesFile("syncthing.sources", "Types: deb", "URIs: https://apt.syncthing.net/", "Suites: syncthing", "Components: stable"), severity: Warn, data: D{"files": []string{"syncthing.sources"}}},
 		{name: "a PPA", setup: after(ubuntu2204, sourcesFile("ppa.list", "deb https://ppa.launchpadcontent.net/x/y/ubuntu jammy main")), severity: Warn},
 		{name: "a mirror of the archive is Debian's", setup: sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), severity: OK},
+		{name: "a mirror that has the archive under a path of its own is Debian's", setup: after(sourcesFile("hetzner.list", "deb http://mirror.hetzner.com/debian/packages bullseye main"), sourcesFile("sec.list", "deb http://mirror.hetzner.com/debian/security bullseye-security main")), severity: OK},
+		{name: "a file that cannot be understood may hide a source that is not Debian's", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
+		{name: "a third party is said whatever else cannot be read", setup: after(sourcesList("rubbish"), sourcesFile("docker.list", dockerLine)), severity: Warn, data: D{"files": []string{"docker.list"}}},
 		{name: "Ubuntu's own", setup: after(ubuntu2204, sourcesList("deb http://archive.ubuntu.com/ubuntu jammy main", "deb http://security.ubuntu.com/ubuntu jammy-security main"), sourcesFile("esm.list", "deb https://esm.ubuntu.com/infra/ubuntu jammy-infra-security main")), severity: OK},
 		{name: "a disc is not a third party", setup: sourcesList("deb cdrom:[x]/ bullseye main"), severity: OK},
 		{name: "a third party that is commented out", setup: sourcesFile("docker.list", "# "+dockerLine), severity: OK},
@@ -127,6 +156,8 @@ func TestSourcesBackports(t *testing.T) {
 		{name: "in a file of its own", setup: sourcesFile("backports.list", "deb http://deb.debian.org/debian bullseye-backports main contrib"), severity: Info, data: D{"files": []string{"backports.list"}}},
 		{name: "the sloppy ones", setup: sourcesFile("sloppy.list", "deb http://deb.debian.org/debian bullseye-backports-sloppy main"), severity: Info},
 		{name: "a third party's", setup: sourcesFile("x.list", "deb https://repo.example.org/apt bullseye-backports main"), severity: OK},
+		{name: "a mirror's, at a path of its own", setup: sourcesFile("m.list", "deb http://mirror.hetzner.com/debian/packages bullseye-backports main"), severity: Info, data: D{"files": []string{"m.list"}}},
+		{name: "a file that cannot be understood is not looked into", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
 	})
 }
 
@@ -147,6 +178,7 @@ func TestSourcesFirmware(t *testing.T) {
 		{name: "firmware that was removed", setup: func(f *fakeProbe) {
 			f.installed("rc \tfirmware-iwlwifi\tamd64\t1\nun \tfirmware-misc-nonfree\tamd64\t1\n", firmwarePatterns...)
 		}, severity: OK},
+		{name: "a file that cannot be understood is not looked into", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
 		{name: "firmware, and the source of the archive is a third party's", setup: after(
 			sourcesList("deb https://repo.example.org/apt bullseye main"),
 			func(f *fakeProbe) { f.installed(pkg("firmware-iwlwifi", "1"), firmwarePatterns...) }), severity: OK},
@@ -178,6 +210,18 @@ func TestSourcesPin(t *testing.T) {
 		{name: "a default release that is not a name", setup: func(f *fakeProbe) { f.on("APT::Default-Release \"<b>x</b>\";\n", 0, argvConfigDump...) },
 			severity: Refuse, data: D{"default_release_set": true}},
 		{name: "an empty default release", setup: func(f *fakeProbe) { f.on("APT::Default-Release \"\";\n", 0, argvConfigDump...) }, severity: OK},
+		// apt's keys do not care for case, and apt-config dump says them as they were typed
+		{name: "a default release, in the case the owner typed it", setup: func(f *fakeProbe) { f.on("APT::default-release \"stable\";\n", 0, argvConfigDump...) }, severity: Refuse, data: D{"default_release": "stable"}},
+		{name: "a default release, in capitals", setup: func(f *fakeProbe) { f.on("APT::DEFAULT-RELEASE \"bookworm\";\n", 0, argvConfigDump...) }, severity: Refuse, data: D{"default_release": "bookworm"}},
+		{name: "a default release of another key is not one", setup: func(f *fakeProbe) {
+			f.on("APT::Default-Releases \"stable\";\nX::APT::Default-Release \"stable\";\n", 0, argvConfigDump...)
+		}, severity: OK},
+		{name: "a pin in a file that has a colon in its name", setup: pref("pin:stable", "Package: *", "Pin: release a=stable", "Pin-Priority: 900"), severity: Refuse, data: D{"files": []string{"pin:stable"}}},
+		{name: "a pin in a file that starts with a dot, which apt does not read", setup: after(pref(".pin", "Package: *", "Pin: release a=stable"), pref(".pin.pref", "Package: *", "Pin: release a=stable")), severity: OK},
+		{name: "a pin file turned off with a link to /dev/null", setup: func(f *fakeProbe) {
+			f.device("/dev/null")
+			f.link("/etc/apt/preferences.d/pin", "/dev/null")
+		}, severity: OK},
 		{name: "a release is pinned", setup: pref("backports", "Package: *", "Pin: release a=bullseye-backports", "Pin-Priority: 900"), severity: Refuse, data: D{"files": []string{"backports"}}},
 		{name: "a pin by codename, with spaces", setup: pref("x.pref", "Package: libc6", "pin:  Release  n=bookworm, l=Debian", "Pin-Priority: 500"), severity: Refuse, data: D{"files": []string{"x.pref"}}},
 		{name: "the main file of preferences", setup: func(f *fakeProbe) {

@@ -50,6 +50,16 @@ func suitesOf(entries []sourceEntry, match func(sourceEntry, string) bool) []str
 	return suites
 }
 
+// unlessUnreadable is the Result of a check of the lines of the sources, or the pass of one that found
+// nothing in the files it understood while a file was not: that file may be what it looks for, and
+// sources_format is the check that says what is wrong with it.
+func unlessUnreadable(set sourcesSet, found Result) Result {
+	if found.Severity == OK && len(set.Unreadable) > 0 {
+		return unknownWith(ReasonUnreadable)
+	}
+	return found
+}
+
 // sourcesProblem is the Result of a check that refuses because of some of the entries, or the
 // pass of one that finds none.
 func sourcesProblem(files, suites []string, title, detail string) Result {
@@ -64,43 +74,43 @@ func sourcesProblem(files, suites []string, title, detail string) Result {
 }
 
 func checkSourcesLocal(ctx context.Context, p Probe) Result {
-	set, err := loadSources(ctx, p)
+	set, err := sourcesOf(ctx, p)
 	if err != nil {
 		return unknown(err)
 	}
-	return sourcesProblem(filesOf(set.Entries, sourceEntry.local), nil,
+	return unlessUnreadable(set, sourcesProblem(filesOf(set.Entries, sourceEntry.local), nil,
 		"A source is a disc or a local directory",
-		"A CD-ROM or a local directory is not an archive the next release can be fetched from: remove it from the sources, or put the network archive in its place.")
+		"A CD-ROM or a local directory is not an archive the next release can be fetched from: remove it from the sources, or put the network archive in its place."))
 }
 
 func checkSourcesAlias(ctx context.Context, p Probe) Result {
-	set, err := loadSources(ctx, p)
+	set, err := sourcesOf(ctx, p)
 	if err != nil {
 		return unknown(err)
 	}
 	alias := func(e sourceEntry, suite string) bool { return e.distro() && isAlias(suite) }
-	return sourcesProblem(
+	return unlessUnreadable(set, sourcesProblem(
 		filesOf(set.Entries, func(e sourceEntry) bool { return e.distro() && slices.ContainsFunc(e.Suites, isAlias) }),
 		suitesOf(set.Entries, alias),
 		"A source names a release by an alias",
-		"A name like stable or oldstable means the release that is current when apt reads it: the sources change release by themselves. They must name the release (bullseye, jammy) instead.")
+		"A name like stable or oldstable means the release that is current when apt reads it: the sources change release by themselves. They must name the release (bullseye, jammy) instead."))
 }
 
 func checkSourcesProposed(ctx context.Context, p Probe) Result {
-	set, err := loadSources(ctx, p)
+	set, err := sourcesOf(ctx, p)
 	if err != nil {
 		return unknown(err)
 	}
 	proposed := func(e sourceEntry, suite string) bool { return e.distro() && isProposed(suite) }
-	return sourcesProblem(
+	return unlessUnreadable(set, sourcesProblem(
 		filesOf(set.Entries, func(e sourceEntry) bool { return e.distro() && slices.ContainsFunc(e.Suites, isProposed) }),
 		suitesOf(set.Entries, proposed),
 		"A source is the proposed updates",
-		"The proposed updates are packages that are not ready for use: the upgrade does not go through them.")
+		"The proposed updates are packages that are not ready for use: the upgrade does not go through them."))
 }
 
 func checkSourcesFormat(ctx context.Context, p Probe) Result {
-	set, err := loadSources(ctx, p)
+	set, err := sourcesOf(ctx, p)
 	if err != nil {
 		return unknown(err)
 	}
@@ -110,14 +120,14 @@ func checkSourcesFormat(ctx context.Context, p Probe) Result {
 }
 
 func checkSourcesThirdParty(ctx context.Context, p Probe) Result {
-	set, err := loadSources(ctx, p)
+	set, err := sourcesOf(ctx, p)
 	if err != nil {
 		return unknown(err)
 	}
 	other := func(e sourceEntry) bool { return !e.distro() && !e.local() }
 	files := filesOf(set.Entries, other)
 	if len(files) == 0 {
-		return pass()
+		return unlessUnreadable(set, pass())
 	}
 	data := D{"files": files}
 	var hosts []string
@@ -137,18 +147,20 @@ func checkSourcesThirdParty(ctx context.Context, p Probe) Result {
 	return Result{
 		Severity: Warn, Title: "Some software comes from other sources than Debian or Ubuntu",
 		Detail: "These sources are paused for the upgrade, since the next release may not exist on them. Docker's is put back, for the new release, after it. The others stay paused until you turn them on.",
-		Data:   data, Action: ActionReviewSources,
+		// no action fits: Docker's source is on every machine of ReCasaOS and the hop handles it, and checking
+		// again never makes it go; the others stay paused until the owner turns them on
+		Data: data, Action: ActionNone,
 	}
 }
 
 func checkSourcesBackports(ctx context.Context, p Probe) Result {
-	set, err := loadSources(ctx, p)
+	set, err := sourcesOf(ctx, p)
 	if err != nil {
 		return unknown(err)
 	}
 	files := filesOf(set.Entries, func(e sourceEntry) bool { return e.distro() && slices.ContainsFunc(e.Suites, isBackports) })
 	if len(files) == 0 {
-		return pass()
+		return unlessUnreadable(set, pass())
 	}
 	return Result{
 		Severity: Info, Title: "The backports lines will be dropped",
@@ -168,7 +180,7 @@ const freeFirmwarePackage = "firmware-linux-free"
 var firmwarePatterns = []string{"firmware-*", "*-microcode"}
 
 func checkSourcesFirmware(ctx context.Context, p Probe) Result {
-	set, err := loadSources(ctx, p)
+	set, err := sourcesOf(ctx, p)
 	if err != nil {
 		return unknown(err)
 	}
@@ -199,7 +211,7 @@ func checkSourcesFirmware(ctx context.Context, p Probe) Result {
 		}
 	}
 	if !lacking {
-		return pass()
+		return unlessUnreadable(set, pass())
 	}
 	data := D{"non_free": nonFree}
 	if len(firmware) > 0 {
@@ -220,12 +232,15 @@ func checkSourcesLater(context.Context, Probe) Result {
 	}
 }
 
-var defaultReleasePattern = regexp.MustCompile(`(?m)^APT::Default-Release\s+"([^"]*)"\s*;`)
+// defaultReleasePattern is the Default-Release of "apt-config dump": apt's keys do not care for case, and
+// the dump says a key as it was typed.
+var defaultReleasePattern = regexp.MustCompile(`(?mi)^APT::Default-Release\s+"([^"]*)"\s*;`)
 
-var prefName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+// prefName is a name apt reads in preferences.d, as it reads one in sources.list.d (see aptSourceName).
+var prefName = regexp.MustCompile(`^[A-Za-z0-9_:-][A-Za-z0-9_:.-]*$`)
 
 // prefFile says whether apt reads a file of /etc/apt/preferences.d: no extension, or .pref, and
-// only the characters apt accepts in a name.
+// only the characters apt accepts in a name (a colon, and no dot at the start).
 func prefFile(name string) bool {
 	if !prefName.MatchString(name) {
 		return false
@@ -272,7 +287,7 @@ func checkSourcesPin(ctx context.Context, p Probe) Result {
 
 	pinned := []string{}
 	check := func(name, path string) error {
-		data, found, err := readOptional(ctx, p, path)
+		data, found, err := readRegular(ctx, p, path)
 		if err != nil {
 			return err
 		}

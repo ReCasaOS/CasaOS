@@ -22,9 +22,12 @@ type fakeProbe struct {
 
 	files map[string]string // regular files
 	links map[string]string // symbolic links, by path
-	dirs  map[string]bool   // directories that are empty (a directory with something in it is implied)
-	fsErr map[string]error  // an error for any access to a path
-	cmds  map[string]fakeCmd
+	// devices are files that are not regular ones (a character device such as /dev/null, a FIFO):
+	// they are there, and are not read
+	devices map[string]bool
+	dirs    map[string]bool  // directories that are empty (a directory with something in it is implied)
+	fsErr   map[string]error // an error for any access to a path
+	cmds    map[string]fakeCmd
 
 	busyReason string
 	busyErr    error
@@ -84,6 +87,18 @@ func (f *fakeProbe) link(path, target string) {
 	f.links[path] = target
 }
 
+// device makes the paths files that are not regular ones.
+func (f *fakeProbe) device(paths ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.devices == nil {
+		f.devices = map[string]bool{}
+	}
+	for _, p := range paths {
+		f.devices[p] = true
+	}
+}
+
 func (f *fakeProbe) remove(paths ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -133,11 +148,25 @@ func (f *fakeProbe) ReadFile(ctx context.Context, p string) ([]byte, error) {
 	if err := f.fsErr[p]; err != nil {
 		return nil, err
 	}
+	// a link to a file is that file, as it is for a read of the machine's
+	for hops := 0; hops < 8; hops++ {
+		target, ok := f.links[p]
+		if !ok {
+			break
+		}
+		if !strings.HasPrefix(target, "/") {
+			target = path.Join(path.Dir(p), target)
+		}
+		p = target
+	}
 	if content, ok := f.files[p]; ok {
 		if len(content) > MaxFileBytes {
 			return nil, ErrTooLarge
 		}
 		return []byte(content), nil
+	}
+	if f.devices[p] {
+		return nil, &fs.PathError{Op: "read", Path: p, Err: errors.New("not a regular file")}
 	}
 	if f.isDir(p) {
 		return nil, &fs.PathError{Op: "read", Path: p, Err: errors.New("is a directory")}
@@ -195,6 +224,9 @@ func (f *fakeProbe) stat(p string, follow bool) (FileInfo, error) {
 	}
 	if content, ok := f.files[p]; ok {
 		return FileInfo{Size: int64(len(content)), Mode: 0o644}, nil
+	}
+	if f.devices[p] {
+		return FileInfo{Mode: fs.ModeDevice | fs.ModeCharDevice | 0o666}, nil
 	}
 	if f.isDir(p) {
 		return FileInfo{Mode: fs.ModeDir | 0o755}, nil

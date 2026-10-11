@@ -60,6 +60,10 @@ type Session struct {
 	// ReleaseErr is why os-release could not be read, when it could not; MarkerErr is why a file
 	// that tells a variant could not be looked at (it answered something else than "not there").
 	ReleaseErr, MarkerErr error
+
+	// sources is the sources of apt as the report reads them, once, for the checks that look at them
+	// (sourcesOf).
+	sources *sourcesMemo
 }
 
 type sessionKey struct{}
