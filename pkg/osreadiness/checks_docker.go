@@ -291,6 +291,10 @@ func containerNames(list []dockerpkg.Container) []string {
 	return names
 }
 
+// checkContainersPolicy names the running containers that have no restart policy ("no", or none). A policy of
+// "on-failure" counts as one that comes back, and Docker does not start such a container again after a
+// restart of the daemon or of the machine (its documentation says so). Left as it is; the owner decides later
+// whether it is to be named too.
 func checkContainersPolicy(ctx context.Context, p Probe) Result {
 	list, err := containers(ctx, p)
 	if err != nil {

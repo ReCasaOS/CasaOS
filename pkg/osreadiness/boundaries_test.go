@@ -437,4 +437,3 @@ func TestABatteryAtNothingIsTheLowestOfBatteries(t *testing.T) {
 		t.Errorf("data = %v", got.Data)
 	}
 }
-

@@ -82,6 +82,11 @@ func checkApps(ctx context.Context, p Probe) Result {
 	}
 }
 
+// checkRebootFirst compares the names of the kernels that are installed with the one that runs, and looks
+// for the flag an update leaves. It does not compare the builds: a kernel package upgraded in place under
+// the same name (linux-image-5.10.0-35-amd64, 5.10.237-1 then -2) that was never booted is not seen, and
+// plain Debian writes no reboot-required for it. Left as it is; the owner decides later whether the version
+// in uname -v is to be compared with the installed package's.
 func checkRebootFirst(ctx context.Context, p Probe) Result {
 	flag := false
 	for _, path := range []string{"/var/run/reboot-required", "/run/reboot-required"} {

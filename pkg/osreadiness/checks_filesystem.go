@@ -36,6 +36,10 @@ const (
 	gibibyte = 1 << 30
 )
 
+// checkMergedUsr refuses a box whose /bin, /sbin or /lib are not links into /usr, on every hop. The release
+// notes of Debian 12 say that a system that is not merged is converted at the upgrade to it, so the refusal
+// for the hop from Debian 11 may be a false one (from 12 to 13 the layout is required). It is the spec's,
+// and the owner decides later whether the hop from 11 is to be let by.
 func checkMergedUsr(ctx context.Context, p Probe) Result {
 	unmerged := []string{}
 	for _, dir := range []string{"/bin", "/sbin", "/lib"} {
