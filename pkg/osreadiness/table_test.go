@@ -145,7 +145,7 @@ func dirty(f *fakeProbe) {
 	// the disks and the start
 	f.remove("/bin")
 	f.set("/bin/sh", "x")
-	f.installed("", grubPackages...)
+	f.installed("", bootloaderPackages...)
 	f.set("/proc/mdstat", "Personalities : [raid1]\nmd0 : active raid1 sda1[0]\n      1046528 blocks super 1.2 [2/1] [U_]\n\nunused devices: <none>\n")
 	f.on(smartOf("FAILED!"), 8, argvSmart("/dev/sda")...)
 	f.set(fstabPath, "UUID=gone /data ext4 defaults 0 2\nnas:/export /home/alice/nas nfs defaults 0 0\n")
@@ -181,7 +181,7 @@ var dirtyBoxes = map[string]func(*fakeProbe){
 		dirty(f)
 		uefi(f)
 		espMounted(f)
-		f.installed(pkg("grub-efi-amd64", "2.06"), grubPackages...)
+		f.installed(pkg("grub-efi-amd64", "2.06"), bootloaderPackages...)
 		f.free["/boot/efi"] = 1 << 20
 		f.set("/proc/self/mountinfo", rootMountInfo+"30 22 8:15 / /boot/efi rw - vfat /dev/sda15 rw\n")
 	},

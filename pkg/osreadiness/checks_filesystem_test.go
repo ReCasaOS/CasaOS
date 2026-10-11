@@ -2,7 +2,9 @@ package osreadiness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"strings"
 	"testing"
@@ -86,7 +88,7 @@ func debconfFile(devices string, empty string) string {
 // grubPC is a machine that has the grub-pc of a BIOS machine, and the questions it asks.
 func grubPC(devices, empty string) func(*fakeProbe) {
 	return func(f *fakeProbe) {
-		f.installed(pkg("grub-pc", "2.06-3~deb11u6")+pkg("grub-pc-bin", "2.06-3~deb11u6"), grubPackages...)
+		f.installed(pkg("grub-pc", "2.06-3~deb11u6")+pkg("grub-pc-bin", "2.06-3~deb11u6"), bootloaderPackages...)
 		f.set(debconfDB, debconfFile(devices, empty))
 		f.set("/dev/disk/by-id/ata-QEMU_HARDDISK_QM00001", "")
 	}
@@ -97,9 +99,30 @@ func TestBootloader(t *testing.T) {
 	freeESP := func(bytes uint64) func(*fakeProbe) { return func(f *fakeProbe) { f.free["/boot/efi"] = bytes } }
 	runScenarios(t, "bootloader", []scenario{
 		{name: "Debian's cloud image: GRUB with no grub-pc, started by BIOS", severity: OK},
-		{name: "no GRUB package", setup: func(f *fakeProbe) { f.installed("", grubPackages...) }, severity: Refuse, data: D{"kind": "not_grub"}},
+		{name: "no GRUB package", setup: func(f *fakeProbe) { f.installed("", bootloaderPackages...) }, severity: Refuse, data: D{"kind": "not_grub"}},
 		{name: "GRUB, and no configuration of it", setup: func(f *fakeProbe) { f.remove("/boot/grub/grub.cfg") }, severity: Refuse, data: D{"kind": "not_grub"}},
-		{name: "a package that is not one of GRUB's", setup: func(f *fakeProbe) { f.installed(pkg("systemd-boot", "252"), grubPackages...) }, severity: Refuse, data: D{"kind": "not_grub"}},
+		{name: "a package that is not one of GRUB's", setup: func(f *fakeProbe) { f.installed(pkg("grub-efi-amd64-bin", "2.06"), bootloaderPackages...) }, severity: Refuse, data: D{"kind": "not_grub"}},
+		// systemd-boot starts the machine when its package is there, or its loader.conf, or the variable it sets
+		// in the firmware: GRUB's package and its grub.cfg can be left behind, and then GRUB is not what starts it
+		{name: "systemd-boot, and no GRUB", setup: func(f *fakeProbe) { f.installed(pkg("systemd-boot", "252"), bootloaderPackages...) }, severity: Refuse, data: D{"kind": "systemd_boot"}, title: "systemd-boot"},
+		{name: "systemd-boot, and GRUB's package and grub.cfg left behind", setup: func(f *fakeProbe) {
+			f.installed(pkg("systemd-boot", "252")+pkg("grub-efi-amd64", "2.06"), bootloaderPackages...)
+		}, severity: Refuse, data: D{"kind": "systemd_boot"}},
+		{name: "systemd-boot by its loader.conf, on /boot", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set("/boot/loader/loader.conf", "default debian\n") }), severity: Refuse, data: D{"kind": "systemd_boot"}},
+		{name: "systemd-boot by its loader.conf, on the ESP at /boot/efi", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set("/boot/efi/loader/loader.conf", "default debian\n") }), severity: Refuse, data: D{"kind": "systemd_boot"}},
+		{name: "systemd-boot by its loader.conf, on the ESP at /efi", setup: after(uefi, espMounted, func(f *fakeProbe) { f.set("/efi/loader/loader.conf", "default debian\n") }), severity: Refuse, data: D{"kind": "systemd_boot"}},
+		{name: "systemd-boot by the variable it sets", setup: after(uefi, espMounted, func(f *fakeProbe) {
+			f.set("/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f", "systemd-boot 252")
+		}), severity: Refuse, data: D{"kind": "systemd_boot"}},
+		{name: "a variable of another loader is not systemd-boot's", setup: after(uefi, espMounted, func(f *fakeProbe) {
+			f.set("/sys/firmware/efi/efivars/LoaderEntries-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f", "x")
+		}), severity: OK},
+		{name: "a loader.conf that cannot be looked at", setup: func(f *fakeProbe) {
+			f.fail("/boot/loader/loader.conf", &fs.PathError{Op: "stat", Path: "x", Err: fs.ErrPermission})
+		}, severity: Refuse, unknown: ReasonUnreadable},
+		{name: "the variable of systemd-boot that cannot be looked at", setup: func(f *fakeProbe) {
+			f.fail("/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f", &fs.PathError{Op: "stat", Path: "x", Err: fs.ErrPermission})
+		}, severity: Refuse, unknown: ReasonUnreadable},
 		{name: "BIOS, grub-pc with its disk", setup: grubPC(disk, ""), severity: OK},
 		{name: "BIOS, grub-pc with two disks, both there", setup: after(grubPC(disk+", /dev/sda", ""), func(f *fakeProbe) { f.set("/dev/sda", "") }), severity: OK},
 		{name: "BIOS, grub-pc with no disk", setup: grubPC("", ""), severity: Refuse, data: D{"kind": "install_devices_empty"}},
@@ -125,7 +148,7 @@ func TestBootloader(t *testing.T) {
 		{name: "UEFI, and a grub-pc with no disk, which does not start this machine", setup: after(uefi, espMounted, grubPC("", "")), severity: OK},
 		{name: "UEFI, ESP whose room cannot be read", setup: after(uefi, espMounted, func(f *fakeProbe) { delete(f.free, "/boot/efi") }), severity: Refuse, unknown: ReasonMissing},
 		{name: "UEFI, mounts that cannot be read", setup: after(uefi, func(f *fakeProbe) { f.remove("/proc/self/mountinfo") }), severity: Refuse, unknown: ReasonMissing},
-		{name: "dpkg-query that fails", setup: func(f *fakeProbe) { f.on("x", 2, argvQuery(grubPackages...)...) }, severity: Refuse, unknown: ReasonFailed},
+		{name: "dpkg-query that fails", setup: func(f *fakeProbe) { f.on("x", 2, argvQuery(bootloaderPackages...)...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "a firmware directory that cannot be looked at", setup: func(f *fakeProbe) {
 			f.fail("/sys/firmware/efi", &fs.PathError{Op: "stat", Path: "/sys/firmware/efi", Err: fs.ErrPermission})
 		}, severity: Refuse, unknown: ReasonUnreadable},
@@ -199,12 +222,45 @@ func TestRootLUKS(t *testing.T) {
 		{name: "a btrfs root, whose subvolume findmnt says in brackets", setup: after(rootOn("/dev/root"), func(f *fakeProbe) {
 			f.on("/dev/sda2[/@rootfs]\n", 0, "findmnt", "-n", "-o", "SOURCE", "/")
 		}, stack("/dev/sda2", "/dev/sda2:part", "/dev/sda:disk")), severity: OK},
+		{name: "a subvolume that findmnt says after a blank", setup: after(rootOn("/dev/root"), func(f *fakeProbe) {
+			f.on("/dev/sda2 [/@rootfs]\n", 0, "findmnt", "-n", "-o", "SOURCE", "/")
+		}, stack("/dev/sda2", "/dev/sda2:part", "/dev/sda:disk")), severity: OK},
 		{name: "findmnt that fails for /dev/root", setup: after(rootOn("/dev/root"), func(f *fakeProbe) { f.on("", 1, "findmnt", "-n", "-o", "SOURCE", "/") }), severity: Refuse, unknown: ReasonFailed},
-		{name: "findmnt that says something that is not a device for /dev/root", setup: after(rootOn("/dev/root"), func(f *fakeProbe) { f.on("none\n", 0, "findmnt", "-n", "-o", "SOURCE", "/") }), severity: OK},
+		// what findmnt says for /dev/root is a device or it is no answer: a root that is on none says so in the
+		// mounts, and not here
+		{name: "findmnt that says something that is not a device for /dev/root", setup: after(rootOn("/dev/root"), func(f *fakeProbe) { f.on("none\n", 0, "findmnt", "-n", "-o", "SOURCE", "/") }), severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "findmnt that says nothing for /dev/root", setup: after(rootOn("/dev/root"), func(f *fakeProbe) { f.on("", 0, "findmnt", "-n", "-o", "SOURCE", "/") }), severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "findmnt that warns before the device for /dev/root", setup: after(rootOn("/dev/root"), func(f *fakeProbe) {
+			f.on("findmnt: warning: could not read /etc/fstab\n/dev/mapper/cryptroot\n", 0, "findmnt", "-n", "-o", "SOURCE", "/")
+		}), severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "findmnt that says a device that cannot be passed on for /dev/root", setup: after(rootOn("/dev/root"), func(f *fakeProbe) { f.on("/dev/sda;x\n", 0, "findmnt", "-n", "-o", "SOURCE", "/") }), severity: Refuse, unknown: ReasonUnexpectedOutput},
+		{name: "findmnt that says a device with a path that goes back up for /dev/root", setup: after(rootOn("/dev/root"), func(f *fakeProbe) { f.on("/dev/../etc/passwd\n", 0, "findmnt", "-n", "-o", "SOURCE", "/") }), severity: Refuse, unknown: ReasonUnexpectedOutput},
 		{name: "a device whose name cannot be passed on", setup: rootOn("/dev/mapper/a;b"), severity: Refuse, unknown: ReasonUnexpectedOutput},
 		{name: "lsblk that fails", setup: func(f *fakeProbe) { f.on("lsblk: /dev/sda1: not a block device\n", 32, argvLsblk("/dev/sda1")...) }, severity: Refuse, unknown: ReasonFailed},
 		{name: "no lsblk", setup: func(f *fakeProbe) { f.onError(ErrToolMissing, argvLsblk("/dev/sda1")...) }, severity: Refuse, unknown: ReasonToolMissing},
 		{name: "lsblk that says nothing", setup: func(f *fakeProbe) { f.on("", 0, argvLsblk("/dev/sda1")...) }, severity: Refuse, unknown: ReasonUnexpectedOutput},
+		// a stack that has more devices than are read is read in part, and an encrypted volume past the bound would not be seen
+		{name: "a stack of more devices than are read", setup: func(f *fakeProbe) {
+			rows := make([]string, 0, maxBlockDevices+1)
+			for i := 0; i <= maxBlockDevices; i++ {
+				rows = append(rows, fmt.Sprintf("/dev/mapper/v%d:lvm", i))
+			}
+			f.on(lsblkOf(rows...), 0, argvLsblk("/dev/sda1")...)
+		}, severity: Refuse, unknown: ReasonTooLarge},
+		{name: "a stack of as many devices as are read", setup: func(f *fakeProbe) {
+			rows := make([]string, 0, maxBlockDevices)
+			for i := 0; i < maxBlockDevices; i++ {
+				rows = append(rows, fmt.Sprintf("/dev/mapper/v%d:lvm", i))
+			}
+			f.on(lsblkOf(rows...), 0, argvLsblk("/dev/sda1")...)
+		}, severity: OK},
+		{name: "a stack that says the same device twice is one device", setup: func(f *fakeProbe) {
+			rows := make([]string, 0, 2*maxBlockDevices)
+			for i := 0; i < 2*maxBlockDevices; i++ {
+				rows = append(rows, "/dev/mapper/v1:lvm")
+			}
+			f.on(lsblkOf(rows...), 0, argvLsblk("/dev/sda1")...)
+		}, severity: OK},
 		{name: "lsblk that says something else", setup: func(f *fakeProbe) {
 			f.on("NAME=/dev/sda1 TYPE=crypt\nTYPE=\"crypt\"\nNAME=\"x\" TYPE=\"CRYPT\"\n", 0, argvLsblk("/dev/sda1")...)
 		}, severity: Refuse, unknown: ReasonUnexpectedOutput},
@@ -233,6 +289,23 @@ func TestMdDegraded(t *testing.T) {
 		{name: "RAID 0, which has no status of members", setup: mdstat("md0 : active raid0 sdb[1] sda[0]\n      2095104 blocks super 1.2 512k chunks\n\n"), severity: OK},
 		{name: "a member marked failed, with its counts saying so", setup: mdstat("md0 : active raid1 sdb1[1](F) sda1[0]\n      1046528 blocks super 1.2 [2/1] [U_]\n\n"), severity: Refuse},
 		{name: "counts that are absurd are not read", setup: mdstat("md0 : active raid1 sda1[0]\n      1 blocks [99999999999/1] [U_]\n\n"), severity: OK},
+		// an array that is not assembled has no [n/m] line, and is not whole: its members are there and it is not
+		// running, as after the loss of one that was left
+		{name: "an array that is inactive", setup: mdstat("md127 : inactive sdb1[1](S)\n      1046528 blocks super 1.2\n\n"), severity: Refuse, data: D{"arrays": []string{"md127"}}},
+		{name: "an inactive one before a whole one", setup: mdstat("md0 : inactive sdc1[0](S)\n      1046528 blocks super 1.2\n\nmd1 : active raid1 sda2[0] sdb2[1]\n      1 blocks [2/2] [UU]\n\n"), severity: Refuse, data: D{"arrays": []string{"md0"}}},
+		{name: "an inactive one and a whole one, sorted", setup: mdstat("md1 : active raid1 sda2[0] sdb2[1]\n      1 blocks [2/2] [UU]\n\nmd0 : inactive sdc1[0](S)\n      1046528 blocks super 1.2\n\n"), severity: Refuse, data: D{"arrays": []string{"md0"}}},
+		{name: "an inactive array that is the last of the file", setup: func(f *fakeProbe) {
+			f.set("/proc/mdstat", "Personalities : [raid1]\nmd127 : inactive sdb1[1](S)\n      1046528 blocks super 1.2\n")
+		}, severity: Refuse, data: D{"arrays": []string{"md127"}}},
+		// the container of Intel's RAID in the firmware is inactive by design, and the volumes in it are the arrays
+		{name: "the container of a firmware RAID, with its volume whole", setup: mdstat("md126 : active raid1 sdb[1] sda[0]\n      976759808 blocks super external:/md127/0 [2/2] [UU]\n\nmd127 : inactive sdb[1](S) sda[0](S)\n      6320 blocks super external:imsm\n\n"), severity: OK},
+		{name: "the container of a firmware RAID, with its volume degraded", setup: mdstat("md126 : active raid1 sda[0]\n      976759808 blocks super external:/md127/0 [2/1] [U_]\n\nmd127 : inactive sda[0](S)\n      3160 blocks super external:imsm\n\n"), severity: Refuse, data: D{"arrays": []string{"md126"}}},
+		{name: "a container of DDF", setup: mdstat("md127 : inactive sdb[1](S) sda[0](S)\n      32768 blocks super external:ddf\n\n"), severity: OK},
+		{name: "an array that is only for reading", setup: mdstat("md0 : active (read-only) raid1 sdb1[1] sda1[0]\n      1046528 blocks super 1.2 [2/2] [UU]\n\n"), severity: OK},
+		{name: "an array that is for reading until it is written to", setup: mdstat("md0 : active (auto-read-only) raid1 sdb1[1] sda1[0]\n      1046528 blocks super 1.2 [2/2] [UU]\n\n"), severity: OK},
+		{name: "an array that is only for reading, and has lost a member", setup: mdstat("md0 : active (read-only) raid1 sda1[0]\n      1046528 blocks super 1.2 [2/1] [U_]\n\n"), severity: Refuse},
+		{name: "an array with a state that is none of the two", setup: mdstat("md0 : broken raid1 sdb1[1] sda1[0]\n      1046528 blocks super 1.2 [2/2] [UU]\n\n"), severity: Refuse, data: D{"arrays": []string{"md0"}}},
+		{name: "an array with no state", setup: mdstat("md0 :\n      1046528 blocks super 1.2\n\n"), severity: Refuse},
 		{name: "no /proc/mdstat: no md driver", setup: func(f *fakeProbe) { f.remove("/proc/mdstat") }, severity: OK},
 		{name: "a /proc/mdstat that cannot be read", setup: func(f *fakeProbe) {
 			f.fail("/proc/mdstat", &fs.PathError{Op: "open", Path: "/proc/mdstat", Err: fs.ErrPermission})
@@ -273,29 +346,117 @@ func TestSmartFailed(t *testing.T) {
 		{name: "a mirror with one disk that does not say and one that passes", setup: raid(smartOf("PASSED"), 0, "Unable to detect device type\n", 1), severity: Info, data: D{"disks": []string{"/dev/sdb"}}},
 		{name: "a mirror with one that fails and one that does not say", setup: raid("Unable to detect device type\n", 1, smartOf("FAILED!"), 8), severity: Refuse, data: D{"disks": []string{"/dev/sdb"}}},
 		{name: "lsblk that fails", setup: func(f *fakeProbe) { f.on("", 32, argvLsblk("/dev/sda1")...) }, severity: Refuse, unknown: ReasonFailed},
+		// smartctl -n standby does not wake a disk that sleeps: it says so, with the exit status 2, and the disk
+		// is not checked (it is not a pass)
+		{name: "a disk that sleeps", setup: smart(standbyText, 2), severity: Info, data: D{"checked": false, "why": "standby", "disks": []string{"/dev/sda"}}, action: ActionNone},
+		{name: "a disk in a deeper sleep", setup: smart("smartctl 7.2 2020-12-30 r5155\nDevice is in SLEEP mode, exit(2)\n", 2), severity: Info, data: D{"why": "standby", "disks": []string{"/dev/sda"}}},
+		{name: "a disk in the second state of standby", setup: smart("Device is in STANDBY_Y mode, exit(2)\n", 2), severity: Info, data: D{"why": "standby"}},
+		{name: "a disk that says it sleeps and does not say it with the exit status", setup: smart(standbyText, 0), severity: Info, data: D{"why": "unavailable"}},
+		{name: "a pass is a pass, whatever else the text says", setup: smart(smartOf("PASSED")+standbyText, 2), severity: OK},
+		{name: "a disk that exits with 2 and does not say it sleeps", setup: smart("Smartctl open device: /dev/sda failed: No such device\n", 2), severity: Info, data: D{"why": "unavailable"}},
+		{name: "a disk that is idle is asked", setup: smart("Device is in IDLE mode, exit(2)\n", 2), severity: Info, data: D{"why": "unavailable"}},
+		{name: "a disk that says it sleeps in the middle of a line", setup: smart("note: Device is in STANDBY mode, exit(2)\n", 2), severity: Info, data: D{"why": "unavailable"}},
+		{name: "a disk that sleeps and says that it failed", setup: smart(standbyText+smartOf("FAILED!"), 10), severity: Refuse, data: D{"disks": []string{"/dev/sda"}}},
+		{name: "a mirror with one disk that sleeps and one that passes", setup: raid(smartOf("PASSED"), 0, standbyText, 2), severity: Info, data: D{"why": "standby", "disks": []string{"/dev/sdb"}}},
+		{name: "a mirror with one disk that sleeps and one that fails", setup: raid(standbyText, 2, smartOf("FAILED!"), 8), severity: Refuse, data: D{"disks": []string{"/dev/sdb"}}},
+		{name: "a mirror with one disk that sleeps and one that does not say", setup: raid(standbyText, 2, "Unable to detect device type\n", 1), severity: Info, data: D{"why": "unavailable", "disks": []string{"/dev/sdb"}}},
+		{name: "a mirror whose two disks sleep", setup: raid(standbyText, 2, standbyText, 2), severity: Info, data: D{"why": "standby", "disks": []string{"/dev/sda", "/dev/sdb"}}},
 	})
 }
 
-func TestSmartIsAskedOfAtMostFourDisks(t *testing.T) {
-	f := newBox(t)
+const standbyText = "smartctl 7.2 2020-12-30 r5155\nDevice is in STANDBY mode, exit(2)\n"
+
+// smartStack is a root on a RAID of the disks, which pass unless they are said not to.
+func smartStack(f *fakeProbe, count int, answer func(disk string) (string, int)) {
 	rootOn("/dev/md0")(f)
 	rows := []string{"/dev/md0:raid5"}
-	for _, name := range []string{"sda", "sdb", "sdc", "sdd", "sde", "sdf"} {
-		rows = append(rows, "/dev/"+name+":disk")
-		f.on(smartOf("PASSED"), 0, argvSmart("/dev/"+name)...)
+	for i := 0; i < count; i++ {
+		disk := fmt.Sprintf("/dev/sd%c", 'a'+i)
+		rows = append(rows, disk+":disk")
+		text, exit := answer(disk)
+		f.on(text, exit, argvSmart(disk)...)
 	}
 	f.on(lsblkOf(rows...), 0, argvLsblk("/dev/md0")...)
-	if got := checkOn(t, f, "smart_failed"); got.Severity != OK {
-		t.Fatalf("finding = %+v", got)
-	}
+}
+
+func smartctlAsked(f *fakeProbe) int {
 	asked := 0
 	for _, argv := range f.attemptedCommands() {
 		if argv[0] == "smartctl" {
 			asked++
 		}
 	}
-	if asked != maxSmartDisks {
-		t.Fatalf("%d disks were asked, want %d", asked, maxSmartDisks)
+	return asked
+}
+
+// A stack of more than four disks is asked of up to sixteen, and one of more than that says that it was
+// asked only in part: a failing fifth disk is not a pass because the first four passed.
+func TestSmartIsAskedOfAtMostSixteenDisksAndSaysItWhenThereAreMore(t *testing.T) {
+	passes := func(string) (string, int) { return smartOf("PASSED"), 0 }
+	for _, tc := range []struct {
+		name     string
+		disks    int
+		answer   func(string) (string, int)
+		severity Severity
+		data     D
+		asked    int
+	}{
+		{"four disks", 4, passes, OK, nil, 4},
+		{"six disks that pass", 6, passes, OK, nil, 6},
+		{"sixteen disks that pass", 16, passes, OK, nil, 16},
+		{"a fifth disk that fails", 5, func(d string) (string, int) {
+			if d == "/dev/sde" {
+				return smartOf("FAILED!"), 8
+			}
+			return passes(d)
+		}, Refuse, D{"disks": []string{"/dev/sde"}}, 5},
+		{"a sixteenth disk that fails", 16, func(d string) (string, int) {
+			if d == "/dev/sdp" {
+				return smartOf("FAILED!"), 8
+			}
+			return passes(d)
+		}, Refuse, D{"disks": []string{"/dev/sdp"}}, 16},
+		{"seventeen disks that pass: sixteen were asked", 17, passes, Info, D{"checked": false, "why": "partial"}, 16},
+		{"seventeen disks, one of the first that fails", 17, func(d string) (string, int) {
+			if d == "/dev/sdb" {
+				return smartOf("FAILED!"), 8
+			}
+			return passes(d)
+		}, Refuse, D{"disks": []string{"/dev/sdb"}}, 16},
+		{"seventeen disks, one of the sixteen that does not say", 17, func(d string) (string, int) {
+			if d == "/dev/sdc" {
+				return "Unable to detect device type\n", 1
+			}
+			return passes(d)
+		}, Info, D{"why": "unavailable", "disks": []string{"/dev/sdc"}}, 16},
+		{"seventeen disks, one of the sixteen that sleeps", 17, func(d string) (string, int) {
+			if d == "/dev/sdc" {
+				return standbyText, 2
+			}
+			return passes(d)
+		}, Info, D{"why": "standby", "disks": []string{"/dev/sdc"}}, 16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBox(t)
+			smartStack(f, tc.disks, tc.answer)
+			got := checkOn(t, f, "smart_failed")
+			if got.Severity != tc.severity || got.Data["unknown"] != false {
+				t.Fatalf("finding = %+v", got)
+			}
+			for key, want := range tc.data {
+				have, _ := json.Marshal(got.Data[key])
+				wanted, _ := json.Marshal(want)
+				if string(have) != string(wanted) {
+					t.Errorf("data[%s] = %s, want %s", key, have, wanted)
+				}
+			}
+			if got.Severity == Info && got.Action != ActionNone {
+				t.Errorf("action = %q", got.Action)
+			}
+			if asked := smartctlAsked(f); asked != tc.asked {
+				t.Errorf("%d disks were asked, want %d", asked, tc.asked)
+			}
+		})
 	}
 }
 
@@ -365,9 +526,14 @@ func TestDiskBoot(t *testing.T) {
 		{name: "nothing left", setup: free(0), severity: Refuse, data: D{"free_mib": 0}},
 		{name: "a /boot that cannot be measured", setup: func(f *fakeProbe) { delete(f.free, "/boot") }, severity: Refuse, unknown: ReasonMissing},
 		{name: "Debian 11 does not ask how large /boot is", setup: size("", 1), severity: OK},
+		// the floor is the size of the filesystem, which is about 4 or 5 percent less than the partition of 768 MB
+		// that the notes of Debian 13 ask for (the inode tables and the journal are not room), and no room that
+		// is freed makes a filesystem larger: there is no action to take but the partition's
 		{name: "Debian 12: a /boot of 768 MiB", setup: after(debian12, size("805306368\n", 0)), severity: OK},
-		{name: "Debian 12: a /boot of a byte less", setup: after(debian12, size("805306367\n", 0)), severity: Refuse, data: D{"path": "/boot", "total_mib": 767, "needed_mib": 768}, action: ActionFreeDiskSpace},
-		{name: "Debian 12: a /boot of 512 MiB, with room in it", setup: after(debian12, size("536870912\n", 0)), severity: Refuse, data: D{"total_mib": 512}},
+		{name: "Debian 12: a filesystem on a partition of 768 MB", setup: after(debian12, size("735000000\n", 0)), severity: OK},
+		{name: "Debian 12: a filesystem of exactly 700 MiB", setup: after(debian12, size("734003200\n", 0)), severity: OK},
+		{name: "Debian 12: a filesystem of a byte less", setup: after(debian12, size("734003199\n", 0)), severity: Refuse, data: D{"path": "/boot", "total_mib": 699, "needed_mib": 700}, action: ActionNone, title: "too small"},
+		{name: "Debian 12: a /boot of 512 MiB, with room in it", setup: after(debian12, size("536870912\n", 0)), severity: Refuse, data: D{"total_mib": 512, "needed_mib": 700}, action: ActionNone},
 		{name: "Debian 12: low room is said before the size is asked", setup: after(debian12, free(10<<20), size("", 1)), severity: Refuse, data: D{"free_mib": 10}},
 		{name: "Debian 12: findmnt that fails", setup: after(debian12, size("", 1)), severity: Refuse, unknown: ReasonFailed},
 		{name: "Debian 12: no findmnt", setup: after(debian12, func(f *fakeProbe) { f.onError(ErrToolMissing, argvSize("/boot")...) }), severity: Refuse, unknown: ReasonToolMissing},

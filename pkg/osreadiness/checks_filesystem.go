@@ -21,7 +21,7 @@ func init() {
 		Check{Code: "root_zfs", Group: GroupFilesystem, Title: "The system is not on ZFS", Run: checkRootZFS},
 		Check{Code: "root_luks", Group: GroupFilesystem, Title: "The system is not on an encrypted disk", Timeout: 8 * time.Second, Run: checkRootLUKS},
 		Check{Code: "md_degraded", Group: GroupFilesystem, Title: "No software RAID array is degraded", Run: checkMdDegraded},
-		Check{Code: "smart_failed", Group: GroupFilesystem, Title: "The disk of the system is not failing", Timeout: 12 * time.Second, Run: checkSmart},
+		Check{Code: "smart_failed", Group: GroupFilesystem, Title: "The disk of the system is not failing", Timeout: 18 * time.Second, Run: checkSmart},
 		Check{Code: "log_on_tmpfs", Group: GroupFilesystem, Title: "The log of ReCasaOS is kept on a disk", Run: checkLogOnTmpfs},
 		Check{Code: "disk_root", Group: GroupFilesystem, Title: "There is room on / and /usr", Run: checkDiskRoot},
 		Check{Code: "disk_archives", Group: GroupFilesystem, Title: "There is room for the packages to download", Run: checkDiskArchives},
@@ -96,6 +96,18 @@ func checkCgroup(ctx context.Context, p Probe) Result {
 // which has both loaders and no grub-pc.
 var grubPackages = []string{"grub-pc", "grub-efi-amd64", "grub-efi-amd64-signed", "grub-cloud-amd64"}
 
+// bootloaderPackages are what dpkg-query is asked for: GRUB's packages, and systemd-boot's.
+var bootloaderPackages = append(slices.Clone(grubPackages), "systemd-boot")
+
+// systemdBootMarkers are the files that say systemd-boot starts the machine: its loader.conf, on the ESP
+// wherever it is mounted (Debian and Ubuntu mount it on /boot/efi, systemd on /efi, and /boot can be the
+// partition systemd-boot calls XBOOTLDR), and the variable that it sets in the firmware, which says what
+// loader started this boot.
+var systemdBootMarkers = []string{
+	"/boot/loader/loader.conf", "/boot/efi/loader/loader.conf", "/efi/loader/loader.conf",
+	"/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f",
+}
+
 const (
 	grubConfig = "/boot/grub/grub.cfg"
 	// espMinimum is the room the ESP needs: GRUB's files are rewritten there.
@@ -111,11 +123,26 @@ func checkBootloader(ctx context.Context, p Probe) Result {
 		}
 		return Result{Severity: Refuse, Title: title, Detail: detail, Data: data}
 	}
-	packages, err := installedPackages(ctx, p, grubPackages...)
+	packages, err := installedPackages(ctx, p, bootloaderPackages...)
 	if err != nil {
 		return unknown(err)
 	}
 	// only the packages that were asked for count, whatever else the tool printed
+	packages = slices.DeleteFunc(packages, func(pkg installedPackage) bool { return !slices.Contains(bootloaderPackages, pkg.Name) })
+	// systemd-boot is what starts the machine when its package is there, or the files it has: GRUB's package
+	// and its grub.cfg are left behind by the change, and are not what boots
+	systemdBoot := slices.ContainsFunc(packages, func(pkg installedPackage) bool { return pkg.Name == "systemd-boot" })
+	for _, marker := range systemdBootMarkers {
+		found, err := exists(ctx, p, marker)
+		if err != nil {
+			return unknown(err)
+		}
+		systemdBoot = systemdBoot || found
+	}
+	if systemdBoot {
+		return refuse("systemd_boot", "The boot loader is systemd-boot",
+			"The upgrade is proven with GRUB, which Debian and Ubuntu install. This machine starts with systemd-boot, whose files the upgrade does not look after: there is no way here to know that the new kernel would be started.", nil)
+	}
 	packages = slices.DeleteFunc(packages, func(pkg installedPackage) bool { return !slices.Contains(grubPackages, pkg.Name) })
 	config, err := exists(ctx, p, grubConfig)
 	if err != nil {
@@ -269,6 +296,12 @@ func rootDevice(ctx context.Context, p Probe) (string, error) {
 		}
 		// a btrfs root says its subvolume, in brackets
 		source, _, _ = strings.Cut(firstLine(out.Text), "[")
+		source = strings.TrimSpace(source)
+		// findmnt names the device the kernel's /dev/root is, or it is no answer: a line that is not a
+		// device (a warning before it, nothing at all) is not a root that is on none
+		if !validDevice(source) {
+			return "", errUnexpectedOutput
+		}
 	}
 	switch {
 	case !strings.HasPrefix(source, "/dev/"):
@@ -304,10 +337,15 @@ func blockChain(ctx context.Context, p Probe, device string) ([]blockDevice, err
 	var chain []blockDevice
 	for _, line := range strings.Split(out.Text, "\n") {
 		m := lsblkLine.FindStringSubmatch(strings.TrimRight(line, "\r"))
-		if m == nil || len(chain) >= maxBlockDevices {
+		if m == nil {
 			continue
 		}
 		if d := (blockDevice{m[1], m[2]}); !slices.Contains(chain, d) {
+			// a stack of more devices than are read is read in part: an encrypted volume or a disk past the
+			// bound would be passed over, and that is not an answer
+			if len(chain) >= maxBlockDevices {
+				return nil, ErrTooLarge
+			}
 			chain = append(chain, d)
 		}
 	}
@@ -339,34 +377,57 @@ func checkRootLUKS(ctx context.Context, p Probe) Result {
 	}
 }
 
-// mdStatus is a line of /proc/mdstat that says how many of an array's members work: "[2/1] [U_]".
+// mdArray is the line of an array in /proc/mdstat: its name, and its state ("active", "inactive", and
+// "active (read-only)" or "active (auto-read-only)" for one that is only read from), then what it is made of.
+// mdStatus is the line that says how many of its members work: "[2/1] [U_]".
 var (
-	mdArray  = regexp.MustCompile(`^(md[0-9]{1,5})\s*:`)
+	mdArray  = regexp.MustCompile(`^(md[0-9]{1,5})\s*:\s*(\S*)`)
 	mdStatus = regexp.MustCompile(`\[([0-9]{1,5})/([0-9]{1,5})\]\s*\[([U_]{1,64})\]`)
 )
 
-// degradedArrays are the arrays of /proc/mdstat that have lost a member: fewer members work than
-// the array has, or one of the marks is a "_".
+// degradedArrays are the arrays of /proc/mdstat that are not whole: fewer members work than the array has,
+// or one of the marks is a "_", or the array is not running ("inactive": its members are there and it is
+// not assembled). The container of a RAID that the firmware keeps (Intel's, DDF: "super external:") is
+// inactive by design, its volumes are the arrays, and it is not one.
 func degradedArrays(text string) []string {
 	var degraded []string
-	current := ""
+	var current struct {
+		name                 string
+		notRunning, external bool
+	}
+	add := func(name string) {
+		if !slices.Contains(degraded, name) {
+			degraded = append(degraded, name)
+		}
+	}
+	// the array that was being read is done: one that is not running is degraded unless it is a container
+	finish := func() {
+		if current.name != "" && current.notRunning && !current.external {
+			add(current.name)
+		}
+		current.name = ""
+	}
 	for _, line := range strings.Split(text, "\n") {
 		if m := mdArray.FindStringSubmatch(line); m != nil {
-			current = m[1]
+			finish()
+			current.name, current.notRunning, current.external = m[1], m[2] != "active", false
 			continue
 		}
-		if current == "" {
+		if current.name == "" {
 			continue
+		}
+		if strings.Contains(line, "super external:") {
+			current.external = true
 		}
 		if m := mdStatus.FindStringSubmatch(line); m != nil {
 			total, _ := strconv.Atoi(m[1])
 			working, _ := strconv.Atoi(m[2])
-			if (working < total || strings.Contains(m[3], "_")) && !slices.Contains(degraded, current) {
-				degraded = append(degraded, current)
+			if working < total || strings.Contains(m[3], "_") {
+				add(current.name)
 			}
-			current = ""
 		}
 	}
+	finish()
 	slices.Sort(degraded)
 	return degraded
 }
@@ -395,8 +456,8 @@ var (
 	smartStatus = regexp.MustCompile(`(?m)^SMART Health Status:\s*(\S+)`)
 )
 
-// maxSmartDisks is how many disks are asked: a stack of more is not one of a ReCasaOS box.
-const maxSmartDisks = 4
+// maxSmartDisks is how many disks are asked: a stack of more is said to have been asked in part.
+const maxSmartDisks = 16
 
 type smartState int
 
@@ -404,11 +465,18 @@ const (
 	smartUnavailable smartState = iota
 	smartPassed
 	smartFailed
+	// smartAsleep is a disk that sleeps, and that "-n standby" did not wake
+	smartAsleep
 )
 
+// smartStandby is what smartctl says of a disk that sleeps when it was asked not to wake it: "Device is in
+// STANDBY mode, exit(2)" (or SLEEP, or STANDBY_Y and STANDBY_Z), at the start of a line, with the exit status
+// of "the device is in a low-power mode" (bit 1).
+var smartStandby = regexp.MustCompile(`(?m)^Device is in (?:STANDBY\w*|SLEEP) mode`)
+
 // smartHealth is what "smartctl -n standby -H" says of a disk: it passed, it failed (the text says so, or the
-// exit status has its bit 3, "disk failing"), or it did not say (a virtual disk, a controller that
-// does not pass the questions on).
+// exit status has its bit 3, "disk failing"), it sleeps and was not woken, or it did not say (a virtual
+// disk, a controller that does not pass the questions on).
 func smartHealth(out Output) smartState {
 	state := smartUnavailable
 	for _, re := range []*regexp.Regexp{smartResult, smartStatus} {
@@ -424,6 +492,9 @@ func smartHealth(out Output) smartState {
 	if out.ExitCode > 0 && out.ExitCode&8 != 0 {
 		return smartFailed
 	}
+	if state == smartUnavailable && out.ExitCode&2 != 0 && smartStandby.MatchString(out.Text) {
+		return smartAsleep
+	}
 	return state
 }
 
@@ -435,7 +506,7 @@ func checkSmart(ctx context.Context, p Probe) Result {
 		}
 		return Result{
 			Severity: Info, Title: "The health of the disk was not checked",
-			Detail: "The disk of the system did not say whether it is failing (it is a virtual disk, or its controller does not pass the question on), or smartctl is not installed here: this report cannot tell.",
+			Detail: "The disk of the system did not say whether it is failing (it is a virtual disk, or its controller does not pass the question on), it sleeps and was not woken to be asked, the stack it is on has more disks than are asked, or smartctl is not installed here: this report cannot tell.",
 			Data:   data, Action: ActionNone,
 		}
 	}
@@ -451,15 +522,22 @@ func checkSmart(ctx context.Context, p Probe) Result {
 		return unknownFor(err)
 	}
 	var disks []string
+	partial := false
 	for _, d := range chain {
-		if d.Type == "disk" && validDevice(d.Name) && !slices.Contains(disks, d.Name) && len(disks) < maxSmartDisks {
-			disks = append(disks, d.Name)
+		if d.Type != "disk" || !validDevice(d.Name) || slices.Contains(disks, d.Name) {
+			continue
 		}
+		if len(disks) >= maxSmartDisks {
+			// a stack of more disks than are asked: what is said is that it was asked in part
+			partial = true
+			continue
+		}
+		disks = append(disks, d.Name)
 	}
 	if len(disks) == 0 {
 		return notChecked("no_disk", nil)
 	}
-	var failed, unavailable []string
+	var failed, unavailable, asleep []string
 	for _, disk := range disks {
 		out, err := p.Run(ctx, "smartctl", "-n", "standby", "-H", disk)
 		if isToolMissing(err) {
@@ -473,6 +551,8 @@ func checkSmart(ctx context.Context, p Probe) Result {
 			failed = append(failed, disk)
 		case smartUnavailable:
 			unavailable = append(unavailable, disk)
+		case smartAsleep:
+			asleep = append(asleep, disk)
 		}
 	}
 	switch {
@@ -484,6 +564,11 @@ func checkSmart(ctx context.Context, p Probe) Result {
 		}
 	case len(unavailable) > 0:
 		return notChecked("unavailable", unavailable)
+	case len(asleep) > 0:
+		// a disk that sleeps is not woken for a question: it was not checked, and it is not a pass
+		return notChecked("standby", asleep)
+	case partial:
+		return notChecked("partial", nil)
 	}
 	return pass()
 }
@@ -529,7 +614,10 @@ const (
 	rootMinimum     = 2 * gibibyte
 	archivesMinimum = gibibyte + gibibyte/2
 	bootMinimum     = 300 * mebibyte
-	bootTotal       = 768 * mebibyte
+	// bootTotal is the size of the filesystem of /boot that Debian 13 asks of a partition of 768 MB: the
+	// filesystem has about 4 or 5 percent less than the partition (the inode tables and the journal are not
+	// room), and findmnt says the filesystem's.
+	bootTotal = 700 * mebibyte
 )
 
 // roomResult is the refusal of a place that has too little room.
@@ -584,7 +672,7 @@ func checkDiskBoot(ctx context.Context, p Probe) Result {
 	if SessionOf(ctx).HopOf() != HopDebian12to13 {
 		return pass()
 	}
-	// Debian 13 asks for a /boot that is 768 MiB, with 300 MiB of them free
+	// Debian 13 asks for a /boot of 768 MB, of which 300 MiB are free
 	total, err := sizeOf(ctx, p, "/boot")
 	if err != nil {
 		return unknownFor(err)
@@ -592,8 +680,9 @@ func checkDiskBoot(ctx context.Context, p Probe) Result {
 	if total < bootTotal {
 		return Result{
 			Severity: Refuse, Title: "/boot is too small for the next release",
-			Detail: "Debian 13 asks for a /boot of at least 768 MiB, with about 300 MiB free: its kernels and initial RAM disks are larger. A smaller one has to be made larger first.",
-			Data:   D{"path": "/boot", "total_mib": total / mebibyte, "needed_mib": uint64(bootTotal / mebibyte)}, Action: ActionFreeDiskSpace,
+			// no room that is freed makes the filesystem larger: the partition has to be
+			Detail: "Debian 13 asks for a /boot partition of 768 MB, with about 300 MiB free: its kernels and initial RAM disks are larger. The filesystem of this one has " + strconv.FormatUint(total/mebibyte, 10) + " MiB, less than the 700 MiB that such a partition has, and freeing room in it does not make it larger: the partition has to be made larger first.",
+			Data:   D{"path": "/boot", "total_mib": total / mebibyte, "needed_mib": uint64(bootTotal / mebibyte)}, Action: ActionNone,
 		}
 	}
 	return pass()

@@ -88,7 +88,7 @@ func furnish(f *fakeProbe) {
 	} {
 		f.free[path] = free
 	}
-	f.installed(pkg("grub-cloud-amd64", "0.0.5")+pkg("grub-efi-amd64-signed", "1+2.06+3~deb11u7"), grubPackages...)
+	f.installed(pkg("grub-cloud-amd64", "0.0.5")+pkg("grub-efi-amd64-signed", "1+2.06+3~deb11u7"), bootloaderPackages...)
 	f.on("cgroup2fs\n", 0, argvCgroup...)
 	f.on(lsblkOf("/dev/sda1:part", "/dev/sda:disk"), 0, argvLsblk("/dev/sda1")...)
 	f.on(smartOf("PASSED"), 0, argvSmart("/dev/sda")...)
