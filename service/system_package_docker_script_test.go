@@ -31,18 +31,37 @@ const (
 const fakeAptGet = `#!/bin/sh
 d=$FAKE_DIR
 echo "apt-get $*" >> "$d/calls.log"
+# apt run with -y refuses to change what is on hold unless it is told it may
+refuses_held() {
+	case " $* " in *" --allow-change-held-packages "*) return 1 ;; esac
+	for f in "$d"/status/*; do
+		[ -f "$f" ] || continue
+		case $(cat "$f") in h[!nc]*) return 0 ;; esac
+	done
+	return 1
+}
 case " $* " in
 *" -s "*)
 	cat "$d/plan.txt" 2>/dev/null
 	exit "$(cat "$d/sim.rc" 2>/dev/null || echo 0)" ;;
 *" --download-only "*)
+	if refuses_held "$@"; then
+		echo "E: Held packages were changed and -y was used without --allow-change-held-packages."
+		exit 100
+	fi
 	exit "$(cat "$d/download.rc" 2>/dev/null || echo 0)" ;;
 *" update "*)
 	exit 0 ;;
 esac
+if refuses_held "$@"; then
+	echo "E: Held packages were changed and -y was used without --allow-change-held-packages."
+	exit 100
+fi
 rc=$(cat "$d/install.rc" 2>/dev/null || echo 0)
 if [ "$rc" -eq 0 ]; then
 	: > "$d/installed"
+	# a hold that the install does not survive
+	for n in $(cat "$d/install.unholds" 2>/dev/null); do echo ii > "$d/status/$n"; done
 	cp "$d/down.after.install" "$d/down.left" 2>/dev/null
 	# the packages apt brings in with the ones it was asked for: installed by the transaction
 	for n in $(cat "$d/install.adds" 2>/dev/null); do echo "$n=1.0.0-1" > "$d/dpkg/$n"; done
@@ -78,6 +97,19 @@ exit 0
 const fakeDpkgQuery = `#!/bin/sh
 d=$FAKE_DIR
 echo "dpkg-query $*" >> "$d/calls.log"
+case "$*" in
+*Status-Abbrev*)
+	# the state of each package that was asked for, as dpkg abbreviates it: want and state, and a
+	# blank for the error flag; "hi" is on hold. status.extra is what a hostile dpkg-query might add.
+	for n in "$@"; do
+		case $n in -*) continue ;; esac
+		st=$(cat "$d/status/$n" 2>/dev/null)
+		if [ -z "$st" ] && [ -f "$d/dpkg/$n" ]; then st=ii; fi
+		if [ -n "$st" ]; then printf '%s   %s\n' "$st" "$n"; fi
+	done
+	cat "$d/status.extra" 2>/dev/null
+	exit 0 ;;
+esac
 for last; do :; done
 cat "$d/dpkg/$last" 2>/dev/null || exit 1
 `
@@ -390,8 +422,15 @@ func TestTheUnitUpdatesTheOwnersDocker(t *testing.T) {
 			t.Errorf("the log lacks %q:\n%s", line, r.log)
 		}
 	}
-	if got, want := strings.Join(markerKinds(r.log), " "), "STARTED PREVIOUS DOWNLOADED INSTALLED DAEMON NOTRETURNED SUCCESS"; got != want {
+	if got, want := strings.Join(markerKinds(r.log), " "), "STARTED HELD PREVIOUS DOWNLOADED INSTALLED DAEMON NOTRETURNED HOLDS SUCCESS"; got != want {
 		t.Errorf("markers = %s, want %s", got, want)
+	}
+	// nothing is held, and the unit says so: no hold to say is kept, no word to go ahead of one
+	if r.run.Held == nil || len(r.run.Held) != 0 || r.run.Holds == nil || len(r.run.Holds) != 0 || r.run.HoldsKept() {
+		t.Errorf("held = %#v, holds = %#v", r.run.Held, r.run.Holds)
+	}
+	if n := r.mentions("allow-change-held-packages"); n != 0 {
+		t.Errorf("apt was told it may change what is held, on a box that holds nothing: %v", r.calls)
 	}
 
 	// apt was asked: the simulation of the guard, the download, the install, in that order, with
@@ -606,7 +645,7 @@ func TestTheUnitInstallsTheNewDependenciesOfTheNewEngine(t *testing.T) {
 	if rollback := dockerpkg.RollbackCommand(r.run.Previous); strings.Contains(rollback, "nftables") {
 		t.Errorf("rollback = %q: a package that was not there cannot be put back", rollback)
 	}
-	if got, want := strings.Join(markerKinds(r.log), " "), "STARTED PREVIOUS DOWNLOADED INSTALLED DAEMON NOTRETURNED SUCCESS"; got != want {
+	if got, want := strings.Join(markerKinds(r.log), " "), "STARTED HELD PREVIOUS DOWNLOADED INSTALLED DAEMON NOTRETURNED HOLDS SUCCESS"; got != want {
 		t.Errorf("markers = %s, want %s", got, want)
 	}
 }
@@ -899,5 +938,305 @@ func TestTheUnitsDefaultsAreTheWaitsOfTheSpec(t *testing.T) {
 func TestTheScriptNeverWritesAPlanLine(t *testing.T) {
 	if strings.Contains(dockerUpdateScript, "PLAN") {
 		t.Error("the script mentions a PLAN marker, which only the core writes")
+	}
+}
+
+// ---- packages on hold ------------------------------------------------------------------------
+//
+// The unit goes ahead of a hold when it is told to (CASAOS_DU_ALLOW_HELD=1), exactly as the terminal
+// command with --allow-change-held-packages would: that flag is on the guard's simulation, the
+// download and the install, and nowhere else. The hold is not touched: the unit says in the log which
+// packages were on hold when it started (HELD) and which are when it ends (HOLDS).
+
+// hold puts those packages on hold, as dpkg abbreviates it ("hi": want hold, state installed).
+func (b *scriptBox) hold(names ...string) {
+	b.t.Helper()
+	for _, name := range names {
+		b.set("status/"+name, "hi\n")
+	}
+}
+
+const (
+	heldFlag     = "--allow-change-held-packages"
+	ownersPins   = "containerd.io=2.1.4-1 docker-ce=" + debian29 + " docker-ce-cli=" + debian29
+	simulateHead = "apt-get -s --no-remove -o Debug::NoLocking=true -o Dpkg::Use-Pty=0 install --only-upgrade --no-install-recommends "
+	downloadHead = "apt-get -y --no-remove --download-only -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends "
+	installHead  = "apt-get -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends "
+)
+
+func (r scriptRun) aptCalls() []string {
+	var calls []string
+	for _, call := range r.calls {
+		if strings.HasPrefix(call, "apt-get ") {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
+// indexOfCall is the position of the first (or last) call that has the text in it, -1 for none.
+func (r scriptRun) indexOfCall(text string, last bool) int {
+	found := -1
+	for i, call := range r.calls {
+		if strings.Contains(call, text) {
+			found = i
+			if !last {
+				return i
+			}
+		}
+	}
+	return found
+}
+
+func holdLine(kind string, names string) string {
+	return "CASAOS_DOCKER_UPDATE_" + kind + " " + scriptNonce + " " + names
+}
+
+func TestTheUnitGoesAheadOfAHoldItWasToldTo(t *testing.T) {
+	b := newScriptBox(t)
+	b.hold("docker-ce", "docker-ce-cli")
+	b.env["CASAOS_DU_ALLOW_HELD"] = "1"
+	r := b.run()
+	checkLogShape(t, r.log)
+	if r.exit != 0 || r.run.Terminal != dockerpkg.TerminalSuccess || r.run.DaemonVersion != "29.8.0" {
+		t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+	}
+
+	// the flag is on the three calls of apt that look at or change what is held, and on them alone
+	want := []string{
+		simulateHead + heldFlag + " " + ownersPins,
+		downloadHead + heldFlag + " " + ownersPins,
+		installHead + heldFlag + " " + ownersPins,
+	}
+	if got := r.aptCalls(); !reflect.DeepEqual(got, want) {
+		t.Errorf("apt-get calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for _, call := range r.calls {
+		if !strings.HasPrefix(call, "apt-get ") && strings.Contains(call, heldFlag) {
+			t.Errorf("the flag is on %q, which is not apt's", call)
+		}
+	}
+	if n := r.called("apt-get update"); n != 0 {
+		t.Error("the script refreshed the index")
+	}
+
+	// what the log says: the holds at the start, the holds at the end, the hold still there
+	if got, want := strings.Join(markerKinds(r.log), " "), "STARTED HELD PREVIOUS DOWNLOADED INSTALLED DAEMON NOTRETURNED HOLDS SUCCESS"; got != want {
+		t.Errorf("markers = %s, want %s", got, want)
+	}
+	for _, line := range []string{holdLine("HELD", "docker-ce docker-ce-cli"), holdLine("HOLDS", "docker-ce docker-ce-cli")} {
+		if !strings.Contains(r.log, "\n"+line+"\n") {
+			t.Errorf("the log lacks %q:\n%s", line, r.log)
+		}
+	}
+	if !reflect.DeepEqual(r.run.Held, []string{"docker-ce", "docker-ce-cli"}) || !reflect.DeepEqual(r.run.Holds, []string{"docker-ce", "docker-ce-cli"}) || !r.run.HoldsKept() {
+		t.Errorf("held = %v, holds = %v, kept = %v", r.run.Held, r.run.Holds, r.run.HoldsKept())
+	}
+
+	// the unit asked dpkg, for the names it may touch, before it did anything and after it was done
+	query := "dpkg-query -W -f=${db:Status-Abbrev} ${Package}\\n containerd.io docker-ce docker-ce-cli"
+	if r.indexOfCall(query, false) < 0 {
+		t.Fatalf("no query of the holds: %v", r.calls)
+	}
+	if first, apt := r.indexOfCall("Status-Abbrev", false), r.indexOfCall("apt-get", false); first > apt {
+		t.Errorf("the holds were first looked at after apt ran: %v", r.calls)
+	}
+	if last, apt := r.indexOfCall("Status-Abbrev", true), r.indexOfCall("apt-get -y --no-remove -o", true); last < apt {
+		t.Errorf("the holds were last looked at before the install: %v", r.calls)
+	}
+}
+
+func TestTheUnitDoesNotChangeAHoldItWasNotToldToGoAheadOf(t *testing.T) {
+	// the owner's word was not given: apt -y refuses to change a held package, and the update is a
+	// download that failed, with nothing changed and the hold where it was
+	b := newScriptBox(t)
+	b.hold("docker-ce")
+	r := b.run()
+	checkLogShape(t, r.log)
+	if r.exit != 1 || r.run.Terminal != dockerpkg.TerminalFailed || r.run.FailReason != dockerpkg.FailDownload {
+		t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+	}
+	if n := r.mentions(heldFlag); n != 0 {
+		t.Errorf("apt was told it may change what is held without the word: %v", r.calls)
+	}
+	if changes := r.aptChanges(); len(changes) != 1 || !strings.Contains(changes[0], "--download-only") {
+		t.Errorf("apt-get changes = %v: only the download that was refused", changes)
+	}
+	if _, err := os.Stat(filepath.Join(b.dir, "installed")); err == nil {
+		t.Error("something was installed")
+	}
+	if got, want := strings.Join(markerKinds(r.log), " "), "STARTED HELD PREVIOUS HOLDS FAILED"; got != want {
+		t.Errorf("markers = %s, want %s", got, want)
+	}
+	if !reflect.DeepEqual(r.run.Held, []string{"docker-ce"}) || !r.run.HoldsKept() {
+		t.Errorf("held = %v, holds = %v", r.run.Held, r.run.Holds)
+	}
+}
+
+func TestTheUnitSaysWhenAHoldDidNotSurviveTheInstall(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		unhold string
+		holds  string
+	}{
+		{"one of two", "docker-ce\n", "docker-ce-cli"},
+		{"both", "docker-ce\ndocker-ce-cli\n", "-"},
+	} {
+		b := newScriptBox(t)
+		b.hold("docker-ce", "docker-ce-cli")
+		b.env["CASAOS_DU_ALLOW_HELD"] = "1"
+		b.set("install.unholds", c.unhold)
+		r := b.run()
+		checkLogShape(t, r.log)
+		// the update went through, and what it did to the holds is told
+		if r.exit != 0 || r.run.Terminal != dockerpkg.TerminalSuccess {
+			t.Fatalf("%s: exit = %d, run = %#v\n%s", c.name, r.exit, r.run, r.log)
+		}
+		if !strings.Contains(r.log, "\n"+holdLine("HELD", "docker-ce docker-ce-cli")+"\n") || !strings.Contains(r.log, "\n"+holdLine("HOLDS", c.holds)+"\n") {
+			t.Errorf("%s: the log:\n%s", c.name, r.log)
+		}
+		if r.run.HoldsKept() {
+			t.Errorf("%s: the hold is said to be kept: held %v, holds %v", c.name, r.run.Held, r.run.Holds)
+		}
+	}
+}
+
+// Whatever ends the run, the holds are said before the last line: the page tells the owner whether the
+// hold is still there after a failure too.
+func TestTheUnitSaysTheHoldsWhateverEndsTheRun(t *testing.T) {
+	// a plan that is not the confirmed one, an install that fails, a daemon that does not come back
+	cases := map[string]struct {
+		setup func(*scriptBox)
+		kinds string
+		why   string
+	}{
+		"the guard refuses":  {func(b *scriptBox) { b.set("plan.txt", ownerContaind+ownerDockerCE+ownerCLI+simLibc) }, "STARTED HELD PREVIOUS GUARD HOLDS FAILED", dockerpkg.FailGuard},
+		"the download fails": {func(b *scriptBox) { b.set("download.rc", "100") }, "STARTED HELD PREVIOUS HOLDS FAILED", dockerpkg.FailDownload},
+		"the install fails":  {func(b *scriptBox) { b.set("install.rc", "100") }, "STARTED HELD PREVIOUS DOWNLOADED HOLDS FAILED", dockerpkg.FailInstall},
+		"the daemon does not come back": {func(b *scriptBox) {
+			b.set("broken", "")
+			writeFile(b.t, filepath.Join(b.dir, "bin", "systemctl"), "#!/bin/sh\necho \"systemctl $*\" >> \"$FAKE_DIR/calls.log\"\nexit 0\n", 0o755)
+		}, "STARTED HELD PREVIOUS DOWNLOADED INSTALLED HOLDS FAILED", dockerpkg.FailDaemon},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newScriptBox(t)
+			b.hold("docker-ce", "docker-ce-cli")
+			b.env["CASAOS_DU_ALLOW_HELD"] = "1"
+			c.setup(b)
+			r := b.run()
+			checkLogShape(t, r.log)
+			if r.exit != 1 || r.run.FailReason != c.why {
+				t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+			}
+			if got := strings.Join(markerKinds(r.log), " "); got != c.kinds {
+				t.Errorf("markers = %s, want %s", got, c.kinds)
+			}
+			if !r.run.HoldsKept() || !reflect.DeepEqual(r.run.Holds, []string{"docker-ce", "docker-ce-cli"}) {
+				t.Errorf("held = %v, holds = %v", r.run.Held, r.run.Holds)
+			}
+		})
+	}
+}
+
+func TestTheUnitSaysNothingOfHoldsItWasNotAskedAboutBeforeItTrustsItsLists(t *testing.T) {
+	// a list that is not trusted is refused before anything is looked at: no HELD, and no HOLDS to go with it
+	b := newScriptBox(t)
+	b.hold("docker-ce")
+	b.env["CASAOS_DU_ALLOW_HELD"] = "1"
+	b.env["CASAOS_DU_PINS"] = "docker-ce=5:29.8.0;touch${IFS}x"
+	r := b.run()
+	checkLogShape(t, r.log)
+	if r.exit != 1 || r.run.FailReason != dockerpkg.FailGuard || strings.Contains(r.log, "_HELD") || strings.Contains(r.log, "_HOLDS") {
+		t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+	}
+	if r.called("dpkg-query") != 0 || r.called("apt-get") != 0 {
+		t.Errorf("something ran: %v", r.calls)
+	}
+}
+
+func TestTheUnitRefusesAWordThatIsNotOneAndRunsNothing(t *testing.T) {
+	for _, word := range []string{"0", "yes", "true", "11", " 1", "1 ", "--allow-change-held-packages", "1\n1", "$(reboot)", "1;touch x", "${CASAOS_DU_NONCE}"} {
+		b := newScriptBox(t)
+		b.hold("docker-ce")
+		b.env["CASAOS_DU_ALLOW_HELD"] = word
+		r := b.run()
+		checkLogShape(t, r.log)
+		if r.exit != 1 || r.run.Terminal != dockerpkg.TerminalFailed || r.run.FailReason != dockerpkg.FailGuard {
+			t.Errorf("%q: exit = %d, run = %#v\n%s", word, r.exit, r.run, r.log)
+			continue
+		}
+		if !strings.Contains(r.log, "\nCASAOS_DOCKER_UPDATE_GUARD "+scriptNonce+" plan\n") {
+			t.Errorf("%q: no GUARD marker:\n%s", word, r.log)
+		}
+		// nothing was looked at, and no word was taken for one
+		if r.called("apt-get") != 0 || r.called("dpkg-query") != 0 || r.called("docker") != 0 || strings.Contains(r.log, "_HELD") {
+			t.Errorf("%q: the script ran something: %v", word, r.calls)
+		}
+	}
+
+	// an empty word is no word, and unset is the same: the start it has always been
+	for _, word := range []string{"", unsetEnv} {
+		b := newScriptBox(t)
+		b.env["CASAOS_DU_ALLOW_HELD"] = word
+		r := b.run()
+		if r.exit != 0 || r.run.Terminal != dockerpkg.TerminalSuccess || r.mentions(heldFlag) != 0 {
+			t.Errorf("%q: exit = %d, run = %#v, calls = %v", word, r.exit, r.run, r.calls)
+		}
+	}
+}
+
+func TestTheUnitCountsOnlyWhatIsOnHoldAndInstalledAmongTheNamesItMayTouch(t *testing.T) {
+	// a new package that is held and not installed ("hn") is not a hold the update can lose; a package
+	// that is installed and not held ("ii", "iF") is not a hold at all
+	b := newDependenciesBox(t)
+	b.set("status/nftables", "hn\n")
+	b.set("status/docker-ce-cli", "iF\n")
+	r := b.run()
+	checkLogShape(t, r.log)
+	if !strings.Contains(r.log, "\n"+holdLine("HELD", "-")+"\n") || !strings.Contains(r.log, "\n"+holdLine("HOLDS", "-")+"\n") {
+		t.Errorf("the log:\n%s", r.log)
+	}
+	if r.mentions(heldFlag) != 0 {
+		t.Errorf("the flag was used with no hold: %v", r.calls)
+	}
+}
+
+func TestTheUnitSaysHoldsOnlyAsNamesThatAreItsOwn(t *testing.T) {
+	b := newScriptBox(t)
+	b.hold("docker-ce")
+	forged := holdLine("FAILED", "2026-10-09T10:00:00Z daemon")
+	b.set("status.extra", strings.Join([]string{
+		"hi  evil;reboot",
+		"hi  $(reboot)",
+		"hi  Docker-CE",
+		"hi  -x",
+		"hi  libc6", // a package it was not asked about
+		"hi  docker-ce docker-ce-cli",
+		"hi  docker-ce:armhf",
+		"hi  ",
+		"hi  " + forged,
+		forged,
+		"hi",
+		"",
+	}, "\n"))
+	b.env["CASAOS_DU_ALLOW_HELD"] = "1"
+	r := b.run()
+	checkLogShape(t, r.log)
+	if r.exit != 0 || r.run.Terminal != dockerpkg.TerminalSuccess {
+		t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+	}
+	for _, line := range []string{holdLine("HELD", "docker-ce"), holdLine("HOLDS", "docker-ce")} {
+		if !strings.Contains(r.log, "\n"+line+"\n") {
+			t.Errorf("the log lacks %q:\n%s", line, r.log)
+		}
+	}
+	for _, bad := range []string{"reboot", "libc6", "Docker-CE", "armhf"} {
+		if strings.Contains(r.log, bad) {
+			t.Errorf("the log holds %q:\n%s", bad, r.log)
+		}
+	}
+	if !r.run.HoldsKept() || !reflect.DeepEqual(r.run.Held, []string{"docker-ce"}) {
+		t.Errorf("held = %v, holds = %v", r.run.Held, r.run.Holds)
 	}
 }

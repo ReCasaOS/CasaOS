@@ -80,7 +80,7 @@ func (s *startedBox) noLog(t *testing.T) {
 
 func TestStartDockerUpdateOwnersCase(t *testing.T) {
 	s := newStartBox(t, nil)
-	status, err := s.updater.startDockerUpdate(s.planID)
+	status, err := s.updater.startDockerUpdate(s.planID, false)
 	if err != nil {
 		t.Fatalf("startDockerUpdate() error = %v", err)
 	}
@@ -173,7 +173,7 @@ func newStartBoxWithDependencies(t *testing.T) *startedBox {
 
 func TestStartDockerUpdateWithTheNewDependencies(t *testing.T) {
 	s := newStartBoxWithDependencies(t)
-	if _, err := s.updater.startDockerUpdate(s.planID); err != nil {
+	if _, err := s.updater.startDockerUpdate(s.planID, false); err != nil {
 		t.Fatalf("startDockerUpdate() error = %v", err)
 	}
 	if s.started.count != 1 {
@@ -202,7 +202,7 @@ func TestStartDockerUpdateSaysChangedWhenTheDependenciesAreNotTheConfirmedOnes(t
 	// confirmed without nftables, and Docker now needs it: the owner reconfirms
 	s := newStartBoxWithDependencies(t)
 	s.planID = ownerPlanID(t)
-	status, err := s.updater.startDockerUpdate(s.planID)
+	status, err := s.updater.startDockerUpdate(s.planID, false)
 	if !errors.As(err, &refusal) || refusal.Code != "changed" || status.ErrorCode != "changed" || s.started.count != 0 {
 		t.Fatalf("a dependency appeared: error = %v, status = %#v, started %d", err, status, s.started.count)
 	}
@@ -211,21 +211,21 @@ func TestStartDockerUpdateSaysChangedWhenTheDependenciesAreNotTheConfirmedOnes(t
 	// confirmed with the dependencies, and one is gone
 	s = newStartBoxWithDependencies(t)
 	s.box.enginePlans["containerd.io"] = strings.Replace(ownerNewDependencies, "Inst libedit2 (3.1-20191231-2+b1 Debian:11.11/oldstable [amd64])\n", "", 1) + ownerContaind
-	if _, err := s.updater.startDockerUpdate(s.planID); !errors.As(err, &refusal) || refusal.Code != "changed" || s.started.count != 0 {
+	if _, err := s.updater.startDockerUpdate(s.planID, false); !errors.As(err, &refusal) || refusal.Code != "changed" || s.started.count != 0 {
 		t.Fatalf("a dependency went: error = %v, started %d", err, s.started.count)
 	}
 
 	// ... and one has a newer version
 	s = newStartBoxWithDependencies(t)
 	s.box.enginePlans["containerd.io"] = strings.Replace(ownerNewDependencies, "Inst nftables (0.9.8-3.1+deb11u2", "Inst nftables (0.9.8-3.1+deb11u3", 1) + ownerContaind
-	if _, err := s.updater.startDockerUpdate(s.planID); !errors.As(err, &refusal) || refusal.Code != "changed" || s.started.count != 0 {
+	if _, err := s.updater.startDockerUpdate(s.planID, false); !errors.As(err, &refusal) || refusal.Code != "changed" || s.started.count != 0 {
 		t.Fatalf("a dependency moved: error = %v, started %d", err, s.started.count)
 	}
 
 	// and a dependency that Docker's update must not bring is a refusal of the plan, not a change
 	s = newStartBoxWithDependencies(t)
 	s.box.enginePlans["containerd.io"] += "Inst docker.io (26.1.5 Debian:11/stable [amd64])\n"
-	if _, err := s.updater.startDockerUpdate(s.planID); !errors.As(err, &refusal) || refusal.Code != "plan" || !reflect.DeepEqual(refusal.Detail, []string{"docker.io"}) || s.started.count != 0 {
+	if _, err := s.updater.startDockerUpdate(s.planID, false); !errors.As(err, &refusal) || refusal.Code != "plan" || !reflect.DeepEqual(refusal.Detail, []string{"docker.io"}) || s.started.count != 0 {
 		t.Fatalf("a docker.io: error = %v, started %d", err, s.started.count)
 	}
 }
@@ -236,7 +236,7 @@ func TestStartDockerUpdateIsTheSameThroughTheService(t *testing.T) {
 	system := &systemService{packageUpdates: s.updater}
 	// the owner's box can be asked once main tells how
 	system.SetAppOperations(func(context.Context) ([]string, error) { return nil, nil })
-	if _, err := system.StartDockerUpdate(s.planID); err != nil || s.started.count != 1 {
+	if _, err := system.StartDockerUpdate(s.planID, false); err != nil || s.started.count != 1 {
 		t.Fatalf("StartDockerUpdate() error = %v, started %d", err, s.started.count)
 	}
 	logAgeOf(s.updater, time.Second)
@@ -256,7 +256,7 @@ func TestStartDockerUpdateRefusesWhatTheCheckRefuses(t *testing.T) {
 			if c.tweak != nil {
 				c.tweak(s.updater)
 			}
-			status, err := s.updater.startDockerUpdate(s.planID)
+			status, err := s.updater.startDockerUpdate(s.planID, false)
 			var refusal *DockerUpdateRefusal
 			if !errors.As(err, &refusal) || refusal.Code != c.code {
 				t.Fatalf("error = %v, want a refusal %q", err, c.code)
@@ -282,7 +282,7 @@ func TestStartDockerUpdateRefusesWhatTheCheckRefuses(t *testing.T) {
 
 func TestStartDockerUpdateReasonsAreEnglishAndHaveNoDataInThem(t *testing.T) {
 	s := newStartBox(t, func(b *aptBox) { b.enginePlans["docker-ce-cli"] += "Remv evil$(reboot) [1]\n" })
-	_, err := s.updater.startDockerUpdate(s.planID)
+	_, err := s.updater.startDockerUpdate(s.planID, false)
 	var refusal *DockerUpdateRefusal
 	if !errors.As(err, &refusal) || refusal.Code != "plan" || !reflect.DeepEqual(refusal.Detail, []string{dockerpkg.InvalidName}) {
 		t.Fatalf("error = %v", err)
@@ -309,7 +309,7 @@ func TestStartDockerUpdateRefusesAnUnfinishedPackageOperationUntilItIsFinished(t
 		if c.tweak != nil {
 			c.tweak(s.updater)
 		}
-		status, err := s.updater.startDockerUpdate(s.planID)
+		status, err := s.updater.startDockerUpdate(s.planID, false)
 		var refusal *DockerUpdateRefusal
 		if !errors.As(err, &refusal) || refusal.Code != "dpkg" || refusal.Reason != reason || len(refusal.Detail) != 0 {
 			t.Errorf("%s: error = %v, want the refusal dpkg with its reason", name, err)
@@ -327,7 +327,7 @@ func TestStartDockerUpdateRefusesAnUnfinishedPackageOperationUntilItIsFinished(t
 		// finished (dpkg --configure -a): the same plan starts, with no other change
 		s.box.dpkgAudit = ""
 		s.updater.readDir = nil
-		if _, err := s.updater.startDockerUpdate(s.planID); err != nil || s.started.count != 1 {
+		if _, err := s.updater.startDockerUpdate(s.planID, false); err != nil || s.started.count != 1 {
 			t.Errorf("%s: after the repair: error = %v, started %d", name, err, s.started.count)
 		}
 	}
@@ -338,7 +338,7 @@ func TestStartDockerUpdateSaysMaintenanceAndNotDpkgWhileAPackageManagerWorks(t *
 	s := newStartBox(t, nil)
 	s.box.dpkgAudit = dpkgAuditHalfConfigured
 	s.updater.dpkgLocked = func() bool { return true }
-	_, err := s.updater.startDockerUpdate(s.planID)
+	_, err := s.updater.startDockerUpdate(s.planID, false)
 	var refusal *DockerUpdateRefusal
 	if !errors.As(err, &refusal) || refusal.Code != "maintenance" || s.started.count != 0 {
 		t.Fatalf("error = %v, started %d, want the refusal maintenance", err, s.started.count)
@@ -359,7 +359,7 @@ func TestStartDockerUpdateRefusesABadPlanID(t *testing.T) {
 	} {
 		s := newStartBox(t, nil)
 		calls := len(s.box.calls)
-		_, err := s.updater.startDockerUpdate(id)
+		_, err := s.updater.startDockerUpdate(id, false)
 		if !errors.Is(err, ErrDockerUpdateBadPlanID) || s.started.count != 0 || len(s.box.calls) != calls {
 			t.Errorf("%s: error = %v, started %d, calls %v", name, err, s.started.count, s.box.calls[calls:])
 		}
@@ -370,7 +370,7 @@ func TestStartDockerUpdateSaysChangedForAPlanThatIsNotTheConfirmedOne(t *testing
 	// the page confirmed a plan, and a newer Docker appeared since
 	s := newStartBox(t, nil)
 	s.box.enginePlans["docker-ce"] = instEngine("docker-ce", debian28, "5:29.9.0-1~debian.11~bullseye")
-	status, err := s.updater.startDockerUpdate(s.planID)
+	status, err := s.updater.startDockerUpdate(s.planID, false)
 	var refusal *DockerUpdateRefusal
 	if !errors.As(err, &refusal) || refusal.Code != "changed" || status.ErrorCode != "changed" {
 		t.Fatalf("error = %v, status = %#v", err, status)
@@ -382,7 +382,7 @@ func TestStartDockerUpdateSaysChangedForAPlanThatIsNotTheConfirmedOne(t *testing
 
 	// a plan id of the right shape that is nobody's
 	s = newStartBox(t, nil)
-	if _, err := s.updater.startDockerUpdate(strings.Repeat("0", 64)); !errors.As(err, &refusal) || refusal.Code != "changed" {
+	if _, err := s.updater.startDockerUpdate(strings.Repeat("0", 64), false); !errors.As(err, &refusal) || refusal.Code != "changed" {
 		t.Fatalf("error = %v, want changed", err)
 	}
 }
@@ -391,7 +391,7 @@ func TestStartDockerUpdateWithNothingToUpdate(t *testing.T) {
 	s := newStartBox(t, nil)
 	s.box.enginePlans = map[string]string{}
 	s.box.upgradeSimulation = simLibc
-	status, err := s.updater.startDockerUpdate(s.planID)
+	status, err := s.updater.startDockerUpdate(s.planID, false)
 	var refusal *DockerUpdateRefusal
 	if !errors.As(err, &refusal) || refusal.Code != "nothing" || status.ErrorCode != "nothing" {
 		t.Fatalf("error = %v", err)
@@ -406,7 +406,7 @@ func TestStartDockerUpdateSaysUnsupportedOnAHostThatCannotUpdate(t *testing.T) {
 	s := newStartBox(t, nil)
 	s.updater.getEUID = func() int { return 1000 }
 	before := len(s.box.calls)
-	status, err := s.updater.startDockerUpdate(s.planID)
+	status, err := s.updater.startDockerUpdate(s.planID, false)
 	if !errors.Is(err, ErrSystemPackageUpdatesUnsupported) || status.Supported || status.ErrorCode != "unsupported" || status.Error == "" {
 		t.Fatalf("error = %v, status = %#v", err, status)
 	}
@@ -436,7 +436,7 @@ func TestStartDockerUpdateWaitsForOtherWork(t *testing.T) {
 			s := newStartBox(t, func(b *aptBox) { b.activeUnits = c.active })
 			s.updater.dpkgLocked = func() bool { return c.locked }
 			calls := len(s.box.calls)
-			status, err := s.updater.startDockerUpdate(s.planID)
+			status, err := s.updater.startDockerUpdate(s.planID, false)
 			var refusal *DockerUpdateRefusal
 			if !errors.As(err, &refusal) || refusal.Code != c.code || status.ErrorCode != c.code || status.Error == "" {
 				t.Fatalf("error = %v, status = %#v, want %s", err, status, c.code)
@@ -479,7 +479,7 @@ func TestStartDockerUpdateLooksAgainAfterTheSlowPart(t *testing.T) {
 					c.change(s)
 				}
 			}
-			_, err := s.updater.startDockerUpdate(s.planID)
+			_, err := s.updater.startDockerUpdate(s.planID, false)
 			var refusal *DockerUpdateRefusal
 			if !errors.As(err, &refusal) || refusal.Code != c.code {
 				t.Fatalf("error = %v, want %s", err, c.code)
@@ -509,7 +509,7 @@ func TestStartDockerUpdateFailsClosedOnApps(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := newStartBox(t, nil)
 			s.updater.appOperations = c.list
-			status, err := s.updater.startDockerUpdate(s.planID)
+			status, err := s.updater.startDockerUpdate(s.planID, false)
 			var refusal *DockerUpdateRefusal
 			if !errors.As(err, &refusal) || refusal.Code != "apps" || status.ErrorCode != "apps" || status.State != "idle" {
 				t.Fatalf("error = %v, status = %#v", err, status)
@@ -543,7 +543,7 @@ func TestStartDockerUpdateAsksTheAppsLast(t *testing.T) {
 		}
 		return nil, nil
 	}
-	if _, err := s.updater.startDockerUpdate(s.planID); err != nil || asked != 1 {
+	if _, err := s.updater.startDockerUpdate(s.planID, false); err != nil || asked != 1 {
 		t.Fatalf("error = %v, asked %d", err, asked)
 	}
 
@@ -551,9 +551,9 @@ func TestStartDockerUpdateAsksTheAppsLast(t *testing.T) {
 	s = newStartBox(t, nil)
 	asked = 0
 	s.updater.appOperations = func(context.Context) ([]string, error) { asked++; return nil, nil }
-	_, _ = s.updater.startDockerUpdate(strings.Repeat("0", 64))
+	_, _ = s.updater.startDockerUpdate(strings.Repeat("0", 64), false)
 	s.box.dockerCEStatus = "hi"
-	_, _ = s.updater.startDockerUpdate(s.planID)
+	_, _ = s.updater.startDockerUpdate(s.planID, false)
 	if asked != 0 {
 		t.Errorf("AppManagement was asked %d times for starts that could not go on", asked)
 	}
@@ -564,7 +564,7 @@ func TestStartDockerUpdateWritesAWholeRunWhenSystemdRunFails(t *testing.T) {
 	s.updater.start = func(string, string, ...string) ([]byte, error) {
 		return []byte("Failed to start transient service unit: Access denied\n"), errors.New("exit status 1")
 	}
-	status, err := s.updater.startDockerUpdate(s.planID)
+	status, err := s.updater.startDockerUpdate(s.planID, false)
 	var refusal *DockerUpdateRefusal
 	if err == nil || errors.As(err, &refusal) || !strings.Contains(err.Error(), "start Docker update") {
 		t.Fatalf("error = %v", err)
@@ -601,14 +601,14 @@ func TestStartDockerUpdateWritesAWholeRunWhenSystemdRunFails(t *testing.T) {
 func TestStartDockerUpdateDoesNotStartWhenTheLogCannotBeWritten(t *testing.T) {
 	s := newStartBox(t, nil)
 	s.updater.writeFile = func(string, []byte, os.FileMode) error { return errors.New("read-only file system") }
-	status, err := s.updater.startDockerUpdate(s.planID)
+	status, err := s.updater.startDockerUpdate(s.planID, false)
 	if err == nil || s.started.count != 0 || status.State != "failed" || !strings.Contains(status.Error, "read-only") {
 		t.Fatalf("error = %v, status = %#v, started %d", err, status, s.started.count)
 	}
 
 	s = newStartBox(t, nil)
 	s.updater.mkdirAll = func(string, os.FileMode) error { return errors.New("no space left") }
-	status, err = s.updater.startDockerUpdate(s.planID)
+	status, err = s.updater.startDockerUpdate(s.planID, false)
 	if err == nil || s.started.count != 0 || status.State != "failed" {
 		t.Fatalf("error = %v, status = %#v, started %d", err, status, s.started.count)
 	}
@@ -630,7 +630,7 @@ func TestStartDockerUpdateHoldsTheLockOnlyWhereItMust(t *testing.T) {
 		}
 		return nil, nil
 	}
-	if _, err := s.updater.startDockerUpdate(s.planID); err != nil {
+	if _, err := s.updater.startDockerUpdate(s.planID, false); err != nil {
 		t.Fatal(err)
 	}
 	if !freeWhileSimulating {
@@ -676,7 +676,7 @@ func TestStartDockerUpdateDoesNotWaitForACheck(t *testing.T) {
 
 	started := make(chan error, 1)
 	begin := time.Now()
-	go func() { _, err := s.updater.startDockerUpdate(s.planID); started <- err }()
+	go func() { _, err := s.updater.startDockerUpdate(s.planID, false); started <- err }()
 	var err error
 	timedOut := false
 	select {
@@ -743,10 +743,10 @@ func TestStartDockerUpdateTwiceStartsOnce(t *testing.T) {
 		s.box.activeUnits = map[string]bool{unit: true}
 		return nil, nil
 	}
-	if _, err := s.updater.startDockerUpdate(s.planID); err != nil {
+	if _, err := s.updater.startDockerUpdate(s.planID, false); err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.updater.startDockerUpdate(s.planID)
+	_, err := s.updater.startDockerUpdate(s.planID, false)
 	var refusal *DockerUpdateRefusal
 	if !errors.As(err, &refusal) || refusal.Code != "running" || s.started.count != 1 {
 		t.Fatalf("error = %v, started %d", err, s.started.count)
@@ -762,7 +762,7 @@ func TestStartDockerUpdateTwiceStartsOnce(t *testing.T) {
 // ended says there is one.
 func TestStartDockerUpdateTwiceBeforeSystemdHasTheUnitStartsOnce(t *testing.T) {
 	s := newStartBox(t, nil)
-	if _, err := s.updater.startDockerUpdate(s.planID); err != nil {
+	if _, err := s.updater.startDockerUpdate(s.planID, false); err != nil {
 		t.Fatal(err)
 	}
 	if s.box.activeUnits[systemDockerUpdateUnit] {
@@ -774,7 +774,7 @@ func TestStartDockerUpdateTwiceBeforeSystemdHasTheUnitStartsOnce(t *testing.T) {
 	}
 	logAgeOf(s.updater, time.Second)
 
-	status, err := s.updater.startDockerUpdate(s.planID)
+	status, err := s.updater.startDockerUpdate(s.planID, false)
 	var refusal *DockerUpdateRefusal
 	if !errors.As(err, &refusal) || refusal.Code != "running" || status.ErrorCode != "running" || s.started.count != 1 {
 		t.Fatalf("error = %v, status = %#v, started %d", err, status, s.started.count)
@@ -810,7 +810,7 @@ func TestStartDockerUpdateStartsAfterARunThatIsOver(t *testing.T) {
 				t.Fatal(err)
 			}
 			logAgeOf(s.updater, c.age)
-			if _, err := s.updater.startDockerUpdate(s.planID); err != nil || s.started.count != 1 {
+			if _, err := s.updater.startDockerUpdate(s.planID, false); err != nil || s.started.count != 1 {
 				t.Fatalf("error = %v, started %d", err, s.started.count)
 			}
 		})
@@ -821,15 +821,15 @@ func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 	nonce := "0123456789abcdef0123456789abcdef"
 	pins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
 	names := []string{"containerd.io", "docker-ce", "docker-ce-cli"}
-	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0"); err != nil {
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", false); err != nil {
 		t.Fatalf("valid arguments: %v", err)
 	}
-	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins[:1], names[:1], ""); err != nil {
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins[:1], names[:1], "", false); err != nil {
 		t.Fatalf("no docker-ce in the plan: %v", err)
 	}
 	// the new packages are names and no pins
 	withNew := append(append([]string{}, names...), "libedit2", "libjansson4", "libnftables1", "nftables")
-	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, withNew, "29.8.0")
+	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, withNew, "29.8.0", false)
 	if err != nil {
 		t.Fatalf("new packages: %v", err)
 	}
@@ -850,12 +850,12 @@ func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 	for i := 1; i <= dockerpkg.MaxNewPackages; i++ {
 		ten = append(ten, fmt.Sprintf("libdep%d", i))
 	}
-	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, ten, "29.8.0"); err != nil {
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, ten, "29.8.0", false); err != nil {
 		t.Fatalf("ten new packages: %v", err)
 	}
 	allSeven := []string{"containerd.io=2.1.4-1", "docker-buildx-plugin=0.30.1-1", "docker-ce-cli=" + debian29, "docker-ce-rootless-extras=" + debian29, "docker-ce=" + debian29, "docker-compose-plugin=5.0.0-1", "docker-model-plugin=1.0.0-1"}
 	sevenNames := []string{"containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-ce-rootless-extras", "docker-compose-plugin", "docker-model-plugin"}
-	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", allSeven, append(append([]string{}, sevenNames...), ten[len(names):]...), "29.8.0"); err != nil {
+	if _, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", allSeven, append(append([]string{}, sevenNames...), ten[len(names):]...), "29.8.0", false); err != nil {
 		t.Fatalf("seven upgrades and ten new packages: %v", err)
 	}
 	for name, c := range map[string]struct {
@@ -899,7 +899,7 @@ func TestDockerUpdateArgsRefuseWhatIsNotValidated(t *testing.T) {
 		"a pin that is not among the names":   {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", pins, []string{"containerd.io", "docker-ce", "nftables"}},
 		"names and no pin":                    {nonce, "/var/log/x.log", "/usr/bin/apt-get", "29.8.0", nil, []string{"nftables"}},
 	} {
-		if args, err := dockerUpdateArgs(c.nonce, c.log, c.apt, c.pins, c.names, c.to); err == nil {
+		if args, err := dockerUpdateArgs(c.nonce, c.log, c.apt, c.pins, c.names, c.to, false); err == nil {
 			t.Errorf("%s: dockerUpdateArgs() = %v, want an error", name, args)
 		}
 	}
@@ -925,7 +925,7 @@ func TestStartDockerUpdateWritesTheQueuedLineAndThePlanInOneWrite(t *testing.T) 
 		seenByTheUnit = string(log)
 		return start(path, unit, args...)
 	}
-	if _, err := s.updater.startDockerUpdate(s.planID); err != nil {
+	if _, err := s.updater.startDockerUpdate(s.planID, false); err != nil {
 		t.Fatalf("startDockerUpdate() error = %v", err)
 	}
 	if len(writes) != 1 || strings.Count(writes[0], "\n") != 2 || seenByTheUnit != writes[0] {
@@ -975,7 +975,7 @@ func TestStartDockerUpdateWritesThePlanOfWhatItStarts(t *testing.T) {
 			c.tweak(fresh)
 		}
 		s.planID = checkBox(t, fresh, nil).Docker.Update.PlanID
-		status, err := s.updater.startDockerUpdate(s.planID)
+		status, err := s.updater.startDockerUpdate(s.planID, false)
 		if err != nil {
 			t.Fatalf("%s: startDockerUpdate() error = %v", c.name, err)
 		}
@@ -994,5 +994,218 @@ func TestStartDockerUpdateWritesThePlanOfWhatItStarts(t *testing.T) {
 				t.Errorf("%s: status = %#v, want %q to %q, major jump %v", c.name, got, c.from, c.to, c.jump)
 			}
 		}
+	}
+}
+
+// ---- packages on hold ------------------------------------------------------------------------
+
+const heldReason = "Docker's packages are on hold. Confirm that the update may go ahead anyway; the hold stays."
+
+// newHeldStartBox is the owner's box with those packages of the engine on hold, and the plan the
+// page confirmed: the one its check gave, which says the hold.
+func newHeldStartBox(t *testing.T, held ...string) *startedBox {
+	t.Helper()
+	s := newStartBox(t, func(b *aptBox) {
+		h := heldBox(t, held...)
+		b.dockerCEStatus, b.statuses, b.packages = h.dockerCEStatus, h.statuses, h.packages
+	})
+	update := checkBox(t, heldBox(t, held...), nil).Docker.Update
+	if update == nil || update.PlanID == "" || update.PlanID == ownerPlanID(t) {
+		t.Fatalf("update = %#v: want a plan of its own", update)
+	}
+	s.planID = update.PlanID
+	return s
+}
+
+func TestStartDockerUpdateRefusesAHeldPlanUntilTheOwnerAllowsIt(t *testing.T) {
+	s := newHeldStartBox(t, "docker-ce-cli", "docker-ce")
+	status, err := s.updater.startDockerUpdate(s.planID, false)
+	var refusal *DockerUpdateRefusal
+	if !errors.As(err, &refusal) || refusal.Code != "held" || refusal.Reason != heldReason || !reflect.DeepEqual(refusal.Detail, []string{"docker-ce", "docker-ce-cli"}) {
+		t.Fatalf("error = %v (%#v), want the refusal held, with the names", err, refusal)
+	}
+	// the reason and the names travel in the data, as for every refusal
+	if status.State != "idle" || status.ErrorCode != "held" || status.Error != heldReason || !reflect.DeepEqual(status.RefusalDetail, []string{"docker-ce", "docker-ce-cli"}) {
+		t.Errorf("status = %#v", status)
+	}
+	if s.started.count != 0 {
+		t.Error("a unit was started")
+	}
+	s.noLog(t)
+	// what the page reads of it, and what the route sends as the data of the 409
+	encoded, _ := json.Marshal(status)
+	wantJSON := `{"supported":true,"state":"idle","phase":"","outcome":"","error":"` + heldReason + `","error_code":"held","refusal_detail":["docker-ce","docker-ce-cli"],"exit_code":null,"started_at":"","completed_at":"","from":"","to":"","major_jump":false,"held":false,"held_packages":[],"holds_kept":false,"not_returned":[],"rollback_command":"","log":""}`
+	if string(encoded) != wantJSON {
+		t.Errorf("JSON = %s\nwant   %s", encoded, wantJSON)
+	}
+	// it is refused before the plan is simulated: no word of the owner, no use in the slow part
+	if calls := engineSimulations(s.box); len(calls) != 0 {
+		t.Errorf("simulations = %#v", calls)
+	}
+
+	// said again with the owner's word it starts, and the unit is told
+	status, err = s.updater.startDockerUpdate(s.planID, true)
+	if err != nil || s.started.count != 1 || status.State != "running" {
+		t.Fatalf("error = %v, started %d, status = %#v", err, s.started.count, status)
+	}
+	if got := s.env("CASAOS_DU_ALLOW_HELD"); got != "1" {
+		t.Errorf("CASAOS_DU_ALLOW_HELD = %q, want 1", got)
+	}
+	// the unit's own environment is the rest of what it always was, in the same order, with the word added
+	wantEnv := []string{"DEBIAN_FRONTEND", "CASAOS_DU_NONCE", "CASAOS_DU_LOG", "CASAOS_DU_APT", "CASAOS_DU_PINS", "CASAOS_DU_NAMES", "CASAOS_DU_TO", "CASAOS_DU_ALLOW_HELD", "CASAOS_DU_DAEMON_TIMEOUT", "CASAOS_DU_RETURN_TIMEOUT", "CASAOS_DU_POLL"}
+	var gotEnv []string
+	for _, arg := range s.started.args {
+		if setenv, ok := strings.CutPrefix(arg, "--setenv="); ok {
+			name, _, _ := strings.Cut(setenv, "=")
+			gotEnv = append(gotEnv, name)
+		}
+	}
+	if !reflect.DeepEqual(gotEnv, wantEnv) {
+		t.Errorf("environment = %v, want %v", gotEnv, wantEnv)
+	}
+	if got, want := s.env("CASAOS_DU_PINS"), "containerd.io=2.1.4-1 docker-ce-cli="+debian29+" docker-ce="+debian29; got != want {
+		t.Errorf("CASAOS_DU_PINS = %q, want %q", got, want)
+	}
+	if script := s.started.args[len(s.started.args)-1]; script != dockerUpdateScriptArg() {
+		t.Error("the script is not the constant")
+	}
+	// the plan is the same plan: the log says what it said, and nothing of a hold
+	log, _ := os.ReadFile(s.updater.dockerLogPath())
+	run := dockerpkg.ParseRun(string(log))
+	if want := dockerpkg.QueuedMarker(run.Nonce, s.updater.now()) + dockerpkg.PlanMarker(run.Nonce, "28.0.4", "29.8.0", true); string(log) != want {
+		t.Errorf("log = %q, want %q", log, want)
+	}
+}
+
+func TestStartDockerUpdateIgnoresTheOwnersWordWhenNothingIsHeld(t *testing.T) {
+	s := newStartBox(t, nil)
+	if _, err := s.updater.startDockerUpdate(s.planID, true); err != nil || s.started.count != 1 {
+		t.Fatalf("error = %v, started %d", err, s.started.count)
+	}
+	// no word is given to the unit that nothing needs it for: apt is not told it may change what is held
+	for _, arg := range s.started.args[:len(s.started.args)-1] {
+		if strings.Contains(arg, "ALLOW_HELD") || strings.Contains(arg, "allow-change-held") {
+			t.Errorf("the unit was given %q", arg)
+		}
+	}
+	// ... and it is the start it has always been
+	wantEnv := s.env("CASAOS_DU_NAMES")
+	if wantEnv != "containerd.io docker-ce docker-ce-cli" {
+		t.Errorf("CASAOS_DU_NAMES = %q", wantEnv)
+	}
+}
+
+func TestStartDockerUpdateSaysChangedWhenTheHoldIsNotTheConfirmedOne(t *testing.T) {
+	var refusal *DockerUpdateRefusal
+	released := func(b *aptBox) { b.dockerCEStatus, b.statuses = "", nil }
+
+	// confirmed with the hold, and the owner released it since
+	s := newHeldStartBox(t, "docker-ce")
+	released(s.box)
+	if _, err := s.updater.startDockerUpdate(s.planID, true); !errors.As(err, &refusal) || refusal.Code != "changed" || s.started.count != 0 {
+		t.Fatalf("a hold that went: error = %v, started %d", err, s.started.count)
+	}
+	s.noLog(t)
+
+	// confirmed without it, and a hold has been set since: the owner has not been told of it, and the
+	// word that was given is not for it
+	s = newStartBox(t, nil)
+	s.box.dockerCEStatus = "hi"
+	if _, err := s.updater.startDockerUpdate(s.planID, true); !errors.As(err, &refusal) || refusal.Code != "changed" || s.started.count != 0 {
+		t.Fatalf("a hold that came: error = %v, started %d", err, s.started.count)
+	}
+	s.noLog(t)
+	// ... and with no word at all it is the hold that is said, which is what the page re-checks on
+	if _, err := s.updater.startDockerUpdate(s.planID, false); !errors.As(err, &refusal) || refusal.Code != "held" || s.started.count != 0 {
+		t.Fatalf("a hold that came, with no word: error = %v, started %d", err, s.started.count)
+	}
+
+	// confirmed with a hold on one package and it is on another now
+	s = newHeldStartBox(t, "docker-ce")
+	released(s.box)
+	s.box.statuses = map[string]string{"docker-ce-cli": "hi"}
+	if _, err := s.updater.startDockerUpdate(s.planID, true); !errors.As(err, &refusal) || refusal.Code != "changed" || s.started.count != 0 {
+		t.Fatalf("a hold that moved: error = %v, started %d", err, s.started.count)
+	}
+}
+
+func TestStartDockerUpdateDoesNotGoAheadOfAHeldPackageThatIsNotDockers(t *testing.T) {
+	s := newHeldStartBox(t, "docker-ce")
+	s.box.enginePlans["docker-ce-cli"] += "Inst libnftables1 [0.9.7-1] (0.9.8-3.1 Debian:11/stable [amd64])\n"
+	s.box.packages["libnftables1"] = "0.9.7-1"
+	s.box.statuses["libnftables1"] = "hi"
+	status, err := s.updater.startDockerUpdate(s.planID, true)
+	var refusal *DockerUpdateRefusal
+	if !errors.As(err, &refusal) || refusal.Code != "plan" || !reflect.DeepEqual(refusal.Detail, []string{"libnftables1"}) || status.ErrorCode != "plan" || s.started.count != 0 {
+		t.Fatalf("error = %v, status = %#v, started %d", err, status, s.started.count)
+	}
+	s.noLog(t)
+}
+
+// What the check refuses for it refuses on a box that is held too, once the owner has allowed the hold.
+func TestStartDockerUpdateRefusesWhatTheCheckRefusesOnAHeldBoxToo(t *testing.T) {
+	for _, c := range refusalCases() {
+		t.Run(c.name, func(t *testing.T) {
+			s := newHeldStartBox(t, "docker-ce")
+			if c.change != nil {
+				c.change(s.box)
+			}
+			if c.tweak != nil {
+				c.tweak(s.updater)
+			}
+			_, err := s.updater.startDockerUpdate(s.planID, true)
+			var refusal *DockerUpdateRefusal
+			if !errors.As(err, &refusal) || refusal.Code != c.code {
+				t.Fatalf("error = %v, want a refusal %q", err, c.code)
+			}
+			if s.started.count != 0 {
+				t.Error("a unit was started")
+			}
+			s.noLog(t)
+		})
+	}
+}
+
+func TestStartDockerUpdateIsTheSameThroughTheServiceWithAHold(t *testing.T) {
+	s := newHeldStartBox(t, "docker-ce")
+	system := &systemService{packageUpdates: s.updater}
+	system.SetAppOperations(func(context.Context) ([]string, error) { return nil, nil })
+	if _, err := system.StartDockerUpdate(s.planID, false); err == nil || s.started.count != 0 {
+		t.Fatalf("StartDockerUpdate() error = %v, started %d: want the refusal", err, s.started.count)
+	}
+	if _, err := system.StartDockerUpdate(s.planID, true); err != nil || s.started.count != 1 || s.env("CASAOS_DU_ALLOW_HELD") != "1" {
+		t.Fatalf("StartDockerUpdate() error = %v, started %d", err, s.started.count)
+	}
+}
+
+func TestDockerUpdateArgsCarryTheOwnersWordOnlyWhenItIsGiven(t *testing.T) {
+	nonce := "0123456789abcdef0123456789abcdef"
+	pins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
+	names := []string{"containerd.io", "docker-ce", "docker-ce-cli"}
+	plain, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range plain[:len(plain)-1] { // the script is the last, and names the variable
+		if strings.Contains(arg, "ALLOW_HELD") {
+			t.Errorf("the arguments of a start that is not allowed to go ahead of a hold hold %q", arg)
+		}
+	}
+	// the same arguments, and one more
+	var without []string
+	for _, arg := range allowed {
+		if arg != "--setenv=CASAOS_DU_ALLOW_HELD=1" {
+			without = append(without, arg)
+		}
+	}
+	if len(allowed) != len(plain)+1 || !reflect.DeepEqual(without, plain) {
+		t.Errorf("allowed:\n%s\nplain:\n%s", strings.Join(allowed, "\n"), strings.Join(plain, "\n"))
+	}
+	if i := indexOf(allowed, "--setenv=CASAOS_DU_ALLOW_HELD=1"); i < 0 || allowed[i-1] != "--setenv=CASAOS_DU_TO=29.8.0" {
+		t.Errorf("the word is not after CASAOS_DU_TO: %v", allowed)
 	}
 }

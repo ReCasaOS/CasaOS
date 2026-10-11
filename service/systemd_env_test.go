@@ -155,7 +155,7 @@ func TestSystemdLeavesTheDockerUpdateScriptAsItIsWritten(t *testing.T) {
 	nonce := "0123456789abcdef0123456789abcdef"
 	pins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
 	names := []string{"containerd.io", "docker-ce", "docker-ce-cli", "nftables"}
-	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0")
+	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", pins, names, "29.8.0", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,16 +177,33 @@ func TestSystemdLeavesTheDockerUpdateScriptAsItIsWritten(t *testing.T) {
 // script uses in ${...}, so that a substitution cannot pass for an unset name.
 func TestSystemdLeavesTheScriptAloneWhateverTheEnvironmentHolds(t *testing.T) {
 	nonce := "0123456789abcdef0123456789abcdef"
-	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", []string{"docker-ce=" + debian29}, []string{"docker-ce"}, "29.8.0")
+	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", []string{"docker-ce=" + debian29}, []string{"docker-ce"}, "29.8.0", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	env, command := systemRunCommand(t, args)
-	for _, name := range []string{"Package", "Version", "previous", "pin", "pair", "policy", "CASAOS_DU_POLL", "CASAOS_DU_NONCE"} {
+	for _, name := range []string{"Package", "Version", "previous", "pin", "pair", "policy", "list", "st", "pkg", "hold_flag", "CASAOS_DU_POLL", "CASAOS_DU_NONCE", "CASAOS_DU_ALLOW_HELD"} {
 		env[name] = "SUBSTITUTED"
 	}
 	if got := systemdExpandArgv(command, env); got[2] != dockerUpdateScript {
 		t.Errorf("the shell is given a script that is not the one written:\n%s", firstDifference(dockerUpdateScript, got[2]))
+	}
+}
+
+// ... and with the owner's word to go ahead of a hold in the environment: one variable more, and the
+// same script.
+func TestSystemdLeavesTheScriptAloneWithTheOwnersWordToo(t *testing.T) {
+	nonce := "0123456789abcdef0123456789abcdef"
+	args, err := dockerUpdateArgs(nonce, "/var/log/casaos/docker-update.log", "/usr/bin/apt-get", []string{"docker-ce=" + debian29}, []string{"docker-ce"}, "29.8.0", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, command := systemRunCommand(t, args)
+	if env["CASAOS_DU_ALLOW_HELD"] != "1" {
+		t.Fatalf("the environment = %v", env)
+	}
+	if got := systemdExpandArgv(command, env); len(got) != 3 || got[2] != dockerUpdateScript {
+		t.Errorf("the shell is given a script that is not the one written:\n%s", firstDifference(dockerUpdateScript, got[len(got)-1]))
 	}
 }
 

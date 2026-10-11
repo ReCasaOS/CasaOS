@@ -16,6 +16,9 @@ import (
 // environment (systemd-run --setenv), after the core validated it, and the script treats it as
 // data: it is quoted, or split into the words it was validated to be made of, and never eval'd.
 //
+// The owner's word to go ahead of a hold on the engine's packages travels the same way
+// (CASAOS_DU_ALLOW_HELD, 1 or nothing), and is the only thing that puts apt's flag on a call.
+//
 // Two lists travel: the pins (name=version) of the packages to upgrade, which are all the
 // script names to apt, and the names of every package apt may install, which are the pins' and
 // those of the dependencies of the new engine that the box does not have yet (nftables, for
@@ -47,11 +50,36 @@ poll=${CASAOS_DU_POLL:-2}
 daemon_timeout=${CASAOS_DU_DAEMON_TIMEOUT:-300}
 return_timeout=${CASAOS_DU_RETURN_TIMEOUT:-90}
 
+hold_marked=
+
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 mark() { printf 'CASAOS_DOCKER_UPDATE_%s %s%s\n' "$1" "$CASAOS_DU_NONCE" "${2:+ $2}"; }
-fail() { mark FAILED "$(ts) $1"; exit 1; }
+# Once the holds are told at the start they are told at the end, whatever the end is.
+fail() { [ -z "$hold_marked" ] || mark HOLDS "$(held_list)"; mark FAILED "$(ts) $1"; exit 1; }
 # A docker command waits for ever on a socket whose service will not start: bound them all.
 bound() { n=$1; shift; if command -v timeout >/dev/null 2>&1; then timeout "$n" "$@"; else "$@"; fi; }
+
+# held_lines prints, one to a line, the packages among those the unit may touch (CASAOS_DU_NAMES)
+# that dpkg has on hold and installed: its abbreviation of a package's state starts with an "h", and
+# is not the "hn" of a package that is held and not installed, or the "hc" of one that only has its
+# configuration left. dpkg-query is asked for those names alone, and only a name of that list is
+# taken from what it prints.
+held_lines() {
+	dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' $CASAOS_DU_NAMES 2>/dev/null | while read -r st pkg; do
+		case $st in
+		h[!nc]*)
+			case " $CASAOS_DU_NAMES " in *" $pkg "*) printf '%s\n' "$pkg" ;; esac
+			;;
+		esac
+	done
+}
+
+# held_list is those names on one line, or - for none: what the HELD and HOLDS markers say.
+held_list() {
+	list=$(held_lines | grep -E '^[a-z0-9][a-z0-9+.-]*$' | tr '\n' ' ')
+	list=${list% }
+	printf '%s' "${list:--}"
+}
 
 # wait_daemon sets $running to the version the daemon reports; it fails after the timeout.
 wait_daemon() {
@@ -79,6 +107,25 @@ if [ -z "$pins" ] || [ -z "$names" ]; then
 	fail guard
 fi
 
+# The owner's word, given in the page's confirmation, that apt may go ahead of a hold on these
+# packages: 1, or nothing. The flag is the terminal command's, and is on the three calls of apt below
+# that look at or change what is held, and on no other. Anything else than 1 or nothing is a unit that
+# the core did not make.
+hold_flag=
+case ${CASAOS_DU_ALLOW_HELD:-} in
+'') ;;
+1) hold_flag=--allow-change-held-packages ;;
+*)
+	mark GUARD plan
+	fail guard
+	;;
+esac
+
+# What is on hold now, said here and again before the end, so that the log shows whether the update
+# left the holds as they were. A hold is the owner's: nothing here releases one.
+mark HELD "$(held_list)"
+hold_marked=1
+
 # What is installed now (what a rollback would put back) and what runs now. Only text of the
 # shape of a package pin or of a container's name and policy gets into the log.
 previous=
@@ -104,7 +151,7 @@ EOF
 # the pinned packages, and the installation of the new packages the owner was told of (the names
 # the core approved), and nothing else. A simulation that fails says nothing, and refuses.
 ok=1
-sim=$("$CASAOS_DU_APT" -s --no-remove -o Debug::NoLocking=true -o Dpkg::Use-Pty=0 install --only-upgrade --no-install-recommends $CASAOS_DU_PINS 2>&1) || ok=0
+sim=$("$CASAOS_DU_APT" -s --no-remove -o Debug::NoLocking=true -o Dpkg::Use-Pty=0 install --only-upgrade --no-install-recommends $hold_flag $CASAOS_DU_PINS 2>&1) || ok=0
 upgrades=
 for pin in $CASAOS_DU_PINS; do
 	upgrades="$upgrades ${pin%%=*}"
@@ -132,10 +179,10 @@ if [ "$ok" -ne 1 ]; then
 fi
 
 # Download first, while the apps run: a failure here has changed nothing.
-"$CASAOS_DU_APT" -y --no-remove --download-only -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends $CASAOS_DU_PINS || fail download
+"$CASAOS_DU_APT" -y --no-remove --download-only -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends $hold_flag $CASAOS_DU_PINS || fail download
 mark DOWNLOADED "$(ts)"
 
-if ! "$CASAOS_DU_APT" -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends $CASAOS_DU_PINS; then
+if ! "$CASAOS_DU_APT" -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends $hold_flag $CASAOS_DU_PINS; then
 	# dpkg may have stopped the daemon and left it down: one bounded try to bring it back
 	bound 120 systemctl start docker.socket docker.service
 	wait_daemon
@@ -180,6 +227,7 @@ for pair in $missing; do
 	mark NOTRETURNED "$name${policy:+ $policy}"
 done
 
+mark HOLDS "$(held_list)"
 mark "$outcome" "$(ts)"
 exit 0
 `
@@ -207,8 +255,9 @@ var (
 // needs goes in as --setenv, and is checked here first: the nonce, the paths, the pins (the
 // upgrades, of the engine's packages) and the names (the pins' and the new packages', which
 // dockerpkg already vetted: this asks again, since it is the last stop before a root shell),
-// and the engine version expected.
-func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to string) ([]string, error) {
+// and the engine version expected. allowHeld is the owner's word that apt may go ahead of a hold: it
+// is an environment variable of its own, there only when it is given, and the script checks it again.
+func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to string, allowHeld bool) ([]string, error) {
 	switch {
 	case !dockerpkg.ValidNonce(nonce):
 		return nil, errors.New("the Docker update's nonce is not a nonce")
@@ -251,7 +300,7 @@ func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to s
 			return nil, fmt.Errorf("%q is pinned and is not among the names", name)
 		}
 	}
-	return []string{
+	args := []string{
 		"--quiet",
 		"--no-block",
 		"--collect",
@@ -265,11 +314,16 @@ func dockerUpdateArgs(nonce, logPath, aptPath string, pins, names []string, to s
 		"--setenv=CASAOS_DU_PINS=" + strings.Join(pins, " "),
 		"--setenv=CASAOS_DU_NAMES=" + strings.Join(names, " "),
 		"--setenv=CASAOS_DU_TO=" + to,
-		"--setenv=CASAOS_DU_DAEMON_TIMEOUT=" + strconv.Itoa(systemDockerDaemonTimeout),
-		"--setenv=CASAOS_DU_RETURN_TIMEOUT=" + strconv.Itoa(systemDockerReturnTimeout),
-		"--setenv=CASAOS_DU_POLL=" + strconv.Itoa(systemDockerPoll),
+	}
+	if allowHeld {
+		args = append(args, "--setenv=CASAOS_DU_ALLOW_HELD=1")
+	}
+	return append(args,
+		"--setenv=CASAOS_DU_DAEMON_TIMEOUT="+strconv.Itoa(systemDockerDaemonTimeout),
+		"--setenv=CASAOS_DU_RETURN_TIMEOUT="+strconv.Itoa(systemDockerReturnTimeout),
+		"--setenv=CASAOS_DU_POLL="+strconv.Itoa(systemDockerPoll),
 		"/bin/sh",
 		"-c",
 		dockerUpdateScriptArg(),
-	}, nil
+	), nil
 }

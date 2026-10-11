@@ -304,7 +304,7 @@ func TestDockerUpdateOfNewPackagesAloneIsNothingToUpdate(t *testing.T) {
 
 	updater := newTestSystemPackageUpdater(t)
 	updater.command = box.command
-	update, plan := updater.dockerUpdatePreflight(context.Background(), systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get"})
+	update, plan := updater.dockerUpdatePreflight(context.Background(), systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get"}, false)
 	if update.Refusal != "" || update.Available || len(update.Packages) != 0 || update.PlanID != "" || len(plan.Packages) != 0 {
 		t.Errorf("update = %#v, plan = %#v", update, plan)
 	}
@@ -461,12 +461,6 @@ func refusalCases() []refusalCase {
 			b.dockerIO = "26.1.5+dfsg1-9"
 			b.upgradeSimulation = simLibc + "Inst docker.io [26.1.5+dfsg1-9] (26.1.6+dfsg1-1 Debian:11/stable [amd64])\n"
 		}, code: "origin"},
-		{name: "docker-ce is on hold", change: func(b *aptBox) { b.dockerCEStatus = "hi" }, code: "held"},
-		{name: "the client is on hold", change: func(b *aptBox) { b.statuses = map[string]string{"docker-ce-cli": "hi"} }, code: "held"},
-		{name: "a plugin is on hold", change: func(b *aptBox) {
-			b.packages["docker-buildx-plugin"] = "0.21.1-1~debian.11~bullseye"
-			b.statuses = map[string]string{"docker-buildx-plugin": "hi"}
-		}, code: "held"},
 		// the simulation passes on a box like these (it takes no lock) and the first real apt call does not
 		{name: "dpkg --audit reports a package left half configured", change: func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured }, code: "dpkg"},
 		{name: "dpkg's journal holds an interrupted operation", tweak: dpkgJournal("0001"), code: "dpkg"},
@@ -631,7 +625,7 @@ func TestDockerUpdateRefusalOrder(t *testing.T) {
 		if c.tweak != nil {
 			c.tweak(updater)
 		}
-		update, plan := updater.dockerUpdatePreflight(context.Background(), c.support)
+		update, plan := updater.dockerUpdatePreflight(context.Background(), c.support, false)
 		if update.Refusal != c.want || update.Available {
 			t.Errorf("%s: refusal = %q, available = %v, want %q", c.name, update.Refusal, update.Available, c.want)
 		}
@@ -688,7 +682,7 @@ func TestDockerUpdateRefusesAnUnfinishedPackageOperationAndNothingElse(t *testin
 		if c.tweak != nil {
 			c.tweak(updater)
 		}
-		update, _ := updater.dockerUpdatePreflight(context.Background(), supported)
+		update, _ := updater.dockerUpdatePreflight(context.Background(), supported, false)
 		if update.Refusal != c.want || update.Available != (c.want == "") {
 			t.Errorf("%s: refusal = %q, available = %v, want refusal %q", c.name, update.Refusal, update.Available, c.want)
 		}
@@ -720,11 +714,11 @@ func TestDockerUpdatePreflightOfAnEngineThatIsNotDockerCE(t *testing.T) {
 	supported := systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get"}
 	updater := newTestSystemPackageUpdater(t)
 	updater.command = (&aptBox{strict: t, snap: true}).command
-	if update, _ := updater.dockerUpdatePreflight(context.Background(), supported); update.Refusal != DockerRefusalOrigin {
+	if update, _ := updater.dockerUpdatePreflight(context.Background(), supported, false); update.Refusal != DockerRefusalOrigin {
 		t.Errorf("a snap: refusal = %q", update.Refusal)
 	}
 	updater.command = (&aptBox{strict: t}).command
-	if update, _ := updater.dockerUpdatePreflight(context.Background(), supported); update.Refusal != DockerRefusalOrigin {
+	if update, _ := updater.dockerUpdatePreflight(context.Background(), supported, false); update.Refusal != DockerRefusalOrigin {
 		t.Errorf("no engine: refusal = %q", update.Refusal)
 	}
 }
@@ -732,7 +726,7 @@ func TestDockerUpdatePreflightOfAnEngineThatIsNotDockerCE(t *testing.T) {
 func TestDockerUpdatePreflightHandsTheStartThePlanItWillInstall(t *testing.T) {
 	updater := newTestSystemPackageUpdater(t)
 	updater.command = ownerBox(t).command
-	update, plan := updater.dockerUpdatePreflight(context.Background(), systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get"})
+	update, plan := updater.dockerUpdatePreflight(context.Background(), systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get"}, false)
 	if !update.Available || plan.ID() != update.PlanID {
 		t.Fatalf("update = %#v, plan = %#v", update, plan)
 	}
@@ -744,7 +738,7 @@ func TestDockerUpdatePreflightHandsTheStartThePlanItWillInstall(t *testing.T) {
 
 	// with the new packages: the pins are still the upgrades, the names are all that may be installed
 	updater.command = ownerBoxWithDependencies(t).command
-	update, plan = updater.dockerUpdatePreflight(context.Background(), systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get"})
+	update, plan = updater.dockerUpdatePreflight(context.Background(), systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get"}, false)
 	if !update.Available || plan.ID() != update.PlanID {
 		t.Fatalf("update = %#v, plan = %#v", update, plan)
 	}
@@ -801,11 +795,18 @@ func TestSystemPackagesJSONCarriesTheDockerUpdate(t *testing.T) {
 
 	docker := encode(checkBox(t, ownerBox(t), nil))["docker"].(map[string]any)
 	update := docker["update"].(map[string]any)
-	if got := keys(update); !reflect.DeepEqual(got, []string{"available", "from", "major_jump", "packages", "plan_id", "refusal", "refusal_detail", "to"}) {
+	if got := keys(update); !reflect.DeepEqual(got, []string{"available", "from", "held", "held_packages", "major_jump", "packages", "plan_id", "refusal", "refusal_detail", "to"}) {
 		t.Errorf("update keys = %v", got)
 	}
 	if update["available"] != true || update["refusal"] != "" || update["from"] != "28.0.4" || update["to"] != "29.8.0" || update["major_jump"] != true {
 		t.Errorf("update = %#v", update)
+	}
+	// nothing is on hold: said, and the list is [] and not null
+	if update["held"] != false {
+		t.Errorf("held = %#v, want false", update["held"])
+	}
+	if held, ok := update["held_packages"].([]any); !ok || len(held) != 0 {
+		t.Errorf("held_packages = %#v, want []", update["held_packages"])
 	}
 	if detail, ok := update["refusal_detail"].([]any); !ok || len(detail) != 0 {
 		t.Errorf("refusal_detail = %#v, want []", update["refusal_detail"])
@@ -840,6 +841,10 @@ func TestSystemPackagesJSONCarriesTheDockerUpdate(t *testing.T) {
 	}
 	if list, ok := refusedUpdate["refusal_detail"].([]any); !ok || len(list) != 0 {
 		t.Errorf("refusal_detail = %#v, want []", refusedUpdate["refusal_detail"])
+	}
+	// a refusal that comes before the question of the holds is not asked of them: false and []
+	if list, ok := refusedUpdate["held_packages"].([]any); !ok || len(list) != 0 || refusedUpdate["held"] != false {
+		t.Errorf("held = %#v, held_packages = %#v, want false and []", refusedUpdate["held"], refusedUpdate["held_packages"])
 	}
 
 	// nothing to update: no "update" key at all
@@ -924,5 +929,284 @@ func TestAStrictAptBoxFailsOnACommandNobodyAnswers(t *testing.T) {
 	}
 	if len(recorded.messages) != 0 {
 		t.Errorf("a command the box knows was reported: %v", recorded.messages)
+	}
+}
+
+// ---- packages on hold ------------------------------------------------------------------------
+//
+// A hold is the owner's act. The check does not refuse a box for it any more: it says which
+// packages are on hold, and the plan is the one the owner's terminal command (apt-get install
+// --only-upgrade --allow-change-held-packages) would make. The start refuses it until the owner has
+// said, in the confirmation, that it may go ahead of the hold.
+
+// heldBox is the owner's box with those packages of the engine on hold (the three that are on it,
+// and docker-buildx-plugin, which is put on it for the purpose).
+func heldBox(t *testing.T, names ...string) *aptBox {
+	t.Helper()
+	box := ownerBox(t)
+	box.statuses = map[string]string{}
+	for _, name := range names {
+		switch name {
+		case "docker-ce":
+			box.dockerCEStatus = "hi"
+		case "docker-ce-cli", "containerd.io":
+			box.statuses[name] = "hi"
+		case "docker-buildx-plugin":
+			box.packages[name] = "0.21.1-1~debian.11~bullseye"
+			box.statuses[name] = "hi"
+		default:
+			t.Fatalf("heldBox: no package %q on the owner's box", name)
+		}
+	}
+	return box
+}
+
+const heldSimulation = "/usr/bin/apt-get -s --no-remove -o Debug::NoLocking=true -o Dpkg::Use-Pty=0 install --only-upgrade --no-install-recommends --allow-change-held-packages "
+
+func TestDockerUpdateOfAHeldBoxIsAvailableAndSaysWhatIsHeld(t *testing.T) {
+	plain := checkBox(t, ownerBox(t), nil).Docker.Update
+	for _, c := range []struct {
+		name string
+		held []string
+		// asked is what the simulation is asked for: the installed packages of the engine
+		asked string
+	}{
+		{"docker-ce", []string{"docker-ce"}, "containerd.io docker-ce docker-ce-cli"},
+		{"the client", []string{"docker-ce-cli"}, "containerd.io docker-ce docker-ce-cli"},
+		{"containerd", []string{"containerd.io"}, "containerd.io docker-ce docker-ce-cli"},
+		{"a plugin that no plan moves", []string{"docker-buildx-plugin"}, "containerd.io docker-buildx-plugin docker-ce docker-ce-cli"},
+		{"three, given in no order", []string{"docker-ce-cli", "containerd.io", "docker-ce"}, "containerd.io docker-ce docker-ce-cli"},
+	} {
+		box := heldBox(t, c.held...)
+		got := checkBox(t, box, nil)
+		update := got.Docker.Update
+		want := append([]string{}, c.held...)
+		sort.Strings(want)
+		if update == nil || !update.Available || update.Refusal != "" || !update.Held || !reflect.DeepEqual(update.HeldPackages, want) {
+			t.Errorf("%s: update = %#v, want available, with %v on hold", c.name, update, want)
+			continue
+		}
+		if update.RefusalDetail == nil || len(update.RefusalDetail) != 0 {
+			t.Errorf("%s: refusal_detail = %#v", c.name, update.RefusalDetail)
+		}
+		// the plan is the one of a box with nothing on hold, and it is another plan to confirm
+		if update.From != "28.0.4" || update.To != "29.8.0" || !update.MajorJump || !reflect.DeepEqual(update.Packages, plain.Packages) {
+			t.Errorf("%s: update = %#v, want the plan of the box that holds nothing", c.name, update)
+		}
+		if len(update.PlanID) != 64 || update.PlanID == plain.PlanID {
+			t.Errorf("%s: plan_id = %q: a hold is part of the plan (the plan without is %q)", c.name, update.PlanID, plain.PlanID)
+		}
+		// apt is told it may change what is held, in the one simulation that is made
+		if calls := engineSimulations(box); len(calls) != 1 || calls[0] != heldSimulation+c.asked {
+			t.Errorf("%s: simulations = %#v, want exactly %q", c.name, calls, heldSimulation+c.asked)
+		}
+	}
+}
+
+func TestDockerUpdateDoesNotAllowHeldChangesOnABoxThatHoldsNone(t *testing.T) {
+	box := ownerBox(t)
+	update := checkBox(t, box, nil).Docker.Update
+	if update == nil || update.Held || update.HeldPackages == nil || len(update.HeldPackages) != 0 {
+		t.Fatalf("update = %#v", update)
+	}
+	for _, call := range box.calls {
+		if strings.Contains(call, "allow-change-held-packages") {
+			t.Errorf("a box that holds nothing was asked with %q", call)
+		}
+	}
+	// a package that is on the box and is not on hold: the abbreviations are told apart
+	for _, status := range []string{"ii", "iF", "iU", "ri", "pi"} {
+		box := ownerBox(t)
+		box.dockerCEStatus = status
+		if update := checkBox(t, box, nil).Docker.Update; update == nil || update.Held || len(update.HeldPackages) != 0 {
+			t.Errorf("status %q: update = %#v", status, update)
+		}
+	}
+}
+
+// The owner's own box: Debian 11, docker-ce 28.0.4 on hold, 29.8.0 on offer. apt's own upgrade leaves
+// the held package out and upgrades the others.
+func TestDockerUpdateOwnersHeldBox(t *testing.T) {
+	box := ownerBox(t)
+	box.dockerCEStatus = "hi"
+	box.upgradeSimulation = simLibc + ownerCLI + ownerContaind
+	got := checkBox(t, box, nil)
+
+	// the line says what it said: a newer Docker exists, the package is on hold, and the command
+	if got.Docker == nil || got.Docker.Candidate != "29.8.0" || !got.Docker.Held ||
+		!strings.Contains(got.Docker.ManualCommand, "--only-upgrade --allow-change-held-packages ") {
+		t.Fatalf("Docker = %#v", got.Docker)
+	}
+	update := got.Docker.Update
+	if update == nil || !update.Available || update.Refusal != "" || !update.Held || !reflect.DeepEqual(update.HeldPackages, []string{"docker-ce"}) {
+		t.Fatalf("update = %#v, want the update offered, with docker-ce on hold", update)
+	}
+	if update.From != "28.0.4" || update.To != "29.8.0" || !update.MajorJump || len(update.Packages) != 3 {
+		t.Errorf("update = %#v", update)
+	}
+
+	// what the page reads of it
+	data, err := json.Marshal(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"available":true,"refusal":"","refusal_detail":[],"held":true,"held_packages":["docker-ce"],"from":"28.0.4","to":"29.8.0","major_jump":true,"plan_id":"` + update.PlanID + `","packages":[` +
+		`{"name":"containerd.io","current_version":"1.7.27-1","candidate_version":"2.1.4-1"},` +
+		`{"name":"docker-ce","current_version":"` + debian28 + `","candidate_version":"` + debian29 + `"},` +
+		`{"name":"docker-ce-cli","current_version":"` + debian28 + `","candidate_version":"` + debian29 + `"}]}`
+	if string(data) != want {
+		t.Errorf("JSON = %s\nwant   %s", data, want)
+	}
+}
+
+// Without the owner's word the start refuses a plan that is held, at the place the check used to:
+// after the origin, before everything that comes after. With it the rest is looked at as for any box.
+func TestDockerUpdatePreflightRefusesAHoldUntilTheOwnerAllowsIt(t *testing.T) {
+	supported := systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get", systemdPath: "/usr/bin/systemd-run"}
+	box := heldBox(t, "docker-ce-cli", "docker-ce")
+	updater := newTestSystemPackageUpdater(t)
+	updater.command = box.command
+
+	update, plan := updater.dockerUpdatePreflight(context.Background(), supported, false)
+	if update.Refusal != DockerRefusalHeld || update.Available || !reflect.DeepEqual(update.RefusalDetail, []string{"docker-ce", "docker-ce-cli"}) {
+		t.Fatalf("update = %#v, want the refusal held, with the names", update)
+	}
+	if !update.Held || !reflect.DeepEqual(update.HeldPackages, []string{"docker-ce", "docker-ce-cli"}) || len(plan.Packages) != 0 || len(update.Packages) != 0 {
+		t.Errorf("update = %#v, plan = %#v", update, plan)
+	}
+	// the expensive simulation is not made for a plan that is refused for a hold
+	if calls := engineSimulations(box); len(calls) != 0 {
+		t.Errorf("a plan was simulated for a refusal that needs none: %#v", calls)
+	}
+
+	update, plan = updater.dockerUpdatePreflight(context.Background(), supported, true)
+	if update.Refusal != "" || !update.Available || !update.Held || len(update.RefusalDetail) != 0 {
+		t.Fatalf("update = %#v, want available", update)
+	}
+	// the plan hands the start the holds it goes ahead of, and its id is the one the check gave
+	if !reflect.DeepEqual(plan.Held, []string{"docker-ce", "docker-ce-cli"}) || plan.ID() != update.PlanID {
+		t.Errorf("plan = %#v, id %q, update's %q", plan, plan.ID(), update.PlanID)
+	}
+	wantPins := []string{"containerd.io=2.1.4-1", "docker-ce-cli=" + debian29, "docker-ce=" + debian29}
+	if !reflect.DeepEqual(plan.Pins(), wantPins) {
+		t.Errorf("pins = %#v, want %#v", plan.Pins(), wantPins)
+	}
+
+	// the check is the second: it is what the page confirms
+	if got := checkBox(t, heldBox(t, "docker-ce-cli", "docker-ce"), nil).Docker.Update; got.PlanID != update.PlanID {
+		t.Errorf("the check's plan_id = %q, want the plan the owner allows: %q", got.PlanID, update.PlanID)
+	}
+
+	// no hold, and the word of the owner: nothing is allowed and nothing is said of it
+	clean := newTestSystemPackageUpdater(t)
+	clean.command = ownerBox(t).command
+	for _, allow := range []bool{false, true} {
+		update, plan := clean.dockerUpdatePreflight(context.Background(), supported, allow)
+		if update.Refusal != "" || !update.Available || update.Held || len(plan.Held) != 0 || update.PlanID != ownerPlanID(t) {
+			t.Errorf("allow %v: update = %#v, plan = %#v", allow, update, plan)
+		}
+	}
+}
+
+func TestDockerUpdatePlanIDChangesWithTheHold(t *testing.T) {
+	id := func(names ...string) string {
+		box := ownerBox(t)
+		if len(names) > 0 {
+			box = heldBox(t, names...)
+		}
+		return checkBox(t, box, nil).Docker.Update.PlanID
+	}
+	none, ce, cli, both := id(), id("docker-ce"), id("docker-ce-cli"), id("docker-ce", "docker-ce-cli")
+	seen := map[string]string{}
+	for name, got := range map[string]string{"none": none, "docker-ce": ce, "docker-ce-cli": cli, "both": both} {
+		if other, dup := seen[got]; dup {
+			t.Errorf("%s and %s have the same plan_id: a hold that is set, removed or moved is another plan", name, other)
+		}
+		seen[got] = name
+	}
+	if none != ownerPlanID(t) {
+		t.Error("the plan of a box that holds nothing is not what it was")
+	}
+	if again := id("docker-ce"); again != ce {
+		t.Errorf("the same hold, another id: %q and %q", again, ce)
+	}
+}
+
+// What comes after the hold in the order of the refusals is still looked at once the owner allows it.
+func TestDockerUpdateStillRefusesWhatComesAfterTheHold(t *testing.T) {
+	supported := systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get", systemdPath: "/usr/bin/systemd-run"}
+	for _, c := range []struct {
+		name   string
+		change func(*aptBox)
+		tweak  func(*systemPackageUpdater)
+		want   string
+	}{
+		{"origin", func(b *aptBox) { b.policy = mirrorPolicy }, nil, "origin"},
+		{"dpkg", func(b *aptBox) { b.dpkgAudit = dpkgAuditHalfConfigured }, nil, "dpkg"},
+		{"the daemon", func(b *aptBox) { b.noDaemon = true }, nil, "daemon"},
+		{"swarm", func(b *aptBox) { b.daemonInfo = `{"ServerVersion":"28.0.4","SwarmState":"active"}` }, nil, "swarm"},
+		{"a plan that is not an upgrade of Docker", func(b *aptBox) { b.enginePlans["docker-ce-cli"] += "Remv docker-compose-v2 [2.1.0]\n" }, nil, "plan"},
+		{"a simulation that fails", func(b *aptBox) { b.installFailure = "E: Unable to correct problems, you have held broken packages." }, nil, "plan"},
+		{"the disk", nil, lowDisk(nil), "disk"},
+	} {
+		box := heldBox(t, "docker-ce")
+		if c.change != nil {
+			c.change(box)
+		}
+		updater := newTestSystemPackageUpdater(t)
+		updater.command = box.command
+		if c.tweak != nil {
+			c.tweak(updater)
+		}
+		update, _ := updater.dockerUpdatePreflight(context.Background(), supported, true)
+		if update.Refusal != c.want || update.Available {
+			t.Errorf("%s: refusal = %q, available = %v, want %q", c.name, update.Refusal, update.Available, c.want)
+		}
+		// a refusal for a reason after the question of the holds still says what is held
+		if c.want != "origin" && (!update.Held || !reflect.DeepEqual(update.HeldPackages, []string{"docker-ce"})) {
+			t.Errorf("%s: held = %v %v", c.name, update.Held, update.HeldPackages)
+		}
+	}
+}
+
+// The flag lets apt change what is held, and it must not let the update of Docker change what is
+// held that is not Docker's: a plan that has to touch such a package is refused, with its name.
+func TestDockerUpdateDoesNotDragAHeldPackageThatIsNotDockersAlong(t *testing.T) {
+	supported := systemPackageSupport{supported: true, aptPath: "/usr/bin/apt-get", systemdPath: "/usr/bin/systemd-run"}
+	for _, c := range []struct {
+		name   string
+		line   string
+		status map[string]string
+		// version is the installed one, for a package that is on the box
+		packages map[string]string
+		want     []string
+	}{
+		{"an upgrade of a library that is held", "Inst libnftables1 [0.9.7-1] (0.9.8-3.1 Debian:11/stable [amd64])\n", map[string]string{"libnftables1": "hi"}, map[string]string{"libnftables1": "0.9.7-1"}, []string{"libnftables1"}},
+		{"an upgrade of a library that is not held", "Inst libnftables1 [0.9.7-1] (0.9.8-3.1 Debian:11/stable [amd64])\n", nil, map[string]string{"libnftables1": "0.9.7-1"}, []string{"libnftables1"}},
+		{"a new package that is on hold, though not installed", "Inst nftables (0.9.8-3.1 Debian:11/stable [amd64])\n", map[string]string{"nftables": "hn"}, map[string]string{"nftables": "0.9.8-3.1"}, []string{"nftables"}},
+		{"two new packages, one on hold", ownerNewDependencies, map[string]string{"libedit2": "hn"}, map[string]string{"libedit2": "3.1-20191231-2+b1"}, []string{"libedit2"}},
+	} {
+		box := heldBox(t, "docker-ce")
+		box.enginePlans["docker-ce-cli"] += c.line
+		for name, version := range c.packages {
+			box.packages[name] = version
+		}
+		for name, status := range c.status {
+			box.statuses[name] = status
+		}
+		updater := newTestSystemPackageUpdater(t)
+		updater.command = box.command
+		update, plan := updater.dockerUpdatePreflight(context.Background(), supported, true)
+		if update.Refusal != DockerRefusalPlan || update.Available || !reflect.DeepEqual(update.RefusalDetail, c.want) || len(plan.Packages) != 0 {
+			t.Errorf("%s: update = %#v, want the refusal plan with %v", c.name, update, c.want)
+		}
+	}
+
+	// a new package that is not held, with the flag in use, is what it was: acceptable
+	box := heldBox(t, "docker-ce")
+	box.enginePlans["containerd.io"] = ownerNewDependencies + ownerContaind
+	box.upgradeSimulation = simLibc
+	if update := checkBox(t, box, nil).Docker.Update; update == nil || !update.Available || len(update.Packages) != 7 || !update.Held {
+		t.Errorf("update = %#v, want the new dependencies accepted", update)
 	}
 }
