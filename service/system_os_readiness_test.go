@@ -190,6 +190,40 @@ func TestACommandWhoseChildHoldsItsOutputOpenDoesNotHoldTheReport(t *testing.T) 
 	}
 }
 
+// os/exec says that a child still holds the output (exec.ErrWaitDelay) only when the process itself ended
+// well: for one that failed it says its exit status, and what arrived in the two seconds is all that
+// there will be. That is no more a whole answer than the other: the failure of a tool is a status that
+// the checks read ("dpkg-query" has no such package, "apt-get check" has broken dependencies), and the
+// words after it are the ones that were lost.
+func TestACommandThatFailedWhileAChildHeldItsOutputOpenIsAnErrorToo(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	probe := osReadinessProbe{updater: newSystemPackageUpdater()}
+	for name, script := range map[string]string{
+		"exit 1": "sleep 7 & echo first; exit 1",
+		"exit 3": "sleep 7 & echo first; exit 3",
+		"exit 0": "sleep 7 & echo first; exit 0",
+	} {
+		t.Run(name, func(t *testing.T) {
+			started := time.Now()
+			out, err := probe.Run(context.Background(), sh, "-c", script)
+			if elapsed := time.Since(started); elapsed > 5*time.Second || elapsed < time.Second {
+				t.Fatalf("took %v: the pipe is waited for two seconds, and not less, and not until its child ends", elapsed)
+			}
+			if !errors.Is(err, exec.ErrWaitDelay) {
+				t.Fatalf("out = %+v, err = %v: an output that a child still holds was taken for a whole one", out, err)
+			}
+		})
+	}
+	// and a command that failed with nothing left behind is its exit status, as before
+	out, err := probe.Run(context.Background(), sh, "-c", "echo first; exit 1")
+	if err != nil || out.ExitCode != 1 || out.Text != "first\n" {
+		t.Fatalf("out = %+v, err = %v", out, err)
+	}
+}
+
 func TestFilesAreReadWithinTheirBounds(t *testing.T) {
 	probe, _ := readinessProbe(t)
 	dir := t.TempDir()

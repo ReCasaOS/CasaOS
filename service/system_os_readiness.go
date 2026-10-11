@@ -135,6 +135,8 @@ type boundedOutput struct {
 	mu  sync.Mutex
 	max int
 	buf []byte
+	// ended is set when the output was read to its end: the pipe was closed by every process that held it.
+	ended bool
 }
 
 func (b *boundedOutput) Write(p []byte) (int, error) {
@@ -144,6 +146,38 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 		b.buf = append(b.buf, p[:min(room, len(p))]...)
 	}
 	return len(p), nil
+}
+
+// ReadFrom is what io.Copy calls, and os/exec copies the output of a command with io.Copy: it reads to the
+// end of the pipe and says so (complete). A pipe that a child still holds open does not end, and the copy
+// is cut by the wait delay with an error: os/exec reports that (exec.ErrWaitDelay) only for a process that
+// ended well, and for one that failed it reports the exit status, with nothing to say that words are lost.
+func (b *boundedOutput) ReadFrom(r io.Reader) (int64, error) {
+	var total int64
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			b.Write(buf[:n])
+			total += int64(n)
+		}
+		switch {
+		case err == io.EOF:
+			b.mu.Lock()
+			b.ended = true
+			b.mu.Unlock()
+			return total, nil
+		case err != nil:
+			return total, err
+		}
+	}
+}
+
+// complete says whether the output was read to its end.
+func (b *boundedOutput) complete() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.ended
 }
 
 // result is what was kept, cut to the bound, and whether the command printed more than that.
@@ -170,6 +204,12 @@ func boundedCommand(ctx context.Context, name string, args ...string) ([]byte, b
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	text, truncated := out.result()
+	// A process that ran, and whose output was not read to its end, left a child that holds it: what it
+	// printed is not known to be whole, whatever its exit status says (see ReadFrom).
+	var exit *exec.ExitError
+	if cmd.ProcessState != nil && !out.complete() && ctx.Err() == nil && (err == nil || errors.As(err, &exit)) {
+		err = exec.ErrWaitDelay
+	}
 	return text, truncated, err
 }
 
@@ -183,7 +223,7 @@ func (p osReadinessProbe) run(ctx context.Context, name string, args ...string) 
 // Run runs a command, in English, and says how it ended. A command that ran and failed is an exit
 // status, and not an error; one that is not installed is osreadiness.ErrToolMissing; one that was
 // stopped by the end of its time is the context's error; one whose output a child still holds is an
-// error (exec.ErrWaitDelay), since what it printed is not known to be whole.
+// error (exec.ErrWaitDelay) whatever its exit status was, since what it printed is not known to be whole.
 func (p osReadinessProbe) Run(ctx context.Context, argv ...string) (osreadiness.Output, error) {
 	if len(argv) == 0 {
 		return osreadiness.Output{}, errors.New("no command")
