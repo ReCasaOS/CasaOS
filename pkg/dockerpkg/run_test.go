@@ -497,9 +497,9 @@ func TestRollbackCommandHeld(t *testing.T) {
 		held []string
 		want string
 	}{
-		{"all three held", []string{"docker-ce", "docker-ce-cli", "containerd.io"}, head + pins + " && sudo apt-mark hold containerd.io docker-ce docker-ce-cli"},
-		{"only a sibling held", []string{"containerd.io"}, head + pins + " && sudo apt-mark hold containerd.io"},
-		{"one held, given twice and in no order", []string{"docker-ce-cli", "docker-ce", "docker-ce-cli"}, head + pins + " && sudo apt-mark hold docker-ce docker-ce-cli"},
+		{"all three held", []string{"docker-ce", "docker-ce-cli", "containerd.io"}, head + pins + " ; sudo apt-mark hold containerd.io docker-ce docker-ce-cli"},
+		{"only a sibling held", []string{"containerd.io"}, head + pins + " ; sudo apt-mark hold containerd.io"},
+		{"one held, given twice and in no order", []string{"docker-ce-cli", "docker-ce", "docker-ce-cli"}, head + pins + " ; sudo apt-mark hold docker-ce docker-ce-cli"},
 	} {
 		if got := RollbackCommandHeld(previous, c.held); got != c.want {
 			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
@@ -516,17 +516,18 @@ func TestRollbackCommandHeld(t *testing.T) {
 	}
 	// only the pins that pass validation, held or not
 	got := RollbackCommandHeld([]string{"docker-ce=5:28.0.4-1", "docker-ce=5:1;reboot", "containerd.io=1.7.27-1"}, []string{"docker-ce"})
-	if want := head + "docker-ce=5:28.0.4-1 containerd.io=1.7.27-1 && sudo apt-mark hold docker-ce"; got != want {
+	if want := head + "docker-ce=5:28.0.4-1 containerd.io=1.7.27-1 ; sudo apt-mark hold docker-ce"; got != want {
 		t.Errorf("RollbackCommandHeld(mixed) = %q, want %q", got, want)
 	}
 	// and only names of Docker's packages are put back on hold, as the box names them
 	hostile := []string{"x; rm -rf /", "$(id)", "libc6", "-oAPT::Foo=1", "docker-ce:armhf", "docker-ce\nreboot", "docker-ce && reboot", ""}
 	got = RollbackCommandHeld(previous, append([]string{"docker-ce"}, hostile...))
-	if want := head + pins + " && sudo apt-mark hold docker-ce"; got != want {
+	if want := head + pins + " ; sudo apt-mark hold docker-ce"; got != want {
 		t.Errorf("RollbackCommandHeld(hostile names) = %q, want %q", got, want)
 	}
-	if strings.ContainsAny(got, ";$`'\"\\<>()\n#*?!{}|") {
-		t.Errorf("the command holds a shell character: %q", got)
+	// the one `;` is the unit's own, between the install and the hold; no other shell character
+	if strings.ContainsAny(got, "$`'\"\\<>()\n#*?!{}|") || strings.Count(got, ";") != 1 {
+		t.Errorf("the command holds a shell character, or not just the one `;`: %q", got)
 	}
 	// no name that is one: nothing on hold to put back, so the command of a run that held nothing
 	if got := RollbackCommandHeld(previous, hostile); got != plain {

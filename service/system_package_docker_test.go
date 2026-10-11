@@ -692,7 +692,7 @@ func TestSystemPackageCheckSaysNothingIsBehindWhenTheCandidateIsTheInstalledVers
 func TestSystemPackageCheckManualCommandOfAHeldDistributionDocker(t *testing.T) {
 	const policy = "docker.io:\n  Installed: 26.1.5-0ubuntu1\n  Candidate: 26.1.6-0ubuntu1\n  Version table:\n     26.1.6-0ubuntu1 500\n        500 http://archive.ubuntu.com/ubuntu jammy-updates/universe amd64 Packages\n *** 26.1.5-0ubuntu1 100\n        100 /var/lib/dpkg/status\n"
 	for status, want := range map[string]string{
-		"hi": "sudo apt-get update && sudo apt-get install --only-upgrade --allow-change-held-packages docker.io && sudo apt-mark hold docker.io",
+		"hi": "sudo apt-get update && sudo apt-get install --only-upgrade --allow-change-held-packages docker.io ; sudo apt-mark hold docker.io",
 		"ii": "sudo apt-get update && sudo apt-get install --only-upgrade docker.io",
 	} {
 		updater := newTestSystemPackageUpdater(t)

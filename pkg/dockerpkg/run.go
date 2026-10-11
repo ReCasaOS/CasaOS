@@ -438,7 +438,10 @@ func RollbackCommand(previous []string) string {
 // as the update was run: with the flag of the terminal command (apt-get install with -y refuses to change
 // a package that is on hold unless it is told it may; without -y it only asks, and the flag is there to
 // say so), and since dpkg drops the hold of every package it unpacks, it ends by putting the hold back on
-// the packages that were held. For a run that held nothing it is RollbackCommand, byte for byte.
+// the packages that were held. The hold is joined with `;` and not `&&`: this command is shown for a run
+// that failed, where an install that fails again may already have unpacked packages and dpkg has dropped
+// their hold, so it goes back whatever apt-get returned (apt-mark hold is idempotent). For a run that held
+// nothing it is RollbackCommand, byte for byte.
 func RollbackCommandHeld(previous, held []string) string {
 	command := RollbackCommand(previous)
 	holds := holdNames(held)
@@ -446,5 +449,5 @@ func RollbackCommandHeld(previous, held []string) string {
 		return command
 	}
 	command = strings.Replace(command, "--allow-downgrades ", "--allow-downgrades "+allowHeldFlag+" ", 1)
-	return command + " && sudo apt-mark hold " + strings.Join(holds, " ")
+	return command + " ; sudo apt-mark hold " + strings.Join(holds, " ")
 }

@@ -189,8 +189,11 @@ func ManualCommand(origin Origin, pending []string) string {
 // that is behind and a held sibling has to move with it (docker-ce 29 needs a newer containerd.io), so the
 // command names every installed package of the engine, the same list the dashboard's plan is made of, and
 // says apt may change what is held. dpkg drops the hold of every package it unpacks, so the command ends
-// by putting the hold back on the ones that were held. For a box that holds nothing, and for an origin
-// that has no apt command, it is ManualCommand, byte for byte.
+// by putting the hold back on the ones that were held. The hold is joined with `;` and not `&&`: an install
+// that fails may already have unpacked packages, and dpkg has dropped their hold by then, so the hold goes
+// back whatever apt-get returned (apt-mark hold is idempotent). The `update && install` part keeps its
+// `&&`. For a box that holds nothing, and for an origin that has no apt command, it is ManualCommand, byte
+// for byte.
 func ManualCommandHeld(origin Origin, pending, installed, held []string) string {
 	holds := holdNames(held)
 	chosen := manualNames(origin, pending)
@@ -200,7 +203,7 @@ func ManualCommandHeld(origin Origin, pending, installed, held []string) string 
 	for _, name := range append(holdNames(installed), holds...) {
 		chosen[name] = struct{}{}
 	}
-	return manualHead + allowHeldFlag + " " + strings.Join(sortedNames(chosen), " ") + " && sudo apt-mark hold " + strings.Join(holds, " ")
+	return manualHead + allowHeldFlag + " " + strings.Join(sortedNames(chosen), " ") + " ; sudo apt-mark hold " + strings.Join(holds, " ")
 }
 
 var (

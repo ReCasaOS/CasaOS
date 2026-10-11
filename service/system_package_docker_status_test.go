@@ -1027,7 +1027,7 @@ func TestDockerStatusRollbackCommandOfARunThatWentAheadOfAHold(t *testing.T) {
 	const pins = "containerd.io=1.7.27-1 docker-ce=" + debian28 + " docker-ce-cli=" + debian28
 	plain := "sudo apt-get install --allow-downgrades " + pins
 	held := func(names string) string {
-		return "sudo apt-get install --allow-downgrades --allow-change-held-packages " + pins + " && sudo apt-mark hold " + names
+		return "sudo apt-get install --allow-downgrades --allow-change-held-packages " + pins + " ; sudo apt-mark hold " + names
 	}
 	failed := mark("FAILED", "2026-08-13T01:03:00Z", "daemon")
 	for _, c := range []struct {

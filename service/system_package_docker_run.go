@@ -148,7 +148,7 @@ type SystemDockerUpdateStatus struct {
 	NotReturned []dockerpkg.NotReturned `json:"not_returned"`
 	// RollbackCommand is what to type to put the packages back, for a run that failed and was not
 	// a major jump; "" otherwise. For a run that went ahead of a hold it carries
-	// --allow-change-held-packages, as the update did, and ends with `&& sudo apt-mark hold` and the
+	// --allow-change-held-packages, as the update did, and ends with `; sudo apt-mark hold` and the
 	// names of the packages that were on hold (HeldPackages): dpkg drops the hold of every package it
 	// unpacks, and this command unpacks them again.
 	RollbackCommand string `json:"rollback_command"`
