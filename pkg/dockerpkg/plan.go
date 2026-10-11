@@ -65,9 +65,10 @@ type Plan struct {
 	// show Offending, not this.
 	Removed []string
 	// Held are the packages of the engine that are on hold, and that the update goes ahead of
-	// because the owner said so: valid names of EngineNames, sorted. Apt's simulation does not
-	// tell, so the caller, which asked dpkg, sets it. ID covers it: a hold that is set, removed or
-	// moved after the owner confirmed is another plan to confirm.
+	// because the owner said so (dpkg drops the hold of those it unpacks, and the unit puts it
+	// back): valid names of EngineNames, sorted. Apt's simulation does not tell, so the caller,
+	// which asked dpkg, sets it. ID covers it: a hold that is set, removed or moved after the
+	// owner confirmed is another plan to confirm.
 	Held []string
 }
 

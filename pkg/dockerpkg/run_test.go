@@ -478,6 +478,35 @@ func TestRollbackCommandFromARun(t *testing.T) {
 	}
 }
 
+// The packages of a run that went ahead of a hold are on hold again when the owner reads the command
+// (the unit puts the hold back), and apt refuses to change a held package unless it is told it may:
+// the command of such a run says so, and the command of any other is what it always was.
+func TestRollbackCommandHeld(t *testing.T) {
+	previous := []string{"docker-ce=5:28.0.4-1~debian.11~bullseye", "containerd.io=1.7.27-1"}
+	plain := RollbackCommand(previous)
+	if got := RollbackCommandHeld(previous, false); got != plain {
+		t.Errorf("RollbackCommandHeld(held=false) = %q, want %q: byte for byte the command of a run that held nothing", got, plain)
+	}
+	want := "sudo apt-get install --allow-downgrades --allow-change-held-packages docker-ce=5:28.0.4-1~debian.11~bullseye containerd.io=1.7.27-1"
+	if got := RollbackCommandHeld(previous, true); got != want {
+		t.Errorf("RollbackCommandHeld(held=true) = %q, want %q", got, want)
+	}
+	// the flag is before the pins and there once; a command that has no pin is still none
+	if got := RollbackCommandHeld(previous, true); strings.Count(got, "--allow-change-held-packages") != 1 || strings.Index(got, "--allow-change-held-packages") > strings.Index(got, "docker-ce=") {
+		t.Errorf("the flag is not once, before the pins: %q", got)
+	}
+	for _, none := range [][]string{nil, {}, {""}, {"libc6=2.31", "docker-ce;reboot=5:1"}} {
+		if got := RollbackCommandHeld(none, true); got != "" {
+			t.Errorf("RollbackCommandHeld(%q, true) = %q, want none", none, got)
+		}
+	}
+	// only the pins that pass validation, held or not
+	got := RollbackCommandHeld([]string{"docker-ce=5:28.0.4-1", "docker-ce=5:1;reboot", "containerd.io=1.7.27-1"}, true)
+	if want := "sudo apt-get install --allow-downgrades --allow-change-held-packages docker-ce=5:28.0.4-1 containerd.io=1.7.27-1"; got != want {
+		t.Errorf("RollbackCommandHeld(mixed) = %q, want %q", got, want)
+	}
+}
+
 func TestIsMarkerLineIsTheShapeParseRunLooksFor(t *testing.T) {
 	for line, want := range map[string]bool{
 		"CASAOS_DOCKER_UPDATE_SUCCESS " + testNonce + " 2026-08-13T01:05:00Z": true,

@@ -110,6 +110,9 @@ func TestRunHoldsKeptOnlyWhenEveryHoldIsStillThere(t *testing.T) {
 	}{
 		{"all kept", []string{marker("HELD", "docker-ce docker-ce-cli"), marker("HOLDS", "docker-ce docker-ce-cli")}, true},
 		{"kept, said in another order", []string{marker("HELD", "docker-ce docker-ce-cli"), marker("HOLDS", "docker-ce-cli docker-ce")}, true},
+		// every hold of the start is there at the end: a name more is not a hold that was lost
+		{"a superset", []string{marker("HELD", "docker-ce"), marker("HOLDS", "docker-ce containerd.io")}, true},
+		{"a superset, in another order", []string{marker("HELD", "docker-ce-cli docker-ce"), marker("HOLDS", "containerd.io docker-ce docker-ce-cli")}, true},
 		{"one name", []string{marker("HELD", "docker-ce"), marker("HOLDS", "docker-ce")}, true},
 		{"one of two released", []string{marker("HELD", "docker-ce docker-ce-cli"), marker("HOLDS", "docker-ce")}, false},
 		{"all released", []string{marker("HELD", "docker-ce docker-ce-cli"), marker("HOLDS", "-")}, false},
@@ -215,6 +218,19 @@ func TestParseRunTakesTheFirstHeldAndTheLastHolds(t *testing.T) {
 	}
 	if run.Holds == nil || len(run.Holds) != 0 || run.HoldsKept() {
 		t.Errorf("Holds = %v: want the last (none), so that the hold is not said to be kept", run.Holds)
+	}
+	// the first valid HELD is the one that counts, a dash as much as a name: a unit that said it held
+	// nothing is not told otherwise by a later line (what the empty list is: seen, and none)
+	run = ParseRun(heldMarkerLog(
+		marker("HELD", "-"),
+		marker("HELD", "docker-ce"),
+		marker("HOLDS", "docker-ce"),
+	))
+	if run.Held == nil || len(run.Held) != 0 {
+		t.Errorf("Held = %#v, want the first, which is empty and not nil", run.Held)
+	}
+	if run.HoldsKept() {
+		t.Error("a hold is said to be kept by a run whose HELD said there was none")
 	}
 	// a marker that is not valid does not replace the one before it
 	run = ParseRun(heldMarkerLog(

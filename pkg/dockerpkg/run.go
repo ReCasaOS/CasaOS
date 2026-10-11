@@ -174,18 +174,19 @@ type Run struct {
 	// whether it changes the major version, and is false with no PLAN line.
 	From, To  string
 	MajorJump bool
-	// Held is what the unit saw on hold, among the packages it may touch, when it started: names of
-	// the engine's, sorted, empty (not nil) for a "-", nil when the unit did not say (the first valid
-	// HELD line counts). Holds is what it saw on hold when it ended, the names it started with among
-	// them if the hold is still there, in the same way (the last valid HOLDS line counts).
+	// Held is what the unit saw on hold when it started, among the engine's packages the core named to
+	// it (CASAOS_DU_HELD, which are the ones the check reports): names of the engine's, sorted, empty
+	// (not nil) for a "-", nil when the unit did not say (the first valid HELD line counts). Holds is
+	// what it saw on hold of those when it ended, after it had put back the hold that dpkg drops from
+	// every package it unpacks, in the same way (the last valid HOLDS line counts).
 	Held  []string
 	Holds []string
 }
 
-// HoldsKept says that the update left the holds as they were: the unit saw packages on hold when
-// it started, and every one of them is still on hold in what it said when it ended. A run that
-// held nothing has no hold to say is kept, and a run whose unit did not say the end of it (it was
-// lost) has none that it can say is.
+// HoldsKept says that the holds are in place again at the end of the update: the unit saw packages
+// on hold when it started, and every one of them is on hold in what it said when it ended (a name more
+// is no hold lost). A run that held nothing has no hold to say is back, and a run whose unit did not say
+// the end of it (it was lost) has none that it can say is.
 func (r Run) HoldsKept() bool {
 	if len(r.Held) == 0 {
 		return false
@@ -430,4 +431,15 @@ func RollbackCommand(previous []string) string {
 		return ""
 	}
 	return "sudo apt-get install --allow-downgrades " + strings.Join(pins, " ")
+}
+
+// RollbackCommandHeld is RollbackCommand for a run that went ahead of a hold (Run.Held is not empty):
+// the unit put the hold back when it ended, and apt refuses to change a package that is on hold unless
+// it is told it may. For a run that held nothing it is RollbackCommand, byte for byte.
+func RollbackCommandHeld(previous []string, held bool) string {
+	command := RollbackCommand(previous)
+	if held && command != "" {
+		return strings.Replace(command, "--allow-downgrades ", "--allow-downgrades --allow-change-held-packages ", 1)
+	}
+	return command
 }
