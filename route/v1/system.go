@@ -243,6 +243,20 @@ func GetDockerUpdateStatus(ctx echo.Context) error {
 	})
 }
 
+// @Summary the operating system, and how long its security updates last
+// @Produce application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /sys/os [get]
+func GetSystemOS(ctx echo.Context) error {
+	return ctx.JSON(http.StatusOK, model.Result{
+		Success: common_err.SUCCESS,
+		Message: common_err.GetMsg(common_err.SUCCESS),
+		Data:    service.MyService.System().GetSystemOS(),
+	})
+}
+
 // @Summary  get logs
 // @Produce  application/json
 // @Accept application/json

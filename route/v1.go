@@ -107,6 +107,8 @@ func InitV1Router() http.Handler {
 			// It sat outside the group, readable by anyone on the network.
 			v1SysGroup.GET("/debug", v1.GetSystemConfigDebug)
 			v1SysGroup.GET("/version", v1.GetSystemCheckVersion) // version/check
+			// The operating system and how long its security updates last: it only reads.
+			v1SysGroup.GET("/os", v1.GetSystemOS)
 
 			v1SysGroup.POST("/update", v1.SystemUpdate)
 			v1SysGroup.GET("/packages", v1.GetSystemPackageUpdates)

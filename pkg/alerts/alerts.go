@@ -17,6 +17,11 @@
 // raise and resolve alike. And when it ends the owner is told once, whether or
 // not the dashboard is open, even across a restart of the core: the nonce of
 // the last run told is kept in docker-update.notified.
+//
+// And when the operating system's security updates are about to end, or have ended,
+// the owner is told once for each state of each release, from a look every day: the
+// last one told is kept in os-support.notified, written once a message has gone out,
+// so that a state is looked at again, every day, until a channel has taken it.
 package alerts
 
 import (
@@ -28,10 +33,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 	"github.com/nicholas-fedor/shoutrrr/pkg/router"
 	"github.com/nicholas-fedor/shoutrrr/pkg/types"
@@ -99,6 +106,9 @@ type Hub struct {
 	Muted func() bool
 	// LastDockerRun is the last run of the Docker update, from the run's log and systemd.
 	LastDockerRun func() DockerRun
+	// OSSupport is the operating system and how long its security updates last, as the service says
+	// it: only the last two states that end it are told.
+	OSSupport func() ossupport.Report
 
 	modifying   sync.Mutex // serialises Update's read-modify-writes of alerts.json
 	mu          sync.Mutex // guards sent and lastFailure
@@ -107,6 +117,9 @@ type Hub struct {
 
 	dockerMu       sync.Mutex // serialises dockerEnded
 	dockerNotified string     // the nonce of the last Docker update told, guarded by dockerMu
+
+	osMu       sync.Mutex // serialises checkOSSupport
+	osNotified string     // the last state of the OS's support told, guarded by osMu
 
 	// Read and written by Run's goroutine only.
 	seen           []disk    // the disks of the previous poll, nil before the first
@@ -120,7 +133,7 @@ type Hub struct {
 var Default = New("/")
 
 // New keeps alerts.json under root and sends through Shoutrrr. Address,
-// Latest, AutoUpdates, Muted and LastDockerRun are left to the caller.
+// Latest, AutoUpdates, Muted, LastDockerRun and OSSupport are left to the caller.
 func New(root string) *Hub {
 	return &Hub{
 		Root:          root,
@@ -134,16 +147,19 @@ func New(root string) *Hub {
 		AutoUpdates:   func() bool { return true },
 		Muted:         func() bool { return false },
 		LastDockerRun: func() DockerRun { return DockerRun{} },
+		OSSupport:     func() ossupport.Report { return ossupport.Report{} },
 		sent:          map[string]*record{},
 	}
 }
 
 // Run follows the message bus until ctx is done, tells a Docker update that ended
-// or is going on, and looks at the disks and for a newer release five minutes
-// after the start, then every hour.
+// or is going on, tells the operating system's support when it is ending or ended
+// (five minutes after the start, then every day), and looks at the disks and for a
+// newer release five minutes after the start, then every hour.
 func (h *Hub) Run(ctx context.Context) {
 	go h.followBus(ctx)
 	go h.watchDocker(ctx)
+	go h.watchOSSupport(ctx)
 	timer := time.NewTimer(5 * time.Minute)
 	defer timer.Stop()
 	for {
@@ -163,6 +179,14 @@ func (h *Hub) Run(ctx context.Context) {
 // the next message says how often it came back. It reports whether a is now
 // on record as sent.
 func (h *Hub) raise(a alert) bool {
+	return h.raiseAs(a, false)
+}
+
+// raiseAs is raise, and with wait it sends now and waits for the channels, and then
+// reports whether one of them took the message: when none did, a is not on record, so
+// that the caller can try again. A caller that tells a condition once, for good, needs
+// that; the others fire and forget.
+func (h *Hub) raiseAs(a alert, wait bool) bool {
 	c := h.load()
 	if len(c.Channels) == 0 || !c.Categories[a.category] {
 		return false
@@ -181,8 +205,21 @@ func (h *Hub) raise(a alert) bool {
 	if previous != nil && previous.repeats > 0 {
 		sentence += fmt.Sprintf(" It happened %d times since %s.", previous.repeats+1, previous.at.Format("15:04"))
 	}
-	h.deliver(c.Channels, a.category, sentence)
-	return true
+	if !wait {
+		h.deliver(c.Channels, a.category, sentence)
+		return true
+	}
+	if h.deliverAll(c.Channels, a.category, sentence) {
+		return true
+	}
+	h.mu.Lock()
+	if previous == nil {
+		delete(h.sent, a.key)
+	} else {
+		h.sent[a.key] = previous
+	}
+	h.mu.Unlock()
+	return false
 }
 
 // resolve sends one "resolved" message for key, only if its alert was sent,
@@ -209,17 +246,27 @@ func (h *Hub) deliver(channels []Channel, category, sentence string) {
 	h.sending.Add(1)
 	go func() {
 		defer h.sending.Done()
-		title, message := h.compose(category, sentence)
-		var each sync.WaitGroup
-		for _, channel := range channels {
-			each.Add(1)
-			go func() {
-				defer each.Done()
-				_ = h.sendTo(channel, title, message)
-			}()
-		}
-		each.Wait()
+		h.deliverAll(channels, category, sentence)
 	}()
+}
+
+// deliverAll sends a message to every channel, each on its own, and waits for them: it
+// reports whether at least one took it.
+func (h *Hub) deliverAll(channels []Channel, category, sentence string) bool {
+	title, message := h.compose(category, sentence)
+	var each sync.WaitGroup
+	var accepted atomic.Bool
+	for _, channel := range channels {
+		each.Add(1)
+		go func() {
+			defer each.Done()
+			if h.sendTo(channel, title, message) == nil {
+				accepted.Store(true)
+			}
+		}()
+	}
+	each.Wait()
+	return accepted.Load()
 }
 
 // compose is the title, "ReCasaOS · <hostname> · <category>", and the message:

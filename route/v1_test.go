@@ -83,6 +83,31 @@ func TestSkipAccessLog(t *testing.T) {
 	}
 }
 
+func TestTheOSRouteIsASysRouteBehindTheToken(t *testing.T) {
+	e, ok := InitV1Router().(*echo.Echo)
+	if !ok {
+		t.Fatal("InitV1Router() is not an *echo.Echo")
+	}
+	registered := false
+	for _, r := range e.Routes() {
+		registered = registered || r.Method+" "+r.Path == "GET /v1/sys/os"
+	}
+	if !registered {
+		t.Error("GET /v1/sys/os is not registered")
+	}
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sys/os", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("GET /v1/sys/os without a token = %d, want 401", recorder.Code)
+	}
+	// the route only reads: nothing else answers on the path
+	recorder = httptest.NewRecorder()
+	e.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/sys/os", nil))
+	if recorder.Code == http.StatusOK {
+		t.Errorf("POST /v1/sys/os = %d", recorder.Code)
+	}
+}
+
 func TestTheTelemetryAutoUpdateAndAlertsRoutesAreSysRoutesBehindTheToken(t *testing.T) {
 	e, ok := InitV1Router().(*echo.Echo)
 	if !ok {

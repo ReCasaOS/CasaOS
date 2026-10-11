@@ -23,6 +23,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/httper"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/ip_helper"
@@ -62,6 +63,8 @@ type SystemService interface {
 	// OnDockerUpdateQueued sets what is called when a run of the Docker update has its log: it
 	// must return at once.
 	OnDockerUpdateQueued(queued func())
+	// GetSystemOS is the operating system and how long its security updates last: it only reads.
+	GetSystemOS() ossupport.Report
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()
