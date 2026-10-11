@@ -25,7 +25,9 @@ import (
 // to install, flag or no flag), so the unit puts the hold back, for those names and no others. The flag
 // is global to the three calls, so a package among the names the unit may touch that is on hold when the
 // unit starts and that the core did not name is a run the unit refuses (GUARD plan), before it asks apt
-// for anything: it could not put that hold back.
+// for anything: it could not put that hold back. The look is taken again once the download is done and
+// before the install starts (the download takes as long as the link takes, and a hold set meanwhile is as
+// much a hold it could not put back): nothing has been installed yet, so it is the same clean refusal.
 //
 // Two lists travel: the pins (name=version) of the packages to upgrade, which are all the
 // script names to apt, and the names of every package apt may install, which are the pins' and
@@ -133,6 +135,18 @@ restore_holds() {
 	done
 }
 
+# refuse_unrestorable_holds refuses the run (GUARD plan) when a package among the names the unit may touch
+# is on hold and installed and is not among the packages it is given, which are the ones whose hold the unit
+# puts back: the flag is global to the calls of apt, so apt would change that package, dpkg would drop its
+# hold, and nothing would put it back or say so. Nothing is asked of it without the flag. It is made while
+# nothing has been installed (install_ran is not set), so fail only says it.
+refuse_unrestorable_holds() {
+	[ -n "$hold_flag" ] || return 0
+	for name in $(held_among $CASAOS_DU_NAMES); do
+		case " $1 " in *" $name "*) ;; *) mark GUARD plan; fail guard ;; esac
+	done
+}
+
 # wait_daemon sets $running to the version the daemon reports; it fails after the timeout.
 wait_daemon() {
 	deadline=$(( $(date +%s) + daemon_timeout ))
@@ -198,15 +212,7 @@ fi
 # listed and no others, so a package among the names that is on hold now and that is not one of them (the
 # owner held it after the core looked) is a hold it would lose without a word: the run is refused, and
 # nothing has been asked of apt yet.
-if [ -n "$hold_flag" ]; then
-	for name in $(held_among $CASAOS_DU_NAMES); do
-		case " $held_names " in *" $name "*) ;; *) bad=1 ;; esac
-	done
-	if [ -n "$bad" ]; then
-		mark GUARD plan
-		fail guard
-	fi
-fi
+refuse_unrestorable_holds "$held_names"
 
 # What is on hold now, said here and again before the end, so that the log shows whether the holds are
 # in place again. They are the ones put back after the install: the packages dpkg drops the hold of
@@ -270,6 +276,11 @@ fi
 # Download first, while the apps run: a failure here has changed nothing.
 "$CASAOS_DU_APT" -y --no-remove --download-only -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends $hold_flag $CASAOS_DU_PINS || fail download
 mark DOWNLOADED "$(ts)"
+
+# The download took as long as it took: look again at what is on hold, while nothing has been installed.
+# What is put back is held_start, the packages that were on hold when the unit started (a package the core
+# listed that was not, and is now, is one it would lose all the same).
+refuse_unrestorable_holds "$held_start"
 
 install_ran=1
 "$CASAOS_DU_APT" -y --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 install --only-upgrade --no-install-recommends $hold_flag $CASAOS_DU_PINS

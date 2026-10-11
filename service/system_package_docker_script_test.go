@@ -50,6 +50,8 @@ case " $* " in
 		echo "E: Held packages were changed and -y was used without --allow-change-held-packages."
 		exit 100
 	fi
+	# the owner holds a package while the packages download (download.holds: its names)
+	for n in $(cat "$d/download.holds" 2>/dev/null); do echo hi > "$d/status/$n"; done
 	exit "$(cat "$d/download.rc" 2>/dev/null || echo 0)" ;;
 *" update "*)
 	exit 0 ;;
@@ -1706,6 +1708,71 @@ func TestTheUnitRefusesToGoAheadOfAHoldItWouldNotPutBack(t *testing.T) {
 				t.Error("something was installed")
 			}
 			if got := b.dpkgSays("docker-ce"); got != "hi" && got != "" {
+				t.Errorf("dpkg says %q of docker-ce: the hold was touched", got)
+			}
+		})
+	}
+}
+
+// The look at what is on hold is taken twice: before apt is asked for anything, and again once the download
+// is done and nothing has been installed yet. The download takes as long as the link takes, and the owner may
+// hold another package among the names in the meantime. The flag is global to the install call, so apt would
+// change that package, dpkg would drop its hold, and the unit, which puts back only the holds it started
+// with, would not put it back and would not say. Refused at the second look the run is as clean as at the
+// first: nothing is installed, and there is nothing to put back (the fake apt-get sets download.holds while
+// it downloads).
+func TestTheUnitRefusesAHoldThatWasSetWhileTheDownloadRan(t *testing.T) {
+	refused := []string{
+		simulateHead + heldFlag + " " + ownersPins,
+		downloadHead + heldFlag + " " + ownersPins,
+	}
+	for _, c := range []struct {
+		name  string
+		setup func(*scriptBox)
+		kinds string
+		apt   []string
+	}{
+		{"set before the download: refused at the first look, as it always was", func(b *scriptBox) {
+			b.goAheadOfHolds("docker-ce")
+			b.hold("docker-ce-cli")
+		}, "STARTED GUARD FAILED", nil},
+		{"set during the download, on a package the core did not list", func(b *scriptBox) {
+			b.goAheadOfHolds("docker-ce")
+			b.set("download.holds", "docker-ce-cli\n")
+		}, "STARTED HELD PREVIOUS DOWNLOADED GUARD HOLDS FAILED", refused},
+		// the core listed it, and it was not on hold when the unit started: it is not among the holds the
+		// unit puts back, and listed or not it is one it would lose
+		{"set during the download, on a package the core listed that was not on hold at the start", func(b *scriptBox) {
+			b.goAheadOfHolds("docker-ce")
+			b.env["CASAOS_DU_HELD"] = "docker-ce docker-ce-cli"
+			b.set("download.holds", "docker-ce-cli\n")
+		}, "STARTED HELD PREVIOUS DOWNLOADED GUARD HOLDS FAILED", refused},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := newScriptBox(t)
+			c.setup(b)
+			r := b.run()
+			checkLogShape(t, r.log)
+			if r.exit != 1 || r.run.Terminal != dockerpkg.TerminalFailed || r.run.FailReason != dockerpkg.FailGuard {
+				t.Fatalf("exit = %d, run = %#v\n%s", r.exit, r.run, r.log)
+			}
+			if got := strings.Join(markerKinds(r.log), " "); got != c.kinds {
+				t.Errorf("markers = %s, want %s", got, c.kinds)
+			}
+			if !strings.Contains(r.log, "\nCASAOS_DOCKER_UPDATE_GUARD "+scriptNonce+" plan\n") {
+				t.Errorf("no GUARD marker:\n%s", r.log)
+			}
+			if got, want := strings.Join(r.aptCalls(), "\n"), strings.Join(c.apt, "\n"); got != want {
+				t.Errorf("apt-get calls:\n%s\nwant:\n%s", got, want)
+			}
+			// the install never started: nothing installed, nothing to put back, the daemon left alone
+			if r.mentions("--force-confold") != 0 || r.called("apt-mark") != 0 || r.called("docker version") != 0 || r.called("systemctl") != 0 {
+				t.Errorf("the unit went on with the install: %v", r.calls)
+			}
+			if _, err := os.Stat(filepath.Join(b.dir, "installed")); err == nil {
+				t.Error("something was installed")
+			}
+			if got := b.dpkgSays("docker-ce"); got != "hi" {
 				t.Errorf("dpkg says %q of docker-ce: the hold was touched", got)
 			}
 		})
