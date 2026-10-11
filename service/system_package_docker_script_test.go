@@ -109,7 +109,8 @@ exit 0
 
 const fakeDpkgQuery = `#!/bin/sh
 d=$FAKE_DIR
-echo "dpkg-query $*" >> "$d/calls.log"
+# printf and not echo: dash's echo turns the \n of dpkg-query's format into a line break, busybox's does not
+printf '%s\n' "dpkg-query $*" >> "$d/calls.log"
 case "$*" in
 *Status-Abbrev*)
 	# the state of each package that was asked for, as dpkg abbreviates it: want and state, and a
