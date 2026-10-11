@@ -381,7 +381,7 @@ func newBox(t *testing.T) *fakeProbe {
 	}
 	f.installed(pkg("debian-archive-keyring", "2021.1.1+deb11u1"), "debian-archive-keyring")
 	f.installed(pkg("openssh-server", "1:8.4p1-5+deb11u3"), "openssh-server")
-	// the link of the root disk's controller
+	furnish(f)
 	return f
 }
 
