@@ -27,7 +27,7 @@ var (
 // osFrom is the box of a release at the day of the hub's clock: the answer of the service, with the
 // real table.
 func osFrom(h *Hub, release map[string]string, now *time.Time) {
-	h.OSSupport = func() ossupport.Report { return ossupport.Describe(release, "amd64", *now) }
+	h.OSSupport = func() ossupport.Report { return ossupport.Describe(release, "amd64", *now, nil) }
 }
 
 // osMarker is what the marker file holds, "" when there is none.
@@ -120,6 +120,30 @@ func TestNothingIsToldForASupportedOrUnknownSystem(t *testing.T) {
 	h.sending.Wait()
 	if len(o.sent) != 0 {
 		t.Fatalf("sent %+v", o.sent)
+	}
+}
+
+// A Raspberry Pi OS, a Proxmox and the like say Debian 11, whose security updates have ended, and are
+// told nothing: they are not known, and Debian's dates are not theirs to be told.
+func TestNothingIsToldForAVariant(t *testing.T) {
+	for variant, path := range map[string]string{
+		"raspberrypi": "/etc/rpi-issue", "armbian": "/etc/armbian-release", "dietpi": "/boot/dietpi.txt",
+		"proxmox": "/usr/bin/pveversion", "openmediavault": "/etc/openmediavault",
+	} {
+		t.Run(variant, func(t *testing.T) {
+			h, o, now := newHub(t)
+			onDay(t, now, "2026-10-10")
+			h.OSSupport = func() ossupport.Report {
+				return ossupport.Describe(debian11, "arm64", *now, func(p string) bool { return p == path })
+			}
+
+			h.checkOSSupport()
+			h.sending.Wait()
+
+			if len(o.sent) != 0 || osMarker(h) != "" {
+				t.Fatalf("sent %+v, marker %q; want nothing", o.sent, osMarker(h))
+			}
+		})
 	}
 }
 
@@ -324,7 +348,7 @@ func TestTheMarkerIsReplacedAtomically(t *testing.T) {
 func TestRacingLooksSendOnce(t *testing.T) {
 	h, o, _ := newHub(t)
 	h.OSSupport = func() ossupport.Report {
-		return ossupport.Describe(debian11, "amd64", time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC))
+		return ossupport.Describe(debian11, "amd64", time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), nil)
 	}
 	var looks atomic.Int64
 	base := time.Date(2026, 9, 25, 6, 0, 0, 0, time.UTC)
@@ -476,7 +500,7 @@ func TestAStateIsToldOnceEvenIfTheMarkerCannotBeWritten(t *testing.T) {
 func TestTheSixQuietHoursDoNotHideTheNextState(t *testing.T) {
 	h, o, _ := newHub(t) // the hub's clock stays at 06:00 on 2026-09-25
 	day := time.Date(2027, 5, 31, 0, 0, 0, 0, time.UTC)
-	h.OSSupport = func() ossupport.Report { return ossupport.Describe(ubuntu22, "amd64", day) }
+	h.OSSupport = func() ossupport.Report { return ossupport.Describe(ubuntu22, "amd64", day, nil) }
 
 	h.checkOSSupport()
 	day = day.AddDate(0, 0, 2)
@@ -502,11 +526,11 @@ func TestTheDailyLookTellsWhatChangedAndStopsWithItsContext(t *testing.T) {
 		n := looks.Add(1)
 		switch {
 		case n < 3:
-			return ossupport.Describe(ubuntu22, "amd64", time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC))
+			return ossupport.Describe(ubuntu22, "amd64", time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC), nil)
 		case n < 6:
-			return ossupport.Describe(ubuntu22, "amd64", time.Date(2027, 1, 15, 0, 0, 0, 0, time.UTC))
+			return ossupport.Describe(ubuntu22, "amd64", time.Date(2027, 1, 15, 0, 0, 0, 0, time.UTC), nil)
 		}
-		return ossupport.Describe(ubuntu22, "amd64", time.Date(2027, 6, 10, 0, 0, 0, 0, time.UTC))
+		return ossupport.Describe(ubuntu22, "amd64", time.Date(2027, 6, 10, 0, 0, 0, 0, time.UTC), nil)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

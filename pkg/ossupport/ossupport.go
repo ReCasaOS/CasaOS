@@ -3,10 +3,15 @@
 // upgrades anything, and nothing here asks the network, apt or the box's own tables (the answer
 // is the same on a box with a stale distro-info-data).
 //
-// Three rules keep it from saying something false:
+// Four rules keep it from saying something false:
 //   - the identity is strict: ID must be exactly "debian" or "ubuntu". ID_LIKE is never looked at,
 //     so Mint, Pop!_OS, Raspbian (32-bit, ID=raspbian) and the rest are not known, and nothing is
 //     claimed;
+//   - but ID cannot tell a plain Debian or Ubuntu from the systems that keep its own os-release
+//     (ID=debian, no ID_LIKE): Raspberry Pi OS (64-bit, and Bookworm and later), Armbian, DietPi,
+//     Proxmox VE and OpenMediaVault. Those are found by marker files, read through the exists seam
+//     of Describe, and are not known either: the answer says which Variant it is, claims nothing,
+//     and offers no next release, because each of them upgrades by its own guide, or not in place;
 //   - a release that is not in the table (Debian 14, Ubuntu 26.10, any non-LTS Ubuntu, 18.04) is
 //     "unknown", not guessed;
 //   - eighteen months after the day the table was last checked (AsOf) what is still to come is
@@ -15,6 +20,7 @@
 package ossupport
 
 import (
+	"strings"
 	"time"
 	"unicode"
 )
@@ -63,8 +69,39 @@ type Identity struct {
 	Codename   string `json:"codename,omitempty"`
 	PrettyName string `json:"pretty_name,omitempty"`
 	Arch       string `json:"arch,omitempty"`
-	// Known is true for ID "debian" or "ubuntu", exactly, and for nothing else.
+	// Known is true for ID "debian" or "ubuntu", exactly, when it is not a Variant, and for nothing
+	// else.
 	Known bool `json:"known"`
+	// Variant is what a box that says ID "debian" or "ubuntu" really is, when it is not the plain
+	// distribution: one of the Variant constants. Such a box is not Known.
+	Variant string `json:"variant,omitempty"`
+}
+
+// The variants, the values of Identity.Variant.
+const (
+	VariantRaspberryPi    = "raspberrypi"
+	VariantArmbian        = "armbian"
+	VariantDietPi         = "dietpi"
+	VariantProxmox        = "proxmox"
+	VariantOpenMediaVault = "openmediavault"
+)
+
+// variantMarkers are the files that say a box is a variant, the first one found deciding: Raspberry
+// Pi OS writes /etc/rpi-issue (its os-release is Debian's own, 64-bit and from Bookworm); Armbian
+// /etc/armbian-release; DietPi /boot/dietpi.txt and /etc/dietpi; Proxmox VE has /usr/bin/pveversion
+// and mounts /etc/pve; OpenMediaVault has /etc/openmediavault and /usr/sbin/omv-confdbadm.
+// Sources: Raspberry Pi forum t=329094, Proxmox forum "we re-use the /etc/os-release file from
+// Debian", the DietPi forum, docs.armbian.com/build-framework/switches/branding, and the packages'
+// own file lists.
+var variantMarkers = []struct {
+	variant string
+	paths   []string
+}{
+	{VariantRaspberryPi, []string{"/etc/rpi-issue"}},
+	{VariantArmbian, []string{"/etc/armbian-release"}},
+	{VariantDietPi, []string{"/boot/dietpi.txt", "/etc/dietpi"}},
+	{VariantProxmox, []string{"/usr/bin/pveversion", "/etc/pve"}},
+	{VariantOpenMediaVault, []string{"/etc/openmediavault", "/usr/sbin/omv-confdbadm"}},
 }
 
 // Extended is the vendor's later, separate programme of security maintenance. Only its name and
@@ -189,10 +226,12 @@ var table = []entry{
 // Parse is the identity of the box from its os-release and its architecture. It is strict: only an
 // ID of exactly "debian" or "ubuntu" is Known, and ID_LIKE is never looked at. Every field is
 // checked for length and characters before it goes anywhere (a log, a page, an alert): one that
-// fails is left empty.
+// fails is left empty. The only variant Parse can tell is Armbian, whose os-release names it (its
+// PRETTY_NAME is "<vendor> <version> <release>", "Armbian-unofficial" when the vendor is not set);
+// the others are told by their files, in Describe.
 func Parse(osRelease map[string]string, arch string) Identity {
 	id := osRelease["ID"]
-	return Identity{
+	identity := Identity{
 		ID:         token(id, 32),
 		VersionID:  token(osRelease["VERSION_ID"], 32),
 		Codename:   token(osRelease["VERSION_CODENAME"], 32),
@@ -200,6 +239,26 @@ func Parse(osRelease map[string]string, arch string) Identity {
 		Arch:       token(arch, 16),
 		Known:      id == "debian" || id == "ubuntu",
 	}
+	if identity.Known && strings.HasPrefix(osRelease["PRETTY_NAME"], "Armbian") {
+		identity.Known, identity.Variant = false, VariantArmbian
+	}
+	return identity
+}
+
+// variantOf is the variant whose marker file exists, or "". exists says whether a path exists on the
+// box; nil means no file does.
+func variantOf(exists func(path string) bool) string {
+	if exists == nil {
+		return ""
+	}
+	for _, m := range variantMarkers {
+		for _, path := range m.paths {
+			if exists(path) {
+				return m.variant
+			}
+		}
+	}
+	return ""
 }
 
 // token is s when it is 1 to limit characters of a-z, 0-9, ".", "_" and "-", and "" otherwise.
@@ -289,9 +348,16 @@ func Evaluate(id Identity, now time.Time) Support {
 	return unknown
 }
 
-// Describe is Parse and Evaluate together, as the API answers them.
-func Describe(osRelease map[string]string, arch string, now time.Time) Report {
+// Describe is Parse, the look for a variant and Evaluate together, as the API answers them. exists
+// says whether a path exists on the box (nil: none does); it is asked only when the box says
+// "debian" or "ubuntu", and the variant it finds is not Known and has no support to claim.
+func Describe(osRelease map[string]string, arch string, now time.Time, exists func(path string) bool) Report {
 	id := Parse(osRelease, arch)
+	if id.Known {
+		if variant := variantOf(exists); variant != "" {
+			id.Known, id.Variant = false, variant
+		}
+	}
 	support := Evaluate(id, now)
 	return Report{Identity: id, Support: support, Next: support.Next}
 }

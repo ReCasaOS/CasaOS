@@ -2,6 +2,7 @@ package ossupport
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,16 +41,17 @@ func asOf(t *testing.T, s string) {
 func TestOnlyDebianAndUbuntuAreKnown(t *testing.T) {
 	for name, r := range map[string]map[string]string{
 		// Every look-alike has an ID_LIKE of debian or ubuntu, and the version of the release it is
-		// built on: none of them is known, and none is told a status.
+		// built on: none of them is known, and none is told a status. (Raspberry Pi OS 64-bit,
+		// Armbian, DietPi, Proxmox VE and OpenMediaVault are not here: they keep Debian's own
+		// os-release, ID=debian and no ID_LIKE, and are told by their files, below.)
 		"Linux Mint":      {"ID": "linuxmint", "ID_LIKE": "ubuntu debian", "VERSION_ID": "21.3", "VERSION_CODENAME": "virginia"},
 		"Mint on jammy":   {"ID": "linuxmint", "ID_LIKE": "ubuntu debian", "VERSION_ID": "22.04", "VERSION_CODENAME": "jammy"},
 		"Pop!_OS":         {"ID": "pop", "ID_LIKE": "ubuntu debian", "VERSION_ID": "22.04", "VERSION_CODENAME": "jammy"},
 		"Zorin":           {"ID": "zorin", "ID_LIKE": "ubuntu debian", "VERSION_ID": "17", "VERSION_CODENAME": "jammy"},
 		"elementary":      {"ID": "elementary", "ID_LIKE": "ubuntu", "VERSION_ID": "7.1"},
-		"Raspbian":        {"ID": "raspbian", "ID_LIKE": "debian", "VERSION_ID": "11", "VERSION_CODENAME": "bullseye"},
-		"DietPi":          {"ID": "dietpi", "ID_LIKE": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm"},
-		"OpenMediaVault":  {"ID": "openmediavault", "ID_LIKE": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm"},
-		"Proxmox-like":    {"ID": "proxmox", "ID_LIKE": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm"},
+		"Raspbian 32-bit": {"ID": "raspbian", "ID_LIKE": "debian", "VERSION_ID": "11", "VERSION_CODENAME": "bullseye"},
+		// the name of a variant is not an ID: only the files, and Armbian's own PRETTY_NAME, say it
+		"an Armbian ID":   {"ID": "armbian", "VERSION_ID": "24.2.1", "PRETTY_NAME": "Armbian 24.2.1 bookworm"},
 		"Kali":            {"ID": "kali", "ID_LIKE": "debian", "VERSION_ID": "2024.1"},
 		"Devuan":          {"ID": "devuan", "ID_LIKE": "debian", "VERSION_ID": "5", "VERSION_CODENAME": "daedalus"},
 		"Ubuntu Core":     {"ID": "ubuntu-core", "ID_LIKE": "ubuntu", "VERSION_ID": "22"},
@@ -66,10 +68,10 @@ func TestOnlyDebianAndUbuntuAreKnown(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			id := Parse(r, "amd64")
-			if id.Known {
-				t.Fatalf("Parse(%v) is known: %+v", r, id)
+			if id.Known || id.Variant != "" {
+				t.Fatalf("Parse(%v) is known, or a variant of what it is not: %+v", r, id)
 			}
-			if got := Describe(r, "amd64", day(t, "2026-10-10")); got.Support.State != Unknown || got.Next != nil || got.Support.Ends != "" || got.Support.Extended != nil {
+			if got := Describe(r, "amd64", day(t, "2026-10-10"), nil); got.Support.State != Unknown || got.Next != nil || got.Support.Ends != "" || got.Support.Extended != nil {
 				t.Fatalf("Describe(%v) claims %+v, want nothing", r, got)
 			}
 		})
@@ -82,6 +84,139 @@ func TestOnlyDebianAndUbuntuAreKnown(t *testing.T) {
 	// ID_LIKE is not looked at, whatever it says and whatever ID is
 	if id := Parse(map[string]string{"ID": "debian", "ID_LIKE": "fedora"}, "amd64"); !id.Known {
 		t.Errorf("a Debian whose ID_LIKE is fedora is not known: %+v", id)
+	}
+}
+
+// has is a box on which exactly these paths exist.
+func has(paths ...string) func(string) bool {
+	return func(path string) bool { return slices.Contains(paths, path) }
+}
+
+// The systems that keep Debian's or Ubuntu's own os-release (ID=debian, no ID_LIKE, the
+// distribution's own PRETTY_NAME) are not known, whatever it says: their files say what they are, the
+// answer says which variant, and it claims nothing and offers no next release, since each of them
+// upgrades by its own guide, or not in place.
+func TestAVariantIsNotKnownWhateverItsOSReleaseSays(t *testing.T) {
+	now := day(t, "2026-10-10")
+	debian := func(version, codename string) map[string]string {
+		return map[string]string{"ID": "debian", "VERSION_ID": version, "VERSION_CODENAME": codename, "PRETTY_NAME": "Debian GNU/Linux " + version + " (" + codename + ")"}
+	}
+	for name, c := range map[string]struct {
+		release map[string]string
+		arch    string
+		files   []string
+		variant string
+	}{
+		"Raspberry Pi OS 64-bit, Bookworm":  {debian("12", "bookworm"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
+		"Raspberry Pi OS 64-bit, Bullseye":  {debian("11", "bullseye"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
+		"Armbian, by its file":              {debian("12", "bookworm"), "arm64", []string{"/etc/armbian-release"}, VariantArmbian},
+		"DietPi, by /boot/dietpi.txt":       {debian("12", "bookworm"), "arm64", []string{"/boot/dietpi.txt"}, VariantDietPi},
+		"DietPi, by /etc/dietpi":            {debian("12", "bookworm"), "amd64", []string{"/etc/dietpi"}, VariantDietPi},
+		"Proxmox VE 7, by pveversion":       {debian("11", "bullseye"), "amd64", []string{"/usr/bin/pveversion"}, VariantProxmox},
+		"Proxmox VE 8, by its /etc/pve":     {debian("12", "bookworm"), "amd64", []string{"/etc/pve"}, VariantProxmox},
+		"OpenMediaVault, by its /etc dir":   {debian("11", "bullseye"), "amd64", []string{"/etc/openmediavault"}, VariantOpenMediaVault},
+		"OpenMediaVault, by omv-confdbadm":  {debian("12", "bookworm"), "amd64", []string{"/usr/sbin/omv-confdbadm"}, VariantOpenMediaVault},
+		"Ubuntu on a Raspberry Pi":          {release("ubuntu", "22.04", "jammy", "Ubuntu 22.04.5 LTS"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
+		"Proxmox on top of a Raspberry Pi":  {debian("12", "bookworm"), "arm64", []string{"/etc/pve", "/etc/rpi-issue"}, VariantRaspberryPi},
+		"Armbian, by its PRETTY_NAME alone": {map[string]string{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Armbian 24.11.0-trunk.81 bookworm"}, "arm64", nil, VariantArmbian},
+		"Armbian-unofficial, no file":       {map[string]string{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Armbian-unofficial 24.2.1 bookworm"}, "arm64", nil, VariantArmbian},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := Describe(c.release, c.arch, now, has(c.files...))
+			if got.Known || got.Variant != c.variant {
+				t.Fatalf("known = %v, variant = %q, want not known and %q: %+v", got.Known, got.Variant, c.variant, got)
+			}
+			if got.Support.State != Unknown || got.Support.Ends != "" || got.Support.Precision != "" || got.Support.Extended != nil || got.Support.Source != "" || got.Next != nil {
+				t.Fatalf("claims %+v and next %+v, want nothing", got.Support, got.Next)
+			}
+			// who it says it is, it still says: the dashboard may show it
+			if got.ID != c.release["ID"] || got.VersionID != c.release["VERSION_ID"] || got.Codename != c.release["VERSION_CODENAME"] || got.Arch != c.arch {
+				t.Fatalf("identity = %+v, want what the os-release says", got.Identity)
+			}
+		})
+	}
+}
+
+// The exact answer of a Raspberry Pi OS 64-bit image, and of an Armbian that its PRETTY_NAME gives
+// away: the variant is said, the support is not.
+func TestTheReportOfAVariantAsJSON(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		release map[string]string
+		files   []string
+		want    string
+	}{
+		{
+			"Raspberry Pi OS 64-bit, Bookworm",
+			map[string]string{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Debian GNU/Linux 12 (bookworm)"},
+			[]string{"/etc/rpi-issue"},
+			`{"id":"debian","version_id":"12","codename":"bookworm","pretty_name":"Debian GNU/Linux 12 (bookworm)","arch":"arm64","known":false,"variant":"raspberrypi","support":{"state":"unknown"}}`,
+		},
+		{
+			"Armbian",
+			map[string]string{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Armbian 24.11.0-trunk.81 bookworm"},
+			nil,
+			`{"id":"debian","version_id":"12","codename":"bookworm","pretty_name":"Armbian 24.11.0-trunk.81 bookworm","arch":"arm64","known":false,"variant":"armbian","support":{"state":"unknown"}}`,
+		},
+	} {
+		got, err := json.Marshal(Describe(c.release, "arm64", day(t, "2026-10-10"), has(c.files...)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != c.want {
+			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
+		}
+	}
+}
+
+// A plain Debian or Ubuntu, with none of the files, is known and has its status; the box is asked
+// about exactly the files the table names, and about none for a system that does not say "debian" or
+// "ubuntu".
+func TestAPlainDebianOrUbuntuHasNoneOfTheMarkers(t *testing.T) {
+	var asked []string
+	exists := func(path string) bool { asked = append(asked, path); return false }
+	now := day(t, "2026-10-10")
+	for _, c := range []struct {
+		release map[string]string
+		want    string
+	}{
+		{release("debian", "11", "bullseye", "Debian GNU/Linux 11 (bullseye)"), SecurityEnded},
+		{release("debian", "12", "bookworm", "Debian GNU/Linux 12 (bookworm)"), Supported},
+		{release("ubuntu", "22.04", "jammy", "Ubuntu 22.04.5 LTS"), Supported},
+	} {
+		asked = nil
+		got := Describe(c.release, "amd64", now, exists)
+		if !got.Known || got.Variant != "" || got.Support.State != c.want || got.Next == nil && c.release["VERSION_ID"] != "13" {
+			t.Errorf("%s %s with none of the files: %+v", c.release["ID"], c.release["VERSION_ID"], got)
+		}
+		slices.Sort(asked)
+		want := []string{"/boot/dietpi.txt", "/etc/armbian-release", "/etc/dietpi", "/etc/openmediavault", "/etc/pve", "/etc/rpi-issue", "/usr/bin/pveversion", "/usr/sbin/omv-confdbadm"}
+		if !slices.Equal(asked, want) {
+			t.Errorf("the box was asked about %v, want %v", asked, want)
+		}
+	}
+	asked = nil
+	if got := Describe(release("linuxmint", "21.3", "virginia", ""), "amd64", now, exists); got.Known || got.Variant != "" || len(asked) != 0 {
+		t.Errorf("a Mint: %+v, files asked %v: want not known, no variant and no file looked for", got, asked)
+	}
+	// a path that is not a marker says nothing, and a box with no seam has no files
+	if got := Describe(release("debian", "12", "bookworm", ""), "amd64", now, has("/etc/os-release", "/etc/debian_version")); !got.Known || got.Variant != "" {
+		t.Errorf("a Debian with ordinary files: %+v", got)
+	}
+	if got := Describe(release("debian", "12", "bookworm", ""), "amd64", now, nil); !got.Known || got.Variant != "" {
+		t.Errorf("a Debian with no way to look for files: %+v", got)
+	}
+}
+
+// A variant is not told a status, however far the table is from its day: nothing leaks through the
+// stale rule either.
+func TestAVariantStaysUnknownWhateverTheDay(t *testing.T) {
+	r := release("debian", "11", "bullseye", "Debian GNU/Linux 11 (bullseye)")
+	for _, now := range []string{"2026-10-10", "2027-10-10", "2028-05-01", "2035-01-01"} {
+		got := Describe(r, "amd64", day(t, now), has("/usr/bin/pveversion"))
+		if got.Known || got.Support.State != Unknown || got.Next != nil {
+			t.Errorf("%s: %+v", now, got)
+		}
 	}
 }
 
@@ -352,13 +487,13 @@ func TestWhatIsNotInTheTableIsUnknown(t *testing.T) {
 		"Debian 11 as trixie":   release("debian", "11", "trixie", ""),
 		"Debian 12 as 11":       release("debian", "012", "bookworm", ""),
 	} {
-		got := Describe(r, "amd64", now)
+		got := Describe(r, "amd64", now, nil)
 		if got.Support.State != Unknown || got.Next != nil || got.Support.Ends != "" || got.Support.Source != "" {
 			t.Errorf("%s: %+v, want unknown and nothing else", name, got.Support)
 		}
 	}
 	// a Debian that is known is still known, and says so
-	if got := Describe(release("debian", "14", "forky", ""), "amd64", now); !got.Known {
+	if got := Describe(release("debian", "14", "forky", ""), "amd64", now, nil); !got.Known {
 		t.Errorf("Debian 14 is Debian: %+v", got)
 	}
 }
@@ -493,7 +628,7 @@ func TestTheReportsAsJSON(t *testing.T) {
 			`{"arch":"amd64","known":false,"support":{"state":"unknown"}}`,
 		},
 	} {
-		got, err := json.Marshal(Describe(c.release, c.arch, day(t, c.now)))
+		got, err := json.Marshal(Describe(c.release, c.arch, day(t, c.now), nil))
 		if err != nil {
 			t.Fatal(err)
 		}
