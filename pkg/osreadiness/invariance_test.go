@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 )
 
 // The report changes nothing on the machine. That is a property of the seam, and these tests pin it:
@@ -46,9 +48,12 @@ func TestOnlyTheReadingFormsOfTheAllowedCommandsAreAllowed(t *testing.T) {
 		aptCheckArgs, aptPolicyArgs("docker-ce"), aptPolicyArgs("docker-ce", "containerd.io"), {"apt-config", "dump"},
 		{"systemd-detect-virt", "--container"}, {"systemd-detect-virt", "--vm"},
 		{"systemctl", "show", "apt-daily.service", "--property=ActiveState", "--value"}, {"systemctl", "is-system-running"}, {"systemctl", "is-active", "ssh.service"}, {"systemctl", "is-enabled", "systemd-resolved"},
-		{"stat", "-fc", "%T", "/sys/fs/cgroup"}, {"findmnt", "--verify"}, {"findmnt", "-n", "-o", "FSTYPE", "/"}, {"lsblk", "-J"}, {"uname", "-r"},
+		{"stat", "-fc", "%T", "/sys/fs/cgroup"}, {"findmnt", "--verify"}, {"findmnt", "-n", "-o", "SOURCE", "/"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/boot"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/"},
+		{"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda1"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/mapper/vg0-root"}, {"uname", "-r"},
 		{"smartctl", "-H", "/dev/sda"}, {"modinfo", "-n", "r8168"}, {"dkms", "status"}, {"mokutil", "--sb-state"}, {"pveversion"},
-		{"docker", "info", "--format", "{{json .}}"}, {"docker", "ps", "-q"}, {"docker", "inspect", "--format", "x", "0123456789ab"}, {"snap", "list"}, {"snap", "list", "docker"},
+		{"docker", "info", "--format", dockerpkg.DaemonInfoFormat}, {"docker", "ps", "-q"},
+		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789ab"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789ab", strings.Repeat("f", 64)},
+		{"snap", "list"}, {"snap", "list", "docker"},
 	} {
 		if !Allowed(argv) {
 			t.Errorf("%v is not allowed", argv)
@@ -68,6 +73,16 @@ func TestOnlyTheReadingFormsOfTheAllowedCommandsAreAllowed(t *testing.T) {
 		{"smartctl", "-s", "on", "/dev/sda"}, {"smartctl", "-t", "long", "/dev/sda"}, {"smartctl", "-H", "sda"}, {"smartctl", "-H", "/dev/sda", "-s", "off"}, {"smartctl", "--scan"},
 		{"modinfo", "-n", "../x"}, {"modinfo", "x"}, {"dkms", "install", "x"}, {"dkms", "remove", "x"}, {"mokutil", "--import", "x"}, {"mokutil", "--disable-validation"},
 		{"docker", "rm", "x"}, {"docker", "run", "x"}, {"docker", "exec", "x", "sh"}, {"docker", "stop", "x"}, {"docker", "system", "prune"}, {"docker"},
+		{"docker", "info"}, {"docker", "info", "--format", "{{json .}}"}, {"docker", "ps"}, {"docker", "ps", "-a"}, {"docker", "ps", "-q", "-a"}, {"docker", "inspect", "--format", "x", "0123456789ab"},
+		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "--all"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "-s", "0123456789ab"},
+		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789A"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789a"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, strings.Repeat("a", 65)},
+		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "../etc/passwd"}, append([]string{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat}, slices.Repeat([]string{"0123456789ab"}, maxInspected+1)...),
+		{"findmnt"}, {"findmnt", "--poll"}, {"findmnt", "--verify", "--poll"}, {"findmnt", "-w", "10"}, {"findmnt", "-n", "-o", "FSTYPE", "/"}, {"findmnt", "-n", "-o", "SOURCE", "/boot"},
+		{"findmnt", "-b", "-n", "-o", "SIZE", "-T", "relative"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/a b"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/x;y"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T"},
+		{"lsblk"}, {"lsblk", "-J"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "sda"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda;x"},
+		{"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/etc/passwd"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda", "/dev/sdb"}, {"lsblk", "-f", "/dev/sda"},
+		{"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/../etc/passwd"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev//sda"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda/"},
+		{"smartctl", "-H", "/dev/../etc/shadow"}, {"smartctl", "-H", "/dev/sda/"}, {"smartctl", "-H", "/dev//sda"},
 		{"snap", "remove", "docker"}, {"snap", "refresh"}, {"snap", "list", "docker", "x"},
 	} {
 		if Allowed(argv) {

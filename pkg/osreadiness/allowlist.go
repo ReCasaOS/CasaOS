@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 )
 
 // The shapes an argument of an allowed command may have. Nothing is ever given to a shell, so
@@ -16,7 +18,27 @@ var (
 	deviceArg  = regexp.MustCompile(`^/dev/[A-Za-z0-9._/-]{1,60}$`)
 	moduleArg  = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	propertyOf = regexp.MustCompile(`^--property=[A-Za-z]{1,40}$`)
+	// mountPathArg is a path findmnt is asked about: absolute, and with nothing in it that is not
+	// a path.
+	mountPathArg = regexp.MustCompile(`^/[A-Za-z0-9._/-]{0,127}$`)
+	// containerIDArg is the short or the whole id that "docker ps -q" prints.
+	containerIDArg = regexp.MustCompile(`^[0-9a-f]{12,64}$`)
 )
+
+// validDevice says whether a string is the path of a device that a command may be asked about: in
+// /dev, of the alphabet of device names, and with no step that goes back up or stays.
+func validDevice(s string) bool {
+	return deviceArg.MatchString(s) && !strings.Contains(s, "..") && !strings.Contains(s, "//") && !strings.HasSuffix(s, "/")
+}
+
+// validName says whether a string is a name that a path of /sys may be made of: of the alphabet
+// of re, and neither "." nor "..".
+func validName(re *regexp.Regexp, s string) bool {
+	return s != "." && s != ".." && re.MatchString(s)
+}
+
+// maxInspected is the most containers one "docker inspect" is asked about.
+const maxInspected = 200
 
 // exact is the rule of a command that may be given one list of arguments, or one of several.
 func exact(lists ...[]string) func([]string) bool {
@@ -84,18 +106,37 @@ var allowed = map[string]func([]string) bool{
 	"stat": func(args []string) bool {
 		return len(args) == 3 && args[0] == "-fc" && args[1] == "%T" && strings.HasPrefix(args[2], "/") && !strings.ContainsAny(args[2], "\x00\n")
 	},
-	"findmnt": anything,
-	"lsblk":   anything,
-	"uname":   anything,
+	// findmnt reads: the fstab's check, the device the root is on, the size of the filesystem of a path
+	"findmnt": func(args []string) bool {
+		switch {
+		case slices.Equal(args, []string{"--verify"}), slices.Equal(args, []string{"-n", "-o", "SOURCE", "/"}):
+			return true
+		case len(args) == 6 && slices.Equal(args[:5], []string{"-b", "-n", "-o", "SIZE", "-T"}):
+			return mountPathArg.MatchString(args[5])
+		}
+		return false
+	},
+	// lsblk, for one device, and the devices it is built on
+	"lsblk": func(args []string) bool {
+		return len(args) == 7 && slices.Equal(args[:6], []string{"-s", "-n", "-P", "-p", "-o", "NAME,TYPE"}) && validDevice(args[6])
+	},
+	"uname": anything,
 	// the health of a disk: -H reads it, where -s, -t and -o would change the disk's settings
-	"smartctl":   func(args []string) bool { return len(args) == 2 && args[0] == "-H" && deviceArg.MatchString(args[1]) },
+	"smartctl":   func(args []string) bool { return len(args) == 2 && args[0] == "-H" && validDevice(args[1]) },
 	"modinfo":    func(args []string) bool { return len(args) == 2 && args[0] == "-n" && moduleArg.MatchString(args[1]) },
 	"dkms":       exact([]string{"status"}),
 	"mokutil":    exact([]string{"--sb-state"}),
 	"pveversion": anything,
-	// the daemon's own answers: info, ps and inspect only read
+	// the daemon's own answers, in the forms that only read: its info, the ids of the running
+	// containers, and what inspect says of some of them
 	"docker": func(args []string) bool {
-		return len(args) > 0 && (args[0] == "info" || args[0] == "ps" || args[0] == "inspect")
+		switch {
+		case slices.Equal(args, []string{"info", "--format", dockerpkg.DaemonInfoFormat}), slices.Equal(args, []string{"ps", "-q"}):
+			return true
+		case len(args) >= 4 && len(args) <= 3+maxInspected && args[0] == "inspect" && args[1] == "--format" && args[2] == dockerpkg.ContainerInspectFormat:
+			return !slices.ContainsFunc(args[3:], func(id string) bool { return !containerIDArg.MatchString(id) })
+		}
+		return false
 	},
 	"snap": exact([]string{"list"}, []string{"list", "docker"}),
 }

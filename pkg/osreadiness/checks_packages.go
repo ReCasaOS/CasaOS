@@ -218,24 +218,32 @@ func driverOf(ctx context.Context, p Probe, device string) (string, error) {
 
 var interfaceName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,15}$`)
 
-// networkDrivers are the drivers of the network card the default route goes out by: of the cards
-// of the bridge, when it is a bridge's.
-func networkDrivers(ctx context.Context, p Probe) ([]string, error) {
+// defaultRouteInterface is the interface the IPv4 default route goes out by, from /proc/net/route:
+// "" when there is no default route, or when it names something that is not an interface's name.
+func defaultRouteInterface(ctx context.Context, p Probe) (string, error) {
 	data, found, err := readOptional(ctx, p, "/proc/net/route")
 	if err != nil || !found {
-		return nil, err
+		return "", err
 	}
-	iface := ""
 	for _, line := range strings.Split(string(data), "\n") {
 		// Iface Destination Gateway Flags RefCnt Use Metric Mask ...
 		fields := strings.Fields(line)
 		if len(fields) >= 8 && fields[1] == "00000000" && fields[7] == "00000000" {
-			iface = fields[0]
-			break
+			if validName(interfaceName, fields[0]) {
+				return fields[0], nil
+			}
+			return "", nil
 		}
 	}
-	if !interfaceName.MatchString(iface) {
-		return nil, nil
+	return "", nil
+}
+
+// networkDrivers are the drivers of the network card the default route goes out by: of the cards
+// of the bridge, when it is a bridge's.
+func networkDrivers(ctx context.Context, p Probe) ([]string, error) {
+	iface, err := defaultRouteInterface(ctx, p)
+	if err != nil || iface == "" {
+		return nil, err
 	}
 	cards := []string{iface}
 	members, err := p.ReadDir(ctx, "/sys/class/net/"+iface+"/brif")
@@ -245,7 +253,7 @@ func networkDrivers(ctx context.Context, p Probe) ([]string, error) {
 	if len(members) > 0 {
 		cards = nil
 		for _, member := range members {
-			if interfaceName.MatchString(member) {
+			if validName(interfaceName, member) {
 				cards = append(cards, member)
 			}
 		}
