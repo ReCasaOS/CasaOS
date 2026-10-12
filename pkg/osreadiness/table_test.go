@@ -117,6 +117,29 @@ func TestAHealthyBoxOfEveryHopIsNotBlocked(t *testing.T) {
 	}
 }
 
+// Docker's source is on every real machine of ReCasaOS, and is not a reason to look at anything: a box that has it is as
+// ready as the one that has none, and says it as a note.
+func TestAHealthyBoxThatHasDockersSourceIsAsReadyAsOneThatHasNone(t *testing.T) {
+	for name, setup := range map[string]func(*fakeProbe){"Debian 11": func(*fakeProbe) {}, "Debian 12": debian12, "Ubuntu 22.04": ubuntu2204, "Ubuntu 24.04": ubuntu2404} {
+		t.Run(name, func(t *testing.T) {
+			f := newBox(t)
+			setup(f)
+			without := Run(context.Background(), f, Options{})
+			sourcesFile("docker.list", dockerLine)(f)
+			with := Run(context.Background(), f, Options{})
+			if got := findingOf(t, with, "sources_third_party"); got.Severity != Info || got.Data["docker_files"] == nil {
+				t.Fatalf("sources_third_party = %+v", got)
+			}
+			if with.State != without.State || with.Counts.Warn != without.Counts.Warn || with.Counts.Refuse != without.Counts.Refuse {
+				t.Errorf("with Docker's source: %s %+v (%v), without: %s %+v", with.State, with.Counts, codesOf(with), without.State, without.Counts)
+			}
+			if name == "Debian 11" && with.State != StateReady {
+				t.Errorf("state = %s: %v", with.State, codesOf(with))
+			}
+		})
+	}
+}
+
 // dirty is a machine that has something wrong with it in most of the ways the checks look for, so
 // that the checks go through their refusals as well as their passes.
 func dirty(f *fakeProbe) {

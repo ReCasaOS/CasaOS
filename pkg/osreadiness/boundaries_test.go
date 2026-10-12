@@ -146,6 +146,7 @@ func TestTheDataOfASourceIsOnlyWhatThereIsToSay(t *testing.T) {
 		"a disc has no suites":             {"sources_cdrom", sourcesList("deb cdrom:[x]/ bullseye main"), []string{"suites"}},
 		"a third party that has no host":   {"sources_third_party", sourcesFile("odd.list", "deb foo:bar bullseye main"), []string{"hosts", "docker_files"}},
 		"a third party that is not Docker": {"sources_third_party", sourcesFile("tailscale.list", tailscaleLine), []string{"docker_files"}},
+		"Docker's alone":                   {"sources_third_party", sourcesFile("docker.list", dockerLine), []string{"other_files"}},
 		"firmware that is not installed":   {"sources_firmware", sourcesList("deb http://deb.debian.org/debian bullseye main non-free"), []string{"packages"}},
 	} {
 		t.Run(name, func(t *testing.T) {
