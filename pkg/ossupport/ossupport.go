@@ -9,7 +9,8 @@
 //     claimed;
 //   - but ID cannot tell a plain Debian or Ubuntu from the systems that keep its own os-release
 //     (ID=debian, no ID_LIKE): Raspberry Pi OS (64-bit, and Bookworm and later), Armbian, DietPi,
-//     Proxmox VE and OpenMediaVault. Those are found by marker files, read through the exists seam
+//     Proxmox VE, Proxmox Backup Server, Proxmox Mail Gateway, TrueNAS SCALE and OpenMediaVault.
+//     Those are found by marker files, read through the exists seam
 //     of Describe, and are not known either: the answer says which Variant it is, claims nothing,
 //     and offers no next release, because each of them upgrades by its own guide, or not in place;
 //   - a release that is not in the table (Debian 14, Ubuntu 26.10, any non-LTS Ubuntu, 18.04) is
@@ -84,15 +85,37 @@ const (
 	VariantDietPi         = "dietpi"
 	VariantProxmox        = "proxmox"
 	VariantOpenMediaVault = "openmediavault"
+	// TrueNAS SCALE (before 25.04 its os-release says ID=debian), Proxmox Backup Server and Proxmox
+	// Mail Gateway (both keep Debian's own os-release, as Proxmox VE does).
+	VariantTrueNAS       = "truenas"
+	VariantProxmoxBackup = "proxmox_backup"
+	VariantProxmoxMail   = "proxmox_mail"
 )
 
 // variantMarkers are the files that say a box is a variant, the first one found deciding: Raspberry
 // Pi OS writes /etc/rpi-issue (its os-release is Debian's own, 64-bit and from Bookworm); Armbian
 // /etc/armbian-release; DietPi /boot/dietpi.txt and /etc/dietpi; Proxmox VE has /usr/bin/pveversion
-// and mounts /etc/pve; OpenMediaVault has /etc/openmediavault and /usr/sbin/omv-confdbadm.
-// Sources: Raspberry Pi forum t=329094, Proxmox forum "we re-use the /etc/os-release file from
-// Debian", the DietPi forum, docs.armbian.com/build-framework/switches/branding, and the packages'
-// own file lists.
+// and mounts /etc/pve; OpenMediaVault has /etc/openmediavault and /usr/sbin/omv-confdbadm; Proxmox
+// Backup Server has /usr/sbin/proxmox-backup-manager; Proxmox Mail Gateway has /usr/bin/pmgversion;
+// TrueNAS SCALE runs /usr/bin/middlewared from the python package
+// /usr/lib/python3/dist-packages/middlewared.
+//
+// What was checked in the vendors' own sources, on 2026-10-11, for the three that were added last:
+// /usr/sbin/proxmox-backup-manager is a line of debian/proxmox-backup-server.install of the package
+// (git.proxmox.com, proxmox-backup); /usr/bin/pmgversion is one of the command-line tools that the
+// Makefile of pmg-api installs in /usr/bin (git.proxmox.com, pmg-api); /usr/bin/middlewared is the
+// ExecStart of middlewared.service (github.com/truenas/middleware, src/middlewared/debian). NOT checked
+// in a source: the python package path of TrueNAS (it is where Debian puts a python3 package, and is
+// kept as a second marker), and the others of the table, which came from forum posts and docs:
+// Raspberry Pi forum t=329094, Proxmox forum "we re-use the /etc/os-release file from Debian", the
+// DietPi forum, docs.armbian.com/build-framework/switches/branding.
+//
+// The configuration directories of Proxmox Backup Server and Mail Gateway (/etc/proxmox-backup, /etc/pmg)
+// are NOT markers: they stay when the package is removed without being purged, and a container that is
+// given the path as a volume makes them, so a plain Debian could be a variant for good. A marker has to
+// be a file that no plain Debian or Ubuntu has, since this is also what the badge of the released system
+// goes by: none of /data/manifest.json (TrueNAS's, where an owner may keep an app's own) and /etc/version
+// (not found in TrueNAS SCALE's sources) is one either.
 var variantMarkers = []struct {
 	variant string
 	paths   []string
@@ -102,6 +125,9 @@ var variantMarkers = []struct {
 	{VariantDietPi, []string{"/boot/dietpi.txt", "/etc/dietpi"}},
 	{VariantProxmox, []string{"/usr/bin/pveversion", "/etc/pve"}},
 	{VariantOpenMediaVault, []string{"/etc/openmediavault", "/usr/sbin/omv-confdbadm"}},
+	{VariantProxmoxBackup, []string{"/usr/sbin/proxmox-backup-manager"}},
+	{VariantProxmoxMail, []string{"/usr/bin/pmgversion"}},
+	{VariantTrueNAS, []string{"/usr/bin/middlewared", "/usr/lib/python3/dist-packages/middlewared"}},
 }
 
 // Extended is the vendor's later, separate programme of security maintenance. Only its name and
@@ -297,6 +323,17 @@ func dayOf(t time.Time) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
+// BeforeTable says whether now is a day before AsOf: a clock that is wrong, since the table was
+// written on AsOf and no box that runs this code is earlier than that. Evaluate says nothing of such
+// a day, and whoever asks for what the table says should say that the date is wrong, and not that
+// the table has nothing.
+func BeforeTable(now time.Time) bool { return dayOf(now).Before(AsOf) }
+
+// Stale says whether the table is too old to be believed on the day of now: more than eighteen months after
+// AsOf. Whoever asks what the table says of a release should say that the table is old, and not that the release
+// has nothing. A day before AsOf is not stale, it is a clock that is wrong (BeforeTable).
+func Stale(now time.Time) bool { return dayOf(now).After(AsOf.AddDate(0, staleAfterMonths, 0)) }
+
 // Evaluate is how long the free security updates of id last, on the day of now (UTC). The last day
 // is a day of support: SecurityEnded begins the day after it, and EndingSoon the 180th day before
 // it. A box that is not Known, a release the table does not have, a codename that is not the
@@ -308,12 +345,11 @@ func dayOf(t time.Time) time.Time {
 func Evaluate(id Identity, now time.Time) Support {
 	unknown := Support{State: Unknown}
 	today := dayOf(now)
-	// A day before AsOf is a clock that is wrong: the table was written on AsOf, so no box that
-	// runs this code is earlier than that.
-	if !id.Known || today.Before(AsOf) {
+	// A day before AsOf is a clock that is wrong (BeforeTable)
+	if !id.Known || BeforeTable(now) {
 		return unknown
 	}
-	stale := today.After(AsOf.AddDate(0, staleAfterMonths, 0))
+	stale := Stale(now)
 	for _, e := range table {
 		if e.id != id.ID || e.versionID != id.VersionID || (id.Codename != "" && id.Codename != e.codename) {
 			continue

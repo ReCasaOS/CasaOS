@@ -129,6 +129,7 @@ func TestNothingIsToldForAVariant(t *testing.T) {
 	for variant, path := range map[string]string{
 		"raspberrypi": "/etc/rpi-issue", "armbian": "/etc/armbian-release", "dietpi": "/boot/dietpi.txt",
 		"proxmox": "/usr/bin/pveversion", "openmediavault": "/etc/openmediavault",
+		"proxmox_backup": "/usr/sbin/proxmox-backup-manager", "proxmox_mail": "/usr/bin/pmgversion", "truenas": "/usr/bin/middlewared",
 	} {
 		t.Run(variant, func(t *testing.T) {
 			h, o, now := newHub(t)

@@ -109,6 +109,9 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/version", v1.GetSystemCheckVersion) // version/check
 			// The operating system and how long its security updates last: it only reads.
 			v1SysGroup.GET("/os", v1.GetSystemOS)
+			// Whether this machine could be upgraded to the next release, and why not: a report, that
+			// only reads the machine. It takes up to twenty seconds.
+			v1SysGroup.GET("/os/readiness", v1.GetSystemOSReadiness)
 
 			v1SysGroup.POST("/update", v1.SystemUpdate)
 			v1SysGroup.GET("/packages", v1.GetSystemPackageUpdates)

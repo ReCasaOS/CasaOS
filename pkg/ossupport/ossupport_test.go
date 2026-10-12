@@ -107,19 +107,24 @@ func TestAVariantIsNotKnownWhateverItsOSReleaseSays(t *testing.T) {
 		files   []string
 		variant string
 	}{
-		"Raspberry Pi OS 64-bit, Bookworm":  {debian("12", "bookworm"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
-		"Raspberry Pi OS 64-bit, Bullseye":  {debian("11", "bullseye"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
-		"Armbian, by its file":              {debian("12", "bookworm"), "arm64", []string{"/etc/armbian-release"}, VariantArmbian},
-		"DietPi, by /boot/dietpi.txt":       {debian("12", "bookworm"), "arm64", []string{"/boot/dietpi.txt"}, VariantDietPi},
-		"DietPi, by /etc/dietpi":            {debian("12", "bookworm"), "amd64", []string{"/etc/dietpi"}, VariantDietPi},
-		"Proxmox VE 7, by pveversion":       {debian("11", "bullseye"), "amd64", []string{"/usr/bin/pveversion"}, VariantProxmox},
-		"Proxmox VE 8, by its /etc/pve":     {debian("12", "bookworm"), "amd64", []string{"/etc/pve"}, VariantProxmox},
-		"OpenMediaVault, by its /etc dir":   {debian("11", "bullseye"), "amd64", []string{"/etc/openmediavault"}, VariantOpenMediaVault},
-		"OpenMediaVault, by omv-confdbadm":  {debian("12", "bookworm"), "amd64", []string{"/usr/sbin/omv-confdbadm"}, VariantOpenMediaVault},
-		"Ubuntu on a Raspberry Pi":          {release("ubuntu", "22.04", "jammy", "Ubuntu 22.04.5 LTS"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
-		"Proxmox on top of a Raspberry Pi":  {debian("12", "bookworm"), "arm64", []string{"/etc/pve", "/etc/rpi-issue"}, VariantRaspberryPi},
-		"Armbian, by its PRETTY_NAME alone": {map[string]string{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Armbian 24.11.0-trunk.81 bookworm"}, "arm64", nil, VariantArmbian},
-		"Armbian-unofficial, no file":       {map[string]string{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Armbian-unofficial 24.2.1 bookworm"}, "arm64", nil, VariantArmbian},
+		"Raspberry Pi OS 64-bit, Bookworm":           {debian("12", "bookworm"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
+		"Raspberry Pi OS 64-bit, Bullseye":           {debian("11", "bullseye"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
+		"Armbian, by its file":                       {debian("12", "bookworm"), "arm64", []string{"/etc/armbian-release"}, VariantArmbian},
+		"DietPi, by /boot/dietpi.txt":                {debian("12", "bookworm"), "arm64", []string{"/boot/dietpi.txt"}, VariantDietPi},
+		"DietPi, by /etc/dietpi":                     {debian("12", "bookworm"), "amd64", []string{"/etc/dietpi"}, VariantDietPi},
+		"Proxmox VE 7, by pveversion":                {debian("11", "bullseye"), "amd64", []string{"/usr/bin/pveversion"}, VariantProxmox},
+		"Proxmox VE 8, by its /etc/pve":              {debian("12", "bookworm"), "amd64", []string{"/etc/pve"}, VariantProxmox},
+		"OpenMediaVault, by its /etc dir":            {debian("11", "bullseye"), "amd64", []string{"/etc/openmediavault"}, VariantOpenMediaVault},
+		"OpenMediaVault, by omv-confdbadm":           {debian("12", "bookworm"), "amd64", []string{"/usr/sbin/omv-confdbadm"}, VariantOpenMediaVault},
+		"Proxmox Backup Server 3, by its manager":    {debian("12", "bookworm"), "amd64", []string{"/usr/sbin/proxmox-backup-manager"}, VariantProxmoxBackup},
+		"Proxmox Mail Gateway, by pmgversion":        {debian("12", "bookworm"), "amd64", []string{"/usr/bin/pmgversion"}, VariantProxmoxMail},
+		"TrueNAS SCALE, by its middleware":           {debian("12", "bookworm"), "amd64", []string{"/usr/bin/middlewared"}, VariantTrueNAS},
+		"TrueNAS SCALE, by its python package":       {debian("12", "bookworm"), "amd64", []string{"/usr/lib/python3/dist-packages/middlewared"}, VariantTrueNAS},
+		"Proxmox VE with a backup client of its own": {debian("12", "bookworm"), "amd64", []string{"/usr/bin/pveversion", "/usr/sbin/proxmox-backup-manager"}, VariantProxmox},
+		"Ubuntu on a Raspberry Pi":                   {release("ubuntu", "22.04", "jammy", "Ubuntu 22.04.5 LTS"), "arm64", []string{"/etc/rpi-issue"}, VariantRaspberryPi},
+		"Proxmox on top of a Raspberry Pi":           {debian("12", "bookworm"), "arm64", []string{"/etc/pve", "/etc/rpi-issue"}, VariantRaspberryPi},
+		"Armbian, by its PRETTY_NAME alone":          {map[string]string{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Armbian 24.11.0-trunk.81 bookworm"}, "arm64", nil, VariantArmbian},
+		"Armbian-unofficial, no file":                {map[string]string{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Armbian-unofficial 24.2.1 bookworm"}, "arm64", nil, VariantArmbian},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := Describe(c.release, c.arch, now, has(c.files...))
@@ -139,6 +144,17 @@ func TestAVariantIsNotKnownWhateverItsOSReleaseSays(t *testing.T) {
 
 // The exact answer of a Raspberry Pi OS 64-bit image, and of an Armbian that its PRETTY_NAME gives
 // away: the variant is said, the support is not.
+func TestTheNamesOfTheVariantsAreTheOnesThePageReads(t *testing.T) {
+	for got, want := range map[string]string{
+		VariantRaspberryPi: "raspberrypi", VariantArmbian: "armbian", VariantDietPi: "dietpi", VariantProxmox: "proxmox", VariantOpenMediaVault: "openmediavault",
+		VariantTrueNAS: "truenas", VariantProxmoxBackup: "proxmox_backup", VariantProxmoxMail: "proxmox_mail",
+	} {
+		if got != want {
+			t.Errorf("variant %q, want %q", got, want)
+		}
+	}
+}
+
 func TestTheReportOfAVariantAsJSON(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -190,7 +206,10 @@ func TestAPlainDebianOrUbuntuHasNoneOfTheMarkers(t *testing.T) {
 			t.Errorf("%s %s with none of the files: %+v", c.release["ID"], c.release["VERSION_ID"], got)
 		}
 		slices.Sort(asked)
-		want := []string{"/boot/dietpi.txt", "/etc/armbian-release", "/etc/dietpi", "/etc/openmediavault", "/etc/pve", "/etc/rpi-issue", "/usr/bin/pveversion", "/usr/sbin/omv-confdbadm"}
+		want := []string{
+			"/boot/dietpi.txt", "/etc/armbian-release", "/etc/dietpi", "/etc/openmediavault", "/etc/pve", "/etc/rpi-issue",
+			"/usr/bin/middlewared", "/usr/bin/pmgversion", "/usr/bin/pveversion", "/usr/lib/python3/dist-packages/middlewared", "/usr/sbin/omv-confdbadm", "/usr/sbin/proxmox-backup-manager",
+		}
 		if !slices.Equal(asked, want) {
 			t.Errorf("the box was asked about %v, want %v", asked, want)
 		}
@@ -205,6 +224,30 @@ func TestAPlainDebianOrUbuntuHasNoneOfTheMarkers(t *testing.T) {
 	}
 	if got := Describe(release("debian", "12", "bookworm", ""), "amd64", now, nil); !got.Known || got.Variant != "" {
 		t.Errorf("a Debian with no way to look for files: %+v", got)
+	}
+}
+
+// The markers are files only the vendors' packages bring. A plain Debian or Ubuntu, with the files
+// that a server of the kind ReCasaOS runs on has, and the ones that look like them (a /data of the
+// owner's, a middleware, a backup client, mail), is none of the variants.
+func TestAPlainSystemIsNoVariantWhateverItHasAroundIt(t *testing.T) {
+	plain := []string{
+		"/etc/os-release", "/etc/debian_version", "/etc/apt/sources.list", "/usr/bin/dpkg", "/usr/sbin/apt-get", "/etc/fstab", "/etc/hostname",
+		"/data", "/data/manifest.json", "/etc/version", "/etc/proxmox", "/etc/backup", "/etc/pm", "/etc/pmg.conf", "/usr/bin/pmg", "/usr/sbin/middleware",
+		// what a package leaves behind when it is removed without being purged, or what a container is given
+		// as a volume: the directories of the configuration of Proxmox Backup Server and of Mail Gateway
+		"/etc/proxmox-backup", "/etc/proxmox-backup/datastore.cfg", "/etc/pmg", "/etc/pmg/pmg.conf",
+		"/usr/bin/proxmox-backup-client", "/usr/bin/proxmox-backup-file-restore", "/etc/postfix", "/etc/dovecot", "/usr/sbin/zpool", "/usr/sbin/zfs",
+		"/etc/openmedia", "/etc/rpi", "/etc/armbian", "/boot/config.txt", "/boot/firmware", "/etc/dietpi.conf",
+	}
+	for _, id := range []map[string]string{
+		{"ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm", "PRETTY_NAME": "Debian GNU/Linux 12 (bookworm)"},
+		{"ID": "ubuntu", "VERSION_ID": "24.04", "VERSION_CODENAME": "noble", "PRETTY_NAME": "Ubuntu 24.04.1 LTS"},
+	} {
+		got := Describe(id, "amd64", time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC), func(path string) bool { return slices.Contains(plain, path) })
+		if !got.Known || got.Variant != "" {
+			t.Errorf("%s: known = %v, variant = %q", id["ID"], got.Known, got.Variant)
+		}
 	}
 }
 
@@ -635,5 +678,29 @@ func TestTheReportsAsJSON(t *testing.T) {
 		if string(got) != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
 		}
+	}
+}
+
+// Stale is the rule of the table that Evaluate uses, said for whoever asks what the table can say: after eighteen
+// months, it is the table that is old, and the release that is not to blame. A clock before the table is not
+// stale: it is wrong (BeforeTable).
+func TestTheTableIsStaleOnlyAfterEighteenMonthsAndMovesWithAsOf(t *testing.T) {
+	for now, want := range map[string]bool{
+		"2026-10-09": false, "2027-10-09": false, "2028-04-09": false, "2028-04-10": true, "2029-01-01": true, "2040-01-01": true,
+		"2026-10-08": false, "1970-01-01": false,
+	} {
+		if got := Stale(day(t, now)); got != want {
+			t.Errorf("Stale(%s) = %v, want %v", now, got, want)
+		}
+	}
+	if !Stale(day(t, "2028-04-09").Add(24 * time.Hour)) {
+		t.Error("the first instant of the day after the last one is stale")
+	}
+	if Stale(day(t, "2028-04-09").Add(24*time.Hour - time.Second)) {
+		t.Error("the last second of the last day is not stale")
+	}
+	asOf(t, "2026-12-30")
+	if Stale(day(t, "2028-06-30")) || !Stale(day(t, "2028-07-01")) {
+		t.Error("the day it goes stale on moves with AsOf")
 	}
 }

@@ -108,6 +108,37 @@ func TestTheOSRouteIsASysRouteBehindTheToken(t *testing.T) {
 	}
 }
 
+// The readiness report runs commands on the box, and says what is on it: it is a sys route behind the
+// token like the others, and it only reads.
+func TestTheReadinessRouteIsASysRouteBehindTheToken(t *testing.T) {
+	e, ok := InitV1Router().(*echo.Echo)
+	if !ok {
+		t.Fatal("InitV1Router() is not an *echo.Echo")
+	}
+	registered := map[string]bool{}
+	for _, r := range e.Routes() {
+		registered[r.Method+" "+r.Path] = true
+	}
+	if !registered["GET /v1/sys/os/readiness"] {
+		t.Error("GET /v1/sys/os/readiness is not registered")
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		if registered[method+" /v1/sys/os/readiness"] {
+			t.Errorf("%s /v1/sys/os/readiness is registered: the report only reads", method)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sys/os/readiness", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("GET /v1/sys/os/readiness without a token = %d, want 401", recorder.Code)
+	}
+	recorder = httptest.NewRecorder()
+	e.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/sys/os/readiness", nil))
+	if recorder.Code == http.StatusOK {
+		t.Errorf("POST /v1/sys/os/readiness = %d", recorder.Code)
+	}
+}
+
 func TestTheTelemetryAutoUpdateAndAlertsRoutesAreSysRoutesBehindTheToken(t *testing.T) {
 	e, ok := InitV1Router().(*echo.Echo)
 	if !ok {

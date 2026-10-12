@@ -173,6 +173,7 @@ func (s *systemService) SetAppOperations(list AppOperationsFunc) {
 	updater.mu.Lock()
 	defer updater.mu.Unlock()
 	updater.appOperations = list
+	updater.appOps.Store(&list)
 }
 
 var (
@@ -344,10 +345,15 @@ func (u *systemPackageUpdater) dockerFailedToStart(support systemPackageSupport,
 // dockerAppOperations are the apps with an operation in progress, valid names only, sorted and
 // once each; the error is that AppManagement could not be asked, or did not answer.
 func (u *systemPackageUpdater) dockerAppOperations(ctx context.Context) ([]string, error) {
-	if u.appOperations == nil {
+	return appOperationNames(ctx, u.appOperations)
+}
+
+// appOperationNames is dockerAppOperations for the question that was set, which is nil when none was.
+func appOperationNames(ctx context.Context, list AppOperationsFunc) ([]string, error) {
+	if list == nil {
 		return nil, errors.New("the box cannot ask AppManagement")
 	}
-	apps, err := u.appOperations(ctx)
+	apps, err := list(ctx)
 	if err != nil {
 		return nil, err
 	}

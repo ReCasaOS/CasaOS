@@ -211,9 +211,19 @@ func publishedPorts(bindings map[string][]struct {
 type DaemonInfo struct {
 	// ServerVersion is the version the running daemon reports.
 	ServerVersion string
-	// SwarmActive is a node that is part of a swarm.
+	// SwarmActive is a node that is part of a swarm and has joined it ("active"): what the update refuses on.
 	SwarmActive bool
+	// SwarmState is the state of the node's swarm as the daemon says it: "inactive" (or nothing) for a node
+	// that is of none, and "active", "pending", "locked" or "error" for one that is, whatever the state. A
+	// state that is not a word of 16 lower-case letters or fewer is SwarmStateInvalid, which is no state of
+	// no swarm.
+	SwarmState string
 }
+
+// SwarmStateInvalid is the SwarmState of a daemon that said something that is not a word.
+const SwarmStateInvalid = "invalid"
+
+var swarmStatePattern = regexp.MustCompile(`^[a-z]{0,16}$`)
 
 // DaemonInfoFormat is the `docker info --format` template ParseDaemonInfo reads: one JSON
 // object on one line.
@@ -239,7 +249,11 @@ func ParseDaemonInfo(output string) (DaemonInfo, error) {
 		if !validDaemonVersion(raw.ServerVersion) {
 			return DaemonInfo{}, errors.New("the Docker daemon did not report a usable version")
 		}
-		return DaemonInfo{ServerVersion: raw.ServerVersion, SwarmActive: raw.SwarmState == "active"}, nil
+		state := raw.SwarmState
+		if !swarmStatePattern.MatchString(state) {
+			state = SwarmStateInvalid
+		}
+		return DaemonInfo{ServerVersion: raw.ServerVersion, SwarmActive: raw.SwarmState == "active", SwarmState: state}, nil
 	}
 	return DaemonInfo{}, errors.New("the Docker daemon did not answer")
 }
