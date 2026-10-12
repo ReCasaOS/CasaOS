@@ -118,12 +118,17 @@ func checkSourcesFormat(ctx context.Context, p Probe) Result {
 		"A .list file must have lines of the form 'deb [options] uri suite component', and a .sources file stanzas with Types, URIs and Suites. The upgrade rewrites the sources, and cannot rewrite a file it does not understand.")
 }
 
+// dockerHost is the host of Docker's own package source, and only that host: the one source of a vendor that the upgrade
+// puts aside and writes again for the new release. An address that merely looks like it is not Docker's.
+const dockerHost = "download.docker.com"
+
 func checkSourcesThirdParty(ctx context.Context, p Probe) Result {
 	set, err := sourcesOf(ctx, p)
 	if err != nil {
 		return unknown(err)
 	}
 	other := func(e sourceEntry) bool { return !e.distro() && !e.local() }
+	docker := func(e sourceEntry) bool { return other(e) && e.host() == dockerHost }
 	files := filesOf(set.Entries, other)
 	if len(files) == 0 {
 		return unlessUnreadable(set, pass())
@@ -138,15 +143,25 @@ func checkSourcesThirdParty(ctx context.Context, p Probe) Result {
 	if len(hosts) > 0 {
 		data["hosts"] = sortedKeys(hosts)
 	}
-	// Docker's is the one that is rewritten for the new release after the hop; the others stay off.
-	if docker := filesOf(set.Entries, func(e sourceEntry) bool { return other(e) && e.host() == "download.docker.com" }); len(docker) > 0 {
-		data["docker_files"] = docker
+	if dockers := filesOf(set.Entries, docker); len(dockers) > 0 {
+		data["docker_files"] = dockers
 	}
+	// Docker's source is on every machine of ReCasaOS, and the upgrade rewrites it for the new release: when it is all there
+	// is, there is nothing to look at. A file that has Docker's line and another vendor's is another's too.
+	others := filesOf(set.Entries, func(e sourceEntry) bool { return other(e) && !docker(e) })
+	if len(others) == 0 {
+		// no action fits: checking again never makes it go
+		return Result{
+			Severity: Info, Title: "Docker's package source is put back after the upgrade",
+			Detail: "It is put aside for the upgrade and rewritten for the new release afterwards. Nothing to do.",
+			Data:   data, Action: ActionNone,
+		}
+	}
+	data["other_files"] = others
 	return Result{
 		Severity: Warn, Title: "Some software comes from other sources than Debian or Ubuntu",
 		Detail: "These sources are paused for the upgrade, since the next release may not exist on them. Docker's is put back, for the new release, after it. The others stay paused until you turn them on.",
-		// no action fits: Docker's source is on every machine of ReCasaOS and the hop handles it, and checking
-		// again never makes it go; the others stay paused until the owner turns them on
+		// no action fits: checking again never makes them go; the others stay paused until the owner turns them on
 		Data: data, Action: ActionNone,
 	}
 }

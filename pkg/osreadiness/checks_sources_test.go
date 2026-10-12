@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -166,29 +167,43 @@ func TestSourcesFormat(t *testing.T) {
 func TestSourcesThirdParty(t *testing.T) {
 	runScenarios(t, "sources_third_party", []scenario{
 		{name: "Debian's archives only", severity: OK},
-		// no action fits: Docker's source is on every machine of ReCasaOS and is handled by the hop, and checking
-		// again never makes it go
-		{name: "Docker's", setup: sourcesFile("docker.list", dockerLine), severity: Warn,
+		// Docker's source is on every machine of ReCasaOS, and the upgrade puts it aside and writes it again for the new release:
+		// alone, it is a note, there is nothing to do about it, and checking again never makes it go
+		{name: "Docker's alone is a note", setup: sourcesFile("docker.list", dockerLine), severity: Info, title: "Docker's package source is put back after the upgrade",
 			data: D{"files": []string{"docker.list"}, "hosts": []string{"download.docker.com"}, "docker_files": []string{"docker.list"}}, action: ActionNone},
-		{name: "another has no action either", setup: sourcesFile("tailscale.list", tailscaleLine), severity: Warn, action: ActionNone},
-		{name: "Docker's, and another", setup: after(sourcesFile("docker.list", dockerLine), sourcesFile("tailscale.list", tailscaleLine)), severity: Warn,
-			data: D{"files": []string{"docker.list", "tailscale.list"}, "hosts": []string{"download.docker.com", "pkgs.tailscale.com"}, "docker_files": []string{"docker.list"}}},
-		{name: "another, not Docker's", setup: sourcesFile("tailscale.list", tailscaleLine), severity: Warn, data: D{"files": []string{"tailscale.list"}}},
+		{name: "Docker's, in a .sources file", setup: sourcesFile("docker.sources", "Types: deb", "URIs: https://download.docker.com/linux/debian", "Suites: bullseye", "Components: stable"), severity: Info,
+			data: D{"files": []string{"docker.sources"}, "docker_files": []string{"docker.sources"}}},
+		{name: "Docker's, in two files", setup: after(sourcesFile("docker.list", dockerLine), sourcesFile("docker.sources", "Types: deb", "URIs: https://download.docker.com/linux/debian", "Suites: bullseye", "Components: stable")), severity: Info,
+			data: D{"files": []string{"docker.list", "docker.sources"}, "docker_files": []string{"docker.list", "docker.sources"}}},
+		{name: "Docker's, with its host in capitals and a port", setup: sourcesFile("docker.list", "deb https://Download.Docker.com:443/linux/debian bullseye stable"), severity: Info,
+			data: D{"hosts": []string{"download.docker.com"}, "docker_files": []string{"docker.list"}}},
+		{name: "another has no action either", setup: sourcesFile("tailscale.list", tailscaleLine), severity: Warn, action: ActionNone, title: "Some software comes from other sources than Debian or Ubuntu"},
+		{name: "Docker's, and another: the other is what is warned of", setup: after(sourcesFile("docker.list", dockerLine), sourcesFile("tailscale.list", tailscaleLine)), severity: Warn,
+			data: D{"files": []string{"docker.list", "tailscale.list"}, "hosts": []string{"download.docker.com", "pkgs.tailscale.com"}, "docker_files": []string{"docker.list"}, "other_files": []string{"tailscale.list"}}},
+		{name: "another, not Docker's", setup: sourcesFile("tailscale.list", tailscaleLine), severity: Warn, data: D{"files": []string{"tailscale.list"}, "other_files": []string{"tailscale.list"}}},
+		{name: "a file that has Docker's line and another's is another's too", setup: sourcesFile("vendors.list", dockerLine, tailscaleLine), severity: Warn,
+			data: D{"files": []string{"vendors.list"}, "hosts": []string{"download.docker.com", "pkgs.tailscale.com"}, "docker_files": []string{"vendors.list"}, "other_files": []string{"vendors.list"}}},
+		{name: "a stanza that has Docker's address and another's is another's too", setup: sourcesFile("vendors.sources", "Types: deb", "URIs: https://download.docker.com/linux/debian https://pkgs.tailscale.com/stable/debian", "Suites: bullseye", "Components: stable"), severity: Warn,
+			data: D{"files": []string{"vendors.sources"}, "docker_files": []string{"vendors.sources"}, "other_files": []string{"vendors.sources"}}},
+		{name: "a source that has no host is another's, and Docker's is not all there is", setup: after(sourcesFile("docker.list", dockerLine), sourcesFile("odd.list", "deb foo:bar bullseye main")), severity: Warn,
+			data: D{"files": []string{"docker.list", "odd.list"}, "docker_files": []string{"docker.list"}, "other_files": []string{"odd.list"}}},
 		{name: "in a .sources file", setup: sourcesFile("syncthing.sources", "Types: deb", "URIs: https://apt.syncthing.net/", "Suites: syncthing", "Components: stable"), severity: Warn, data: D{"files": []string{"syncthing.sources"}}},
 		{name: "a PPA", setup: after(ubuntu2204, sourcesFile("ppa.list", "deb https://ppa.launchpadcontent.net/x/y/ubuntu jammy main")), severity: Warn},
 		{name: "a mirror of the archive that apt has a Release file of, that says Debian, is Debian's", setup: after(sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), inRelease("mirror.example.edu_debian_dists_bullseye", "Debian")), severity: OK},
 		{name: "a mirror that has the archive under a path of its own is Debian's, by its Release files", setup: after(sourcesFile("hetzner.list", "deb http://mirror.hetzner.com/debian/packages bullseye main"), sourcesFile("sec.list", "deb http://mirror.hetzner.com/debian/security bullseye-security main"),
 			inRelease("mirror.hetzner.com_debian_packages_dists_bullseye", "Debian"), release("mirror.hetzner.com_debian_security_dists_bullseye-security", "Debian")), severity: OK},
-		{name: "a mirror that apt has no Release file of is a third party's, and is said", setup: sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), severity: Warn, data: D{"files": []string{"mirror.list"}, "hosts": []string{"mirror.example.edu"}}},
+		{name: "a mirror that apt has no Release file of is a third party's, and is said", setup: sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), severity: Warn, data: D{"files": []string{"mirror.list"}, "hosts": []string{"mirror.example.edu"}, "other_files": []string{"mirror.list"}}},
 		{name: "a mirror whose Release file says another origin is a third party's", setup: after(sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), inRelease("mirror.example.edu_debian_dists_bullseye", "Raspbian")), severity: Warn},
 		// the repositories of vendors that serve their own at the root of their host under the name of the distribution
-		{name: "InfluxData's is a third party's, and is said", setup: after(sourcesFile("influxdata.list", "deb https://repos.influxdata.com/debian stable main"), inRelease("repos.influxdata.com_debian_dists_stable", "InfluxData")), severity: Warn, data: D{"files": []string{"influxdata.list"}, "hosts": []string{"repos.influxdata.com"}}},
+		{name: "InfluxData's is a third party's, and is said", setup: after(sourcesFile("influxdata.list", "deb https://repos.influxdata.com/debian stable main"), inRelease("repos.influxdata.com_debian_dists_stable", "InfluxData")), severity: Warn, data: D{"files": []string{"influxdata.list"}, "hosts": []string{"repos.influxdata.com"}, "other_files": []string{"influxdata.list"}}},
 		{name: "Microsoft's is a third party's, and is said", setup: sourcesFile("microsoft-prod.list", "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/11/prod bullseye main"), severity: Warn, data: D{"hosts": []string{"packages.microsoft.com"}}},
 		{name: "Element's is a third party's, and is said", setup: sourcesFile("element-io.list", "deb [signed-by=/usr/share/keyrings/element-io-archive-keyring.gpg] https://packages.element.io/debian/ default main"), severity: Warn, data: D{"hosts": []string{"packages.element.io"}}},
 		{name: "ProtonVPN's is a third party's, and is said", setup: sourcesFile("protonvpn-stable.list", "deb https://repo.protonvpn.com/debian stable main"), severity: Warn, data: D{"hosts": []string{"repo.protonvpn.com"}}},
-		{name: "a third party's, a mirror's with no file and Debian's together are each judged by themselves", setup: after(sourcesFile("a.list", "deb https://repos.influxdata.com/debian stable main"), sourcesFile("b.list", "deb http://mirror.example.edu/debian bullseye main"), sourcesFile("c.list", "deb http://deb.debian.org/debian bullseye main")), severity: Warn, data: D{"files": []string{"a.list", "b.list"}}},
+		{name: "a third party's, a mirror's with no file and Debian's together are each judged by themselves", setup: after(sourcesFile("a.list", "deb https://repos.influxdata.com/debian stable main"), sourcesFile("b.list", "deb http://mirror.example.edu/debian bullseye main"), sourcesFile("c.list", "deb http://deb.debian.org/debian bullseye main")), severity: Warn, data: D{"files": []string{"a.list", "b.list"}, "other_files": []string{"a.list", "b.list"}}},
 		{name: "a file that cannot be understood may hide a source that is not Debian's", setup: sourcesList("rubbish"), severity: Refuse, unknown: ReasonUnreadable},
-		{name: "a third party is said whatever else cannot be read", setup: after(sourcesList("rubbish"), sourcesFile("docker.list", dockerLine)), severity: Warn, data: D{"files": []string{"docker.list"}}},
+		// what cannot be read is sources_format's to refuse: Docker's, on what could be read, is still a note
+		{name: "Docker's is said whatever else cannot be read", setup: after(sourcesList("rubbish"), sourcesFile("docker.list", dockerLine)), severity: Info, data: D{"files": []string{"docker.list"}}},
+		{name: "another is said whatever else cannot be read", setup: after(sourcesList("rubbish"), sourcesFile("tailscale.list", tailscaleLine)), severity: Warn, data: D{"files": []string{"tailscale.list"}, "other_files": []string{"tailscale.list"}}},
 		{name: "Ubuntu's own", setup: after(ubuntu2204, sourcesList("deb http://archive.ubuntu.com/ubuntu jammy main", "deb http://security.ubuntu.com/ubuntu jammy-security main"), sourcesFile("esm.list", "deb https://esm.ubuntu.com/infra/ubuntu jammy-infra-security main")), severity: OK},
 		{name: "a disc is not a third party", setup: sourcesList("deb cdrom:[x]/ bullseye main"), severity: OK},
 		{name: "a third party that is commented out", setup: sourcesFile("docker.list", "# "+dockerLine), severity: OK},
@@ -196,14 +211,111 @@ func TestSourcesThirdParty(t *testing.T) {
 		{name: "a host that is in two files, and twice in one, is said once", setup: after(
 			sourcesFile("a.list", "deb https://repo.example.org/apt bullseye main", "deb-src https://repo.example.org/apt bullseye main"),
 			sourcesFile("b.list", "deb https://repo.example.org/other bullseye main")), severity: Warn,
-			data: D{"files": []string{"a.list", "b.list"}, "hosts": []string{"repo.example.org"}}},
+			data: D{"files": []string{"a.list", "b.list"}, "hosts": []string{"repo.example.org"}, "other_files": []string{"a.list", "b.list"}}},
 		// the stanza of a mirror that has the backports too is Debian's, as far as each of its suites says so
 		{name: "a mirror's stanza, whose suites say Debian and whose backports say Debian Backports, is Debian's", setup: mirrorStanza("Debian Backports"), severity: OK},
 		{name: "the same stanza, and the backports are not fetched: that part of the file is a third party's", setup: mirrorStanza(""), severity: Warn,
-			data: D{"files": []string{"mirror.sources"}, "hosts": []string{"mirror.example.edu"}}},
+			data: D{"files": []string{"mirror.sources"}, "hosts": []string{"mirror.example.edu"}, "other_files": []string{"mirror.sources"}}},
 		{name: "the same stanza, and the backports say an origin that only has the word Debian in it", setup: mirrorStanza("SomeDebianThing"), severity: Warn, data: D{"files": []string{"mirror.sources"}}},
 		{name: "a vendor whose origin only has the word Debian in it", setup: after(sourcesFile("v.list", "deb https://repo.example.org/debian stable main"), inRelease("repo.example.org_debian_dists_stable", "SomeDebianThing")), severity: Warn},
 	})
+}
+
+// The data of the finding is the keys that apply to the case, and no other: the page says what it finds in them.
+func TestTheDataOfThirdPartiesIsTheKeysThatApplyToTheCase(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup    func(*fakeProbe)
+		severity Severity
+		keys     []string
+	}{
+		"Docker's alone":                        {sourcesFile("docker.list", dockerLine), Info, []string{"docker_files", "files", "hosts"}},
+		"another alone":                         {sourcesFile("tailscale.list", tailscaleLine), Warn, []string{"files", "hosts", "other_files"}},
+		"Docker's and another":                  {after(sourcesFile("docker.list", dockerLine), sourcesFile("tailscale.list", tailscaleLine)), Warn, []string{"docker_files", "files", "hosts", "other_files"}},
+		"another that has no host":              {sourcesFile("odd.list", "deb foo:bar bullseye main"), Warn, []string{"files", "other_files"}},
+		"a mirror that apt has no Release of":   {sourcesFile("mirror.list", "deb http://mirror.example.edu/debian bullseye main"), Warn, []string{"files", "hosts", "other_files"}},
+		"Docker's and another that has no host": {after(sourcesFile("docker.list", dockerLine), sourcesFile("odd.list", "deb foo:bar bullseye main")), Warn, []string{"docker_files", "files", "hosts", "other_files"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newBox(t)
+			tc.setup(f)
+			got := checkOn(t, f, "sources_third_party")
+			if got.Severity != tc.severity {
+				t.Fatalf("severity = %s, want %s: %+v", got.Severity, tc.severity, got)
+			}
+			keys := []string{}
+			for key := range got.Data {
+				if key != "unknown" {
+					keys = append(keys, key)
+				}
+			}
+			slices.Sort(keys)
+			if !slices.Equal(keys, tc.keys) {
+				t.Errorf("data has %v, want %v", keys, tc.keys)
+			}
+		})
+	}
+}
+
+// Docker's source is the one on Docker's own host, written as apt reads the host: an address that only looks like it is
+// another vendor's, and is warned of as one.
+func TestOnlyDockersOwnHostIsDockers(t *testing.T) {
+	for _, uri := range []string{
+		"https://download.docker.com.evil.example/linux/debian",
+		"https://download.docker.community/linux/debian",
+		"https://mirror.download.docker.com/linux/debian",
+		"https://evil-download.docker.com/linux/debian",
+		"https://docker.com/linux/debian",
+		"https://get.docker.com/linux/debian",
+		"https://download.docker.com@evil.example/linux/debian",
+		"https://evil.example/download.docker.com/linux/debian",
+	} {
+		t.Run(uri, func(t *testing.T) {
+			f := newBox(t)
+			sourcesFile("x.list", "deb "+uri+" bullseye stable")(f)
+			got := checkOn(t, f, "sources_third_party")
+			if got.Severity != Warn {
+				t.Fatalf("severity = %s: %+v", got.Severity, got)
+			}
+			if other, _ := got.Data["other_files"].([]string); !slices.Equal(other, []string{"x.list"}) {
+				t.Errorf("other_files = %v", got.Data["other_files"])
+			}
+			if _, has := got.Data["docker_files"]; has {
+				t.Errorf("docker_files = %v", got.Data["docker_files"])
+			}
+		})
+	}
+}
+
+// What the owner pastes: Docker's source alone is a note of a report that is ready, another's is a warning of one that has
+// things to look at.
+func TestTheTextSaysDockersSourceAsANoteAndAnotherAsAWarning(t *testing.T) {
+	f := newBox(t)
+	sourcesFile("docker.list", dockerLine)(f)
+	text := Text(Run(context.Background(), f, Options{}))
+	for _, want := range []string{
+		"Result: Ready.\n",
+		"NOTES\n",
+		"[sources_third_party] Docker's package source is put back after the upgrade\n    It is put aside for the upgrade and rewritten for the new release afterwards. Nothing to do.\n    docker_files: docker.list\n    files: docker.list\n    hosts: download.docker.com\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the text has no %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "WARNINGS") || strings.Contains(text, "other_files") {
+		t.Errorf("Docker's source alone is warned of:\n%s", text)
+	}
+
+	sourcesFile("tailscale.list", tailscaleLine)(f)
+	text = Text(Run(context.Background(), f, Options{}))
+	for _, want := range []string{
+		"Result: Ready, with things to look at.\n",
+		"WARNINGS\n[sources_third_party] Some software comes from other sources than Debian or Ubuntu\n",
+		"    other_files: tailscale.list\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the text has no %q:\n%s", want, text)
+		}
+	}
 }
 
 func TestSourcesBackports(t *testing.T) {
