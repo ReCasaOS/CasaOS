@@ -297,7 +297,7 @@ func TestBlock6SaysThatAnInterruptedDpkgOrAnUnmetDependencyIsNeitherTheLockNorTh
 		}
 	}
 	// the prose of the block does not say that it ends the same way after a restart or a dead terminal, whatever happened
-	if !strings.Contains(rb.Text, "apt stops at its first command here (it is neither a lock nor the network), and the STOP says to go forward by hand with the commands of the table") {
+	if !suiteAuto && !strings.Contains(rb.Text, "apt stops at its first command here (it is neither a lock nor the network), and the STOP says to go forward by hand with the commands of the table") {
 		t.Error("the prose of block 6 says nothing of an interrupted dpkg")
 	}
 }
@@ -627,10 +627,11 @@ func TestBlock8StartsTheTimersThatWereRunningAndRemovesTheirState(t *testing.T) 
 		t.Error("the state of the timers is left behind when the hop has ended")
 	}
 	// the state is removed when the block ENDS, not before: a block that stops after it has started the timers (Docker cannot be asked) goes on from the state, run again
+	// (the unit's block does not stop for a Docker that cannot be asked: it ends, and takes the state away)
 	b = newShellBox(t)
 	setupBlock8(b)
 	b.fake("curl", "exit 6")
-	if out, code := b.run(rb, "after"); code == 0 || !b.exists("timers.state") {
+	if out, code := b.run(rb, "after"); !suiteAuto && (code == 0 || !b.exists("timers.state")) {
 		t.Errorf("a block that stops: exit %d, the state of the timers is there: %v, %q", code, b.exists("timers.state"), out)
 	}
 	// the state is not there (it was removed, or block 1 was not run by this text): the block says so, starts nothing, and ends
@@ -870,7 +871,7 @@ exit 0`)
 		outs[i] = &bytes.Buffer{}
 		cmds[i] = exec.Command(sh, script)
 		cmds[i].Dir = b.dir
-		cmds[i].Env = append(os.Environ(), "FAKE=./fake")
+		cmds[i].Env = b.environ()
 		cmds[i].Stdout, cmds[i].Stderr = outs[i], outs[i]
 	}
 	for _, c := range cmds {
@@ -1291,10 +1292,7 @@ func TestEveryRoomStopOfBlock0SaysWhatToDo(t *testing.T) {
 	}
 	q := *p
 	q.Disk = nil
-	coarse, err := BuildRunbook(q)
-	if err != nil {
-		t.Fatal(err)
-	}
+	coarse := buildFor(t, q)
 	for path, want := range map[string]string{"/var/cache/apt/archives": "/var/cache/apt/archives has less than 1.5 GB free.", "/": "/ has less than 2 GB free."} {
 		b := newShellBox(t)
 		setupVerify(t, b)

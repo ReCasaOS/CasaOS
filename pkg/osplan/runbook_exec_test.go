@@ -20,10 +20,12 @@ import (
 // replacements are the ones of shellBox.paths, and nothing else of it is changed.
 //
 // DEVELOPING NOTES. These tests start a shell for every block they run, and a shell is cheap on Linux and dear on Windows with Git Bash: the
-// package takes some 8 s under dash on Linux and some 480 s on Windows, close to the 10 minutes that go test allows by default. On Windows
-// pass a longer limit for a full run (go test -timeout 20m ./pkg/osplan), or -short to skip every test that runs the shell (each says why it
-// was skipped). The run under dash on Linux is the one that counts, and it is what CI does: build the test binary for Linux (GOOS=linux go
-// test -c ./pkg/osplan) and run it where /bin/sh is dash (a Debian chroot).
+// package takes some 16 s under dash on Linux and some 2000 s on Windows (the suites run twice, on the owner's text and on the unit's: see
+// auto_exec_test.go), well over the 10 minutes that go test allows by default. On Windows pass a longer limit for a full run (go test -timeout 60m
+// ./pkg/osplan), run one test with -run (the unit's text is TestTheExecSuitesRunOnTheAutoText/<the name of the test>), or pass -short to skip every
+// test that runs the shell (each says why it was skipped). The run under dash on Linux is the one that counts, and it is what CI does: build the
+// test binary for Linux (GOOS=linux go test -c ./pkg/osplan) and run it where /bin/sh is dash (a Debian chroot), from a directory that has testdata
+// and the two files of the suites (TestEveryExecTestIsInTheAutoSetOrManualOnly reads them).
 
 // planMadeAt is the clock of the plans of these tests (the clock of newBox).
 var planMadeAt = time.Date(2026, 10, 12, 9, 30, 0, 0, time.UTC)
@@ -43,16 +45,22 @@ type shellBox struct {
 	noMux bool
 	// umask, when it is set, is the umask of the shell that runs the block.
 	umask string
+	// auto is set when the blocks that it runs are the ones of the unit (BuildAuto), in the unit of run testRunID: the environment says so, ./run is the folder of the run
+	// (the blocks write the class of a stop there), and ./cgroup is the file that the gate reads and that names the unit.
+	auto bool
 }
 
 func newShellBox(t *testing.T) *shellBox {
 	t.Helper()
-	b := &shellBox{t: t, dir: t.TempDir()}
-	for _, d := range []string{"bin", "fake", "bk", "etc-apt/sources.list.d", "boot/grub", "archives", "root/etc"} {
+	b := &shellBox{t: t, dir: t.TempDir(), auto: suiteAuto}
+	for _, d := range []string{"bin", "fake", "bk", "run", "etc-apt/sources.list.d", "boot/grub", "archives", "root/etc"} {
 		if err := os.MkdirAll(filepath.Join(b.dir, filepath.FromSlash(d)), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	b.write("cgroup", "0::/system.slice/casaos-os-upgrade.service\n")
+	// sync says whether the marker of the point of no return was on the disk's way when it ran
+	b.fake("sync", "echo \"sync begun-upgrade=$([ -e ./bk/begun-upgrade ] && echo yes || echo no)\" >> \"$FAKE/calls.log\"")
 	b.fake("id", "[ \"$1\" = -u ] && echo 0 || echo root")
 	b.fake("hostname", "echo testbox")
 	b.fake("uname", "if [ \"$1\" = -r ]; then if [ -f \"$FAKE/uname-r\" ]; then cat \"$FAKE/uname-r\"; else echo 5.10.0-46-cloud-amd64; fi; else echo Linux; fi")
@@ -240,18 +248,33 @@ func (b *shellBox) paths(code, planID string) string {
 // run runs a block of the runbook and says what it printed and how it ended.
 func (b *shellBox) run(rb *Runbook, id string) (string, int) {
 	b.t.Helper()
-	code := b.paths(blockOf(b.t, rb.Text, id), rb.PlanID)
+	return b.runCode(b.paths(blockOf(b.t, rb.Text, id), rb.PlanID))
+}
+
+// environ is the environment of a block: the box's own, and in the unit the three words that the driver gives its blocks (the nonce is not one of them).
+func (b *shellBox) environ() []string {
+	env := slices.DeleteFunc(os.Environ(), func(e string) bool {
+		return strings.HasPrefix(e, "TMUX=") || strings.HasPrefix(e, "STY=") || strings.HasPrefix(e, "CASAOS_OSU_")
+	})
+	env = append(env, "FAKE=./fake")
+	if !b.noMux {
+		env = append(env, "TMUX=/tmp/tmux-0/default,1,0")
+	}
+	if b.auto {
+		env = append(env, "CASAOS_OSU_RUN="+testRunID, "CASAOS_OSU_DIR=./run", "CASAOS_OSU_ATTEMPT=1")
+	}
+	return append(env, b.env...)
+}
+
+// runCode runs the code of a block, whose paths have been pointed at the box, and says what it printed and how it ended.
+func (b *shellBox) runCode(code string) (string, int) {
+	b.t.Helper()
 	if b.umask != "" {
 		code = "umask " + b.umask + "\n" + code
 	}
 	cmd := exec.Command(shellOrSkip(b.t), writeScript(b.t, code))
 	cmd.Dir = b.dir
-	env := slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, "TMUX=") || strings.HasPrefix(e, "STY=") })
-	env = append(env, "FAKE=./fake")
-	if !b.noMux {
-		env = append(env, "TMUX=/tmp/tmux-0/default,1,0")
-	}
-	cmd.Env = append(env, b.env...)
+	cmd.Env = b.environ()
 	out, err := cmd.CombinedOutput()
 	exit := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -387,6 +410,10 @@ func TestBlock0ChecksTheMachineBeforeAnythingElse(t *testing.T) {
 		{"block 5 has begun", good, func(b *shellBox) { b.write("bk/begun-upgrade", "") }, "the upgrade has begun (block 5 was started): this block is for before it. Do not restore anything. Only forward: "},
 		{"block 5 ended", good, func(b *shellBox) { b.write("bk/done-minimal", "") }, "the upgrade has begun (block 5 was started)"},
 	} {
+		// the name of the machine is typed by the owner in the owner's text, and written by the core in the unit's (TestAutoBlock0StopsWhenTheNameThatIsWrittenIsNotTheMachinesOwn)
+		if suiteAuto && (tc.name == "no name typed" || tc.name == "another name typed") {
+			continue
+		}
 		b := newShellBox(t)
 		setupVerify(t, b)
 		tc.set(b)
@@ -413,7 +440,7 @@ func TestBlock0SaysThatItDoesNotSeeTheLocksOfApt(t *testing.T) {
 	if !strings.Contains(out, "looks at the processes, not at the file locks of apt and dpkg") {
 		t.Errorf("the line says nothing of the locks: %q", out)
 	}
-	if !strings.Contains(rb.Text, "it does not see their file locks") {
+	if !suiteAuto && !strings.Contains(rb.Text, "it does not see their file locks") {
 		t.Error("the prose of block 0 does not say that the locks are not seen")
 	}
 }
@@ -820,8 +847,8 @@ func TestBlock6GoesOnUntilNothingIsLeftAndStopsWhenSomethingIs(t *testing.T) {
 		not   []string
 	}{
 		{"converges at once", func(b *shellBox) {}, "",
-			[]string{"apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold --download-only dist-upgrade",
-				"apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade"},
+			[]string{"apt-get " + aptqOpts() + " --download-only dist-upgrade",
+				"apt-get " + aptqOpts() + " dist-upgrade"},
 			[]string{"dpkg --configure", "install"}},
 		{"converges at the second pass", func(b *shellBox) { b.write("fake/sim1.txt", left) }, "",
 			[]string{"dist-upgrade"}, []string{"dpkg --configure"}},
@@ -1004,13 +1031,18 @@ func TestBlock5NeedsTheConfirmationAndStopsAfterTheMinimalUpgradeIfAptSaysSo(t *
 	ok := typed(rb, "CONFIRM", "I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON")
 	b := newShellBox(t)
 	b.write("bk/done-download", "")
-	out, code := b.run(rb, "minimal")
-	if code == 0 || !strings.Contains(out, "point of no return") || b.exists("fake/calls.log") || b.exists("bk/begun-upgrade") {
-		t.Errorf("without the confirmation: exit %d, %q, calls %q", code, out, b.read("fake/calls.log"))
-	}
-	out, code = b.run(typed(rb, "CONFIRM", "yes"), "minimal")
-	if code == 0 || b.exists("fake/calls.log") || b.exists("bk/begun-upgrade") {
-		t.Errorf("with another word: exit %d, %q", code, out)
+	var out string
+	var code int
+	// the confirmation is typed by the owner in the owner's text, and baked into the unit's (TestAutoBlock5HasTheConfirmationBakedIn)
+	if !suiteAuto {
+		out, code = b.run(rb, "minimal")
+		if code == 0 || !strings.Contains(out, "point of no return") || b.exists("fake/calls.log") || b.exists("bk/begun-upgrade") {
+			t.Errorf("without the confirmation: exit %d, %q, calls %q", code, out, b.read("fake/calls.log"))
+		}
+		out, code = b.run(typed(rb, "CONFIRM", "yes"), "minimal")
+		if code == 0 || b.exists("fake/calls.log") || b.exists("bk/begun-upgrade") {
+			t.Errorf("with another word: exit %d, %q", code, out)
+		}
 	}
 	out, code = b.run(ok, "minimal")
 	if code != 0 || !b.exists("bk/done-minimal") || !strings.Contains(b.read("fake/calls.log"), " upgrade\n") {
@@ -1281,10 +1313,7 @@ func TestBlock7ChecksTheKernelTheInitrdAndSshdBeforeTheRestart(t *testing.T) {
 	// a plan that installs no kernel: the newest kernel is the one that runs, and its files are looked at all the same
 	p := *realPlan(t)
 	p.NewPackages = slices.DeleteFunc(slices.Clone(p.NewPackages), func(n string) bool { return strings.HasPrefix(n, "linux-image-") })
-	noKernel, err := BuildRunbook(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	noKernel := buildFor(t, p)
 	b = newShellBox(t)
 	setup(b)
 	b.write("fake/kernels.txt", "ii  linux-image-5.10.0-46-cloud-amd64\n")
@@ -1438,10 +1467,7 @@ func TestBlock7SeesARestartThatCameBeforeItEnded(t *testing.T) {
 	// the kernel that runs was installed before the hop and is the newest that dpkg has, in a plan that installs no kernel: the usual flow, the checks run and the boot is written
 	p := *realPlan(t)
 	p.NewPackages = slices.DeleteFunc(slices.Clone(p.NewPackages), func(n string) bool { return strings.HasPrefix(n, "linux-image-") })
-	noKernel, err := BuildRunbook(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	noKernel := buildFor(t, p)
 	b := newShellBox(t)
 	setup(b)
 	b.write("fake/kernels.txt", "ii  linux-image-5.10.0-46-cloud-amd64\n")
@@ -1500,10 +1526,7 @@ func TestAPlanWhoseListOfNewPackagesWasCutExpectsANewKernel(t *testing.T) {
 	if !expectsNewKernel(p) {
 		t.Error("a plan whose list was cut, with no kernel in it, does not expect one")
 	}
-	rb, err := BuildRunbook(p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	rb := buildFor(t, p)
 	if !strings.Contains(blockOf(t, rb.Text, "prereboot"), "the plan installs a new kernel") {
 		t.Error("block 7 of a plan whose list was cut has no stop for a kernel that did not come")
 	}
@@ -1611,7 +1634,12 @@ func TestBlock8NeedsARestartAndDebian12(t *testing.T) {
 			tc.stops = "curl is not installed, so Docker's repository cannot be asked about bookworm"
 		}
 		out, code := b.run(run, "after")
-		if code == 0 || !strings.Contains(out, "STOP:") || !strings.Contains(out, tc.stops) || b.exists("bk/done-after") {
+		if suiteAuto && strings.HasPrefix(tc.name, "curl") {
+			// the unit goes on: a Docker that cannot be asked is a note for the judge, and its source stays paused (TestAutoBlock8WritesWhyDockersSourceStaysPaused says each answer)
+			if code != 0 || strings.Contains(out, "STOP:") || !b.exists("bk/done-after") || !b.exists("bk/docker-source-note") {
+				t.Errorf("%s: exit %d, %q", tc.name, code, out)
+			}
+		} else if code == 0 || !strings.Contains(out, "STOP:") || !strings.Contains(out, tc.stops) || b.exists("bk/done-after") {
 			t.Errorf("%s: exit %d, %q", tc.name, code, out)
 		}
 		if strings.HasPrefix(tc.name, "curl") && (b.exists("etc-apt/sources.list.d/docker.list") || !b.exists("etc-apt/sources.list.d/docker.list.casaos-paused")) {
@@ -1756,6 +1784,10 @@ func TestBlock3WritesTheTreeAndStopsOnItsOwnErrors(t *testing.T) {
 			b.write("fake/sim.txt", "1 upgraded, 0 newly installed, 2 to remove and 0 not upgraded.\n")
 		}, "not as many as its summary says"},
 	} {
+		// the removals are accepted by the owner in the owner's text, and written by the core in the unit's (TestAutoBlock3HasTheAcceptedRemovalsWrittenIn)
+		if suiteAuto && (tc.name == "the removals are not accepted" || tc.name == "another name accepted") {
+			continue
+		}
 		b := newShellBox(t)
 		setup(b)
 		tc.set(b)
@@ -2016,7 +2048,7 @@ func TestTheAptCommandsOfTheBlocksRunWithoutAQuestionAndWithTheOptionsOfTheHopBu
 			if !strings.HasPrefix(line, "apt-get ") || strings.HasPrefix(line, "apt-get check") {
 				continue
 			}
-			if !strings.HasPrefix(line, "apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold ") {
+			if !strings.HasPrefix(line, "apt-get "+aptqOpts()+" ") {
 				t.Errorf("block %s: %q", tc.id, line)
 			}
 		}
