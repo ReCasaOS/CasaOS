@@ -435,7 +435,7 @@ func (s *systemService) closeOSUpgradeRun(run *osUpgradeRun, how string) error {
 // osUpgradeNewerRefresh is plan_older_than_refresh: the old release was brought to its latest state after the plan was made, and a plan is of the machine as it was.
 // A time that cannot be read is no time: the refresh writes it, and a plan that is stale is stopped by the first block that simulates.
 func osUpgradeNewerRefresh(plan *osplan.Plan) *OSUpgradeRefusal {
-	data, err := readOSUpgradeFile(filepath.Join(osUpgradeRoot, "last-refresh"), 256)
+	data, err := readOSUpgradeFile(filepath.Join(osUpgradeRoot, osUpgradeLastRefreshFile), 256)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			logger.Error("the time of the last refresh could not be read", zap.Error(err))

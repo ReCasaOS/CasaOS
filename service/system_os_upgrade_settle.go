@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -398,7 +399,7 @@ func (s *systemService) osUpgradeNoteRefresh(run *osUpgradeRun) {
 	if ended.IsZero() {
 		return
 	}
-	path := osUpgradeRoot + "/" + osUpgradeLastRefreshFile
+	path := filepath.Join(osUpgradeRoot, osUpgradeLastRefreshFile)
 	if data, err := readOSUpgradeFile(path, 256); err == nil {
 		if at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err == nil && !at.Before(ended) {
 			return
