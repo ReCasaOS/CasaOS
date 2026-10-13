@@ -799,3 +799,22 @@ func TestARehearsalThatWasRestartedHasItsTimersStoppedBeforeItIsPutBack(t *testi
 		t.Errorf("the attempts are %+v", got)
 	}
 }
+
+// With no upgrade on the machine the loop does nothing that can be seen: it makes no folder, writes no file and asks systemd nothing, so that a machine that never used the feature
+// is as it was.
+func TestTheSettlingTouchesNothingWhenThereIsNoUpgrade(t *testing.T) {
+	box := newUpgradeBox(t)
+	for i := 0; i < 3; i++ {
+		box.tick()
+		box.advance(30 * time.Second)
+	}
+	if _, err := os.Lstat(box.root); !os.IsNotExist(err) {
+		t.Errorf("the folder of the runs was made: %v", err)
+	}
+	if got := box.commandsWith(""); len(got) != 0 {
+		t.Errorf("systemd was asked %q", got)
+	}
+	if len(box.startedUnits()) != 0 {
+		t.Errorf("%d units were started", len(box.startedUnits()))
+	}
+}
