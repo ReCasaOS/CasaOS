@@ -725,9 +725,15 @@ func (c *ctx) result() (result, bool) {
 	case f.DoneAfter:
 		// The file of the last block is the truth, whatever the markers got to say.
 		return result{kind: MkVerifyDone, at: c.la}, true
-	case f.DonePrereboot && ValidUUID(f.BootIDFile):
-		return result{kind: MkRebootPending, boot: f.BootIDFile, at: c.la}, true
+	case f.DonePrereboot && f.BootIDFile != "":
+		// A boot id that is not one cannot be compared with the machine's, and so is not read as a restart.
+		boot := f.BootIDFile
+		if !ValidUUID(boot) {
+			boot = ""
+		}
+		return result{kind: MkRebootPending, boot: boot, at: c.la}, true
 	case f.DonePrereboot:
+		// The last block found the machine restarted already, and wrote no boot id.
 		return result{kind: MkRebootNotNeeded, at: c.la}, true
 	}
 	return result{}, false

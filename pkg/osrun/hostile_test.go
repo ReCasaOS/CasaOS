@@ -76,6 +76,30 @@ func TestADuplicateOrALateWordOfAnAttemptChangesNothing(t *testing.T) {
 		Marker{Kind: MkRebootPending, N: 1, Boot: bootA, Kernel: "x"}, Marker{Kind: MkStop, N: 1, Index: 7, ID: BlockFull, RC: 2, Class: ClassDisk, PNR: true})
 }
 
+func TestAWordThatTheUnitCouldNotHaveWrittenYetOrAnymoreChangesNothing(t *testing.T) {
+	// A hop whose unit did the last block, was lost, and is read a minute later: the files have what it was to do.
+	base := hopLaunched(t)
+	for i, b := range BlockList(PhaseRun, Files{}) {
+		base.blockStart(1, i+1, b)
+		base.blockFiles(b, true)
+		base.blockDone(1, i+1, b)
+	}
+	late := func(in *Input) { in.Now = in.Now.Add(time.Minute) }
+	s := reduced(t, afterLast(base.input(), time.Minute))
+	is(t, s, StateAwaitingReboot, "")
+	// A result that is not a hop's is not the run's, and nor is a stop of a unit that has said it was done.
+	for name, m := range map[string]Marker{
+		"the result of a refresh":   {Kind: MkRefreshDone, N: 1, Result: "yes", Why: "kernel"},
+		"the result of a rehearsal": {Kind: MkRehearsalReady, N: 1},
+		"the result of a check":     {Kind: MkVerifyDone, N: 1, Boot: bootA},
+	} {
+		stays(t, name, base, late, m)
+	}
+	done := base.clone()
+	done.add(Marker{Kind: MkRebootPending, N: 1, Boot: bootA, Kernel: "k"})
+	stays(t, "a stop after a result", done, late, Marker{Kind: MkStop, N: 1, Index: 8, ID: BlockPrereboot, RC: 1, Class: ClassDisk, PNR: true})
+}
+
 func TestAHandfulOfBlockWordsIsKeptAndAFloodIsNot(t *testing.T) {
 	l := hopInBlock(t, BlockDownload)
 	for i := 0; i < 5000; i++ {

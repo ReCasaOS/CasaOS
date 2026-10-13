@@ -228,6 +228,18 @@ func TestARunningStateHasTheBlockThatBeganAndIsAbortableUntilTheMinimalUpgrade(t
 	}
 }
 
+func TestTheMinimalUpgradeCannotBeCalledOffOnceItHasBegun(t *testing.T) {
+	// The unit has begun the block, and the marker file that says packages are being changed is not written yet: the files
+	// say the point of no return is not passed, and the owner still cannot stop it, since the unit may be writing it.
+	l := hopInBlock(t, BlockMinimal)
+	l.files.Begun = false
+	s := reduced(t, running(l.input()))
+	is(t, s, StateRunning, "")
+	if s.PNR || s.Abortable || isOneOf(ActionsFor(s), ActionAbort) {
+		t.Errorf("%+v", s)
+	}
+}
+
 func TestAUnitThatSystemdSaysIsGoneIsQuietBeforeItIsLost(t *testing.T) {
 	in := hopInBlock(t, BlockDownload).input()
 	is(t, reduced(t, in), StateRunning, "")
@@ -392,6 +404,12 @@ func TestAUnitThatDiedAfterItsLastBlockHasWhatItWasToDo(t *testing.T) {
 	in.Files.BootIDFile = bootA
 	in.Boot.Now = bootB
 	is(t, reduced(t, in), StateResuming, "")
+	// A boot id that is not one is no restart to be seen, and the machine is waited for.
+	in.Files.BootIDFile = "not a boot id"
+	in.Boot.Now = bootB
+	if s := reduced(t, in); s.Name != StateAwaitingReboot || !s.BootUnknown {
+		t.Errorf("%+v", s)
+	}
 	// A unit that did not get that far is interrupted.
 	in = quiet(hopInBlock(t, BlockPrereboot).input(), time.Minute)
 	is(t, reduced(t, in), StateInterrupted, "")

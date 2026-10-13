@@ -396,3 +396,13 @@ func FuzzParseMarkers(f *testing.F) {
 		_ = ActionsFor(s)
 	})
 }
+
+func TestABootIsKnownWhenTheRunBeganInItOrTheCoreSawIt(t *testing.T) {
+	l := newLog(t, RunHop).add(Marker{Kind: MkBootSeen, Boot: bootB})
+	ms := l.input().Markers
+	for boot, want := range map[string]bool{bootA: true, bootB: true, bootC: false, "": false} {
+		if got := BootKnown(ms, boot); got != want {
+			t.Errorf("BootKnown(%q) = %v", boot, got)
+		}
+	}
+}

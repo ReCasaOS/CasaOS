@@ -397,3 +397,17 @@ func ParseMarkers(r io.Reader) (nonce string, ms []Marker, ignored int, err erro
 	}
 	return nonce, ms, ignored, err
 }
+
+// BootKnown is whether the log has already told of a boot: the one the run began in, or one that the core saw afterwards and
+// wrote down. A boot that is neither is new to the run, and the core notes it once.
+func BootKnown(ms []Marker, boot string) bool {
+	if boot == "" {
+		return false
+	}
+	for _, m := range ms {
+		if (m.Kind == MkRun || m.Kind == MkBootSeen) && m.Boot == boot {
+			return true
+		}
+	}
+	return false
+}
