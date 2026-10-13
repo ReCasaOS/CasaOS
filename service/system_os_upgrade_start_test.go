@@ -1230,3 +1230,57 @@ func TestWhatTheMachineCannotSayIsNotAYes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Closing a run takes away what says that it is open, and puts a backup folder that ended where the blocks of a later run will not stop at it; one that did not end stays
+// where the owner who finishes it by hand will look.
+func TestClosingARunMovesItsBackupOnlyWhenTheHopEnded(t *testing.T) {
+	for name, c := range map[string]struct {
+		files []string
+		moved bool
+	}{
+		"a hop that ended":                {[]string{"done-verify", "done-after"}, true},
+		"a hop that did not end":          {[]string{"done-verify", "apt-orig", "begun-upgrade"}, false},
+		"a hop that has no folder at all": {nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			box := newUpgradeBox(t)
+			run := box.aRun(box.anUpgradePlan(osplan.VerdictOK, nil), osrun.RunHop)
+			box.pointTo(run)
+			if err := setOSUpgradeBusy(run.ID, osrun.StateFailed, box.now()); err != nil {
+				t.Fatal(err)
+			}
+			if c.files != nil {
+				run = box.leave(run, c.files...)
+			}
+			bk := run.BK
+			if err := box.closeOSUpgradeRun(run, "acknowledge"); err != nil {
+				t.Fatal(err)
+			}
+			closed := box.read(run.ID)
+			if last := closed.Markers[len(closed.Markers)-1]; last.Kind != osrun.MkAck || last.Result != "acknowledge" {
+				t.Errorf("the log ends with %+v", last)
+			}
+			if _, state := currentOSUpgrade(); state != osUpgradeNoRun {
+				t.Error("the pointer to the run is still there")
+			}
+			if busy, _ := osUpgradeFlagOpen(); busy {
+				t.Error("the flag of the open upgrade is still there")
+			}
+			_, movedErr := os.Stat(filepath.Join(run.Dir, "bk-done"))
+			_, leftErr := os.Stat(bk)
+			if c.files == nil {
+				return
+			}
+			if moved := movedErr == nil; moved != c.moved || (leftErr == nil) == c.moved {
+				t.Errorf("moved = %v (want %v), left behind = %v", moved, c.moved, leftErr == nil)
+			}
+			if got := box.state(closed); got.Name != osrun.StateIdle || !got.Closed {
+				t.Errorf("the closed run is %+v", got)
+			}
+			// closing it again is no harm
+			if err := box.closeOSUpgradeRun(box.read(run.ID), "acknowledge"); err != nil {
+				t.Errorf("a run that was closed is closed again: %v", err)
+			}
+		})
+	}
+}
