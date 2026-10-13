@@ -193,6 +193,8 @@ func (s *systemService) osUpgradeSettleOnce(ctx context.Context) (tick osUpgrade
 	if state.Name == osrun.StateResuming {
 		in.Ready = s.osUpgradeReady(ctx, run)
 	}
+	// what stands before the restart is asked again at every look: it only reads, and it is no action
+	s.osUpgradeKeepBarrier(ctx, run, state)
 	action := osrun.NextAction(state, in)
 	tick.Action = action.Kind
 	if done := s.osUpgradeDo(ctx, run, state, action); done != "" {
@@ -342,6 +344,13 @@ func (s *systemService) osUpgradeDo(ctx context.Context, run *osUpgradeRun, stat
 		default:
 			logger.Error("the core could not start a unit for an upgrade of the operating system", zap.String("run", run.ID), zap.String("action", action.Kind), zap.Error(err))
 		}
+	case osrun.DoJudge:
+		if err := s.osUpgradeJudge(ctx, run); err != nil {
+			logger.Error("the machine could not be judged after an upgrade of the operating system", zap.String("run", run.ID), zap.Error(err))
+			return ""
+		}
+		logger.Info("the machine was judged after an upgrade of the operating system", zap.String("run", run.ID))
+		return action.Kind
 	case osrun.DoCleanup:
 		if err := pruneOSUpgradeRuns(osUpgradeKeepRuns); err != nil {
 			logger.Error("the old runs of the upgrade could not be removed", zap.Error(err))
