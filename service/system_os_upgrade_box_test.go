@@ -36,8 +36,9 @@ type upgradeBox struct {
 	// what systemctl says of the units it is asked about: is-active for a unit that is not here is "inactive", and is-system-running is "running" unless a test says another word
 	active map[string]string
 	system string
-	// stopErr is what stopping a unit says
+	// stopErr is what stopping a unit says, and onStop is called (with the box's lock held) when the unit of the upgrade is stopped
 	stopErr error
+	onStop  func()
 }
 
 const (
@@ -173,6 +174,9 @@ func (b *upgradeBox) command(_ context.Context, name string, args ...string) ([]
 			return nil, b.stopErr
 		}
 		if args[1] == systemOSUpgradeUnit {
+			if b.onStop != nil {
+				b.onStop()
+			}
 			b.unit = "inactive"
 		}
 		delete(b.active, args[1])
