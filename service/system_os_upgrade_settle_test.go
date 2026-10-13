@@ -657,3 +657,71 @@ func TestALookThatPanicsDoesNotEndTheLoop(t *testing.T) {
 		t.Fatalf("the loop looked %d times", looks.Load())
 	}
 }
+
+// ---- what a run that is gone or cannot be read leaves ------------------------------------------------------------------------------------
+
+// A pointer to a run that cannot be read is a machine that is not known to be free of it: the flag is put back if it was lost, with the id of the run when the pointer has one.
+func TestTheSettlingHoldsTheMachineForARunItCannotRead(t *testing.T) {
+	box := newUpgradeBox(t)
+	const id = "0b8f3a52-6c1e-4d0a-9a53-7f1c2d4e8b19"
+	box.putInRoot(osUpgradeCurrentFile, id+"\n")
+
+	box.tick()
+	flag, ok := readOSUpgradeBusyFlag()
+	if !ok || flag.RunID != id || flag.State != osrun.StateNeedsAttention {
+		t.Errorf("the flag is %+v (%v): the machine is not held for a run that cannot be read", flag, ok)
+	}
+
+	// and for a pointer that says nothing at all
+	if err := clearOSUpgradeBusy(); err != nil {
+		t.Fatal(err)
+	}
+	box.putInRoot(osUpgradeCurrentFile, "this is not an id\n")
+	box.tick()
+	if !box.flagIsThere() {
+		t.Error("the machine is not held for a pointer that says nothing")
+	}
+}
+
+// A run that the owner closed and that the core forgot to forget (it was cut short between the two) is forgotten by the next look: the pointer and the flag go.
+func TestTheSettlingForgetsARunThatWasClosed(t *testing.T) {
+	box := newUpgradeBox(t)
+	run := box.aHopThatWasLost()
+	box.own(run, osrun.StateRunning)
+	box.say(run, osrun.Marker{Kind: osrun.MkAck, Result: "acknowledge"})
+
+	box.tick()
+	if box.currentIs(run.ID) || box.flagIsThere() {
+		t.Errorf("the run that was closed is still the latest (%v) or holds the machine (%v)", box.currentIs(run.ID), box.flagIsThere())
+	}
+}
+
+// The folders of the old runs are looked after when the core starts, and not only when a run begins: a core that was cut short after it closed a run leaves no more than three.
+func TestTheFirstLookKeepsTheLastThreeRuns(t *testing.T) {
+	box := newUpgradeBox(t)
+	ids := []string{
+		"11111111-6c1e-4d0a-9a53-7f1c2d4e8b19", "22222222-6c1e-4d0a-9a53-7f1c2d4e8b19", "33333333-6c1e-4d0a-9a53-7f1c2d4e8b19",
+		"44444444-6c1e-4d0a-9a53-7f1c2d4e8b19", "55555555-6c1e-4d0a-9a53-7f1c2d4e8b19",
+	}
+	if err := ensureOSUpgradeRoot(); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range ids {
+		dir := filepath.Join(box.root, id)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(dir, osUpgradeRunJSON)
+		if err := os.WriteFile(file, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		when := box.now().Add(time.Duration(i) * time.Hour)
+		if err := os.Chtimes(file, when, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+	box.tick()
+	if got := box.runFolders(); len(got) != 3 {
+		t.Errorf("the runs left are %v", got)
+	}
+}

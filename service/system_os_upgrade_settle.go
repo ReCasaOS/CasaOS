@@ -47,6 +47,7 @@ type osUpgradeEngine struct {
 	// told is what this core told the owner, by key, and is only touched by a look; notify is what tells them; muteUntil is when the alerts about the apps' containers may
 	// be heard again (unix nanoseconds).
 	told      map[string]bool
+	pruned    bool
 	notify    atomic.Pointer[func(key, sentence string)]
 	muteUntil atomic.Int64
 }
@@ -164,19 +165,28 @@ func (s *systemService) osUpgradeSettleOnce(ctx context.Context) (tick osUpgrade
 		}
 	}()
 
+	if !e.pruned {
+		// the folders of the old runs are looked after at the first look, for a core that was cut short after it closed one
+		e.pruned = true
+		if err := pruneOSUpgradeRuns(osUpgradeKeepRuns); err != nil {
+			logger.Error("the old runs of the upgrade could not be removed", zap.Error(err))
+		}
+	}
 	id, current := currentOSUpgrade()
 	switch current {
 	case osUpgradeNoRun:
 		s.osUpgradeDropStrayFlag()
 		return tick
 	case osUpgradeBadRun:
-		// the machine is not known to be free of it: its flag stays
+		// the machine is not known to be free of it: its flag stays, or is put back
 		e.logUnread("the pointer to the latest upgrade of the operating system cannot be read: the upgrade is taken for open", errors.New("the pointer says nothing that can be used"))
+		s.osUpgradeHoldUnread("")
 		return tick
 	}
 	run, err := readOSUpgradeRun(id)
 	if err != nil {
 		e.logUnread("the latest upgrade of the operating system cannot be read: the upgrade is taken for open", err)
+		s.osUpgradeHoldUnread(id)
 		return tick
 	}
 	tick.RunID = id
@@ -365,6 +375,7 @@ func (s *systemService) osUpgradeDo(ctx context.Context, run *osUpgradeRun, stat
 		logger.Info("the machine was judged after an upgrade of the operating system", zap.String("run", run.ID))
 		return action.Kind
 	case osrun.DoCleanup:
+		s.osUpgradeForget(run)
 		if err := pruneOSUpgradeRuns(osUpgradeKeepRuns); err != nil {
 			logger.Error("the old runs of the upgrade could not be removed", zap.Error(err))
 		}
@@ -395,5 +406,36 @@ func (s *systemService) osUpgradeNoteRefresh(run *osUpgradeRun) {
 	}
 	if err := osUpgradeWriteFile(path, []byte(ended.UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
 		logger.Error("the time of the end of the refresh could not be written down", zap.Error(err))
+	}
+}
+
+// osUpgradeHoldUnread puts the flag of the open upgrade back for a run that cannot be read, when it was lost: the machine is not known to be free of it, and a backup must not read
+// what dpkg may be rewriting. runID is the one the pointer names, or "" when the pointer says nothing, and then the flag is the one of no run.
+func (s *systemService) osUpgradeHoldUnread(runID string) {
+	if open, _ := osUpgradeFlagOpen(); open {
+		return
+	}
+	if runID == "" {
+		runID = "00000000-0000-0000-0000-000000000000"
+	}
+	osUpgradeMu.Lock()
+	defer osUpgradeMu.Unlock()
+	if open, _ := osUpgradeFlagOpen(); open {
+		return
+	}
+	if err := setOSUpgradeBusy(runID, osrun.StateNeedsAttention, s.systemPackageUpdater().now()); err != nil {
+		logger.Error("the flag of an upgrade of the operating system that cannot be read could not be written", zap.Error(err))
+	}
+}
+
+// osUpgradeForget forgets a run that the owner closed and that the core was cut short before it forgot: the pointer to it, and its flag, go.
+func (s *systemService) osUpgradeForget(run *osUpgradeRun) {
+	osUpgradeMu.Lock()
+	defer osUpgradeMu.Unlock()
+	if id, current := currentOSUpgrade(); current != osUpgradeHasRun || id != run.ID {
+		return
+	}
+	if err := errors.Join(clearOSUpgradeCurrent(), clearOSUpgradeBusy()); err != nil {
+		logger.Error("a run of the upgrade that was closed could not be forgotten", zap.String("run", run.ID), zap.Error(err))
 	}
 }
