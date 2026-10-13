@@ -149,10 +149,13 @@ func (s *systemService) GetSystemOSUpgradeStatus() OSUpgradeStatus {
 	return s.osUpgradeStatusOf(status, run, in, osrun.Reduce(in))
 }
 
-// osUpgradeDamaged is the status of a run that cannot be read: the machine is not known to be free of it, so it is busy, and the owner is asked to look.
+// osUpgradeDamaged is the status of a run that cannot be read: the machine is not known to be free of it, so it is busy and may be half upgraded, and the owner is asked to look.
+// The one thing that can be done with such a run is to let go of it, with the typed word: there is nothing of it to take over.
 func (s *systemService) osUpgradeDamaged(status OSUpgradeStatus, runID string) OSUpgradeStatus {
-	state := osrun.State{Name: osrun.StateNeedsAttention, Reason: osrun.ReasonRunDamaged, RunID: runID, Busy: true}
-	return s.osUpgradeStatusOf(status, nil, osrun.Input{}, state)
+	state := osrun.State{Name: osrun.StateNeedsAttention, Reason: osrun.ReasonRunDamaged, RunID: runID, Busy: true, HalfUpgraded: true}
+	status = s.osUpgradeStatusOf(status, nil, osrun.Input{}, state)
+	status.Actions = []string{osrun.ActionAcknowledge}
+	return status
 }
 
 // osUpgradeStatusOf makes the status of a run from its state. run is nil for no run, or for one that cannot be read.

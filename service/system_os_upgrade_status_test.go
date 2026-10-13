@@ -420,8 +420,9 @@ func TestARunThatCannotBeReadIsBusyAndNeedsAttention(t *testing.T) {
 	if got.State != osrun.StateNeedsAttention || got.Reason != osrun.ReasonRunDamaged || !got.Busy || got.RunID != run.ID {
 		t.Errorf("a run with no identity: %+v", got)
 	}
-	if !reflect.DeepEqual(got.Actions, []string{osrun.ActionAcknowledge, osrun.ActionTakeover}) {
-		t.Errorf("the buttons are %v", got.Actions)
+	// there is nothing of it to take over: it can be let go of, with the word that is asked for a machine that may be half upgraded
+	if !reflect.DeepEqual(got.Actions, []string{osrun.ActionAcknowledge}) || got.AckWord != osrun.AckWord {
+		t.Errorf("the buttons are %v (word %q)", got.Actions, got.AckWord)
 	}
 
 	rewrite(t, filepath.Join(box.root, "current"), "the latest one\n")
