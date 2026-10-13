@@ -259,7 +259,7 @@ func (s *systemService) osUpgradeInputWith(run *osUpgradeRun, unit osrun.Unit) o
 		Unit: unit, Boot: osrun.Boot{Now: boot, OK: ok},
 		Now: u.now().UTC(), LastActivity: run.OutputAt.UTC(),
 		Damaged: run.TooLarge || verifyOSUpgradeRun(run.Dir, run.Meta.Kind) != nil,
-		Timing:  osrun.DefaultTiming,
+		Timing:  osUpgradeTiming,
 	}
 	if barrier := readOSUpgradeBarrier(run); barrier != nil {
 		in.Barrier = &osrun.Barrier{OK: barrier.OK}

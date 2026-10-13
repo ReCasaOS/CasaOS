@@ -120,6 +120,8 @@ type systemService struct {
 	packageUpdates *systemPackageUpdater
 	// osPlan is the job that makes the plan of the upgrade of the operating system.
 	osPlan osPlanJob
+	// osUpgrade is what the core keeps in memory of the upgrade that it runs: its loop, and nothing that the upgrade is.
+	osUpgrade osUpgradeEngine
 }
 
 func (c *systemService) GetDeviceInfo() model.DeviceInfo {

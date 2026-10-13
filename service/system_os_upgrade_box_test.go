@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,11 @@ type upgradeBox struct {
 	startErr error
 	boot     string
 	commands []string
+	// what systemctl says of the units it is asked about: is-active for a unit that is not here is "inactive", and is-system-running is "running" unless a test says another word
+	active map[string]string
+	system string
+	// stopErr is what stopping a unit says
+	stopErr error
 }
 
 const (
@@ -101,6 +107,35 @@ func (b *upgradeBox) setBoot(id string) {
 	b.boot = id
 }
 
+// setActive says that systemd calls a unit active (or another word) from now on.
+func (b *upgradeBox) setActive(unit, state string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.active == nil {
+		b.active = map[string]string{}
+	}
+	b.active[unit] = state
+}
+
+func (b *upgradeBox) setSystem(state string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.system = state
+}
+
+// commandsWith are the commands that were run and begin with these words, in order.
+func (b *upgradeBox) commandsWith(prefix string) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for _, c := range b.commands {
+		if strings.HasPrefix(c, prefix) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 func (b *upgradeBox) startedUnits() [][]string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -120,6 +155,28 @@ func (b *upgradeBox) command(_ context.Context, name string, args ...string) ([]
 			return []byte(b.unit + "\n"), nil
 		}
 		return []byte("inactive\n"), nil
+	}
+	if name == "systemctl" && len(args) >= 2 && args[0] == "is-active" {
+		if state, ok := b.active[args[1]]; ok {
+			return []byte(state + "\n"), nil
+		}
+		return []byte("inactive\n"), errors.New("exit status 3")
+	}
+	if name == "systemctl" && len(args) >= 1 && args[0] == "is-system-running" {
+		if b.system == "" {
+			return []byte("running\n"), nil
+		}
+		return []byte(b.system + "\n"), errors.New("exit status 1")
+	}
+	if name == "systemctl" && len(args) >= 2 && args[0] == "stop" {
+		if b.stopErr != nil {
+			return nil, b.stopErr
+		}
+		if args[1] == systemOSUpgradeUnit {
+			b.unit = "inactive"
+		}
+		delete(b.active, args[1])
+		return nil, nil
 	}
 	return nil, nil
 }
