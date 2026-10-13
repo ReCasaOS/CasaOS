@@ -153,7 +153,9 @@ func osUpgradeFiles(run *osUpgradeRun) osrun.Files {
 }
 
 // osUpgradeBootID is the id of the boot the machine is in; false when it cannot be read, which the reducer then never infers anything from. A var, for the tests.
-var osUpgradeBootID = func() (string, bool) {
+var osUpgradeBootID = readOSUpgradeBootID
+
+func readOSUpgradeBootID() (string, bool) {
 	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {
 		return "", false

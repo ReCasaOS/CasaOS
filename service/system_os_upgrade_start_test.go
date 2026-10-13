@@ -1284,3 +1284,46 @@ func TestClosingARunMovesItsBackupOnlyWhenTheHopEnded(t *testing.T) {
 		})
 	}
 }
+
+// The size of /etc is what its regular files add up to: a link is not followed, a folder is not a size, and the end of the time ends the count.
+func TestTheSizeOfAFolderIsWhatItsRegularFilesAddUpTo(t *testing.T) {
+	root := t.TempDir()
+	for name, size := range map[string]int{"a": 10, "sub/b": 200, "sub/deeper/c": 3000} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "big"), make([]byte, 1<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// what a link leads to is not counted
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Logf("no symbolic links here: %v", err)
+	}
+	if got, err := sizeOfFolder(context.Background(), root); err != nil || got != 3210 {
+		t.Errorf("sizeOfFolder() = %d, %v, want 3210", got, err)
+	}
+	if got, err := sizeOfFolder(context.Background(), filepath.Join(root, "nowhere")); err != nil || got != 0 {
+		t.Errorf("a folder that is not there holds %d bytes (%v)", got, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := sizeOfFolder(ctx, root); err == nil {
+		t.Error("a count that was told to stop goes on")
+	}
+}
+
+func TestTheBootIdOfTheMachineIsReadFromTheKernel(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the kernel of Linux has the file")
+	}
+	id, ok := readOSUpgradeBootID()
+	if !ok || !osrun.ValidUUID(id) {
+		t.Errorf("the boot id is %q, %v", id, ok)
+	}
+}

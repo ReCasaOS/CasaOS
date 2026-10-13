@@ -39,9 +39,12 @@ const (
 )
 
 // osUpgradeEtcSize is the size of what /etc holds, which the backup copies. A var, for the tests.
-var osUpgradeEtcSize = func(ctx context.Context) (int64, error) {
+var osUpgradeEtcSize = func(ctx context.Context) (int64, error) { return sizeOfFolder(ctx, "/etc") }
+
+// sizeOfFolder is the sum of the sizes of the regular files below a folder: links are not followed, and a file that goes away as it is counted is not counted.
+func sizeOfFolder(ctx context.Context, root string) (int64, error) {
 	var total int64
-	err := filepath.WalkDir("/etc", func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
