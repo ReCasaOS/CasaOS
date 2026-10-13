@@ -35,7 +35,7 @@ func TestTheProbeCannotWrite(t *testing.T) {
 }
 
 func TestTheAllowListIsPinned(t *testing.T) {
-	want := []string{"apt-cache", "apt-config", "apt-get", "dkms", "docker", "dpkg", "dpkg-query", "findmnt", "lsblk", "modinfo", "mokutil", "pveversion", "smartctl", "snap", "stat", "systemctl", "systemd-detect-virt", "uname"}
+	want := []string{"apt-cache", "apt-config", "apt-get", "dkms", "docker", "dpkg", "dpkg-query", "findmnt", "lsblk", "modinfo", "mokutil", "pdbedit", "pveversion", "smartctl", "snap", "stat", "systemctl", "systemd-detect-virt", "uname"}
 	if got := allowedCommands(); !slices.Equal(got, want) {
 		t.Fatalf("the allow-list has %v, want %v: a command added here is a command the report runs on every machine", got, want)
 	}
@@ -50,7 +50,7 @@ func TestOnlyTheReadingFormsOfTheAllowedCommandsAreAllowed(t *testing.T) {
 		{"systemctl", "show", "apt-daily.service", "--property=ActiveState", "--value"}, {"systemctl", "is-system-running"}, {"systemctl", "is-active", "ssh.service"}, {"systemctl", "is-enabled", "systemd-resolved"},
 		{"stat", "-fc", "%T", "/sys/fs/cgroup"}, {"findmnt", "-n", "-o", "SOURCE", "/"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/boot"}, {"findmnt", "-b", "-n", "-o", "SIZE", "-T", "/"},
 		{"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/sda1"}, {"lsblk", "-s", "-n", "-P", "-p", "-o", "NAME,TYPE", "/dev/mapper/vg0-root"}, {"uname", "-r"},
-		{"smartctl", "-n", "standby", "-H", "/dev/sda"}, {"modinfo", "-n", "r8168"}, {"dkms", "status"}, {"mokutil", "--sb-state"}, {"pveversion"},
+		{"smartctl", "-n", "standby", "-H", "/dev/sda"}, {"modinfo", "-n", "r8168"}, {"dkms", "status"}, {"mokutil", "--sb-state"}, {"pveversion"}, {"pdbedit", "-L"},
 		{"docker", "info", "--format", dockerpkg.DaemonInfoFormat}, {"docker", "ps", "-q"}, {"docker", "--version"},
 		{"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789ab"}, {"docker", "inspect", "--format", dockerpkg.ContainerInspectFormat, "0123456789ab", strings.Repeat("f", 64)},
 		{"snap", "list"}, {"snap", "list", "docker"},
@@ -76,6 +76,11 @@ func TestOnlyTheReadingFormsOfTheAllowedCommandsAreAllowed(t *testing.T) {
 		{"smartctl", "-H", "-n", "standby", "/dev/sda"}, {"smartctl", "-n", "standby,", "-H", "/dev/sda"}, {"smartctl", "-n", "standby", "-H", "/dev/sda", "/dev/sdb"}, {"smartctl", "-n", "standby", "-X", "/dev/sda"},
 		{"smartctl", "-n", "standby", "-a", "/dev/sda"}, {"smartctl", "-X", "/dev/sda"}, {"smartctl", "-n", "standby", "-H", "/etc/passwd"}, {"smartctl", "-n", "standby", "-H", "/dev/sda;x"},
 		{"modinfo", "-n", "../x"}, {"modinfo", "x"}, {"modinfo", "-k", "x"}, {"modinfo", "-F", "x"}, {"modinfo", "-0", "x"}, {"modinfo", "-k", "x", "y"}, {"modinfo", "-k", "x", "-n", "y"}, {"modinfo", "-n", "x", "y"}, {"modinfo", "-n"}, {"modinfo"}, {"dkms", "install", "x"}, {"dkms", "remove", "x"}, {"mokutil", "--import", "x"}, {"mokutil", "--disable-validation"},
+		// pdbedit only lists: every other option adds, changes, removes or prints what is not asked for (the hashes
+		// of the passwords with -w, the whole record with -v), and the long form is not the short one
+		{"pdbedit"}, {"pdbedit", "-L", "-v"}, {"pdbedit", "-Lv"}, {"pdbedit", "-v"}, {"pdbedit", "-w"}, {"pdbedit", "-L", "-w"}, {"pdbedit", "-l"}, {"pdbedit", "--list"}, {"pdbedit", "-L", "-u", "root"},
+		{"pdbedit", "-a", "x"}, {"pdbedit", "-x", "x"}, {"pdbedit", "-r", "x"}, {"pdbedit", "-c", "[D]", "-u", "x"}, {"pdbedit", "-i", "smbpasswd"}, {"pdbedit", "-e", "tdbsam:/tmp/x"}, {"pdbedit", "-L", "-s", "/tmp/smb.conf"},
+		{"pdbedit", "-L", "-L"}, {"pdbedit", "-L", ""}, {"pdbedit", ""}, {"/usr/bin/pdbedit", "-L"}, {"pdbedit\x00", "-L"},
 		// the client's version is the one question that asks no daemon, and in its one form
 		{"docker", "--version", "x"}, {"docker", "-v"}, {"docker", "version"}, {"docker", "--help"}, {"docker", "--version", "--format", "x"}, {"docker", "--host", "tcp://x:2375", "--version"}, {"docker", "-H", "x", "info"},
 		{"docker", "rm", "x"}, {"docker", "run", "x"}, {"docker", "exec", "x", "sh"}, {"docker", "stop", "x"}, {"docker", "system", "prune"}, {"docker"},
