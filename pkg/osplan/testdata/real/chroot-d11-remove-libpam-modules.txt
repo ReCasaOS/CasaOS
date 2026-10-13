@@ -1,0 +1,20 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following packages will be REMOVED:
+  adduser apt apt-utils libpam-modules libpam-runtime login mount passwd
+  util-linux
+WARNING: The following essential packages will be removed.
+This should NOT be done unless you know exactly what you are doing!
+  apt adduser (due to apt) login libpam-runtime (due to login)
+  libpam-modules (due to login) util-linux
+0 upgraded, 0 newly installed, 9 to remove and 0 not upgraded.
+Remv apt-utils [2.2.4]
+Remv apt [2.2.4]
+Remv adduser [3.118+deb11u1]
+Remv mount [2.36.1-8+deb11u2]
+Remv util-linux [2.36.1-8+deb11u2]
+Remv login [1:4.8.1-1]
+Remv passwd [1:4.8.1-1]
+Remv libpam-modules [1.4.0-9+deb11u1] [libpam-runtime:amd64 ]
+Remv libpam-runtime [1.4.0-9+deb11u1]

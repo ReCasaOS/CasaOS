@@ -112,6 +112,14 @@ func InitV1Router() http.Handler {
 			// Whether this machine could be upgraded to the next release, and why not: a report, that
 			// only reads the machine. It takes up to twenty seconds.
 			v1SysGroup.GET("/os/readiness", v1.GetSystemOSReadiness)
+			// The plan of the upgrade to the next release: what apt would do, planned in a sandbox with the
+			// machine unchanged. Starting one runs apt-get update against a temporary copy of the sources, as
+			// the update of Docker runs apt: the token goes in the header, and is not the refresh token. The
+			// runbook has the lines of the box's own sources as the files have them (a URL's password among
+			// them): the same. The plan itself is read-only and takes what the group takes.
+			v1SysGroup.POST("/os/upgrade/plan", v1.StartSystemOSPlan, headerTokenOnly)
+			v1SysGroup.GET("/os/upgrade/plan", v1.GetSystemOSPlan)
+			v1SysGroup.GET("/os/upgrade/runbook", v1.GetSystemOSRunbook, headerTokenOnly)
 
 			v1SysGroup.POST("/update", v1.SystemUpdate)
 			v1SysGroup.GET("/packages", v1.GetSystemPackageUpdates)

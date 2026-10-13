@@ -213,8 +213,14 @@ func (b *boundedOutput) result() ([]byte, bool) {
 func boundedCommand(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return runBounded(ctx, cmd, osreadiness.MaxOutputBytes)
+}
+
+// runBounded runs cmd, a command made with exec.CommandContext(ctx, ...), with its output kept only up to max bytes
+// (see boundedCommand, which is it for the report; the sandbox of the plan of an upgrade is the other that has it).
+func runBounded(ctx context.Context, cmd *exec.Cmd, max int) ([]byte, bool, error) {
 	cmd.WaitDelay = readinessWaitDelay
-	out := &boundedOutput{max: osreadiness.MaxOutputBytes}
+	out := &boundedOutput{max: max}
 	// one writer for both: they are one stream, in the order the process wrote them
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
@@ -244,6 +250,11 @@ func (p osReadinessProbe) Run(ctx context.Context, argv ...string) (osreadiness.
 		return osreadiness.Output{}, errors.New("no command")
 	}
 	out, truncated, err := p.run(ctx, argv[0], argv[1:]...)
+	return finishRun(ctx, out, truncated, err)
+}
+
+// finishRun says how a command that was run ended, as the Probe says it (see Run).
+func finishRun(ctx context.Context, out []byte, truncated bool, err error) (osreadiness.Output, error) {
 	result := osreadiness.Output{Text: string(out), Truncated: truncated}
 	if err == nil {
 		return result, nil

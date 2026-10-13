@@ -1,0 +1,5 @@
+Err:1 http://deb.example.invalid/debian bookworm InRelease
+  Temporary failure resolving 'deb.example.invalid'
+Reading package lists...
+E: Failed to fetch http://deb.example.invalid/debian/dists/bookworm/InRelease  Temporary failure resolving 'deb.example.invalid'
+E: Some index files failed to download. They have been ignored, or old ones used instead.

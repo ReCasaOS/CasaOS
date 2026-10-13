@@ -1,0 +1,12 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following packages will be REMOVED:
+  login mount util-linux
+WARNING: The following essential packages will be removed.
+This should NOT be done unless you know exactly what you are doing!
+  login util-linux
+0 upgraded, 0 newly installed, 3 to remove and 0 not upgraded.
+Remv mount [2.36.1-8+deb11u2]
+Remv util-linux [2.36.1-8+deb11u2]
+Remv login [1:4.8.1-1]

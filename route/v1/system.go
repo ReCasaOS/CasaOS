@@ -365,15 +365,22 @@ func PutCasaOSPort(ctx echo.Context) error {
 		})
 }
 
+// exitCore ends the core: os.Exit, and a test's own in its place.
+var exitCore = os.Exit
+
 // @Summary active killing casaos
 // @Produce  application/json
 // @Accept application/json
 // @Tags sys
 // @Security ApiKeyAuth
 // @Success 200 {string} string "ok"
-// @Router /sys/restart [post]
+// @Router /sys/stop [post]
 func PostKillCasaOS(ctx echo.Context) error {
-	os.Exit(0)
+	// os.Exit does not go through the handler of main.go that ends the plan of the upgrade of the operating system that is being
+	// made (it cancels the job, and waits for it to remove the directory it made in /var/tmp): this does the same first, so that
+	// a restart asked for here removes that directory as a signal does
+	service.MyService.System().StopSystemOSPlan(service.OSPlanStopWait)
+	exitCore(0)
 	return nil
 }
 

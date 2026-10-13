@@ -1,0 +1,5 @@
+Err:1 http://deb.debian.org/debian bookworm InRelease
+  Could not connect to 127.0.0.1:9 (127.0.0.1). - connect (111: Connection refused)
+Reading package lists...
+E: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease  Could not connect to 127.0.0.1:9 (127.0.0.1). - connect (111: Connection refused)
+E: Some index files failed to download. They have been ignored, or old ones used instead.

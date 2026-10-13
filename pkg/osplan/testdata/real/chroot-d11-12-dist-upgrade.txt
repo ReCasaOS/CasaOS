@@ -1,0 +1,250 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be REMOVED:
+  libsemanage1
+The following NEW packages will be installed:
+  gcc-12-base libcap2 libffi8 libfile-find-rule-perl libgdbm-compat4 libgdbm6
+  libmd0 libnumber-compare-perl libperl5.36 libsemanage2 libsepol2 libssl3
+  libtext-glob-perl netbase perl perl-modules-5.36 sensible-utils usrmerge
+  util-linux-extra
+The following packages will be upgraded:
+  adduser apt apt-utils base-files base-passwd bash bsdutils ca-certificates
+  coreutils dash debconf debian-archive-keyring debianutils diffutils dpkg
+  e2fsprogs findutils gpgv grep gzip hostname init-system-helpers libacl1
+  libapt-pkg6.0 libattr1 libaudit-common libaudit1 libblkid1 libbz2-1.0
+  libc-bin libc6 libcap-ng0 libcom-err2 libcrypt1 libdb5.3 libdebconfclient0
+  libext2fs2 libgcc-s1 libgcrypt20 libgmp10 libgnutls30 libgpg-error0
+  libgssapi-krb5-2 libhogweed6 libidn2-0 libk5crypto3 libkeyutils1 libkrb5-3
+  libkrb5support0 liblz4-1 liblzma5 libmount1 libnettle8 libp11-kit0
+  libpam-modules libpam-modules-bin libpam-runtime libpam0g libpcre2-8-0
+  libpcre3 libseccomp2 libselinux1 libsemanage-common libsmartcols1 libss2
+  libstdc++6 libsystemd0 libtasn1-6 libtinfo6 libtirpc-common libtirpc3
+  libudev1 libunistring2 libuuid1 libxxhash0 libzstd1 login logsave lsb-base
+  mawk mount ncurses-base ncurses-bin openssl passwd perl-base sed
+  sysvinit-utils tar tzdata util-linux zlib1g
+92 upgraded, 19 newly installed, 1 to remove and 0 not upgraded.
+Inst base-files [11.1+deb11u11] (12.4+deb12u15 Debian:12.15/oldstable [amd64])
+Conf base-files (12.4+deb12u15 Debian:12.15/oldstable [amd64])
+Inst libc6 [2.31-13+deb11u11] (2.36-9+deb12u14 Debian:12.15/oldstable [amd64]) [libc-bin:amd64 ]
+Conf libc6 (2.36-9+deb12u14 Debian:12.15/oldstable [amd64]) [libc-bin:amd64 ]
+Inst libc-bin [2.31-13+deb11u11] (2.36-9+deb12u14 Debian:12.15/oldstable [amd64])
+Conf libc-bin (2.36-9+deb12u14 Debian:12.15/oldstable [amd64])
+Inst gcc-12-base (12.2.0-14+deb12u1 Debian:12.15/oldstable [amd64])
+Conf gcc-12-base (12.2.0-14+deb12u1 Debian:12.15/oldstable [amd64])
+Inst libgcc-s1 [10.2.1-6] (12.2.0-14+deb12u1 Debian:12.15/oldstable [amd64])
+Conf libgcc-s1 (12.2.0-14+deb12u1 Debian:12.15/oldstable [amd64])
+Inst debianutils [4.11.2] (5.7-0.5~deb12u1 Debian:12.15/oldstable [amd64])
+Conf debianutils (5.7-0.5~deb12u1 Debian:12.15/oldstable [amd64])
+Inst bash [5.1-2+deb11u1] (5.2.15-2+b13 Debian:12.15/oldstable [amd64])
+Conf bash (5.2.15-2+b13 Debian:12.15/oldstable [amd64])
+Inst bsdutils [1:2.36.1-8+deb11u2] (1:2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Conf bsdutils (1:2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Inst libgmp10 [2:6.2.1+dfsg-1+deb11u1] (2:6.2.1+dfsg1-1.1 Debian:12.15/oldstable [amd64])
+Conf libgmp10 (2:6.2.1+dfsg1-1.1 Debian:12.15/oldstable [amd64])
+Inst coreutils [8.32-4+b1] (9.1-1 Debian:12.15/oldstable [amd64])
+Conf coreutils (9.1-1 Debian:12.15/oldstable [amd64])
+Inst liblzma5 [5.2.5-2.1~deb11u1] (5.4.1-1+deb12u1 Debian:12.15/oldstable [amd64])
+Conf liblzma5 (5.4.1-1+deb12u1 Debian:12.15/oldstable [amd64])
+Inst libmd0 (1.0.4-2 Debian:12.15/oldstable [amd64])
+Conf libmd0 (1.0.4-2 Debian:12.15/oldstable [amd64])
+Inst libzstd1 [1.4.8+dfsg-2.1] (1.5.4+dfsg2-5 Debian:12.15/oldstable [amd64])
+Conf libzstd1 (1.5.4+dfsg2-5 Debian:12.15/oldstable [amd64])
+Inst tar [1.34+dfsg-1+deb11u1] (1.34+dfsg-1.2+deb12u1 Debian:12.15/oldstable [amd64])
+Conf tar (1.34+dfsg-1.2+deb12u1 Debian:12.15/oldstable [amd64])
+Inst dpkg [1.20.13] (1.21.23 Debian:12.15/oldstable [amd64])
+Conf dpkg (1.21.23 Debian:12.15/oldstable [amd64])
+Inst dash [0.5.11+git20200708+dd9ef66-5] (0.5.12-2 Debian:12.15/oldstable [amd64])
+Conf dash (0.5.12-2 Debian:12.15/oldstable [amd64])
+Inst diffutils [1:3.7-5] (1:3.8-4 Debian:12.15/oldstable [amd64])
+Conf diffutils (1:3.8-4 Debian:12.15/oldstable [amd64])
+Inst findutils [4.8.0-1] (4.9.0-4 Debian:12.15/oldstable [amd64])
+Conf findutils (4.9.0-4 Debian:12.15/oldstable [amd64])
+Inst grep [3.6-1+deb11u1] (3.8-5 Debian:12.15/oldstable [amd64])
+Conf grep (3.8-5 Debian:12.15/oldstable [amd64])
+Inst gzip [1.10-4+deb11u1] (1.12-1 Debian:12.15/oldstable [amd64])
+Conf gzip (1.12-1 Debian:12.15/oldstable [amd64])
+Inst hostname [3.23] (3.23+nmu1 Debian:12.15/oldstable [amd64])
+Conf hostname (3.23+nmu1 Debian:12.15/oldstable [amd64])
+Inst login [1:4.8.1-1] (1:4.13+dfsg1-1+deb12u2 Debian:12.15/oldstable [amd64])
+Conf login (1:4.13+dfsg1-1+deb12u2 Debian:12.15/oldstable [amd64])
+Inst libtinfo6 [6.2+20201114-2+deb11u2] (6.4-4 Debian:12.15/oldstable [amd64]) [ncurses-bin:amd64 on libtinfo6:amd64] [ncurses-bin:amd64 ]
+Conf libtinfo6 (6.4-4 Debian:12.15/oldstable [amd64]) [ncurses-bin:amd64 ]
+Inst ncurses-bin [6.2+20201114-2+deb11u2] (6.4-4 Debian:12.15/oldstable [amd64])
+Conf ncurses-bin (6.4-4 Debian:12.15/oldstable [amd64])
+Inst perl-base [5.32.1-4+deb11u3] (5.36.0-7+deb12u3 Debian:12.15/oldstable [amd64])
+Conf perl-base (5.36.0-7+deb12u3 Debian:12.15/oldstable [amd64])
+Inst sed [4.7-1] (4.9-1+deb12u1 Debian:12.15/oldstable [amd64])
+Conf sed (4.9-1+deb12u1 Debian:12.15/oldstable [amd64])
+Inst libblkid1 [2.36.1-8+deb11u2] (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Conf libblkid1 (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Inst libpcre2-8-0 [10.36-2+deb11u1] (10.42-1 Debian:12.15/oldstable [amd64])
+Conf libpcre2-8-0 (10.42-1 Debian:12.15/oldstable [amd64])
+Inst libselinux1 [3.1-3] (3.4-1+b6 Debian:12.15/oldstable [amd64])
+Conf libselinux1 (3.4-1+b6 Debian:12.15/oldstable [amd64])
+Inst libmount1 [2.36.1-8+deb11u2] (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Conf libmount1 (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Inst libsmartcols1 [2.36.1-8+deb11u2] (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Conf libsmartcols1 (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Inst libaudit-common [1:3.0-2] (1:3.0.9-1 Debian:12.15/oldstable [all])
+Conf libaudit-common (1:3.0.9-1 Debian:12.15/oldstable [all])
+Inst libcap-ng0 [0.7.9-2.2+b1] (0.8.3-1+b3 Debian:12.15/oldstable [amd64])
+Conf libcap-ng0 (0.8.3-1+b3 Debian:12.15/oldstable [amd64])
+Inst libaudit1 [1:3.0-2] (1:3.0.9-1 Debian:12.15/oldstable [amd64])
+Conf libaudit1 (1:3.0.9-1 Debian:12.15/oldstable [amd64])
+Inst util-linux [2.36.1-8+deb11u2] (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64]) []
+Inst util-linux-extra (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Conf util-linux-extra (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Inst libgpg-error0 [1.38-2] (1.46-1 Debian:12.15/oldstable [amd64])
+Conf libgpg-error0 (1.46-1 Debian:12.15/oldstable [amd64])
+Inst libgcrypt20 [1.8.7-6] (1.10.1-3+deb12u1 Debian:12.15/oldstable [amd64])
+Conf libgcrypt20 (1.10.1-3+deb12u1 Debian:12.15/oldstable [amd64])
+Inst libstdc++6 [10.2.1-6] (12.2.0-14+deb12u1 Debian:12.15/oldstable [amd64])
+Conf libstdc++6 (12.2.0-14+deb12u1 Debian:12.15/oldstable [amd64])
+Inst libbz2-1.0 [1.0.8-4] (1.0.8-5+b1 Debian:12.15/oldstable [amd64])
+Conf libbz2-1.0 (1.0.8-5+b1 Debian:12.15/oldstable [amd64])
+Inst liblz4-1 [1.9.3-2] (1.9.4-1 Debian:12.15/oldstable [amd64])
+Conf liblz4-1 (1.9.4-1 Debian:12.15/oldstable [amd64])
+Inst libcap2 (1:2.66-4+deb12u3+b1 Debian:12.15/oldstable [amd64])
+Conf libcap2 (1:2.66-4+deb12u3+b1 Debian:12.15/oldstable [amd64])
+Inst libsystemd0 [247.3-7+deb11u5] (252.39-1~deb12u2 Debian:12.15/oldstable [amd64])
+Conf libsystemd0 (252.39-1~deb12u2 Debian:12.15/oldstable [amd64])
+Inst libudev1 [247.3-7+deb11u5] (252.39-1~deb12u2 Debian:12.15/oldstable [amd64])
+Conf libudev1 (252.39-1~deb12u2 Debian:12.15/oldstable [amd64])
+Inst libxxhash0 [0.8.0-2] (0.8.1-1 Debian:12.15/oldstable [amd64])
+Conf libxxhash0 (0.8.1-1 Debian:12.15/oldstable [amd64])
+Inst zlib1g [1:1.2.11.dfsg-2+deb11u2] (1:1.2.13.dfsg-1 Debian:12.15/oldstable [amd64])
+Conf zlib1g (1:1.2.13.dfsg-1 Debian:12.15/oldstable [amd64])
+Inst libapt-pkg6.0 [2.2.4] (2.6.1 Debian:12.15/oldstable [amd64])
+Conf libapt-pkg6.0 (2.6.1 Debian:12.15/oldstable [amd64])
+Inst libnettle8 [3.7.3-1] (3.8.1-2 Debian:12.15/oldstable [amd64])
+Conf libnettle8 (3.8.1-2 Debian:12.15/oldstable [amd64])
+Inst libhogweed6 [3.7.3-1] (3.8.1-2 Debian:12.15/oldstable [amd64])
+Conf libhogweed6 (3.8.1-2 Debian:12.15/oldstable [amd64])
+Inst libunistring2 [0.9.10-4] (1.0-2 Debian:12.15/oldstable [amd64])
+Conf libunistring2 (1.0-2 Debian:12.15/oldstable [amd64])
+Inst libidn2-0 [2.3.0-5] (2.3.3-1+b1 Debian:12.15/oldstable [amd64])
+Conf libidn2-0 (2.3.3-1+b1 Debian:12.15/oldstable [amd64])
+Inst libffi8 (3.4.4-1 Debian:12.15/oldstable [amd64])
+Conf libffi8 (3.4.4-1 Debian:12.15/oldstable [amd64])
+Inst libp11-kit0 [0.23.22-1] (0.24.1-2 Debian:12.15/oldstable [amd64])
+Conf libp11-kit0 (0.24.1-2 Debian:12.15/oldstable [amd64])
+Inst libtasn1-6 [4.16.0-2+deb11u1] (4.19.0-2+deb12u1 Debian:12.15/oldstable [amd64])
+Conf libtasn1-6 (4.19.0-2+deb12u1 Debian:12.15/oldstable [amd64])
+Inst libgnutls30 [3.7.1-5+deb11u5] (3.7.9-2+deb12u7 Debian:12.15/oldstable [amd64])
+Conf libgnutls30 (3.7.9-2+deb12u7 Debian:12.15/oldstable [amd64])
+Inst libdb5.3 [5.3.28+dfsg1-0.8] (5.3.28+dfsg2-1 Debian:12.15/oldstable [amd64])
+Conf libdb5.3 (5.3.28+dfsg2-1 Debian:12.15/oldstable [amd64])
+Inst apt [2.2.4] (2.6.1 Debian:12.15/oldstable [amd64]) [apt-utils:amd64 ]
+Conf apt (2.6.1 Debian:12.15/oldstable [amd64]) [apt-utils:amd64 ]
+Inst apt-utils [2.2.4] (2.6.1 Debian:12.15/oldstable [amd64])
+Inst libsemanage-common [3.1-1] (3.4-1 Debian:12.15/oldstable [all]) [libsemanage1:amd64 ]
+Conf libsemanage-common (3.4-1 Debian:12.15/oldstable [all]) [libsemanage1:amd64 ]
+Inst libsepol2 (3.4-2.1 Debian:12.15/oldstable [amd64]) [libsemanage1:amd64 ]
+Conf libsepol2 (3.4-2.1 Debian:12.15/oldstable [amd64]) [libsemanage1:amd64 ]
+Inst libsemanage2 (3.4-1+b5 Debian:12.15/oldstable [amd64]) [libsemanage1:amd64 ]
+Conf libsemanage2 (3.4-1+b5 Debian:12.15/oldstable [amd64]) [libsemanage1:amd64 ]
+Inst passwd [1:4.8.1-1] (1:4.13+dfsg1-1+deb12u2 Debian:12.15/oldstable [amd64]) [libsemanage1:amd64 ]
+Conf passwd (1:4.13+dfsg1-1+deb12u2 Debian:12.15/oldstable [amd64]) [libsemanage1:amd64 ]
+Remv libsemanage1 [3.1-1+b2]
+Inst debconf [1.5.77] (1.5.82 Debian:12.15/oldstable [all])
+Conf debconf (1.5.82 Debian:12.15/oldstable [all])
+Inst libpam0g [1.4.0-9+deb11u1] (1.5.2-6+deb12u2 Debian:12.15/oldstable [amd64])
+Conf libpam0g (1.5.2-6+deb12u2 Debian:12.15/oldstable [amd64])
+Inst libcrypt1 [1:4.4.18-4] (1:4.4.33-2 Debian:12.15/oldstable [amd64])
+Conf libcrypt1 (1:4.4.33-2 Debian:12.15/oldstable [amd64])
+Inst libpam-modules-bin [1.4.0-9+deb11u1] (1.5.2-6+deb12u2 Debian:12.15/oldstable [amd64]) [libpam-modules:amd64 on libpam-modules-bin:amd64] [libpam-modules:amd64 ]
+Conf libpam-modules-bin (1.5.2-6+deb12u2 Debian:12.15/oldstable [amd64]) [libpam-modules:amd64 ]
+Inst libpam-modules [1.4.0-9+deb11u1] (1.5.2-6+deb12u2 Debian:12.15/oldstable [amd64])
+Conf libpam-modules (1.5.2-6+deb12u2 Debian:12.15/oldstable [amd64])
+Inst adduser [3.118+deb11u1] (3.134 Debian:12.15/oldstable [all])
+Conf adduser (3.134 Debian:12.15/oldstable [all])
+Inst gpgv [2.2.27-2+deb11u2] (2.2.40-1.1+deb12u2 Debian:12.15/oldstable [amd64])
+Conf gpgv (2.2.40-1.1+deb12u2 Debian:12.15/oldstable [amd64])
+Inst debian-archive-keyring [2021.1.1+deb11u1] (2023.3+deb12u2 Debian:12.15/oldstable [all])
+Conf debian-archive-keyring (2023.3+deb12u2 Debian:12.15/oldstable [all])
+Inst libseccomp2 [2.5.1-1+deb11u1] (2.5.4-1+deb12u1 Debian:12.15/oldstable [amd64])
+Conf libseccomp2 (2.5.4-1+deb12u1 Debian:12.15/oldstable [amd64])
+Inst libdebconfclient0 [0.260] (0.270 Debian:12.15/oldstable [amd64])
+Conf libdebconfclient0 (0.270 Debian:12.15/oldstable [amd64])
+Inst base-passwd [3.5.51] (3.6.1 Debian:12.15/oldstable [amd64])
+Conf base-passwd (3.6.1 Debian:12.15/oldstable [amd64])
+Inst perl-modules-5.36 (5.36.0-7+deb12u3 Debian:12.15/oldstable [all])
+Inst libgdbm6 (1.23-3 Debian:12.15/oldstable [amd64])
+Inst libgdbm-compat4 (1.23-3 Debian:12.15/oldstable [amd64])
+Inst libperl5.36 (5.36.0-7+deb12u3 Debian:12.15/oldstable [amd64])
+Inst perl (5.36.0-7+deb12u3 Debian:12.15/oldstable [amd64])
+Inst libnumber-compare-perl (0.03-3 Debian:12.15/oldstable [all])
+Conf libnumber-compare-perl (0.03-3 Debian:12.15/oldstable [all])
+Inst libtext-glob-perl (0.11-3 Debian:12.15/oldstable [all])
+Conf libtext-glob-perl (0.11-3 Debian:12.15/oldstable [all])
+Inst libfile-find-rule-perl (0.34-4~deb12u1 Debian:12.15/oldstable [all])
+Conf perl-modules-5.36 (5.36.0-7+deb12u3 Debian:12.15/oldstable [all])
+Conf libgdbm6 (1.23-3 Debian:12.15/oldstable [amd64])
+Conf libgdbm-compat4 (1.23-3 Debian:12.15/oldstable [amd64])
+Conf libperl5.36 (5.36.0-7+deb12u3 Debian:12.15/oldstable [amd64])
+Conf perl (5.36.0-7+deb12u3 Debian:12.15/oldstable [amd64])
+Conf libfile-find-rule-perl (0.34-4~deb12u1 Debian:12.15/oldstable [all])
+Inst usrmerge (37~deb12u1 Debian:12.15/oldstable [all])
+Conf usrmerge (37~deb12u1 Debian:12.15/oldstable [all])
+Inst init-system-helpers [1.60] (1.65.2+deb12u1 Debian:12.15/oldstable [all])
+Conf init-system-helpers (1.65.2+deb12u1 Debian:12.15/oldstable [all])
+Inst ncurses-base [6.2+20201114-2+deb11u2] (6.4-4 Debian:12.15/oldstable [all])
+Conf ncurses-base (6.4-4 Debian:12.15/oldstable [all])
+Inst lsb-base [11.1.0] (11.6 Debian:12.15/oldstable [all]) []
+Inst sysvinit-utils [2.96-7+deb11u1] (3.06-4 Debian:12.15/oldstable [amd64])
+Conf sysvinit-utils (3.06-4 Debian:12.15/oldstable [amd64])
+Inst logsave [1.46.2-2] (1.47.0-2+b2 Debian:12.15/oldstable [amd64])
+Inst libext2fs2 [1.46.2-2] (1.47.0-2+b2 Debian:12.15/oldstable [amd64]) [e2fsprogs:amd64 on libext2fs2:amd64] [e2fsprogs:amd64 ]
+Conf libext2fs2 (1.47.0-2+b2 Debian:12.15/oldstable [amd64]) [e2fsprogs:amd64 ]
+Inst e2fsprogs [1.46.2-2] (1.47.0-2+b2 Debian:12.15/oldstable [amd64])
+Inst mount [2.36.1-8+deb11u2] (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Inst libpam-runtime [1.4.0-9+deb11u1] (1.5.2-6+deb12u2 Debian:12.15/oldstable [all])
+Conf libpam-runtime (1.5.2-6+deb12u2 Debian:12.15/oldstable [all])
+Inst libacl1 [2.2.53-10] (2.3.1-3 Debian:12.15/oldstable [amd64])
+Conf libacl1 (2.3.1-3 Debian:12.15/oldstable [amd64])
+Inst libattr1 [1:2.4.48-6] (1:2.5.1-4 Debian:12.15/oldstable [amd64])
+Conf libattr1 (1:2.5.1-4 Debian:12.15/oldstable [amd64])
+Inst libpcre3 [2:8.39-13] (2:8.39-15 Debian:12.15/oldstable [amd64])
+Conf libpcre3 (2:8.39-15 Debian:12.15/oldstable [amd64])
+Inst libuuid1 [2.36.1-8+deb11u2] (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Conf libuuid1 (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Inst mawk [1.3.4.20200120-2] (1.3.4.20200120-3.1 Debian:12.15/oldstable [amd64])
+Inst tzdata [2024a-0+deb11u1] (2026b-0+deb12u1 Debian:12.15/oldstable [all])
+Inst netbase (6.4 Debian:12.15/oldstable [all])
+Inst sensible-utils (0.0.17+nmu1 Debian:12.15/oldstable [all])
+Inst libssl3 (3.0.20-1~deb12u2 Debian:12.15/oldstable [amd64])
+Inst openssl [1.1.1w-0+deb11u1] (3.0.20-1~deb12u2 Debian:12.15/oldstable [amd64])
+Inst ca-certificates [20210119] (20230311+deb12u1 Debian:12.15/oldstable [all])
+Inst libcom-err2 [1.46.2-2] (1.47.0-2+b2 Debian:12.15/oldstable [amd64])
+Inst libgssapi-krb5-2 [1.18.3-6+deb11u5] (1.20.1-2+deb12u5 Debian:12.15/oldstable [amd64]) []
+Inst libkrb5-3 [1.18.3-6+deb11u5] (1.20.1-2+deb12u5 Debian:12.15/oldstable [amd64]) []
+Inst libk5crypto3 [1.18.3-6+deb11u5] (1.20.1-2+deb12u5 Debian:12.15/oldstable [amd64]) []
+Inst libkrb5support0 [1.18.3-6+deb11u5] (1.20.1-2+deb12u5 Debian:12.15/oldstable [amd64])
+Inst libkeyutils1 [1.6.1-2] (1.6.3-2 Debian:12.15/oldstable [amd64])
+Inst libss2 [1.46.2-2] (1.47.0-2+b2 Debian:12.15/oldstable [amd64])
+Inst libtirpc-common [1.3.1-1+deb11u1] (1.3.3+ds-1 Debian:12.15/oldstable [all])
+Inst libtirpc3 [1.3.1-1+deb11u1] (1.3.3+ds-1 Debian:12.15/oldstable [amd64])
+Conf util-linux (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Conf apt-utils (2.6.1 Debian:12.15/oldstable [amd64])
+Conf lsb-base (11.6 Debian:12.15/oldstable [all])
+Conf logsave (1.47.0-2+b2 Debian:12.15/oldstable [amd64])
+Conf e2fsprogs (1.47.0-2+b2 Debian:12.15/oldstable [amd64])
+Conf mount (2.38.1-5+deb12u3 Debian:12.15/oldstable [amd64])
+Conf mawk (1.3.4.20200120-3.1 Debian:12.15/oldstable [amd64])
+Conf tzdata (2026b-0+deb12u1 Debian:12.15/oldstable [all])
+Conf netbase (6.4 Debian:12.15/oldstable [all])
+Conf sensible-utils (0.0.17+nmu1 Debian:12.15/oldstable [all])
+Conf libssl3 (3.0.20-1~deb12u2 Debian:12.15/oldstable [amd64])
+Conf openssl (3.0.20-1~deb12u2 Debian:12.15/oldstable [amd64])
+Conf ca-certificates (20230311+deb12u1 Debian:12.15/oldstable [all])
+Conf libcom-err2 (1.47.0-2+b2 Debian:12.15/oldstable [amd64])
+Conf libgssapi-krb5-2 (1.20.1-2+deb12u5 Debian:12.15/oldstable [amd64])
+Conf libkrb5-3 (1.20.1-2+deb12u5 Debian:12.15/oldstable [amd64])
+Conf libk5crypto3 (1.20.1-2+deb12u5 Debian:12.15/oldstable [amd64])
+Conf libkrb5support0 (1.20.1-2+deb12u5 Debian:12.15/oldstable [amd64])
+Conf libkeyutils1 (1.6.3-2 Debian:12.15/oldstable [amd64])
+Conf libss2 (1.47.0-2+b2 Debian:12.15/oldstable [amd64])
+Conf libtirpc-common (1.3.3+ds-1 Debian:12.15/oldstable [all])
+Conf libtirpc3 (1.3.3+ds-1 Debian:12.15/oldstable [amd64])
