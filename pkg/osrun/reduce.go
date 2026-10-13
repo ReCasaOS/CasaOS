@@ -485,7 +485,7 @@ func (c *ctx) systemdSilent() bool {
 // of life lately, or it is gone but spoke a moment ago (systemd can say so before the last line lands).
 func (c *ctx) active() bool {
 	a := c.a
-	if !a.open() {
+	if a == nil || !a.open() {
 		return false
 	}
 	return c.in.Unit.Active || !c.in.Unit.Answered || a.Started && c.age(c.la) < c.tm.GraceQuiet

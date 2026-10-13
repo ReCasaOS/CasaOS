@@ -272,3 +272,30 @@ func TestARunThatIsNotDecidedGoesOnWhenTheNextAttemptIsWritten(t *testing.T) {
 		}
 	}
 }
+
+func TestWhatIsWrittenAfterTheOwnersCloseDoesNotOpenTheRunAgain(t *testing.T) {
+	l := hopInBlock(t, BlockFull).add(Marker{Kind: MkAck, Result: "acknowledge"})
+	for _, m := range strays() {
+		m.At = l.clock
+		l.add(m)
+	}
+	in := running(l.input())
+	if s := reduced(t, in); s.Name != StateIdle || !s.Closed || s.Busy {
+		t.Errorf("%+v", s)
+	}
+}
+
+// NextAction is handed the state that Reduce gave for the same input; handed another it must still do no harm.
+func TestNextActionIsSafeForAStateThatIsNotTheInputs(t *testing.T) {
+	inputs := []Input{{}, hopInBlock(t, BlockFull).input(), hopVerified(t).input(), newLog(t, RunHop).input()}
+	for _, in := range inputs {
+		for _, name := range States {
+			for _, s := range []State{{Name: name}, {Name: name, PNR: true, Resumable: true, Class: ClassNetwork}, {Name: name, Closed: true}} {
+				a := NextAction(s, in)
+				if !isOneOf([]string{DoNone, DoUnwind, DoLaunchVerify, DoLaunchRecover, DoJudge, DoBarrier, DoRemind, DoCleanup, DoAlert}, a.Kind) {
+					t.Errorf("%s: %+v", name, a)
+				}
+			}
+		}
+	}
+}

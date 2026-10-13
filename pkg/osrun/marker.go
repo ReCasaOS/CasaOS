@@ -52,7 +52,8 @@ var MarkerKinds = []string{
 }
 
 // ErrMarkersTooLarge is what ParseMarkers answers, with what it read, when the file is longer than it reads: a run's
-// story is a few kilobytes, and one that is not is not to be trusted to say how it ended.
+// story is a few kilobytes, and one that is not is not to be trusted to say how it ended. A caller that gets it reduces
+// what it was given with Input.Damaged set.
 var ErrMarkersTooLarge = errors.New("the log of the upgrade is longer than it can be")
 
 // A Marker is one valid line of the log. Only the fields its Kind has are set; the others are empty. A field that the

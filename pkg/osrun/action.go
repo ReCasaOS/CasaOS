@@ -222,7 +222,7 @@ func (c *ctx) relaunchVerify() Action {
 
 // afterInterruption is what follows a unit that was lost: its check again, its undoing, or the owner's word.
 func (c *ctx) afterInterruption(s State) Action {
-	if !c.canLaunch() {
+	if c.a == nil || !c.canLaunch() {
 		return Action{Kind: DoNone}
 	}
 	switch {
