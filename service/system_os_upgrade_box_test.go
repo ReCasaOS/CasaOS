@@ -63,6 +63,7 @@ func newUpgradeBox(t *testing.T) *upgradeBox {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		b.started = append(b.started, append([]string{path, unit}, args...))
+		b.commands = append(b.commands, "systemd-run "+unit)
 		return []byte("systemd-run said something"), b.startErr
 	}
 	b.systemService = &systemService{packageUpdates: b.updater}

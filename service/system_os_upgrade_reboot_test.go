@@ -45,6 +45,21 @@ func (b *upgradeBox) aMachineThatRestarts(run *osUpgradeRun, failWith error) *wh
 	return told
 }
 
+// aMachineThatRestartsWith is aMachineThatRestarts that only says what it was told, and not what the log held when it was.
+func (b *upgradeBox) aMachineThatRestartsWith(failWith error) *whatTheMachineWasToldToDo {
+	b.t.Helper()
+	told := &whatTheMachineWasToldToDo{}
+	wasSync, wasPower := osUpgradeSync, osUpgradePowerAction
+	osUpgradeSync = func() { told.add("sync") }
+	osUpgradePowerAction = func(action string) error {
+		told.add(action)
+		return failWith
+	}
+	b.t.Cleanup(func() { osUpgradeSync, osUpgradePowerAction = wasSync, wasPower })
+	b.updater.dpkgLocked = func() bool { return false }
+	return told
+}
+
 func lastWordOf(run *osUpgradeRun) string {
 	return run.Markers[len(run.Markers)-1].Kind
 }

@@ -750,3 +750,52 @@ func waitFor(t *testing.T, done func() bool, what string) {
 	}
 	t.Fatalf("%s did not come", what)
 }
+
+// A power cut before the point of no return: the timers of apt came back with the boot, and are stopped before the undoing starts, so that it is not apt that changes the
+// machine under it.
+func TestAPowerCutBeforeThePointOfNoReturnStopsTheTimersAndThenUnwinds(t *testing.T) {
+	box := newUpgradeBox(t)
+	run := box.aHopThatWasLost()
+	box.own(run, osrun.StateRunning)
+	box.setBoot(boxBoot2)
+	box.setActive("apt-daily.timer", "active")
+	box.setActive("apt-daily-upgrade.timer", "active")
+
+	tick := box.tick()
+	if tick.Action != osrun.DoUnwind || len(tick.Done) != 1 {
+		t.Fatalf("the look says %+v", tick)
+	}
+	order := box.commandsWith("")
+	stops, launch := -1, -1
+	for i, c := range order {
+		switch {
+		case c == "systemctl stop apt-daily.timer" && stops < 0:
+			stops = i
+		case strings.HasPrefix(c, "systemd-run") && launch < 0:
+			launch = i
+		}
+	}
+	if stops < 0 || launch < 0 || stops > launch {
+		t.Errorf("the timers were stopped at %d and the unwind was started at %d: %q", stops, launch, order)
+	}
+	if got := markersOfKind(box.read(run.ID), osrun.MkBootSeen); len(got) != 1 {
+		t.Errorf("the log says %+v", got)
+	}
+}
+
+// A rehearsal that the machine's restart cut short is put back, and the timers that came back with the boot are stopped first.
+func TestARehearsalThatWasRestartedHasItsTimersStoppedBeforeItIsPutBack(t *testing.T) {
+	box := newUpgradeBox(t)
+	run := box.aRehearsal()
+	box.own(run, osrun.StateRehearsed)
+	box.setBoot(boxBoot2)
+	box.setActive("unattended-upgrades.service", "active")
+
+	box.tick()
+	if got := box.commandsWith("systemctl stop unattended-upgrades.service"); len(got) != 1 {
+		t.Errorf("the units that were stopped: %q", box.commandsWith("systemctl stop"))
+	}
+	if got := box.attemptsOf(run); len(got) != 2 || got[1].Phase != osrun.PhaseUnwind {
+		t.Errorf("the attempts are %+v", got)
+	}
+}
