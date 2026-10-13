@@ -55,7 +55,7 @@ func TestTheRunFolderHoldsWhatTheUnitAndTheOwnerNeed(t *testing.T) {
 		t.Error("manual-runbook.sh is not the owner's text for the plan")
 	}
 	var meta osUpgradeRunMeta
-	if err := json.Unmarshal([]byte(readText(t, filepath.Join(dir, "run.json"))), &meta); err != nil || meta != run.Meta || meta.Kind != osrun.RunHop || meta.PlanID != plan.PlanID {
+	if err := json.Unmarshal([]byte(readText(t, filepath.Join(dir, "run.json"))), &meta); err != nil || !reflect.DeepEqual(meta, run.Meta) || meta.Kind != osrun.RunHop || meta.PlanID != plan.PlanID {
 		t.Errorf("run.json = %+v, %v", meta, err)
 	}
 	for _, name := range []string{"facts-before.json", "plan.json"} {

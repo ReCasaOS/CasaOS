@@ -155,7 +155,7 @@ func (b *upgradeBox) aRun(plan *osplan.Plan, kind string) *osUpgradeRun {
 	spec := osUpgradeRunSpec{
 		Meta: osUpgradeRunMeta{
 			RunID: runID, Kind: kind, Hop: plan.Hop, PlanID: plan.PlanID, SafetyNet: "snapshot",
-			BK: osUpgradeUnitBackups + "/casaos-os-upgrade-" + plan.PlanID, CreatedAt: b.now(),
+			BK: osUpgradeUnitBackups + "/casaos-os-upgrade-" + plan.PlanID, CreatedAt: b.now(), Blocks: osUpgradeBlockInfos(auto.Blocks, auto.Forward),
 		},
 		Driver: osrun.Driver, Blocks: auto.Blocks, Forward: auto.Forward, Plan: planJSON, Manual: manual.Text,
 		Facts: osverify.Facts{Taken: true, At: b.now(), DpkgQuiet: true},

@@ -86,6 +86,23 @@ type osUpgradeRunMeta struct {
 	// BK is the backup folder as the unit knows it.
 	BK        string    `json:"bk_path"`
 	CreatedAt time.Time `json:"created_at"`
+	// Blocks are the blocks of the run as the page lists them: the id and the title of each, the repair block last.
+	Blocks []osUpgradeBlockInfo `json:"blocks"`
+}
+
+// osUpgradeBlockInfo is a block of a run, for the page.
+type osUpgradeBlockInfo struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// osUpgradeBlockInfos are the blocks of a text of the unit, in the order of its list and the repair block last.
+func osUpgradeBlockInfos(blocks []osplan.AutoBlock, forward osplan.AutoBlock) []osUpgradeBlockInfo {
+	var out []osUpgradeBlockInfo
+	for _, b := range append(slices.Clone(blocks), forward) {
+		out = append(out, osUpgradeBlockInfo{ID: b.ID, Title: b.Title})
+	}
+	return out
 }
 
 func (m osUpgradeRunMeta) valid(dirName string) bool {

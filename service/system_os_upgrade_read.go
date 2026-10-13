@@ -177,14 +177,8 @@ func (u *systemPackageUpdater) osUpgradeUnit() osrun.Unit {
 // The two results that the core's own settling writes, and that the reducer reads back: whether the machine may be restarted, and what the judge found after the
 // restart. They are in the run folder, written whole, and what is not there has not been computed.
 type osUpgradeBarrierDoc struct {
-	OK     bool                    `json:"ok"`
-	Checks []osUpgradeBarrierCheck `json:"checks"`
-}
-
-type osUpgradeBarrierCheck struct {
-	Code     string `json:"code"`
-	OK       bool   `json:"ok"`
-	Severity string `json:"severity"`
+	OK     bool                   `json:"ok"`
+	Checks []OSUpgradeBarrierItem `json:"checks"`
 }
 
 type osUpgradeVerifyDoc struct {
