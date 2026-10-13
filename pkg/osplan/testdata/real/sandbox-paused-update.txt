@@ -1,0 +1,14 @@
+Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+Get:2 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+Get:3 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Get:4 http://deb.debian.org/debian bookworm/main Sources [9492 kB]
+Get:5 http://deb.debian.org/debian bookworm/main amd64 Packages [8790 kB]
+Get:6 http://deb.debian.org/debian bookworm/main Translation-en [6107 kB]
+Get:7 http://deb.debian.org/debian-security bookworm-security/main Sources [271 kB]
+Get:8 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [349 kB]
+Get:9 http://deb.debian.org/debian-security bookworm-security/main Translation-en [218 kB]
+Get:10 http://deb.debian.org/debian bookworm-updates/main Sources [3288 B]
+Get:11 http://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
+Get:12 http://deb.debian.org/debian bookworm-updates/main Translation-en [5448 B]
+Fetched 25.5 MB in 3s (8812 kB/s)
+Reading package lists...

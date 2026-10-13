@@ -1,0 +1,27 @@
+Ign:1 http://192.0.2.1/debian bookworm InRelease
+Ign:2 http://192.0.2.1/debian bookworm Release
+Ign:3 http://192.0.2.1/debian bookworm/main amd64 Packages
+Ign:4 http://192.0.2.1/debian bookworm/main all Packages
+Ign:5 http://192.0.2.1/debian bookworm/main Translation-en
+Ign:3 http://192.0.2.1/debian bookworm/main amd64 Packages
+Ign:4 http://192.0.2.1/debian bookworm/main all Packages
+Ign:5 http://192.0.2.1/debian bookworm/main Translation-en
+Ign:3 http://192.0.2.1/debian bookworm/main amd64 Packages
+Ign:4 http://192.0.2.1/debian bookworm/main all Packages
+Ign:5 http://192.0.2.1/debian bookworm/main Translation-en
+Ign:3 http://192.0.2.1/debian bookworm/main amd64 Packages
+Ign:4 http://192.0.2.1/debian bookworm/main all Packages
+Ign:5 http://192.0.2.1/debian bookworm/main Translation-en
+Ign:3 http://192.0.2.1/debian bookworm/main amd64 Packages
+Ign:4 http://192.0.2.1/debian bookworm/main all Packages
+Ign:5 http://192.0.2.1/debian bookworm/main Translation-en
+Ign:3 http://192.0.2.1/debian bookworm/main amd64 Packages
+Ign:4 http://192.0.2.1/debian bookworm/main all Packages
+Ign:5 http://192.0.2.1/debian bookworm/main Translation-en
+Err:3 http://192.0.2.1/debian bookworm/main amd64 Packages
+  Cannot initiate the connection to 192.0.2.1:80 (192.0.2.1). - connect (101: Network is unreachable)
+Ign:4 http://192.0.2.1/debian bookworm/main all Packages
+Ign:5 http://192.0.2.1/debian bookworm/main Translation-en
+Reading package lists...
+E: Failed to fetch http://192.0.2.1/debian/dists/bookworm/main/binary-amd64/Packages  Cannot initiate the connection to 192.0.2.1:80 (192.0.2.1). - connect (101: Network is unreachable)
+E: Some index files failed to download. They have been ignored, or old ones used instead.
