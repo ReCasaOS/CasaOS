@@ -10,8 +10,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
@@ -109,6 +112,17 @@ func main() {
 	if *versionFlag {
 		return
 	}
+
+	// The plan of the upgrade of the operating system makes a directory in /var/tmp and removes it when it ends. The one that a
+	// core did not live to end left its directory behind: those older than ten minutes are removed now, and the end of this
+	// core removes the one it has.
+	removed, err := service.RemoveStaleOSPlanDirs()
+	if err != nil {
+		logger.Error("the directories of plans that did not end could not all be removed", zap.Error(err), zap.Strings("removed", removed))
+	} else if len(removed) > 0 {
+		logger.Info("removed the directories of plans that did not end", zap.Strings("removed", removed))
+	}
+	go stopThePlanWhenTheCoreIsToldToStop()
 
 	// The installer's --no-telemetry leaves a marker: fold it into
 	// telemetry.json before the API serves and before the first check. If it
@@ -295,6 +309,29 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+// sigintIgnoredAtStart says whether SIGINT was ignored when the process began (the job of a shell that is sent to the background
+// is): it is looked at here, where nothing of the core can have listened to it yet, since listening to a signal that was ignored
+// makes it one that is no longer.
+var sigintIgnoredAtStart = signal.Ignored(syscall.SIGINT)
+
+// stopThePlanWhenTheCoreIsToldToStop cancels the plan that is being made when the core is told to stop (SIGTERM, and SIGINT
+// unless the core was started ignoring it), and waits a few seconds for it to remove the directory it made in /var/tmp; then it
+// lets the signal end the core as it would have: nothing else of how the core stops is changed.
+func stopThePlanWhenTheCoreIsToldToStop() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, service.OSPlanStopSignals(sigintIgnoredAtStart)...)
+	received := <-signals
+	service.MyService.System().StopSystemOSPlan(service.OSPlanStopWait)
+	// the default again, and the signal again
+	signal.Stop(signals)
+	if number, ok := received.(syscall.Signal); ok {
+		_ = syscall.Kill(os.Getpid(), number)
+		time.Sleep(time.Second)
+		os.Exit(128 + int(number))
+	}
+	os.Exit(1)
 }
 
 // lastDockerRun is the last run of the Docker update as the alerts tell it, read from the run's

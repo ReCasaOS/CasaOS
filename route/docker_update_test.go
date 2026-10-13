@@ -128,10 +128,7 @@ func (f fakeUpdateRepository) System() service.SystemService { return f.system }
 // The real router, with real tokens: the key is served by a user-service of the test's.
 func TestTheDockerUpdateStartsOnlyForTheAccessTokenInTheHeader(t *testing.T) {
 	runtimePath := t.TempDir()
-	private, public, err := jwt.GenerateKeyPair()
-	if err != nil {
-		t.Fatal(err)
-	}
+	private, public := signingKeys(t)
 	jwks, err := jwt.GenerateJwksJSON(public)
 	if err != nil {
 		t.Fatal(err)

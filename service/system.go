@@ -23,6 +23,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
@@ -71,6 +72,19 @@ type SystemService interface {
 	// GetSystemOSReadiness is the report of whether the box could be upgraded to the next release of
 	// its operating system, and why not: it only reads, and takes up to twenty seconds.
 	GetSystemOSReadiness() osreadiness.Answer
+	// StartSystemOSPlan starts the job that makes the plan of the upgrade of the operating system: what apt would
+	// do, in a sandbox, with the machine unchanged. A job that runs is the answer (AlreadyRunning) and none is
+	// started; an *OSPlanRefusal says why none was.
+	StartSystemOSPlan() (SystemOSPlanStatus, error)
+	// GetSystemOSPlan says how the plan is going, or how it went, and whether one can be made: it runs no apt
+	// and waits for no lock.
+	GetSystemOSPlan() SystemOSPlanStatus
+	// GetSystemOSRunbook is the text with which to do the hop by hand, written from the plan that is there; an
+	// *OSPlanRefusal says why there is none.
+	GetSystemOSRunbook() (*osplan.Runbook, error)
+	// StopSystemOSPlan cancels the plan that is being made, and waits (no longer than wait) for it to have
+	// removed its directory: the core's end.
+	StopSystemOSPlan(wait time.Duration)
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()
@@ -104,6 +118,8 @@ type SystemService interface {
 }
 type systemService struct {
 	packageUpdates *systemPackageUpdater
+	// osPlan is the job that makes the plan of the upgrade of the operating system.
+	osPlan osPlanJob
 }
 
 func (c *systemService) GetDeviceInfo() model.DeviceInfo {
