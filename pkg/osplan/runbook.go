@@ -46,6 +46,10 @@ import (
 // simulation before it runs the real command; and every block stops once block 8 has ended, whichever plan of the machine ended it, and when
 // the machine is no longer Debian 11 although this plan did not begin the upgrade of its packages (another plan, or the owner, took it on).
 
+// The same blocks are written a second time for the unit of the dashboard (BuildAuto, auto.go): every place where the unit differs from a person at a terminal is a method of rbCtx
+// (prologue, typedHostname, acceptRemovals, confirm, muxAtHand, survive, aptq, syncAfterMarker, dockerAnswers) that writes the owner's text when c.auto is nil, so that the text
+// of the owner's runbook does not change by one byte for it.
+
 // The reasons there is no runbook for a plan.
 var (
 	// ErrNoRunbook: the plan has none (it is blocked, or is not for a hop that has a runbook, or has no tree).
@@ -88,6 +92,11 @@ type rbCtx struct {
 	hop  HopSpec
 	// manual are the names of the removals that the owner has to accept
 	manual []string
+	// auto is set when the text is the one that the unit of the dashboard runs (BuildAuto): the hooks of auto.go change what they write for it, and
+	// write exactly what the owner's text has when it is nil. cur is the block being written and fired counts the hooks that went off in it.
+	auto  *AutoParams
+	cur   string
+	fired map[string]int
 }
 
 type blockSpec struct {
@@ -102,6 +111,12 @@ var runbookHops = map[osreadiness.HopID][]blockSpec{
 	osreadiness.HopDebian11to12: debian11to12Blocks,
 }
 
+// backupFoldersScopedByHop says whether head() and otherPlans() look only at the backup folders of their own hop. They do not: they look at every
+// /var/backups/casaos-os-upgrade-* folder, which is right while there is one hop (a second hop's folder is a folder of another plan of this machine, as far as the
+// first hop's blocks can tell, and would stop them for the wrong reason). A second row of runbookHops makes TestASecondHopNeedsTheBackupFoldersScopedByHop fail until
+// the folders are told apart by hop and this is true.
+const backupFoldersScopedByHop = false
+
 // the markers of a block, which the tests and the page look for
 const (
 	blockStart = "# >>> BLOCK "
@@ -111,19 +126,18 @@ const (
 // shQ is s as one word of a shell, in single quotes.
 func shQ(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// BuildRunbook writes the runbook of a plan. It is refused (ErrNoRunbook) for a plan that is blocked, which has no runbook
-// (its problems say why), and ErrRunbookUnsafe when a line of the tree has the word that ends a heredoc.
-func BuildRunbook(p Plan) (*Runbook, error) {
+// newRbCtx is what the text of a plan is written from, and the blocks of its hop: the refusals that both texts (the owner's, and the unit's of BuildAuto) share.
+func newRbCtx(p Plan) (*rbCtx, []blockSpec, error) {
 	hop, ok := PlannedHop(osreadiness.HopID(p.Hop))
 	blocks := runbookHops[osreadiness.HopID(p.Hop)]
 	switch {
 	case p.Verdict == VerdictBlocked, !ok, len(blocks) == 0, len(p.Sources.Tree) == 0, !ValidPlanID(p.PlanID):
-		return nil, ErrNoRunbook
+		return nil, nil, ErrNoRunbook
 	}
 	for _, f := range p.Sources.Tree {
 		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK"} {
 			if strings.Contains(f.Content, bad) {
-				return nil, ErrRunbookUnsafe
+				return nil, nil, ErrRunbookUnsafe
 			}
 		}
 	}
@@ -134,6 +148,16 @@ func BuildRunbook(p Plan) (*Runbook, error) {
 				c.manual = append(c.manual, name)
 			}
 		}
+	}
+	return c, blocks, nil
+}
+
+// BuildRunbook writes the runbook of a plan. It is refused (ErrNoRunbook) for a plan that is blocked, which has no runbook
+// (its problems say why), and ErrRunbookUnsafe when a line of the tree has the word that ends a heredoc.
+func BuildRunbook(p Plan) (*Runbook, error) {
+	c, blocks, err := newRbCtx(p)
+	if err != nil {
+		return nil, err
 	}
 	var b strings.Builder
 	b.WriteString(runbookHeader(c))
@@ -369,9 +393,12 @@ const timerUnits = "apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.
 
 // shTimers stops the timers of apt and unattended-upgrades that run, and stops the block when one stays up. Block 1 does it first (after writing down
 // their state); blocks 3, 5 and 6 do it again, because the timers are enabled units and a restart in the middle of the hop brings them back.
-func shTimers() string {
+func shTimers() string { return shTimersOf(timerUnits) }
+
+// shTimersOf is shTimers for the units that it is given: the repair block of the unit stops the five units that the table at the end names.
+func shTimersOf(units string) string {
 	return shLines(
-		"for unit in "+timerUnits+"; do",
+		"for unit in "+units+"; do",
 		`  if [ "$(systemctl is-active "$unit" 2>/dev/null || true)" = active ]; then systemctl stop "$unit"; fi`,
 		`  [ "$(systemctl is-active "$unit" 2>/dev/null || true)" != active ] || `+stop("$unit is still running: stop it (systemctl stop $unit), then run this block again."),
 		"done",
@@ -464,7 +491,7 @@ func indentBy(s, pad string) string {
 // plan, or the owner by hand, took it on. When this plan has begun, the machine turns Debian 12 as base-files is upgraded, and the blocks from there must run. Block 0 has its own
 // words for a machine that is not Debian 11.
 func head(c *rbCtx, prev string) string {
-	s := shHead + "BK=/var/backups/casaos-os-upgrade-" + c.plan.PlanID + "\n"
+	s := shHead + c.prologue() + "BK=/var/backups/casaos-os-upgrade-" + c.plan.PlanID + "\n"
 	s += `[ ! -e "$BK/done-after" ] || { echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }` + "\n"
 	s += shLines(
 		`for fin in /var/backups/casaos-os-upgrade-*; do`,
@@ -770,8 +797,8 @@ var debian11to12Blocks = []blockSpec{
 		body: func(c *rbCtx, _ string) string {
 			var b strings.Builder
 			b.WriteString(head(c, ""))
-			b.WriteString(shAptq)
-			b.WriteString("# Type the name of this machine between the quotes, then run the block.\nTYPED_HOSTNAME=\"\"\n")
+			b.WriteString(c.aptq())
+			b.WriteString(c.typedHostname())
 			b.WriteString("echo \"Block 0: is this the machine of the plan? Nothing is changed.\"\n")
 			b.WriteString(`[ "$(id -u)" = 0 ] || ` + stop("run this as root.") + "\n")
 			b.WriteString(verifyGate())
@@ -787,7 +814,7 @@ var debian11to12Blocks = []blockSpec{
 					break
 				}
 			}
-			b.WriteString(muxAtHand())
+			b.WriteString(c.muxAtHand())
 			b.WriteString(psBusy)
 			b.WriteString(`[ -z "$busy" ] || { echo "STOP: a package manager is running (the process list says: $busy): wait until it ends. This check looks at the processes, not at the file locks of apt and dpkg: the apt-get commands of this text that check, download or install wait up to 5 minutes for the dpkg lock and stop if it stays held, and apt-get update does not wait for the lock of the lists."; exit 1; }` + "\n")
 			b.WriteString("aptq check > /dev/null || " + stop("apt-get check finds a broken dependency, or could not get the lock of dpkg in 5 minutes (what it printed above says which): repair it, or wait for the other package manager, then run this block again. If it is a broken dependency, ask for a new plan once it is repaired.") + "\n")
@@ -911,7 +938,7 @@ var debian11to12Blocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(shAptq + shSim + shNotup + sourcesHash)
+			b.WriteString(c.aptq() + shSim + shNotup + sourcesHash)
 			b.WriteString("APT_ETC=/etc/apt\n")
 			b.WriteString("undo=\"No package has been installed or removed yet. To put the sources back: sh $BK/restore-sources.sh   (it also lets this block be run again, and this block says when the plan is no longer good).\"\n")
 			b.WriteString("changed=\"The machine is not as it was when the plan was made: once the sources are back, ask for a new plan.\"\n")
@@ -928,7 +955,7 @@ var debian11to12Blocks = []blockSpec{
 			// another plan of this machine whose block 3 ran has rewritten the sources: this plan cannot go on from them, and the way back is that plan's restore script
 			b.WriteString(otherPlans())
 			if len(c.manual) > 0 {
-				fmt.Fprintf(&b, "# These packages are removed by the upgrade, and you installed them yourself. To accept it, type their names, as they are, between the quotes:\n#   %s\nACCEPT_REMOVALS=\"\"\n", strings.Join(c.manual, " "))
+				b.WriteString(c.acceptRemovals())
 				fmt.Fprintf(&b, "[ \"$ACCEPT_REMOVALS\" = %s ] || %s\n", shQ(strings.Join(c.manual, " ")), stop("type the names of the packages that are removed, "+strings.Join(c.manual, " ")+", between the quotes of ACCEPT_REMOVALS at the top of this block, to accept that they go."))
 			}
 			b.WriteString("echo \"Block 3: writing the sources of " + c.hop.To + ".\"\n")
@@ -986,7 +1013,7 @@ var debian11to12Blocks = []blockSpec{
 			var b strings.Builder
 			b.WriteString(head(c, prev))
 			b.WriteString(beganCheck("this block only downloads for the minimal upgrade, which is block 5's, and block 5 downloads what it still needs."))
-			b.WriteString(shAptq)
+			b.WriteString(c.aptq())
 			// where the owner goes from a stop, decided when the stop is said: the marker says whether the upgrade has begun (it is not there when this block begins, and a block 5 run
 			// in another terminal may write it while this one downloads)
 			b.WriteString("whereto() { if [ -e \"$BK/begun-upgrade\" ]; then echo \"The upgrade has begun (block 5 was started): do not restore anything. Only forward: " + forwardWords + "\"; else echo \"No package has been installed or removed yet: run this block again, or put the sources back with sh $BK/restore-sources.sh\"; fi; }\n")
@@ -1010,9 +1037,9 @@ var debian11to12Blocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(shAptq + shSim + shGuard() + shHelp + shDpkgState)
-			b.WriteString(survive())
-			b.WriteString("# Type I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON between the quotes, then run the block.\nCONFIRM=\"\"\n")
+			b.WriteString(c.aptq() + shSim + shGuard() + shHelp + shDpkgState)
+			b.WriteString(c.survive())
+			b.WriteString(c.confirm())
 			b.WriteString("[ \"$CONFIRM\" = I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON ] || " + stop("this is the point of no return. Type the words between the quotes of CONFIRM at the top of this block, if you have a snapshot or a console, and want to go on.") + "\n")
 			b.WriteString(shTimers())
 			// said when it is said: an earlier run of this block may have written the marker (a dead terminal, with apt still at work), and then nothing is "not begun"
@@ -1024,6 +1051,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("fresh=yes\n[ ! -e \"$BK/begun-upgrade\" ] || fresh=no\n")
 			b.WriteString("before=\"$(dpkgstate)\"\n")
 			b.WriteString(": > \"$BK/begun-upgrade\"\n")
+			b.WriteString(c.syncAfterMarker())
 			b.WriteString("echo \"BLOCK 5: THE POINT OF NO RETURN. THE UPGRADE BEGINS NOW.\"\n")
 			b.WriteString("if ! aptq upgrade; then\n")
 			b.WriteString("  if [ \"$fresh\" = yes ] && [ \"$before\" = \"$(dpkgstate)\" ]; then\n")
@@ -1054,8 +1082,8 @@ var debian11to12Blocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(shAptq + shSim + shGuard() + shHelp)
-			b.WriteString(survive())
+			b.WriteString(c.aptq() + shSim + shGuard() + shHelp)
+			b.WriteString(c.survive())
 			b.WriteString(shTimers())
 			b.WriteString(busyCheck("The upgrade has begun: do not undo anything."))
 			b.WriteString("echo \"Block 6: the full upgrade. It takes a while, and a package may be silent for minutes.\"\n")
@@ -1205,7 +1233,7 @@ var debian11to12Blocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(shAptq)
+			b.WriteString(c.aptq())
 			b.WriteString("APT_ETC=/etc/apt\n")
 			b.WriteString("echo \"Block 8: after the restart.\"\n")
 			// block 7 wrote the boot it ran in, unless it found the machine restarted already and ended without the checks: then there is no boot to compare
@@ -1264,10 +1292,7 @@ var debian11to12Blocks = []blockSpec{
 					}
 				}
 				byHand := "  echo " + shQ("To put Docker's source back by hand, when it is published: "+dockerByHand(c)) + "\n"
-				b.WriteString("elif [ \"$rc\" = 22 ] && { [ \"$code\" = 404 ] || [ \"$code\" = 403 ] || [ \"$code\" = 410 ]; }; then\n  echo \"Docker publishes nothing for " + c.hop.To + " yet (download.docker.com answered the status $code for its Release file): its source stays paused.\"\n" + byHand)
-				b.WriteString("elif [ \"$rc\" = 22 ]; then\n  echo \"STOP: download.docker.com answered the error status $code, which does not say that it publishes nothing (429 and 5xx are the server's own trouble, and pass): wait a little, then run this block again. Docker's source stays paused until it has been asked.\"\n" + byHand + "  exit 1\n")
-				b.WriteString("elif [ \"$rc\" = 127 ]; then\n  echo \"STOP: curl is not installed, so Docker's repository cannot be asked about " + c.hop.To + ". Install it: apt-get install curl   then run this block again.\"\n" + byHand + "  exit 1\n")
-				b.WriteString("else\n  echo \"STOP: curl could not reach download.docker.com (exit $rc: 6 no name, 7 no connection, 28 too slow): the network is probably not up yet. Wait a little, then run this block again. Docker's source stays paused until it has been asked.\"\n" + byHand + "  exit 1\nfi\n")
+				b.WriteString(c.dockerAnswers(byHand))
 			}
 			var left []string
 			for _, pa := range c.plan.Paused {
