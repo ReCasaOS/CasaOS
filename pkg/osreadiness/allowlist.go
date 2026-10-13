@@ -146,8 +146,9 @@ var allowed = map[string]func([]string) bool{
 	// whole record and the hashes of the passwords, the other options add, change and remove. No check of the
 	// report runs it: the judge of an upgrade asks it, before and after, to count the users that the new Samba
 	// must still know. Samba's library opens the database file for writing too, so on a box where that file is
-	// missing the read makes an empty one, and the first read after Samba was upgraded brings the file's format
-	// up to date, as smbd does when it starts: that is what the row may leave on the machine, in /var/lib/samba.
+	// missing the read may make an empty one, and the first read after Samba was upgraded may bring the file's
+	// format up to date, as smbd does when it starts: that is what the row may leave on the machine, in
+	// /var/lib/samba.
 	"pdbedit":    exact([]string{"-L"}),
 	"pveversion": anything,
 	// the client's own version (it asks no daemon, and says there is a docker command), and the daemon's own
