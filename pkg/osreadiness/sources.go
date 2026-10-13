@@ -471,22 +471,30 @@ func suiteSaysDistro(ctx context.Context, p Probe, uri, suite, arch string, look
 // InRelease: apt prefers the first) and says whether its Origin is Debian's or Ubuntu's. A file that is not there,
 // or cannot be read, says nothing; only the end of the time is an error.
 func releaseSaysDistro(ctx context.Context, p Probe, name string) (bool, error) {
+	says, _, err := releaseLook(ctx, p, name)
+	return says, err
+}
+
+// releaseLook is releaseSaysDistro that also says whether there was a Release file to read: found is false when there is
+// none, or when the one there is cannot be read. The report takes that for "not the distribution's"; the plan, which
+// rewrites the sources and must not guess, takes it for "not known".
+func releaseLook(ctx context.Context, p Probe, name string) (says, found bool, err error) {
 	for _, suffix := range []string{"_InRelease", "_Release"} {
 		if err := ctx.Err(); err != nil {
-			return false, err
+			return false, false, err
 		}
 		data, err := p.ReadHead(ctx, listsDir+name+suffix, releaseHeadBytes)
 		switch {
 		case err == nil:
-			return distroOrigin(releaseOrigin(data)), nil
+			return distroOrigin(releaseOrigin(data)), true, nil
 		case isNotExist(err):
 			continue
 		case ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
-			return false, err
+			return false, false, err
 		}
-		return false, nil
+		return false, false, nil
 	}
-	return false, nil
+	return false, false, nil
 }
 
 // distroOrigin says whether the Origin of a Release file is the distribution's own: Debian or Ubuntu, alone or as the first
