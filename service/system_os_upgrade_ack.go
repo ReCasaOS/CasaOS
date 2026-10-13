@@ -104,6 +104,7 @@ func (s *systemService) osUpgradeAckLocked(req OSUpgradeAckRequest) error {
 	}
 	// the end of a refresh is written down before the run is closed: a plan that was made before it must not be started
 	s.osUpgradeNoteRefresh(run)
+	s.osUpgradeKeepQuiet(state)
 	if req.Action == OSUpgradeAckDiscard {
 		s.osUpgradeDropPlan()
 	}

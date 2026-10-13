@@ -44,6 +44,11 @@ type osUpgradeEngine struct {
 	tickMu sync.Mutex
 	// unreadAt is when a run that cannot be read was last said in the log: the loop looks every half minute.
 	unreadAt atomic.Int64
+	// told is what this core told the owner, by key, and is only touched by a look; notify is what tells them; muteUntil is when the alerts about the apps' containers may
+	// be heard again (unix nanoseconds).
+	told      map[string]bool
+	notify    atomic.Pointer[func(key, sentence string)]
+	muteUntil atomic.Int64
 }
 
 // osUpgradeTick is what one look did, for the log and the tests.
@@ -200,6 +205,8 @@ func (s *systemService) osUpgradeSettleOnce(ctx context.Context) (tick osUpgrade
 	if done := s.osUpgradeDo(ctx, run, state, action); done != "" {
 		tick.Done = append(tick.Done, done)
 	}
+	s.osUpgradeTellOf(state, action)
+	s.osUpgradeKeepQuiet(state)
 	return tick
 }
 
@@ -238,9 +245,15 @@ func (s *systemService) osUpgradeKeepFlag(run *osUpgradeRun, state osrun.State) 
 		if err != nil || osUpgradeHolds(osrun.Reduce(s.osUpgradeInput(fresh))) {
 			return
 		}
+		if held, _ := osUpgradeFlagOpen(); !held {
+			return
+		}
 		if err := clearOSUpgradeBusy(); err != nil {
 			logger.Error("the flag of an upgrade of the operating system could not be taken away", zap.String("run", run.ID), zap.Error(err))
+			return
 		}
+		// the machine is let go of: the apps' watch is slow to say that the containers are back
+		s.osUpgradeQuietUntil(s.systemPackageUpdater().now().Add(osUpgradeMuteAfter))
 		return
 	}
 	since := run.Meta.CreatedAt
