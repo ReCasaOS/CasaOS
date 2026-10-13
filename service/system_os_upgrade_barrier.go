@@ -43,18 +43,20 @@ func (s *systemService) osUpgradeBarrier(ctx context.Context) osUpgradeBarrierDo
 	return doc
 }
 
-// osUpgradeKeepBarrier makes barrier.json what the machine says now, for a run that waits for its restart; what it already says is not written again.
-func (s *systemService) osUpgradeKeepBarrier(ctx context.Context, run *osUpgradeRun, state osrun.State) {
+// osUpgradeKeepBarrier makes barrier.json what the machine says now, for a run that waits for its restart, and gives what it says; what the file already says is not written
+// again. For a state in which the barrier is not asked it does nothing, and gives nil.
+func (s *systemService) osUpgradeKeepBarrier(ctx context.Context, run *osUpgradeRun, state osrun.State) *osUpgradeBarrierDoc {
 	if state.Name != osrun.StateAwaitingReboot && state.Name != osrun.StateRebootStalled {
-		return
+		return nil
 	}
 	doc := s.osUpgradeBarrier(ctx)
 	if was := readOSUpgradeBarrier(run); was != nil && reflect.DeepEqual(*was, doc) {
-		return
+		return &doc
 	}
 	if err := writeOSUpgradeBarrier(run, doc); err != nil {
 		logger.Error("the barrier of an upgrade of the operating system could not be written", zap.String("run", run.ID), zap.Error(err))
-		return
+		return &doc
 	}
 	logger.Info("the barrier before the restart of an upgrade of the operating system changed", zap.String("run", run.ID), zap.Bool("ok", doc.OK))
+	return &doc
 }

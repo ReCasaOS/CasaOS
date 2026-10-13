@@ -112,7 +112,10 @@ func (b *upgradeBox) aRehearsal() *osUpgradeRun {
 }
 
 // aRefresh is a refresh that ended: the old release is as new as it gets, and the machine does not need a restart for it.
-func (b *upgradeBox) aRefresh() *osUpgradeRun {
+func (b *upgradeBox) aRefresh() *osUpgradeRun { return b.aRefreshWith("no", "none") }
+
+// aRefreshWith is a refresh that ended and says whether the machine needs a restart, and why.
+func (b *upgradeBox) aRefreshWith(restart, why string) *osUpgradeRun {
 	b.t.Helper()
 	runID := "5a1d9e44-2b6f-4a8e-8d35-1e0f6a9b3c28"
 	var blocks []osplan.AutoBlock
@@ -141,7 +144,7 @@ func (b *upgradeBox) aRefresh() *osUpgradeRun {
 	run := b.read(runID)
 	run = b.attempt(run, 1, osrun.PhaseRefresh, osrun.WhoOwner)
 	b.advance(time.Minute)
-	run = b.say(run, osrun.Marker{Kind: osrun.MkRefreshDone, N: 1, Result: "no", Why: "none"})
+	run = b.say(run, osrun.Marker{Kind: osrun.MkRefreshDone, N: 1, Result: restart, Why: why})
 	run = b.end(run, 1, "ok")
 	b.setUnit("inactive")
 	return b.read(run.ID)

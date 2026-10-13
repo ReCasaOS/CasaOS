@@ -2,7 +2,10 @@
 
 package service
 
-import "os"
+import (
+	"os"
+	"syscall"
+)
 
 // syncFolder makes what was written or renamed in a folder survive a power cut: the name of a file is in the folder, and not only its content on the disk.
 func syncFolder(dir string) error {
@@ -13,3 +16,6 @@ func syncFolder(dir string) error {
 	defer f.Close()
 	return f.Sync()
 }
+
+// syncDisks writes what the machine holds in memory to its disks, before it is restarted.
+func syncDisks() { syscall.Sync() }
