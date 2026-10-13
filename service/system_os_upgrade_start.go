@@ -348,6 +348,7 @@ func (s *systemService) StartSystemOSUpgrade(req OSUpgradeStartRequest) (OSUpgra
 	if err := pruneOSUpgradeRuns(osUpgradeKeepRuns); err != nil {
 		logger.Error("the old runs of the upgrade could not be removed", zap.Error(err))
 	}
+	s.nudgeOSUpgradeSettle()
 	return s.GetSystemOSUpgradeStatus(), nil
 }
 

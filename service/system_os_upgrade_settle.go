@@ -103,9 +103,6 @@ func (s *systemService) StopSystemOSUpgradeSettle(wait time.Duration) {
 	}
 }
 
-// SettleSystemOSUpgrade makes one look at once, and waits for it: what the buttons and the tests ask for.
-func (s *systemService) SettleSystemOSUpgrade() { s.osUpgradeSettleOnce(context.Background()) }
-
 // nudgeOSUpgradeSettle asks the loop for a look now, after a button changed something. With no loop it does nothing: the next one that is started looks first of all.
 func (s *systemService) nudgeOSUpgradeSettle() {
 	e := &s.osUpgrade

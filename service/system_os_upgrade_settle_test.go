@@ -725,3 +725,28 @@ func TestTheFirstLookKeepsTheLastThreeRuns(t *testing.T) {
 		t.Errorf("the runs left are %v", got)
 	}
 }
+
+// A button that changed something asks the loop to look at once, and the loop does not wait for its half minute.
+func TestAButtonThatChangedSomethingMakesTheLoopLookAtOnce(t *testing.T) {
+	withTiming(t, func(tm *osrun.Timing) { tm.SettleEvery = time.Hour })
+	box := newUpgradeBox(t)
+	box.StartSystemOSUpgradeSettle(t.Context())
+	t.Cleanup(func() { box.StopSystemOSUpgradeSettle(5 * time.Second) })
+	waitFor(t, func() bool { return box.osUpgrade.pruneDone() }, "the first look")
+
+	if err := setOSUpgradeBusy("0b8f3a52-6c1e-4d0a-9a53-7f1c2d4e8b19", osrun.StateRunning, box.now()); err != nil {
+		t.Fatal(err)
+	}
+	box.nudgeOSUpgradeSettle()
+	waitFor(t, func() bool { return !box.flagIsThere() }, "the look that a nudge asks for")
+}
+
+func waitFor(t *testing.T, done func() bool, what string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
+		if done() {
+			return
+		}
+	}
+	t.Fatalf("%s did not come", what)
+}

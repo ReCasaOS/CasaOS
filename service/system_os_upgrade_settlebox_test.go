@@ -217,3 +217,10 @@ func withTiming(t *testing.T, change func(*osrun.Timing)) {
 	t.Cleanup(func() { osUpgradeTiming = was })
 	change(&osUpgradeTiming)
 }
+
+// pruneDone says whether a look has been made: the first of them looks after the folders of the old runs.
+func (e *osUpgradeEngine) pruneDone() bool {
+	e.tickMu.Lock()
+	defer e.tickMu.Unlock()
+	return e.pruned
+}
