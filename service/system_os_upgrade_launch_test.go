@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
+	"github.com/ReCasaOS/CasaOS/pkg/osverify"
 )
 
 func launchKind(t *testing.T, err error) string {
@@ -469,5 +472,66 @@ func TestARunThatCannotBeReadIsAnError(t *testing.T) {
 			t.Errorf("%s: the run is read", name)
 		}
 		rewrite(t, filepath.Join(run.Dir, "run.json"), saved)
+	}
+}
+
+// What the settling writes, the status and the reducer read back; and a facts file that is lost is the zero value.
+func TestTheResultsOfTheSettlingAreWrittenWholeAndReadBack(t *testing.T) {
+	box := newUpgradeBox(t)
+	run := box.aRun(box.anUpgradePlan(osplan.VerdictOK, nil), osrun.RunHop)
+	if err := writeOSUpgradeBarrier(run, osUpgradeBarrierDoc{OK: false, Checks: []OSUpgradeBarrierItem{{Code: "fstab_unresolved", OK: false, Severity: "refuse"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOSUpgradeVerify(run, osUpgradeVerifyDoc{At: box.now(), Findings: []osverify.Finding{{Code: osverify.CodePortsMissing, Severity: osverify.SeverityWarn, Arg: "445"}}}); err != nil {
+		t.Fatal(err)
+	}
+	in := box.osUpgradeInput(run)
+	if in.Barrier == nil || in.Barrier.OK || len(in.Barrier.Checks) != 1 || in.Verify == nil || in.Verify.Warnings != 1 {
+		t.Errorf("the input is %+v, %+v", in.Barrier, in.Verify)
+	}
+	if runtime.GOOS == "linux" {
+		for _, name := range []string{"barrier.json", "verify.json"} {
+			if info, err := os.Stat(filepath.Join(run.Dir, name)); err != nil || info.Mode().Perm()&0o077 != 0 {
+				t.Errorf("%s is %v, %v", name, info, err)
+			}
+		}
+	}
+
+	facts := readOSUpgradeFacts(run)
+	if !facts.Taken || !facts.DpkgQuiet {
+		t.Errorf("the facts are %+v", facts)
+	}
+	for name, damage := range map[string]func(){
+		"lost":    func() { remove(t, filepath.Join(run.Dir, "facts-before.json")) },
+		"garbage": func() { rewrite(t, filepath.Join(run.Dir, "facts-before.json"), "not json") },
+		"a link": func() {
+			remove(t, filepath.Join(run.Dir, "facts-before.json"))
+			os.Symlink(filepath.Join(run.Dir, "run.json"), filepath.Join(run.Dir, "facts-before.json"))
+		},
+	} {
+		damage()
+		if got := readOSUpgradeFacts(run); got.Taken || got.Kernel != "" {
+			t.Errorf("%s: the facts are %+v: nothing was taken", name, got)
+		}
+	}
+}
+
+// The ids that the driver accepts are the ids that the core writes lists of, covers with sums and keeps in run.json: one set.
+func TestTheBlocksOfTheDriverAreTheBlocksOfTheRun(t *testing.T) {
+	_, rest, found := strings.Cut(osrun.Driver, `case "$id" in `)
+	if !found {
+		t.Fatal("the driver has no case of the ids of the blocks")
+	}
+	list, _, _ := strings.Cut(rest, ")")
+	ids := strings.Split(list, "|")
+	slices.Sort(ids)
+	var run []string
+	for _, kind := range []string{osrun.RunHop, osrun.RunRefresh} {
+		run = append(run, osUpgradeBlockIDs(kind)...)
+	}
+	slices.Sort(run)
+	run = slices.Compact(run)
+	if !reflect.DeepEqual(ids, run) {
+		t.Errorf("the driver accepts %v, the core writes %v", ids, run)
 	}
 }

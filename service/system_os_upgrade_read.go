@@ -186,6 +186,35 @@ type osUpgradeVerifyDoc struct {
 	Findings []osverify.Finding `json:"findings"`
 }
 
+// readOSUpgradeFacts is what the machine was before the hop, as the start took it: the zero Facts when the file is lost or cannot be read, which says that nothing was
+// taken and is judged by what is known.
+func readOSUpgradeFacts(run *osUpgradeRun) osverify.Facts {
+	var facts osverify.Facts
+	data, err := readOSUpgradeFile(filepath.Join(run.Dir, osUpgradeFactsFile), 4<<20)
+	if err != nil || json.Unmarshal(data, &facts) != nil {
+		return osverify.Facts{}
+	}
+	return facts
+}
+
+// writeOSUpgradeBarrier and writeOSUpgradeVerify put the two results of the settling in the run folder, whole or not at all: what is there is what the status and the
+// reducer read, and what is not has not been computed.
+func writeOSUpgradeBarrier(run *osUpgradeRun, doc osUpgradeBarrierDoc) error {
+	return writeOSUpgradeResult(run, osUpgradeBarrierFile, doc)
+}
+
+func writeOSUpgradeVerify(run *osUpgradeRun, doc osUpgradeVerifyDoc) error {
+	return writeOSUpgradeResult(run, osUpgradeVerifyFile, doc)
+}
+
+func writeOSUpgradeResult(run *osUpgradeRun, name string, doc any) error {
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return osUpgradeWriteFile(filepath.Join(run.Dir, name), append(data, '\n'), 0o600)
+}
+
 // readOSUpgradeBarrier is barrier.json of a run, nil when it was not computed or cannot be read.
 func readOSUpgradeBarrier(run *osUpgradeRun) *osUpgradeBarrierDoc {
 	data, err := readOSUpgradeFile(filepath.Join(run.Dir, osUpgradeBarrierFile), 256<<10)

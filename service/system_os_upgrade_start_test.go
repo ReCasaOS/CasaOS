@@ -78,8 +78,13 @@ func TestAStartThatTheChecksLetThroughWritesTheRunAndStartsItsUnit(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, blk := range auto.Blocks {
-		if got := readText(t, filepath.Join(run.Dir, "blocks", blk.ID+".sh")); got != blk.Text {
+		got := readText(t, filepath.Join(run.Dir, "blocks", blk.ID+".sh"))
+		if got != blk.Text {
 			t.Errorf("blocks/%s.sh is not the text that the plan makes for this run", blk.ID)
+		}
+		// the gate of the unit looks at the real file of cgroups, which only a test of the text changes
+		if !strings.Contains(got, "/proc/self/cgroup") {
+			t.Errorf("blocks/%s.sh does not look at the cgroup of its process", blk.ID)
 		}
 	}
 	if run.Meta.Kind != osrun.RunHop || run.Meta.SafetyNet != "snapshot" || run.Meta.PlanID != plan.PlanID || len(run.Meta.Blocks) != 10 || run.Meta.Blocks[0].ID != "verify" || run.Meta.Blocks[0].Title == "" {
@@ -800,15 +805,26 @@ func TestTheStartIsNotKeptAwayByItsOwnUnitOrFlag(t *testing.T) {
 }
 
 func TestAUnitOfTheUpgradeThatRunsOrASystemdThatIsSilentRefusesTheStart(t *testing.T) {
+	original := osUpgradeWriteFile
+	t.Cleanup(func() { osUpgradeWriteFile = original })
+	writes := 0
+	osUpgradeWriteFile = func(path string, data []byte, mode os.FileMode) error {
+		writes++
+		return original(path, data, mode)
+	}
 	for name, state := range map[string]string{"a unit that runs": "active", "a systemd that does not answer": ""} {
 		box := newUpgradeBox(t)
 		_, plan := box.aMachineThatCanStart()
 		box.setUnit(state)
+		writes = 0
 		_, err := box.StartSystemOSUpgrade(box.aGoodRequest(plan))
 		if refusal := refusalOf(t, err); refusal.Code != OSUpgradeBusy {
 			t.Errorf("%s: %+v", name, refusal)
 		}
 		box.assertNothingChanged(nil)
+		if writes != 0 {
+			t.Errorf("%s: %d files were written before the refusal: it is the check that says it, and not the launch that undoes it", name, writes)
+		}
 	}
 }
 
