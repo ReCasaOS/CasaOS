@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("CASAOS_OSU_QUEUED 0123456789abcdef0123456789abcdef 0 2026-10-13T10:00:00Z\nCASAOS_OSU_QUEUED ffffffffffffffffffffffffffffffff 0 2026-10-13T10:00:01Z\napt: CASAOS_OSU_STOP 0123456789abcdef0123456789abcdef 1 2 timers 1 busy 0 2026-10-13T10:00:02Z\nCASAOS_OSU_STOP ffffffffffffffffffffffffffffffff 1 2 timers 1 busy 0 2026-10-13T10:00:02Z\nCASAOS_OSU_STOP 0123456789abcdef0123456789abcdef 1 2 timers 1 made_up_word 0 2026-10-13T10:00:03Z\n")
