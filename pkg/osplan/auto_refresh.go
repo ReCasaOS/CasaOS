@@ -119,7 +119,7 @@ const refreshKernels = `dpkg-query -W -f='${db:Status-Abbrev} ${Package} ${Versi
 const refreshRoomWords = " Free some room there (apt-get clean empties the cache of downloaded packages; remove what you do not need), then start the refresh again."
 
 // shHelpRefresh is what the STOP lines of R2 end with: the refresh has no point of no return, and the unit puts the machine back.
-const shHelpRefresh = "help=\"The refresh stops here: the unit puts the sources and the timers back, and finishes what dpkg left half done. Do not undo anything by hand, and ask for help if the machine is not as it was. " + logWords + "\"\n"
+const shHelpRefresh = "help=\"The refresh stops here: the unit puts the sources and the timers back, and finishes what dpkg left half done. Do not undo anything by hand, and ask for help if the machine is not as it was. " + logWordsUnit + "\"\n"
 
 // shNoRemovals defines no_removals: the refresh brings the release that is left to its last state and removes nothing, so a simulation that lists a removal is a stop, whatever
 // the package is (what is protected is stopped first, by guard_removals, with its own words).
@@ -148,9 +148,11 @@ var refreshBlocks = []blockSpec{
 			b.WriteString(`[ "$(hostname)" = ` + shQ(c.refresh.hostname) + ` ] || ` + stop("this machine is called $(hostname), which is not the machine that the refresh was started on: the text of this unit was written for another.") + "\n")
 			b.WriteString(`grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || ` + stop("this machine is not Debian 11 ("+c.hop.From+") any more: the refresh brings the release that the machine runs up to its last state, and this machine runs another.") + "\n")
 			b.WriteString(otherPlans())
+			// a package manager at work is looked for before dpkg is asked whether it is quiet: one that is half way through an install leaves dpkg unquiet, and the stop that
+			// says so is the busy one, which is the truth, and not a broken dpkg that the owner is sent to mend under it
+			b.WriteString(busyCheck("Nothing has been changed by this block."))
 			b.WriteString(auditCheck("Run: dpkg --configure -a   then start the refresh again. If dpkg cannot open its own database, ask for help."))
 			b.WriteString("aptq check > /dev/null || " + stop("apt-get check finds a broken dependency, or could not get the lock of dpkg in 5 minutes (what it printed above says which): repair it, or wait for the other package manager, then start the refresh again.") + "\n")
-			b.WriteString(busyCheck("Nothing has been changed by this block."))
 			b.WriteString("avail() { df -Pk \"$1\" | awk 'NR == 2 { print $4 }'; }\n")
 			fmt.Fprintf(&b, "[ \"$(avail /var/cache/apt/archives)\" -ge %d ] || %s\n", 1536*1024, stop("/var/cache/apt/archives has less than 1.5 GB free."+refreshRoomWords))
 			fmt.Fprintf(&b, "[ \"$(avail /)\" -ge %d ] || %s\n", 2048*1024, stop("/ has less than 2 GB free."+refreshRoomWords))
@@ -161,7 +163,7 @@ var refreshBlocks = []blockSpec{
 			b.WriteString(refreshKernels + " > \"$BK/kernels-before.txt\" || true\n")
 			b.WriteString("TS=" + timersState + "\n")
 			b.WriteString(shTimersState("the end of the refresh"))
-			b.WriteString(": > \"$BK/done-timers\"\n")
+			b.WriteString(": > \"$BK/done-timers\"\nsync\n")
 			b.WriteString(shTimers())
 			b.WriteString(refreshDone(osrun.BlockRCheck, "R0"))
 			return b.String()
@@ -179,7 +181,7 @@ var refreshBlocks = []blockSpec{
 			b.WriteString("now=\"$(srchash)\"\n")
 			fmt.Fprintf(&b, "[ \"$now\" = %s ] || %s\n", shQ(c.plan.Sources.HashCurrent), stop("the sources of apt are not the ones the refresh was started from: something changed them. Nothing has been changed by this block."))
 			b.WriteString(busyCheck("Nothing has been changed by this block."))
-			b.WriteString(shSourcesBackup("Start the refresh again."))
+			b.WriteString(c.sourcesBackup("Start the refresh again."))
 			// a refresh removes nothing, and the folder says what it expects: nothing (the repair block reads the list)
 			b.WriteString(": > \"$BK/expected-removed.txt\"\n")
 			b.WriteString("# the sources of the refresh: the machine's own, each under a new name first, read back and compared with the hash that was made of them, and put in place when all are right\n")
@@ -206,7 +208,7 @@ var refreshBlocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(c.aptq() + shSim + shGuardSaying("The refresh stops here, and the unit puts the machine back. Ask for help, with $1. ") + shHelpRefresh + shNoRemovals)
+			b.WriteString(c.aptq() + shSim + c.guardSaying("The refresh stops here, and the unit puts the machine back. Ask for help, with $1. ") + shHelpRefresh + shNoRemovals)
 			b.WriteString("echo \"Block R2: the full upgrade of the old release. It takes a while, and a package may be silent for minutes.\"\n")
 			b.WriteString(busyCheck("Nothing has been installed or removed yet."))
 			b.WriteString("aptq -s dist-upgrade" + refreshPhased + " > \"$BK/resim.txt\" 2>&1 || { echo \"STOP: apt cannot work out the upgrade of the old release: see $BK/resim.txt. $help\"; exit 1; }\n")
@@ -214,9 +216,11 @@ var refreshBlocks = []blockSpec{
 			b.WriteString("guard_removals \"$BK/resim.txt\"\n")
 			b.WriteString("no_removals \"$BK/resim.txt\"\n")
 			b.WriteString("aptq --download-only dist-upgrade" + refreshPhased + " || " + stop("the download did not go through: the network, or a lock held by another package manager (see what apt printed above). Nothing has been installed or removed yet.") + "\n")
-			b.WriteString(repairLadder(refreshPhased, func(file string) string { return "no_removals \"" + file + "\"\n" }))
+			// from here dpkg is changed: the unwind mends what it leaves only for a refresh that got this far
+			b.WriteString(": > \"$BK/begun-rupgrade\"\nsync\n")
+			b.WriteString(c.repairLadder(refreshPhased, func(file string) string { return "no_removals \"" + file + "\"\n" }))
 			b.WriteString(auditCheck("Run dpkg --configure -a, then start the refresh again. If dpkg cannot open its own database, ask for help."))
-			b.WriteString("aptq check > /dev/null || " + stop("apt-get check finds a broken dependency, or could not get the lock of dpkg in 5 minutes, or dpkg was interrupted (what it printed above says which). Do not undo anything by hand: ask for help. "+logWords) + "\n")
+			b.WriteString("aptq check > /dev/null || " + stop("apt-get check finds a broken dependency, or could not get the lock of dpkg in 5 minutes, or dpkg was interrupted (what it printed above says which). Do not undo anything by hand: ask for help. "+c.logWords()) + "\n")
 			b.WriteString(refreshDone(osrun.BlockRUpgrade, "R2"))
 			return b.String()
 		},

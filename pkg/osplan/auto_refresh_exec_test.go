@@ -190,6 +190,20 @@ func TestR0KeepsTheStateOfTheTimersThatIsThereAlready(t *testing.T) {
 	}
 }
 
+// A package manager that is half way through an install leaves dpkg unquiet: R0 says what it is, busy, and does not send the owner to mend a dpkg that is only at work.
+func TestR0SaysABusyPackageManagerBeforeItSaysThatDpkgIsNotQuiet(t *testing.T) {
+	b := newRefreshBox(t, false)
+	b.write("fake/ps.txt", psTable("apt-get         apt-get install foo"))
+	b.write("fake/audit.txt", "The following packages are only half installed: foo\n")
+	out, code := b.run("rcheck")
+	if code == 0 || !strings.Contains(out, "STOP: a package manager is running") || strings.Contains(out, "dpkg is not quiet") || b.stopClass() != osrun.ClassBusy {
+		t.Errorf("exit %d, class %q, %q", code, b.stopClass(), out)
+	}
+	if b.exists("bk/done-rcheck") || b.exists("bk/done-timers") || b.exists("timers.state") {
+		t.Error("R0 changed something before it stopped")
+	}
+}
+
 func TestR0StopsWithItsClassBeforeItChangesAnything(t *testing.T) {
 	for _, tc := range []struct {
 		name, class, saying string
@@ -276,12 +290,12 @@ func TestR1KeepsACopyAndWritesTheSourcesOfTheRefreshAndFetchesTheLists(t *testin
 	if code != 0 || !strings.Contains(out, "Block R1 done.") || !b.exists("bk/done-rsources") {
 		t.Fatalf("exit %d, %q", code, out)
 	}
-	// the copy of /etc/apt, whole, and its restore script, which is the owner's
+	// the copy of /etc/apt, whole, and its restore script, which is the owner's but for what it says of a hop
 	if !b.exists("bk/apt-orig/sources.list") || !b.exists("bk/apt-orig/sources.list.d/docker.list") || b.exists("bk/apt-orig.new") {
 		t.Error("the copy of /etc/apt is not there, or is not whole")
 	}
-	if b.read("bk/restore-sources.sh") != restoreScript {
-		t.Error("the restore script is not the owner's")
+	if b.read("bk/restore-sources.sh") != restoreScriptRefresh {
+		t.Error("the restore script is not the refresh's")
 	}
 	// the refresh removes nothing, and says so to the block that mends
 	if !b.exists("bk/expected-removed.txt") || b.read("bk/expected-removed.txt") != "" {
@@ -632,29 +646,27 @@ func TestBlockFOfARefreshAllowsNoRemovalAtAll(t *testing.T) {
 	}
 }
 
-// The unwind of a refresh puts the timers back and then runs F, which stops them: F of a refresh starts again the ones that ran when it began, and nothing else. F of a hop does
-// not (the blocks of the hop that follow it stop the timers themselves).
-func TestBlockFOfARefreshStartsAgainTheTimersThatRanWhenItBeganAndTheOneOfAHopDoesNot(t *testing.T) {
+// F stops the units of apt and starts none, in a refresh as in a hop: the unwind of a refresh runs it before it starts the timers, from the state it kept, and the blocks of a hop
+// that follow F stop the timers themselves.
+func TestBlockFStopsTheUnitsOfAptAndStartsNoneInARefreshAsInAHop(t *testing.T) {
 	b := newRefreshBox(t, false)
 	b.write("fake/active-apt-daily.service", "")
+	b.write("fake/active-apt-daily.timer", "")
+	b.write("fake/active-unattended-upgrades.service", "")
 	out, code := b.runCode(b.paths(autoBlockOf(t, b.ar, osrun.BlockForward), "refresh-"+testRunID))
 	if code != 0 || !strings.Contains(out, "Block F done.") {
 		t.Fatalf("F of a refresh: exit %d, %q", code, out)
 	}
 	calls := strings.Join(b.calls(), "\n")
-	// stopped first, then mended, then started again; the service of the daily job is stopped and is not started again, and a timer that did not run is not started
-	stop, repair, start := strings.Index(calls, "systemctl stop apt-daily.timer"), strings.Index(calls, " -f install"), strings.Index(calls, "systemctl start apt-daily.timer")
-	if stop < 0 || repair < stop || start < repair {
-		t.Errorf("the order of F: stop %d, repair %d, start %d:\n%s", stop, repair, start, calls)
+	if stop, repair := strings.Index(calls, "systemctl stop apt-daily.timer"), strings.Index(calls, " -f install"); stop < 0 || repair < stop {
+		t.Errorf("the order of F: stop %d, repair %d:\n%s", stop, repair, calls)
 	}
-	for _, unit := range []string{"apt-daily.timer", "unattended-upgrades.service"} {
-		if !b.exists("fake/active-"+unit) || !strings.Contains(calls, "systemctl start "+unit) {
-			t.Errorf("%s ran when F began and does not run now", unit)
-		}
+	if strings.Contains(calls, "systemctl start") {
+		t.Errorf("F of a refresh started a unit:\n%s", calls)
 	}
-	for _, unit := range []string{"apt-daily.service", "apt-daily-upgrade.timer", "apt-daily-upgrade.service"} {
-		if strings.Contains(calls, "systemctl start "+unit) || b.exists("fake/active-"+unit) {
-			t.Errorf("%s was started by F", unit)
+	for _, unit := range []string{"apt-daily.timer", "apt-daily.service", "unattended-upgrades.service"} {
+		if b.exists("fake/active-" + unit) {
+			t.Errorf("%s runs when F is done", unit)
 		}
 	}
 	// F of a hop: the same units are stopped, and none is started

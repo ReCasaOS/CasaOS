@@ -526,11 +526,20 @@ func TestBlock5TakesItsMarkerBackWhenAptFailedBeforeItChangedAnything(t *testing
 	}
 }
 
+// stopLogName is the file that the stops after the point of no return send the owner to for what dpkg and the scripts of the packages printed: the log of apt's pty in the owner's
+// text, and the log of the unit in the unit's, where apt has no pty and term.log holds nothing of it.
+func stopLogName() string {
+	if suiteAuto {
+		return "output.log"
+	}
+	return "/var/log/apt/term.log"
+}
+
 // The stops after the point of no return name the logs that hold what the terminal does not (screen keeps 100 lines, tmux 2000, a dead terminal none).
 func TestTheStopsAfterThePointOfNoReturnNameTheLogs(t *testing.T) {
 	_, rb := realRunbook(t)
 	ok := typed(rb, "CONFIRM", "I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON")
-	logs := []string{"/var/log/apt/term.log", "/var/log/apt/history.log", "/var/log/dpkg.log"}
+	logs := []string{stopLogName(), "/var/log/apt/history.log", "/var/log/dpkg.log"}
 	left := "Reading package lists...\n12 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"
 	for _, tc := range []struct {
 		name, id, prev string
@@ -565,7 +574,7 @@ func TestTheStopsAfterThePointOfNoReturnNameTheLogs(t *testing.T) {
 	b := newShellBox(t)
 	b.write("bk/done-download", "")
 	b.write("fake/upgrade-fails", "")
-	if out, _ := b.run(ok, "minimal"); strings.Contains(out, "/var/log/apt/term.log") {
+	if out, _ := b.run(ok, "minimal"); strings.Contains(out, stopLogName()) {
 		t.Errorf("a stop of before the marker names the logs: %q", out)
 	}
 }
@@ -1124,7 +1133,7 @@ func TestTheRepairLadderOfBlock6SimulatesTheRepairAndTheFullUpgradeAfterItAndGua
 			t.Errorf("%s: exit %d, %q", tc.name, code, out)
 		}
 		if strings.Contains(tc.stops, "protected") || strings.Contains(tc.stops, "essential") {
-			for _, want := range []string{"DO NOT UNDO ANYTHING", "/var/log/apt/term.log"} {
+			for _, want := range []string{"DO NOT UNDO ANYTHING", stopLogName()} {
 				if !strings.Contains(out, want) {
 					t.Errorf("%s: the stop does not say %q: %q", tc.name, want, out)
 				}

@@ -138,12 +138,14 @@ func (f *flowBox) afterTheKill(t *testing.T, name string, power bool, fix func()
 		if (reason == osrun.ReasonInterruptedKilled || reason == osrun.ReasonInterruptedPower) && files.AbortFlag {
 			reason = osrun.ClassAbort
 		}
-		// the timers are started again, and their state is gone, when the folder stopped them (done-timers); else the state is what it was
+		// the timers are started again, and their state is gone, when the folder stopped them or was about to (the marker that block 1 writes before the first stop, or its done
+		// file); else the state is what it was
 		hadState, upgrades := f.exists(f.root+"/timers.state"), f.aptUpgrades()
+		stoppedThem := files.DoneTimers || f.exists(f.bk+"/timers-stopping")
 		f.launch(2, osrun.PhaseUnwind)
 		equalStory(t, name+": the unwind", f.story(2), []string{"UNIT_START unwind", "UNWOUND ok", "UNIT_END ok"})
 		timersRun := f.exists(f.root+"/fake/active-apt-daily.timer") && f.exists(f.root+"/fake/active-unattended-upgrades.service")
-		stateStays := hadState && !files.DoneTimers
+		stateStays := hadState && !stoppedThem
 		if !f.sourcesAreTheOriginals() || !timersRun || f.exists(f.root+"/timers.state") != stateStays || f.exists(f.bk) || !f.exists(f.dir+"/bk-aborted") || f.aptUpgrades() != upgrades {
 			t.Errorf("%s: the sources are the original ones %v, the timers run %v, the state of the timers is there %v (want %v), the folder is there %v, apt upgrade ran %d more times",
 				name, f.sourcesAreTheOriginals(), timersRun, f.exists(f.root+"/timers.state"), stateStays, f.exists(f.bk), f.aptUpgrades()-upgrades)
@@ -242,6 +244,9 @@ func TestTheDriverKilledInTheMiddleOfABlockLeavesARunThatTheCoreUndoesOrKeeps(t 
 			after      bool
 		}{
 			{"block 1, as the first timer is being stopped", "systemctl", `[ "$1" = stop ]`, 1, false},
+			{"block 1, with the first timer stopped", "systemctl", `[ "$1" = stop ]`, 1, true},
+			{"block 1, as the second timer is being stopped", "systemctl", `[ "$1" = stop ]`, 2, false},
+			{"block 1, with the second timer stopped", "systemctl", `[ "$1" = stop ]`, 2, true},
 			{"block 3, as apt-get update begins, with the sources replaced", "apt-get", `case " $* " in *" update "*) return 0 ;; esac; return 1`, 1, false},
 			{"block 4, as the download begins", "apt-get", `case "$*" in *--download-only*) return 0 ;; esac; return 1`, 1, false},
 			{"block 4, with the download done", "apt-get", `case "$*" in *--download-only*) return 0 ;; esac; return 1`, 1, true},

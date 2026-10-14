@@ -94,22 +94,28 @@ func TestAfterABlockOfTheDriverThatStoppedTheOwnersTextTakesOver(t *testing.T) {
 }
 
 // The other way: the owner's blocks are run by hand up to any block, and the unit is started with the list of all the blocks of the hop (the core's list for a run that has
-// to go on): it passes the blocks that have their done file, runs the others, and ends as a run that the unit made from the start.
+// to go on, a later attempt of the run): it passes the blocks that have their done file, runs the others, and ends as a run that the unit made from the start. A first attempt
+// does not pass them: the folder of a fresh run holds no done file (see TestAFreshRunDoesNotSkipTheBlocksThatItDidNotDo).
 func TestAfterTheBlocksOfTheOwnersTextTheDriverGoesOnAndEndsTheSame(t *testing.T) {
 	eachDriverShell(t, false, func(t *testing.T, sh driverShell) {
 		manual := manualOf(t)
 		// the end of a hop that the unit ran alone
 		alone := newFlowBox(t, sh)
 		alone.launch(1, osrun.PhaseRun, hopList...)
-		wantFiles := alone.filesOfTheBackupFolder()
+		// the marker that the unit writes before it stops the timers is its own: the owner's block 1 writes none
+		withoutMarker := func(files []string) []string {
+			return slices.DeleteFunc(slices.Clone(files), func(name string) bool { return name == "timers-stopping" })
+		}
+		wantFiles := withoutMarker(alone.filesOfTheBackupFolder())
 		f := newFlowBox(t, sh)
 		for k, id := range hopList {
 			if out, code := f.manualBlock(manual, id); code != 0 || !f.exists(f.bk+"/done-"+id) {
 				t.Fatalf("the owner's block %s: exit %d, %q", id, code, out)
 			}
 			c := f.clone()
-			c.launch(1, osrun.PhaseRun, hopList...)
-			want := []string{"UNIT_START run"}
+			c.anEarlierAttempt()
+			c.launch(2, osrun.PhaseRecover, hopList...)
+			want := []string{"UNIT_START recover"}
 			for i, id := range hopList {
 				if i <= k {
 					want = append(want, "BLOCK_SKIPPED "+itoa(i+1)+" "+id)
@@ -118,8 +124,8 @@ func TestAfterTheBlocksOfTheOwnersTextTheDriverGoesOnAndEndsTheSame(t *testing.T
 				}
 			}
 			want = append(want, "REBOOT_PENDING 6.1.0-53-cloud-amd64", "UNIT_END ok")
-			equalStory(t, "the unit after the owner's block "+id, c.story(1), want)
-			if got := c.filesOfTheBackupFolder(); !slices.Equal(got, wantFiles) {
+			equalStory(t, "the unit after the owner's block "+id, c.story(2), want)
+			if got := withoutMarker(c.filesOfTheBackupFolder()); !slices.Equal(got, wantFiles) {
 				t.Errorf("after the owner's block %s and the unit: the backup folder has %v, and the unit's own run %v", id, got, wantFiles)
 			}
 			if c.aptUpgrades() != 1 {
@@ -130,13 +136,59 @@ func TestAfterTheBlocksOfTheOwnersTextTheDriverGoesOnAndEndsTheSame(t *testing.T
 			// the same with the list of the blocks that are left, which is what a core that reads the files of the folder would give it
 			if rest := hopList[k+1:]; len(rest) > 0 {
 				c = f.clone()
-				c.launch(1, osrun.PhaseRun, rest...)
-				want := append([]string{"UNIT_START run"}, blockStory(1, rest...)...)
-				equalStory(t, "the unit with the blocks left after the owner's block "+id, c.story(1), append(want, "REBOOT_PENDING 6.1.0-53-cloud-amd64", "UNIT_END ok"))
-				if got := c.filesOfTheBackupFolder(); !slices.Equal(got, wantFiles) {
+				c.anEarlierAttempt()
+				c.launch(2, osrun.PhaseRecover, rest...)
+				want := append([]string{"UNIT_START recover"}, blockStory(1, rest...)...)
+				equalStory(t, "the unit with the blocks left after the owner's block "+id, c.story(2), append(want, "REBOOT_PENDING 6.1.0-53-cloud-amd64", "UNIT_END ok"))
+				if got := withoutMarker(c.filesOfTheBackupFolder()); !slices.Equal(got, wantFiles) {
 					t.Errorf("after the owner's block %s and the unit with the blocks left: the backup folder has %v, and the unit's own run %v", id, got, wantFiles)
 				}
 			}
+		}
+	})
+}
+
+// anEarlierAttempt writes a first attempt of the run that was lost, so that the one the test starts is a later one, as the repair of the core is.
+func (b *driverBox) anEarlierAttempt() {
+	b.t.Helper()
+	b.append(osrun.Marker{Kind: osrun.MkAttempt, N: 1, Phase: osrun.PhaseRun, Who: osrun.WhoAuto})
+	b.append(osrun.Marker{Kind: osrun.MkUnitStart, N: 1, Phase: osrun.PhaseRun, Boot: driverBootA, PID: 99})
+	b.append(osrun.Marker{Kind: osrun.MkUnitEnd, N: 1, Result: "stopped"})
+}
+
+// A fresh run, a first attempt of a hop, a rehearsal or a refresh, begins where nothing is done: a done file that it did not write (a block that the owner ran by hand, the folder of
+// another run) would make it skip a block that it has not run, and the folder that holds it is nobody's to undo. The driver says so, and does nothing. A later attempt passes the
+// blocks that are done, which is what it is for.
+func TestAFreshRunDoesNotSkipTheBlocksThatItDidNotDo(t *testing.T) {
+	eachDriverShell(t, false, func(t *testing.T, sh driverShell) {
+		for _, tc := range []struct {
+			name, kind, phase string
+			list              []string
+			done              string
+		}{
+			{"a hop", osrun.RunHop, osrun.PhaseRun, hopList, "done-verify"},
+			{"a rehearsal", osrun.RunRehearsal, osrun.PhaseRehearse, osrun.BlockList(osrun.PhaseRehearse, osrun.Files{}), "done-timers"},
+			{"a refresh", osrun.RunRefresh, osrun.PhaseRefresh, refreshList, "done-rcheck"},
+		} {
+			b := newStubBox(t, sh, tc.kind)
+			b.write(b.bk+"/"+tc.done, "", 0o644)
+			b.write(b.root+"/timers.state", "apt-daily.timer active\n", 0o644)
+			b.launch(1, tc.phase, tc.list...)
+			equalStory(t, tc.name, b.story(1), []string{"UNIT_START " + tc.phase, "STOP 0 driver rc=1 integrity pnr=false", "UNIT_END stopped"})
+			if got := b.trace(); len(got) != 0 {
+				t.Errorf("%s: something ran: %q", tc.name, got)
+			}
+			// nothing of the folder is touched: not moved, not undone, and the state of the timers is the owner's
+			if !b.exists(b.bk+"/"+tc.done) || b.exists(b.dir+"/bk-aborted") || !b.exists(b.root+"/timers.state") {
+				t.Errorf("%s: the folder that was not the run's was touched", tc.name)
+			}
+			wantState(t, b, tc.name, osrun.StateFailed, osrun.ClassIntegrity, false, osrun.DoNone)
+		}
+		// and the folder that is empty, as the core leaves it, is the run's own
+		b := newStubBox(t, sh, osrun.RunHop)
+		b.launch(1, osrun.PhaseRun, hopList...)
+		if got := b.story(1); got[len(got)-1] != "UNIT_END ok" {
+			t.Errorf("a folder with nothing in it: %q", got)
 		}
 	})
 }

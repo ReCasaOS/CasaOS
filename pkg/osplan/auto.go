@@ -10,13 +10,22 @@ import (
 )
 
 // The auto text: the nine blocks of the hop as the unit of the dashboard runs them. They are the blocks of the owner's runbook, written by the same code (blockSpec.body),
-// with eight places where the unit differs from a person at a terminal (the hooks below), and one pass that gives every STOP line a class that the dashboard can tell
+// with nine places where the unit differs from a person at a terminal (the hooks below), and one pass that gives every STOP line a class that the dashboard can tell
 // apart. Nothing of the block text is replaced after it is written but that pass, which leaves what is inside a heredoc as it is: block 3 checks the hash of its restore
 // script, and the tree of the sources is the plan's, byte for byte.
 //
 // A unit has no terminal and nobody to type the words: the name of the machine, the removals that the owner accepted and the confirmation before the point of no return
 // are written into the text by the core after it has checked them against the plan, and the gate of the unit takes the place of every question that was asked of a
 // person: a block of this text runs only in the unit that was made for it.
+
+// The words that block 7 of the unit writes in the file "warnings" of the backup folder, one on a line, for each WARNING it prints: the core shows them beside the restart, and the
+// judge reports them after it.
+const (
+	// WarningInitrdSmall: the initrd of the new kernel is under the 5 MiB of a usual one.
+	WarningInitrdSmall = "initrd_small"
+	// WarningNoGrubConfig: there is no /boot/grub/grub.cfg to see whether the boot loader names the new kernel.
+	WarningNoGrubConfig = "grub_cfg_missing"
+)
 
 // AutoParams is what the core knows when it writes the text for a run.
 type AutoParams struct {
@@ -60,14 +69,17 @@ func BuildAuto(p Plan, a AutoParams) (*AutoRunbook, error) {
 
 // the hooks, each by the name that the tests and the golden use
 const (
-	hookPrologue = "H1" // the trap that says the class of a stop, and the gate of the unit
-	hookHostname = "H2" // the name of the machine, written in
-	hookRemovals = "H3" // the removals that the owner accepted, written in
-	hookConfirm  = "H4" // the confirmation before the point of no return, written in
-	hookNoTTY    = "H5" // no question of the terminal (a console, tmux or screen): a unit has none
-	hookAptq     = "H6" // apt without its pty
-	hookSync     = "H7" // sync after the marker of the point of no return
-	hookDocker   = "H8" // Docker's repository that cannot be asked is a note, not a stop
+	hookPrologue = "H1"  // the trap that says the class of a stop, and the gate of the unit
+	hookHostname = "H2"  // the name of the machine, written in
+	hookRemovals = "H3"  // the removals that the owner accepted, written in
+	hookConfirm  = "H4"  // the confirmation before the point of no return, written in
+	hookNoTTY    = "H5"  // no question of the terminal (a console, tmux or screen): a unit has none
+	hookAptq     = "H6"  // apt without its pty
+	hookSync     = "H7"  // sync after the marker of the point of no return
+	hookDocker   = "H8"  // Docker's repository that cannot be asked is a note, not a stop
+	hookTimers   = "H9"  // a marker, on the disk, that the timers are about to be stopped
+	hookNote     = "H10" // the note about Docker's source is taken away at the start of the check after the restart
+	hookWarning  = "H11" // the warnings of block 7 are written down for the core
 )
 
 // buildAuto is BuildAuto and the number of times that each hook went off in each block ("<block>/<hook>").
@@ -141,6 +153,9 @@ func autoHookSites(manual, docker bool) map[string]int {
 		sites[id+"/"+hookNoTTY] = 1
 	}
 	sites["verify/"+hookHostname] = 1
+	sites["timers/"+hookTimers] = 1
+	sites["after/"+hookNote] = 1
+	sites["prereboot/"+hookWarning] = 2
 	sites["minimal/"+hookConfirm] = 1
 	sites["minimal/"+hookSync] = 1
 	if manual {
@@ -210,6 +225,38 @@ func (c *rbCtx) prologue() string {
 		"trap osu_exit EXIT",
 		`[ "${CASAOS_OSU_RUN:-}" = `+shQ(c.auto.RunID)+` ] && grep -q 'casaos-os-upgrade\.service' `+cgroup+` || { echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }`,
 	)
+}
+
+// timersStopping (H9) is what the unit does between writing down the state of the timers and stopping the first of them: a marker in the backup folder, and a sync, so that both are on
+// the disk before a timer stops. The unwind starts the timers again from the state when the folder holds this marker or the one that block 1 ends with, and a block that is stopped or
+// killed between the first stop and its end leaves the timers running again.
+func (c *rbCtx) timersStopping() string {
+	if c.auto == nil {
+		return ""
+	}
+	c.hook(hookTimers)
+	return ": > \"$BK/timers-stopping\"\nsync\n"
+}
+
+// freshNote (H10) is what block 8 does first in the unit: the note about Docker's source that an earlier run of this block wrote is taken away, and the one of this run is written
+// by the branch that this run takes (and none by the branch that finds Docker answering). The check after the restart is run again when the machine is restarted a second time or
+// when the owner asks, and a note that is left from the run before is a finding about a machine that is not the one the judge looks at.
+func (c *rbCtx) freshNote() string {
+	if c.auto == nil {
+		return ""
+	}
+	c.hook(hookNote)
+	return "rm -f \"$BK/docker-source-note\"\n"
+}
+
+// warned (H11) is what a warning of block 7 does in the unit besides printing itself: the word of it is written in the backup folder, where the core reads it, to show beside the
+// button that restarts the machine and to say in the report after the restart. The owner's text prints the warning and asks them to look.
+func (c *rbCtx) warned(word string) string {
+	if c.auto == nil {
+		return ""
+	}
+	c.hook(hookWarning)
+	return "printf '%s\\n' " + word + " >> \"$BK/warnings\"; "
 }
 
 // typedHostname (H2) is the name of the machine: typed by the owner between the quotes, or written by the core (which has checked it is the machine's own). The block compares it

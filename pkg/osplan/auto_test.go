@@ -125,6 +125,12 @@ func TestTheAutoBlocksAreTheOwnersBlocksButForTheHooksAndTheClasses(t *testing.T
 		body = strings.Replace(body, muxAtHand(), "", 1)
 		body = strings.Replace(body, survive(), "", 1)
 		body = strings.Replace(body, ": > \"$BK/begun-upgrade\"\n", ": > \"$BK/begun-upgrade\"\nsync\n", 1)
+		body = strings.Replace(body, shTimersState("block 8"), shTimersState("block 8")+": > \"$BK/timers-stopping\"\nsync\n", 1)
+		body = strings.Replace(body, "warned=yes; echo \"WARNING: /boot/initrd.img", "warned=yes; printf '%s\\n' initrd_small >> \"$BK/warnings\"; echo \"WARNING: /boot/initrd.img", 1)
+		body = strings.Replace(body, "warned=yes; echo \"WARNING: /boot/grub/grub.cfg", "warned=yes; printf '%s\\n' grub_cfg_missing >> \"$BK/warnings\"; echo \"WARNING: /boot/grub/grub.cfg", 1)
+		body = strings.Replace(body, "echo \"Block 8: after the restart.\"\n", "echo \"Block 8: after the restart.\"\nrm -f \"$BK/docker-source-note\"\n", 1)
+		body = strings.ReplaceAll(body, logWords, logWordsUnit)
+		body = strings.ReplaceAll(body, (&rbCtx{}).dpkgWords(), (&rbCtx{auto: &AutoParams{}}).dpkgWords())
 		body = docker.ReplaceAllString(body, "<Docker's answers>\n")
 		want := "# casaos-os-upgrade " + blk.ID + " " + testRunID + "\n" + body
 		got := docker.ReplaceAllString(stripClasses.ReplaceAllString(blk.Text, "$1"), "<Docker's answers>\n")
@@ -170,6 +176,9 @@ func TestEveryHookFiresOnceWhereItHasASiteAndNowhereElse(t *testing.T) {
 			want[id+"/H5"] = 1
 		}
 		want["verify/H2"] = 1
+		want["timers/H9"] = 1
+		want["after/H10"] = 1
+		want["prereboot/H11"] = 2
 		want["minimal/H4"] = 1
 		want["minimal/H7"] = 1
 		if len(planManual(p)) > 0 {
@@ -310,8 +319,8 @@ func TestTheHooksEachHaveTheirEffectInTheAutoText(t *testing.T) {
 	})
 	t.Run("H7 sync follows the marker of the point of no return", func(t *testing.T) {
 		b := autoBlockOf(t, ar, "minimal")
-		if !strings.Contains(b, "\n: > \"$BK/begun-upgrade\"\nsync\necho \"BLOCK 5: THE POINT OF NO RETURN. THE UPGRADE BEGINS NOW.\"\n") || count(all, "\nsync\n") != 1 {
-			t.Error("block 5 does not sync after its marker, or something else syncs")
+		if !strings.Contains(b, "\n: > \"$BK/begun-upgrade\"\nsync\necho \"BLOCK 5: THE POINT OF NO RETURN. THE UPGRADE BEGINS NOW.\"\n") || count(b, "\nsync\n") != 1 || count(all, "\nsync\n") != 2 {
+			t.Error("block 5 does not sync after its marker, or something else syncs (block 1 syncs after the marker of its timers, and nothing else does)")
 		}
 	})
 	t.Run("H8 Docker's repository that cannot be asked is a note, not a stop", func(t *testing.T) {

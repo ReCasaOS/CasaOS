@@ -165,8 +165,9 @@ func TestARefreshThatIsKilledIsUnwoundAndTheTimersComeBack(t *testing.T) {
 	})
 }
 
-// When dpkg says that the refresh left something half done, the unwind runs the block that mends it, once the sources and the timers are back: it is the one place where a
-// refresh runs F. A repair that wants to remove anything is refused there (the refresh removed nothing, and the repair of it removes nothing), and the unwind is then partial.
+// When dpkg says that the refresh left something half done, the unwind runs the block that mends it, once the sources are back and before the timers are started: F stops them, and
+// they are the last thing that the unwind puts back, from the state it kept. It is the one place where a refresh runs F. A repair that wants to remove anything is refused there (the
+// refresh removed nothing, and the repair of it removes nothing), and the unwind is then partial: the timers are back all the same, and the folder stays where it was.
 func TestTheUnwindOfARefreshRunsTheBlockThatMendsWhatDpkgLeftHalfDone(t *testing.T) {
 	eachDriverShell(t, false, func(t *testing.T, sh driverShell) {
 		half := func(f *refreshFlow) {
@@ -203,7 +204,7 @@ exit 0`)
 		if !contains(got, "STOP 3 rupgrade rc=1 dpkg_broken pnr=false") || !contains(got, "UNWOUND ok") {
 			t.Fatalf("the markers: %q", got)
 		}
-		// the order of the unwind: the sources, the timers, then dpkg is asked, then F
+		// the order of the unwind: the sources, then dpkg is asked, then F, then the timers
 		calls := f.rb.calls()
 		at := func(prefix string, from int) int {
 			for i := from; i < len(calls); i++ {
@@ -214,11 +215,11 @@ exit 0`)
 			return -1
 		}
 		first := at("dpkg --configure -a", 0)
-		start := at("systemctl start apt-daily.timer", first)
-		audit := at("dpkg --audit", start)
+		audit := at("dpkg --audit", first)
 		second := at("dpkg --configure -a", audit)
 		repair := at("apt-get", second)
-		if first < 0 || start < first || audit < start || second < audit || repair < second || !strings.Contains(calls[repair], " -s -f install") || realRepairs(f) != 1 {
+		start := at("systemctl start apt-daily.timer", repair)
+		if first < 0 || audit < first || second < audit || repair < second || start < repair || !strings.Contains(calls[repair], " -s -f install") || realRepairs(f) != 1 {
 			t.Errorf("the order of the unwind: %q", calls)
 		}
 		if !f.rb.sourcesAre(originalSources(t)) || !f.timersAreBack() {
@@ -237,6 +238,10 @@ exit 0`)
 		}
 		if realRepairs(f) != 0 {
 			t.Errorf("the repair ran: %q", f.rb.calls())
+		}
+		// the timers are back all the same, and the folder with the copy of /etc/apt is where it was
+		if !f.timersAreBack() || !f.exists(f.bk) || f.exists(f.dir+"/bk-aborted") {
+			t.Errorf("timers back %v, folder there %v, folder put aside %v", f.timersAreBack(), f.exists(f.bk), f.exists(f.dir+"/bk-aborted"))
 		}
 		wantState(t, f.driverBox, "a repair that removes", osrun.StateNeedsAttention, osrun.ReasonUnwindPartial, true, osrun.DoNone)
 	})

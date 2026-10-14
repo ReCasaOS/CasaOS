@@ -3,6 +3,7 @@ package osplan
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -100,20 +101,25 @@ func TestAStopInTheMinimalUpgradeIsBeforeOrAfterThePointOfNoReturnByTheFileItLef
 	})
 }
 
-// The timers are started again only by a folder that stopped them: the state of the timers is one file for the whole machine, and a manual run may have written it.
-func TestTheUnwindStartsTheTimersOnlyWhenItsOwnFolderStoppedThem(t *testing.T) {
+// The timers are started again by a folder that was about to stop them, or did: the state of the timers is one file for the whole machine, and a manual run may have written it. A
+// folder that is only at the block before has not stopped anything, and leaves the state alone.
+func TestTheUnwindStartsTheTimersOnlyWhenItsOwnFolderWasAboutToStopThem(t *testing.T) {
 	eachDriverShell(t, false, func(t *testing.T, sh driverShell) {
-		// the block that stops the timers writes the state and stops: its folder has no done-timers
+		// the block that stops the timers writes the state and the marker that it is about to stop them, and stops: the first of them may be stopped, and all that ran are started again
 		b := newStubBox(t, sh, osrun.RunHop)
 		b.fail(osrun.BlockTimers, 1, osrun.ClassBusy)
 		b.launch(1, osrun.PhaseRun, hopList...)
+		started := 0
 		for _, l := range b.trace() {
-			if strings.HasPrefix(l, "systemctl") {
-				t.Errorf("a folder with no done-timers started a timer: %q", l)
+			if strings.HasPrefix(l, "systemctl start ") {
+				started++
 			}
 		}
-		if !b.exists(b.root + "/timers.state") {
-			t.Error("the state of the timers, which another run may own, was removed")
+		if got := b.trace(); started != 2 || !slices.Contains(got, "systemctl start apt-daily.timer") || !slices.Contains(got, "systemctl start unattended-upgrades.service") {
+			t.Errorf("the timers that ran were not all started again: %q", got)
+		}
+		if b.exists(b.root + "/timers.state") {
+			t.Error("the state of the timers is left behind after they were started again")
 		}
 		wantState(t, b, "the timers block that stopped", osrun.StateFailed, osrun.ClassBusy, false, osrun.DoNone)
 
@@ -137,10 +143,22 @@ func TestTheUnwindStartsTheTimersOnlyWhenItsOwnFolderStoppedThem(t *testing.T) {
 			}
 		}
 		wantState(t, b, "no timer was running", osrun.StateFailed, osrun.ClassDisk, false, osrun.DoNone)
+
+		// a unit that is killed between the marker and the end of the block (some of the timers stopped) is unwound by the unit that the core starts: the timers come back
+		b = newStubBox(t, sh, osrun.RunHop)
+		b.blocks[osrun.BlockTimers] = "BK='" + b.bk + "'\nprintf 'apt-daily.timer active\\nunattended-upgrades.service active\\n' > '" + b.root + "/timers.state'\n: > \"$BK/timers-stopping\"\nkill -9 $PPID\n"
+		b.mayDie = true
+		b.launch(1, osrun.PhaseRun, hopList...)
+		b.launch(2, osrun.PhaseUnwind)
+		equalStory(t, "the unwind", b.story(2), []string{"UNIT_START unwind", "UNWOUND ok", "UNIT_END ok"})
+		if got := b.trace(); !slices.Contains(got, "systemctl start apt-daily.timer") || !slices.Contains(got, "systemctl start unattended-upgrades.service") || b.exists(b.root+"/timers.state") {
+			t.Errorf("the timers of a block that was killed were not started again: %q", got)
+		}
 	})
 }
 
-// What could not be put back is said, and the run is not called failed: the owner looks at the machine.
+// What could not be put back is said, and the run is not called failed: the owner looks at the machine. The folder that holds the copy of /etc/apt stays where it was, so that there
+// is something to look at and to put back from; only a folder whose contents were all put back is put aside.
 func TestAnUnwindThatCouldNotPutEverythingBackSaysPartialAndTheRunNeedsAttention(t *testing.T) {
 	eachDriverShell(t, false, func(t *testing.T, sh driverShell) {
 		for _, tc := range []struct {
@@ -148,15 +166,19 @@ func TestAnUnwindThatCouldNotPutEverythingBackSaysPartialAndTheRunNeedsAttention
 			setup func(b *driverBox)
 			// the state of the timers, which stays when a timer could not be started
 			timersStay bool
+			// the copy of /etc/apt, which is still in the folder when the sources were not put back from it
+			copyStays bool
 		}{
-			{"the restore script fails", func(b *driverBox) { b.write(b.root+"/restore-fails", "", 0o644) }, false},
-			{"a timer cannot be started", func(b *driverBox) { b.write(b.root+"/systemctl-fails-apt-daily.timer", "", 0o644) }, true},
+			{"the restore script fails", func(b *driverBox) { b.write(b.root+"/restore-fails", "", 0o644) }, false, true},
+			{"a timer cannot be started", func(b *driverBox) { b.write(b.root+"/systemctl-fails-apt-daily.timer", "", 0o644) }, true, false},
 			// apt-orig is there, and the script that puts it back is not
 			{"there is no restore script", func(b *driverBox) {
 				b.blocks[osrun.BlockSources] = "BK='" + b.bk + "'\nmkdir -p \"$BK/apt-orig\"\n: > \"$BK/done-sources\"\n"
-			}, false},
+			}, false, true},
+			{"the folder cannot be put aside", func(b *driverBox) { b.write(b.root+"/mv-fails", "", 0o644) }, false, false},
 		} {
 			b := newStubBox(t, sh, osrun.RunHop)
+			b.write(b.root+"/bin/mv", "#!/bin/sh\n[ ! -f '"+b.root+"/mv-fails' ] || case \"$*\" in *bk-aborted*) exit 1 ;; esac\nexec /bin/mv \"$@\"\n", 0o755)
 			tc.setup(b)
 			b.fail(osrun.BlockDownload, 7, osrun.ClassNetwork)
 			b.launch(1, osrun.PhaseRun, hopList...)
@@ -167,9 +189,9 @@ func TestAnUnwindThatCouldNotPutEverythingBackSaysPartialAndTheRunNeedsAttention
 			if b.exists(b.root+"/timers.state") != tc.timersStay {
 				t.Errorf("%s: the state of the timers is there: %v", tc.name, b.exists(b.root+"/timers.state"))
 			}
-			// the folder is put aside all the same, with what is left to look at
-			if b.exists(b.bk) || !b.exists(b.dir+"/bk-aborted") {
-				t.Errorf("%s: the folder was not put aside", tc.name)
+			// the folder stays where it was, with what is left to look at and to put back from
+			if !b.exists(b.bk) || b.exists(b.dir+"/bk-aborted") || b.exists(b.bk+"/apt-orig") != tc.copyStays {
+				t.Errorf("%s: the folder was put aside (%v), or the copy of /etc/apt is there: %v, and it should be: %v", tc.name, !b.exists(b.bk), b.exists(b.bk+"/apt-orig"), tc.copyStays)
 			}
 			wantState(t, b, tc.name, osrun.StateNeedsAttention, osrun.ReasonUnwindPartial, true, osrun.DoNone)
 		}

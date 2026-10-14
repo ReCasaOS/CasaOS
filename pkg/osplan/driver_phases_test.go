@@ -59,36 +59,41 @@ func TestTheRefreshEndsWithTheWordOfItsLastBlock(t *testing.T) {
 	})
 }
 
-// A refresh that stops puts the sources and the timers back, and finishes what dpkg left half done when dpkg says that it did leave something: block F, which is run by the
-// unwind of a refresh and by no other.
+// A refresh that stops puts the sources back, finishes what dpkg left half done when the refresh got to change packages and dpkg says that it did leave something (block F, which is
+// run by the unwind of a refresh and by no other), and then starts the timers again: F stops them, and they are the last thing that the unwind puts back.
 func TestTheUnwindOfARefreshFinishesWhatDpkgLeftAndTheUnwindOfAHopDoesNot(t *testing.T) {
 	eachDriverShell(t, true, func(t *testing.T, sh driverShell) {
 		for _, tc := range []struct {
 			name        string
 			kind        string
 			audit       string
-			unwind      bool // the unwind is a unit of its own, after a unit that was killed
+			stopAt      string // the block that stops (a refresh that is killed is killed in the block that upgrades, after its marker)
+			killed      bool
 			forwardRuns bool
 		}{
-			{"a refresh that stops, and dpkg is not quiet", osrun.RunRefresh, "half\n", false, true},
-			{"a refresh that stops, and dpkg is quiet", osrun.RunRefresh, "", false, false},
-			{"a refresh that is killed, and dpkg is not quiet", osrun.RunRefresh, "half\n", true, true},
-			{"a refresh that is killed, and dpkg is quiet", osrun.RunRefresh, "", true, false},
-			{"a hop that stops, and dpkg is not quiet", osrun.RunHop, "half\n", false, false},
+			{"a refresh that stops in the upgrade, and dpkg is not quiet", osrun.RunRefresh, "half\n", osrun.BlockRUpgrade, false, true},
+			{"a refresh that stops in the upgrade, and dpkg is quiet", osrun.RunRefresh, "", osrun.BlockRUpgrade, false, false},
+			{"a refresh that is killed in the upgrade, and dpkg is not quiet", osrun.RunRefresh, "half\n", osrun.BlockRUpgrade, true, true},
+			{"a refresh that is killed in the upgrade, and dpkg is quiet", osrun.RunRefresh, "", osrun.BlockRUpgrade, true, false},
+			// the refresh had not touched dpkg: what is not quiet is somebody else's, or was before, and the block that mends it is not run on a refresh that did nothing
+			{"a refresh that stops in the first block, and dpkg is not quiet", osrun.RunRefresh, "half\n", osrun.BlockRCheck, false, false},
+			{"a refresh that stops in the sources, and dpkg is not quiet", osrun.RunRefresh, "half\n", osrun.BlockRSources, false, false},
+			{"a hop that stops, and dpkg is not quiet", osrun.RunHop, "half\n", osrun.BlockDownload, false, false},
 		} {
 			b := newStubBox(t, sh, tc.kind)
 			b.write(b.root+"/audit.txt", tc.audit, 0o644)
 			phase, list := osrun.PhaseRefresh, refreshList
-			stopAt := osrun.BlockRUpgrade
 			if tc.kind == osrun.RunHop {
-				phase, list, stopAt = osrun.PhaseRun, hopList, osrun.BlockDownload
+				phase, list = osrun.PhaseRun, hopList
 			}
-			if tc.unwind {
-				b.hookAfter(1+2*2+1, "kill -9 $$")
+			if tc.killed {
+				// the block leaves its marker, and the unit is killed in it
+				b.blocks[tc.stopAt] = "BK='" + b.bk + "'\n: > \"$BK/begun-rupgrade\"\nkill -9 $PPID\n"
+				b.mayDie = true
 				b.launch(1, phase, list...)
 				b.launch(2, osrun.PhaseUnwind)
 			} else {
-				b.fail(stopAt, 1, osrun.ClassAptFailed)
+				b.fail(tc.stopAt, 1, osrun.ClassAptFailed)
 				b.launch(1, phase, list...)
 			}
 			ran := slices.Contains(b.trace(), "ran forward")
@@ -96,9 +101,9 @@ func TestTheUnwindOfARefreshFinishesWhatDpkgLeftAndTheUnwindOfAHopDoesNot(t *tes
 				t.Errorf("%s: block F ran: %v\n%q", tc.name, ran, b.trace())
 			}
 			if tc.forwardRuns {
-				// the sources and the timers first, then dpkg is asked, then F, then the folder is moved
+				// the sources first, then dpkg is asked, then F, then the timers, then the folder is moved
 				at := func(s string) int { return slices.Index(b.trace(), s) }
-				if !(at("restore") >= 0 && at("restore") < at("systemctl start apt-daily.timer") && at("systemctl start apt-daily.timer") < at("dpkg --audit") && at("dpkg --audit") < at("ran forward")) {
+				if !(at("restore") >= 0 && at("restore") < at("dpkg --audit") && at("dpkg --audit") < at("ran forward") && at("ran forward") < at("systemctl start apt-daily.timer")) {
 					t.Errorf("%s: the order of the unwind: %q", tc.name, b.trace())
 				}
 			}

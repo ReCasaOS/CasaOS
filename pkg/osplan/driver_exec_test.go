@@ -17,7 +17,7 @@ import (
 // stubParts is what the stub of a block does: what it leaves before it can stop, and what it leaves when it ends. The words in capitals are the box's.
 var stubParts = map[string][2]string{
 	osrun.BlockVerify:   {"", `: > "$BK/done-verify"`},
-	osrun.BlockTimers:   {`printf 'apt-daily.timer active\napt-daily-upgrade.timer inactive\nunattended-upgrades.service active\n' > ROOT/timers.state`, `: > "$BK/done-timers"`},
+	osrun.BlockTimers:   {`printf 'apt-daily.timer active\napt-daily-upgrade.timer inactive\nunattended-upgrades.service active\n' > ROOT/timers.state; : > "$BK/timers-stopping"`, `: > "$BK/done-timers"`},
 	osrun.BlockSnapshot: {"", `: > "$BK/done-snapshot"`},
 	osrun.BlockSources: {`mkdir -p "$BK/apt-orig"
 cat > "$BK/restore-sources.sh" <<'CASAOS_EOS'
@@ -42,7 +42,7 @@ HERE="${0%/*}"
 printf '%s\n' restore >> ROOT/trace.log
 mv "$HERE/apt-orig" "$HERE/apt-orig.restored.$$"
 CASAOS_EOS`, `: > "$BK/done-rsources"`},
-	osrun.BlockRUpgrade: {"", `: > "$BK/done-rupgrade"`},
+	osrun.BlockRUpgrade: {`: > "$BK/begun-rupgrade"`, `: > "$BK/done-rupgrade"`},
 	osrun.BlockRDone:    {"", `if [ -f ROOT/refresh-reboot ]; then cat ROOT/refresh-reboot > "$BK/refresh-reboot"; fi; : > "$BK/done-rdone"`},
 }
 

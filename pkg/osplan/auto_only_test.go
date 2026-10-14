@@ -433,6 +433,61 @@ func TestAutoBlock8WritesWhyDockersSourceStaysPaused(t *testing.T) {
 	}
 }
 
+// A note that an earlier run of block 8 left about Docker's source is taken away when the block begins, and the branch that finds Docker answering writes none: the note is about
+// this run of the block, and the judge reads it as the machine's own.
+func TestAutoBlock8TakesAwayTheNoteOfAnEarlierRun(t *testing.T) {
+	_, rb, _ := autoBox(t)
+	b := newShellBox(t)
+	b.auto = true
+	setupBlock8(b)
+	b.write("bk/docker-source-note", "unreachable\n")
+	if out, code := b.run(rb, "after"); code != 0 || b.exists("bk/docker-source-note") || !b.exists("etc-apt/sources.list.d/docker.list") {
+		t.Errorf("Docker publishes the release: exit %d, note %q, %q", code, b.read("bk/docker-source-note"), out)
+	}
+	// and it is taken away at the start of the block, so that a block that stops before it gets to Docker leaves none either
+	b = newShellBox(t)
+	b.auto = true
+	setupBlock8(b)
+	b.write("bk/docker-source-note", "unreachable\n")
+	b.write("os-release", "VERSION_CODENAME=bullseye\n")
+	if out, code := b.run(rb, "after"); code == 0 || b.exists("bk/docker-source-note") {
+		t.Errorf("a block that stops on a machine that is not Debian 12: exit %d, note %q, %q", code, b.read("bk/docker-source-note"), out)
+	}
+}
+
+// What block 7 warns of is written, as a word on a line, in the file that the core reads to show it beside the restart and to say it after: the initrd that is under 5 MiB, and the
+// boot loader that cannot be looked at. A machine that has nothing to warn of leaves no file.
+func TestAutoBlock7WritesTheWordOfEachWarningItPrints(t *testing.T) {
+	b, rb, _ := autoBox(t)
+	b.write("bk/done-full", "")
+	b.write("bk/packages.tsv", "ii \tlinux-image-5.10.0-46-cloud-amd64\t5.10.209-2\n")
+	b.write("bk/sshd-keys.txt", "")
+	b.write("bk/iptables-alternative.txt", "")
+	b.write("bootid-now", "boot-A\n")
+	b.write("fake/kernels.txt", "ii  linux-image-5.10.0-46-cloud-amd64\nii  linux-image-6.1.0-53-cloud-amd64\n")
+	b.write("fake/pkg-systemd-timesyncd", "ii ")
+	b.write("boot/vmlinuz-6.1.0-53-cloud-amd64", "k")
+	b.write("boot/vmlinuz-5.10.0-46-cloud-amd64", "k")
+	b.sized("boot/initrd.img-6.1.0-53-cloud-amd64", 2<<20)
+	os.Remove(filepath.Join(b.dir, "boot", "grub", "grub.cfg"))
+	out, code := runBlock7(b, rb)
+	if code != 0 || !b.exists("bk/done-prereboot") || b.read("bk/warnings") != "initrd_small\ngrub_cfg_missing\n" {
+		t.Fatalf("both warnings: exit %d, warnings %q, %q", code, b.read("bk/warnings"), out)
+	}
+	// the words are the ones that the core and the judge know
+	if WarningInitrdSmall != "initrd_small" || WarningNoGrubConfig != "grub_cfg_missing" {
+		t.Error("the words of the warnings are not the ones of the files")
+	}
+	// the initrd is a usual one, and the boot loader names the kernel: nothing to warn of
+	b.sized("boot/initrd.img-6.1.0-53-cloud-amd64", initrdOK)
+	b.write("boot/grub/grub.cfg", "menuentry { linux /boot/vmlinuz-6.1.0-53-cloud-amd64 }\n")
+	os.Remove(filepath.Join(b.dir, "bk", "done-prereboot"))
+	os.Remove(filepath.Join(b.dir, "bk", "warnings"))
+	if out, code := runBlock7(b, rb); code != 0 || b.exists("bk/warnings") {
+		t.Errorf("no warning: exit %d, warnings %q, %q", code, b.read("bk/warnings"), out)
+	}
+}
+
 // ---- block F ---------------------------------------------------------------------------------------------------------------------------------------
 
 func fBox(t *testing.T) (*shellBox, *AutoRunbook) {
@@ -491,6 +546,25 @@ func TestBlockFMendsInTheOrderOfTheTableAndWritesItsSimulationForTheAttempt(t *t
 	}
 }
 
+// The first step of the table, dpkg --configure -a, that fails is not the end of it: a package whose dependency is not unpacked yet cannot be configured, and the repair that follows
+// is what unpacks it. The block says what dpkg could not do, simulates the repair, reads it, runs it, and is done when dpkg is quiet afterwards.
+func TestBlockFGoesOnWhenDpkgCannotConfigureAndTheRepairMendsIt(t *testing.T) {
+	b, ar := fBox(t)
+	b.write("fake/dpkg-fails", "")
+	out, code := runForward(b, ar)
+	if code != 0 || !strings.Contains(out, "dpkg could not configure everything that is half done (it ended with 1;") || !strings.Contains(out, "Block F done.") {
+		t.Fatalf("exit %d, %q", code, out)
+	}
+	calls := b.read("fake/calls.log")
+	configure, simulate, repair := strings.Index(calls, "dpkg --configure -a"), strings.Index(calls, "-s -f install"), strings.Index(calls, "--force-confold -f install\n")
+	if configure < 0 || simulate < configure || repair < simulate {
+		t.Errorf("the table's steps did not run in their order: configure %d, simulate %d, repair %d:\n%s", configure, simulate, repair, calls)
+	}
+	if got := stopClassOf(b); got != "" {
+		t.Errorf("a stop class %q was written for a block that ended well", got)
+	}
+}
+
 func TestBlockFStopsWhereTheTableWouldNotGoOn(t *testing.T) {
 	protected := resimOf("fuse", "samba-libs")
 	for _, tc := range []struct {
@@ -502,7 +576,8 @@ func TestBlockFStopsWhereTheTableWouldNotGoOn(t *testing.T) {
 	}{
 		{"a timer that stays up", func(b *shellBox) { b.fake("systemctl", `case "$1" in is-active) echo active;; esac; exit 0`) }, "STOP: apt-daily.timer is still running", "busy", "dpkg"},
 		{"a package manager is at work", func(b *shellBox) { b.write("fake/ps.txt", psTable("apt-get         apt-get -y upgrade")) }, "STOP: a package manager is running", "busy", "dpkg"},
-		{"dpkg cannot configure", func(b *shellBox) { b.write("fake/dpkg-fails", "") }, "STOP: dpkg could not configure what is half done", "dpkg_broken", "-s -f install"},
+		{"dpkg cannot configure and the repair fails too", func(b *shellBox) { b.write("fake/dpkg-fails", ""); b.write("fake/fix-fails", "") }, "STOP: dpkg could not configure what is half done, and apt could not repair it either", "dpkg_broken", ""},
+		{"dpkg is not quiet after the repair", func(b *shellBox) { b.write("fake/audit.txt", "The following packages are only half configured: foo\n") }, "STOP: dpkg is not quiet after the repair", "dpkg_broken", ""},
 		{"the repair cannot be worked out", func(b *shellBox) { b.write("fake/fixsim-fails", "") }, "STOP: apt cannot work out the repair", "apt_failed", "--force-confold -f install"},
 		{"the simulation has no summary", func(b *shellBox) { b.write("fake/fixsim.txt", "Reading package lists...\n") }, "STOP: apt printed no summary line", "apt_failed", "--force-confold -f install"},
 		{"the names and the summary disagree", func(b *shellBox) {

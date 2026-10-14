@@ -294,7 +294,7 @@ func TestEveryBlockOfTheRefreshIsShellThatTheShellParses(t *testing.T) {
 }
 
 // The sources that R1 writes are the tree of the refresh, byte for byte (the files of the machine, which a refresh keeps), and R1 reads them back against the hash that the
-// rewrite made of them; the restore script is the owner's, verbatim.
+// rewrite made of them; the restore script is the refresh's own (the owner's, but for what it says of a hop).
 func TestR1HoldsTheTreeAndTheRestoreScriptByteForByte(t *testing.T) {
 	in := refreshInputsOf(t, false)
 	ar, err := BuildRefresh(in)
@@ -308,8 +308,8 @@ func TestR1HoldsTheTreeAndTheRestoreScriptByteForByte(t *testing.T) {
 		bodies = append(bodies, h.opener)
 		switch {
 		case strings.Contains(h.opener, "restore-sources.sh"):
-			if h.body != strings.TrimSuffix(restoreScript, "\n") {
-				t.Error("the restore script is not the owner's")
+			if h.body != strings.TrimSuffix(restoreScriptRefresh, "\n") {
+				t.Error("the restore script is not the refresh's")
 			}
 		case strings.Contains(h.opener, ".casaos-new"):
 			want := ""
@@ -344,4 +344,44 @@ func runIn(dir, sh string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// The restore script of a refresh is the owner's but for what it says of a hop: the line that sends the owner back to block 3 and the one about the timers that block 1 stopped,
+// which the last block of a refresh starts itself. Nothing that does the work is different.
+func TestTheRestoreScriptOfTheRefreshDiffersFromTheOwnersOnlyInWhatItSaysOfAHop(t *testing.T) {
+	owner := strings.Split(restoreScript, "\n")
+	refresh := strings.Split(restoreScriptRefresh, "\n")
+	var gone []string
+	for _, l := range owner {
+		if !slices.Contains(refresh, l) {
+			gone = append(gone, l)
+		}
+	}
+	for _, l := range refresh {
+		if !slices.Contains(owner, l) && !strings.HasPrefix(l, "# Puts /etc/apt/sources.list") && !strings.HasPrefix(l, "# The copy of /etc/apt that the refresh made") && l != `echo "The sources are back as they were."` {
+			t.Errorf("a line that is the refresh's only: %q", l)
+		}
+	}
+	for _, l := range gone {
+		switch {
+		case strings.HasPrefix(l, "# Puts /etc/apt/sources.list"), strings.HasPrefix(l, "# The copy of /etc/apt that block 3 made"), strings.HasPrefix(l, `echo "The sources are back as they were.`):
+		case strings.HasPrefix(l, "TS="), strings.HasPrefix(l, `if [ -s "$TS" ]; then`), strings.HasPrefix(l, `  units="$(awk`), strings.HasPrefix(l, `  if [ -n "$units" ]; then echo "The timers of apt that block 1 stopped`), l == "fi":
+		default:
+			t.Errorf("a line of the owner's script that the refresh's leaves out: %q", l)
+		}
+	}
+	for _, word := range []string{"Block 3 can be run again", "timers of apt that block 1 stopped", "block 3 of the runbook", "that block 3 made"} {
+		if strings.Contains(restoreScriptRefresh, word) {
+			t.Errorf("the restore script of a refresh says %q", word)
+		}
+		if !strings.Contains(restoreScript, word) {
+			t.Errorf("the owner's restore script does not say %q any more: the test is not looking at what it was made for", word)
+		}
+	}
+	if !strings.Contains(restoreScriptRefresh, `rm -f "$HERE/done-sources" "$HERE/done-download"`) || !strings.Contains(restoreScriptRefresh, "apt-get update") {
+		t.Error("the work of the script is not all there")
+	}
+	if restoreScriptHashOf(restoreScriptRefresh) == restoreScriptHash() {
+		t.Error("the two scripts have the same hash")
+	}
 }

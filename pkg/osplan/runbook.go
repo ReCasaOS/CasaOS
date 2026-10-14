@@ -344,6 +344,35 @@ const stopTimersNow = "systemctl stop apt-daily.timer apt-daily-upgrade.timer ap
 // is on the terminal only), so the words tell the owner to copy the terminal too.
 const logWords = "What dpkg and the scripts of the packages printed is in /var/log/apt/term.log; what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each. The lines of apt itself (the ones that start with E:) are on the terminal only: copy what the terminal shows too."
 
+// logWordsUnit is logWords for the unit: apt runs there without a pty, so term.log holds only when it started and ended, and what dpkg and the scripts of the packages print, and the
+// lines of apt itself, are in the log of the unit, in the folder of the run (the page shows the end of it).
+const logWordsUnit = "What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."
+
+// logWords (method) is the words that end the STOP lines of the blocks after the point of no return, for the text that c writes.
+func (c *rbCtx) logWords() string {
+	if c.auto != nil {
+		return logWordsUnit
+	}
+	return logWords
+}
+
+// dpkgWords is how the STOP line of a dpkg --configure -a that failed says where to read what it printed: dpkg run by apt is in the log of apt's pty, dpkg run by hand prints on the
+// terminal, and in the unit it prints in the log of the unit.
+func (c *rbCtx) dpkgWords() string {
+	if c.auto != nil {
+		return "dpkg could not configure what is half done: what it printed is above, in the log of the unit. "
+	}
+	return "dpkg could not configure what is half done: what it printed is above, on this terminal only (dpkg run by hand does not write term.log): copy it. "
+}
+
+// help (the method) defines the help variable of blocks 5 and 6 and block F: the words of the owner's text, or the unit's.
+func (c *rbCtx) help() string {
+	if c.auto != nil {
+		return "help=\"The upgrade has begun: do not undo anything, ask for help. " + logWordsUnit + "\"\n"
+	}
+	return shHelp
+}
+
 func resumeMap(blocks []blockSpec) string {
 	var b strings.Builder
 	b.WriteString("\n# ==============================\n")
@@ -454,7 +483,7 @@ func shTimersBack() string {
 // with the repair and the full upgrade after it simulated and read before they are run, as the full upgrade was read before the first. Block 6 of the hop runs it, and so does the
 // block of a refresh that upgrades. opts are added to every dist-upgrade of it and of its simulations (the refresh asks apt to include the phased updates; the hop adds none), and
 // more, when it is not nil, is the shell of the check that a block adds after the guard of each simulation, for what only that block refuses (the refresh allows no removal at all).
-func repairLadder(opts string, more func(file string) string) string {
+func (c *rbCtx) repairLadder(opts string, more func(file string) string) string {
 	after := func(file string) string {
 		if more == nil {
 			return ""
@@ -467,19 +496,19 @@ func repairLadder(opts string, more func(file string) string) string {
 	var b strings.Builder
 	b.WriteString("if ! aptq dist-upgrade" + opts + "; then\n")
 	b.WriteString("  echo \"The dist-upgrade failed once: configuring what is half done, repairing, then again.\"\n")
-	b.WriteString("  dpkg --configure -a --force-confdef --force-confold || " + stop("dpkg could not configure what is half done: what it printed is above, on this terminal only (dpkg run by hand does not write term.log): copy it. Do not undo anything: ask for help. "+logWords) + "\n")
+	b.WriteString("  dpkg --configure -a --force-confdef --force-confold || " + stop(c.dpkgWords()+"Do not undo anything: ask for help. "+c.logWords()) + "\n")
 	// the repair removes a package that has an unmet dependency without a stop, and the full upgrade after it may want something else than before: each is simulated
 	// and read, as the full upgrade was before the first one
 	b.WriteString("  aptq -s -f install > \"$BK/repair.txt\" 2>&1 || { echo \"STOP: apt cannot work out the repair: see $BK/repair.txt. $help\"; exit 1; }\n")
 	b.WriteString(indentBy(checkSim("$BK/repair.txt", "$help"), "  "))
 	b.WriteString("  guard_removals \"$BK/repair.txt\" \"the repair\"\n")
 	b.WriteString(after("$BK/repair.txt"))
-	b.WriteString("  aptq -f install || " + stop("apt could not repair the packages. Do not undo anything: ask for help. "+logWords) + "\n")
+	b.WriteString("  aptq -f install || " + stop("apt could not repair the packages. Do not undo anything: ask for help. "+c.logWords()) + "\n")
 	b.WriteString("  aptq -s dist-upgrade" + opts + " > \"$BK/after-repair.txt\" 2>&1 || { echo \"STOP: apt cannot work out the full upgrade after the repair: see $BK/after-repair.txt. $help\"; exit 1; }\n")
 	b.WriteString(indentBy(checkSim("$BK/after-repair.txt", "$help"), "  "))
 	b.WriteString("  guard_removals \"$BK/after-repair.txt\" \"the full upgrade after the repair\"\n")
 	b.WriteString(after("$BK/after-repair.txt"))
-	b.WriteString("  aptq dist-upgrade" + opts + " || " + stop("the full upgrade failed again after the repair. Do not undo anything: ask for help. "+logWords) + "\n")
+	b.WriteString("  aptq dist-upgrade" + opts + " || " + stop("the full upgrade failed again after the repair. Do not undo anything: ask for help. "+c.logWords()) + "\n")
 	b.WriteString("fi\n")
 	return b.String()
 }
@@ -626,12 +655,12 @@ func checkSim(file, tail string) string {
 // says is essential or required. The simulation is the one of the full upgrade, or of the repair when the second word says so, and the upgrade has begun when it
 // is read: the words are forward-only. Block 5 calls it after the minimal upgrade, block 6 before each catch-up pass (the first full upgrade may have changed
 // what the next one wants) and before each step of the repair ladder that can remove a package (apt-get -f install, and the full upgrade after it).
-func shGuard() string {
-	return shGuardSaying("The upgrade has begun. DO NOT UNDO ANYTHING. Ask for help, with $1. ")
+func (c *rbCtx) guard() string {
+	return c.guardSaying("The upgrade has begun. DO NOT UNDO ANYTHING. Ask for help, with $1. ")
 }
 
 // shGuardSaying is shGuard with the words that a stop ends with, before the words of the logs: the refresh has not begun the upgrade, and puts the machine back.
-func shGuardSaying(words string) string {
+func (c *rbCtx) guardSaying(words string) string {
 	return shLines(
 		`guard_removals() {`,
 		`  what="${2:-the full upgrade}"`,
@@ -643,7 +672,7 @@ func shGuardSaying(words string) string {
 		`        why="protected" ;;`,
 		`      *) case "$(dpkg-query -W -f='${Essential} ${Priority}\n' "$base" 2> /dev/null || true)" in "yes "*|*" required") why="essential or required, as dpkg says" ;; esac ;;`,
 		`    esac`,
-		`    [ -z "$why" ] || { echo "STOP: $what would remove $name, which is $why. `+words+logWords+`"; exit 1; }`,
+		`    [ -z "$why" ] || { echo "STOP: $what would remove $name, which is $why. `+words+c.logWords()+`"; exit 1; }`,
 		`  done`,
 		`}`,
 	)
@@ -754,21 +783,51 @@ if [ -z "${CASAOS_NO_UPDATE:-}" ]; then apt-get update || echo "apt-get update d
 `
 
 // restoreScriptHash is the hash of the restore script as the block writes it, which the block checks after writing it.
-func restoreScriptHash() string {
-	sum := sha256.Sum256([]byte(restoreScript))
+func restoreScriptHash() string { return restoreScriptHashOf(restoreScript) }
+
+func restoreScriptHashOf(script string) string {
+	sum := sha256.Sum256([]byte(script))
 	return hex.EncodeToString(sum[:])
+}
+
+// restoreScriptRefresh is the restore script that the refresh writes: the owner's, but for the two things it says that are about a hop and are untrue of a refresh, whose last block
+// starts the timers itself and which has no block 3 to run again. The unit runs it with its log in the page, and a refresh that ended well would show a line that sends the owner to
+// give up a hop. It is the only difference, and a test holds it to that.
+var restoreScriptRefresh = refreshRestoreScript(restoreScript)
+
+func refreshRestoreScript(script string) string {
+	const again = ` Block 3 can be run again.`
+	i := strings.Index(script, "TS=\"${CASAOS_TIMERS_STATE:-")
+	j := strings.Index(script, `if [ -z "${CASAOS_NO_UPDATE:-}" ]`)
+	if !strings.Contains(script, again) || i < 0 || j < i {
+		panic("osplan: the restore script is not the one that the refresh's is made from")
+	}
+	script = script[:i] + script[j:]
+	script = strings.Replace(script, again, "", 1)
+	script = strings.Replace(script, "# Puts /etc/apt/sources.list and sources.list.d back as they were before block 3 of the runbook, and forgets blocks 3 and 4 (block 3 can be run again).", "# Puts /etc/apt/sources.list and sources.list.d back as they were before the refresh wrote its own.", 1)
+	script = strings.Replace(script, "# The copy of /etc/apt that block 3 made is in apt-orig,", "# The copy of /etc/apt that the refresh made is in apt-orig,", 1)
+	return script
+}
+
+// restoreText is the restore script that the text of c writes: the refresh's own for a refresh.
+func (c *rbCtx) restoreText() string {
+	if c.refresh != nil {
+		return restoreScriptRefresh
+	}
+	return restoreScript
 }
 
 // shSourcesBackup is what a block does before it changes a file of /etc/apt: it writes the restore script and reads it back, and copies /etc/apt whole (or not at all). Block 3
 // of the hop does it, and so does the block of a refresh that writes the sources. again is what the stops of the script say to do (run the block again, or start the refresh again).
-func shSourcesBackup(again string) string {
+func (c *rbCtx) sourcesBackup(again string) string {
 	// the restore script is written and checked BEFORE the copy of /etc/apt, and the copy is made under another name and renamed when it is whole: the
 	// state "apt-orig is there" means that the script is there and the copy is complete (a copy that died half way, found by a restore script of an
 	// earlier cycle, would be taken for the truth and delete the sources)
 	var b strings.Builder
-	b.WriteString("cat > \"$BK/restore-sources.sh\" <<'" + heredocEnd + "'\n" + restoreScript + heredocEnd + "\n")
+	script := c.restoreText()
+	b.WriteString("cat > \"$BK/restore-sources.sh\" <<'" + heredocEnd + "'\n" + script + heredocEnd + "\n")
 	b.WriteString("sh -n \"$BK/restore-sources.sh\" || " + stop("the restore script was damaged on its way here: it is not shell. Nothing is changed in /etc/apt. "+again) + "\n")
-	fmt.Fprintf(&b, "[ \"$(sha256sum < \"$BK/restore-sources.sh\" | awk '{ print $1 }')\" = %s ] || %s\n", shQ(restoreScriptHash()), stop("the restore script is not the one of this text: it was changed on its way here. Nothing is changed in /etc/apt. "+again))
+	fmt.Fprintf(&b, "[ \"$(sha256sum < \"$BK/restore-sources.sh\" | awk '{ print $1 }')\" = %s ] || %s\n", shQ(restoreScriptHashOf(script)), stop("the restore script is not the one of this text: it was changed on its way here. Nothing is changed in /etc/apt. "+again))
 	b.WriteString("rm -rf \"$BK/apt-orig.new\"\n")
 	b.WriteString("cp -a \"$APT_ETC\" \"$BK/apt-orig.new\"\n")
 	b.WriteString("mv -f \"$BK/apt-orig.new\" \"$BK/apt-orig\"\n")
@@ -969,6 +1028,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("TS=" + timersState + "\n")
 			b.WriteString("echo \"Block 1: stopping the timers of apt.\"\n")
 			b.WriteString(shTimersState("block 8"))
+			b.WriteString(c.timersStopping())
 			b.WriteString(shTimers())
 			b.WriteString(done("timers", 1))
 			return b.String()
@@ -1062,7 +1122,7 @@ var debian11to12Blocks = []blockSpec{
 			fmt.Fprintf(&b, "[ \"$now\" = %s ] || %s\n", shQ(c.plan.Sources.HashCurrent), stop("the sources of apt are not the ones the plan was made from: something changed them since block 0. Nothing has been changed by this block. Ask for a new plan."))
 			b.WriteString(shTimers())
 			b.WriteString(busyCheck("Nothing has been changed by this block."))
-			b.WriteString(shSourcesBackup("Run this block again."))
+			b.WriteString(c.sourcesBackup("Run this block again."))
 			b.WriteString("cat > \"$BK/expected-removed.txt\" <<'" + heredocEnd + "'\n")
 			for _, r := range c.plan.Removals {
 				b.WriteString(r.Name + "\n")
@@ -1124,7 +1184,7 @@ var debian11to12Blocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(c.aptq() + shSim + shGuard() + shHelp + shDpkgState)
+			b.WriteString(c.aptq() + shSim + c.guard() + c.help() + shDpkgState)
 			b.WriteString(c.survive())
 			b.WriteString(c.confirm())
 			b.WriteString("[ \"$CONFIRM\" = I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON ] || " + stop("this is the point of no return. Type the words between the quotes of CONFIRM at the top of this block, if you have a snapshot or a console, and want to go on.") + "\n")
@@ -1145,7 +1205,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("    rm -f \"$BK/begun-upgrade\"\n")
 			b.WriteString("    " + stop("apt-get upgrade failed before it changed any package (dpkg's records are as they were): nothing was installed or removed, and the marker of the point of no return is taken back. A lock held by another package manager, no room on the disk, or a download that failed are the usual causes: see what apt printed above. Fix it, then run this block again (type the confirmation again), or put the sources back: sh $BK/restore-sources.sh") + "\n")
 			b.WriteString("  fi\n")
-			b.WriteString("  echo \"STOP: the minimal upgrade failed, and it has begun: do not restore anything. Run: " + forwardCommands + "   then type the confirmation again and run this block again. " + logWords + "\"; exit 1\n")
+			b.WriteString("  echo \"STOP: the minimal upgrade failed, and it has begun: do not restore anything. Run: " + forwardCommands + "   then type the confirmation again and run this block again. " + c.logWords() + "\"; exit 1\n")
 			b.WriteString("fi\n")
 			b.WriteString("aptq -s dist-upgrade > \"$BK/after-minimal.txt\" 2>&1 || { echo \"STOP: apt cannot work out the full upgrade: see $BK/after-minimal.txt. $help\"; exit 1; }\n")
 			b.WriteString(checkSim("$BK/after-minimal.txt", "$help"))
@@ -1169,13 +1229,13 @@ var debian11to12Blocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(c.aptq() + shSim + shGuard() + shHelp)
+			b.WriteString(c.aptq() + shSim + c.guard() + c.help())
 			b.WriteString(c.survive())
 			b.WriteString(shTimers())
 			b.WriteString(busyCheck("The upgrade has begun: do not undo anything."))
 			b.WriteString("echo \"Block 6: the full upgrade. It takes a while, and a package may be silent for minutes.\"\n")
 			b.WriteString("aptq --download-only dist-upgrade || " + stop("the download of the full upgrade did not go through: a lock held by another package manager, or the network (see what apt printed above). The upgrade has begun: run this block again when the lock is free or the network is back. A third cause: if apt printed dpkg was interrupted, or Unmet dependencies (dpkg was killed in the middle of its work, or a dependency is missing), running this block again changes nothing: "+interruptedTail) + "\n")
-			b.WriteString(repairLadder("", nil))
+			b.WriteString(c.repairLadder("", nil))
 			b.WriteString("pass=1\nconverged=no\n")
 			b.WriteString("while [ \"$pass\" -le 3 ]; do\n")
 			b.WriteString("  last=\"$BK/converge$pass.txt\"\n")
@@ -1184,13 +1244,13 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("  if [ \"$pass\" -lt 3 ]; then\n")
 			b.WriteString(indent(checkSim("$last", "$help")))
 			b.WriteString("    guard_removals \"$last\"\n")
-			b.WriteString("    aptq dist-upgrade || " + stop("a catch-up pass failed. Do not undo anything: ask for help. "+logWords) + "\n")
+			b.WriteString("    aptq dist-upgrade || " + stop("a catch-up pass failed. Do not undo anything: ask for help. "+c.logWords()) + "\n")
 			b.WriteString("  fi\n")
 			b.WriteString("  pass=$((pass + 1))\n")
 			b.WriteString("done\n")
-			b.WriteString("[ \"$converged\" = yes ] || " + stop("apt still has something to do after the passes: see $last, and ask for help. "+logWords) + "\n")
+			b.WriteString("[ \"$converged\" = yes ] || " + stop("apt still has something to do after the passes: see $last, and ask for help. "+c.logWords()) + "\n")
 			b.WriteString(auditCheck("Run dpkg --configure -a, then this block again. If dpkg cannot open its own database, do not undo anything: ask for help."))
-			b.WriteString("aptq check > /dev/null || " + stop("apt-get check finds a broken dependency, or could not get the lock of dpkg in 5 minutes, or dpkg was interrupted (what it printed above says which). If it printed dpkg was interrupted, or Unmet dependencies: "+interruptedTail+" Do not undo anything: ask for help. "+logWords) + "\n")
+			b.WriteString("aptq check > /dev/null || " + stop("apt-get check finds a broken dependency, or could not get the lock of dpkg in 5 minutes, or dpkg was interrupted (what it printed above says which). If it printed dpkg was interrupted, or Unmet dependencies: "+interruptedTail+" Do not undo anything: ask for help. "+c.logWords()) + "\n")
 			b.WriteString(done("full", 6))
 			b.WriteString("echo \"The next is block 7: do not restart the machine before it has ended (it looks at the new kernel and at what the machine needs to start). Apt may say that some packages are no longer needed: do not run apt autoremove by hand, see the end of block 8.\"\n")
 			return b.String()
@@ -1246,8 +1306,8 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("[ \"$((size))\" -ge 1048576 ] || " + stop("/boot/initrd.img-$newest is only $((size)) bytes: an initrd is never under 1 MiB, this one is cut short. Fix: update-initramfs -u -k $newest   then run this block again.") + "\n")
 			b.WriteString("command -v lsinitramfs > /dev/null 2>&1 || " + stop("lsinitramfs is not there (initramfs-tools): the initrd cannot be opened to look inside. Ask for help.") + "\n")
 			b.WriteString("lsinitramfs \"/boot/initrd.img-$newest\" > /dev/null 2>&1 || " + stop("lsinitramfs cannot open /boot/initrd.img-$newest: the machine would not start. Fix: update-initramfs -u -k $newest   then run this block again.") + "\n")
-			b.WriteString("if [ \"$((size))\" -le 5242880 ]; then warned=yes; echo \"WARNING: /boot/initrd.img-$newest is $((size)) bytes, under the 5 MiB of a usual initrd (this is NOT a stop). That is right on a machine set up with few modules (MODULES=dep in /etc/initramfs-tools/initramfs.conf) and wrong on one whose initrd is cut short: check by hand that it holds the driver of your disk and of your network card, for example: lsinitramfs /boot/initrd.img-$newest | grep -i <the name of the driver>   Restart only if it does.\"; fi\n")
-			b.WriteString("if [ -e /boot/grub/grub.cfg ]; then grep -q \"vmlinuz-$newest\" /boot/grub/grub.cfg || " + stop("grub.cfg does not name the kernel $newest. Fix: update-grub   then run this block again.") + "; else warned=yes; echo \"WARNING: /boot/grub/grub.cfg is not there, so this block cannot look at whether the boot loader names the kernel $newest (a machine that starts with another loader, systemd-boot for example, is not one that this text was tried on: that loader may not know the new kernel). This is NOT a stop: look at it by hand before you restart.\"; fi\n")
+			b.WriteString("if [ \"$((size))\" -le 5242880 ]; then warned=yes; " + c.warned(WarningInitrdSmall) + "echo \"WARNING: /boot/initrd.img-$newest is $((size)) bytes, under the 5 MiB of a usual initrd (this is NOT a stop). That is right on a machine set up with few modules (MODULES=dep in /etc/initramfs-tools/initramfs.conf) and wrong on one whose initrd is cut short: check by hand that it holds the driver of your disk and of your network card, for example: lsinitramfs /boot/initrd.img-$newest | grep -i <the name of the driver>   Restart only if it does.\"; fi\n")
+			b.WriteString("if [ -e /boot/grub/grub.cfg ]; then grep -q \"vmlinuz-$newest\" /boot/grub/grub.cfg || " + stop("grub.cfg does not name the kernel $newest. Fix: update-grub   then run this block again.") + "; else warned=yes; " + c.warned(WarningNoGrubConfig) + "echo \"WARNING: /boot/grub/grub.cfg is not there, so this block cannot look at whether the boot loader names the kernel $newest (a machine that starts with another loader, systemd-boot for example, is not one that this text was tried on: that loader may not know the new kernel). This is NOT a stop: look at it by hand before you restart.\"; fi\n")
 			b.WriteString("[ -e \"/boot/vmlinuz-$running\" ] || " + stop("the kernel that runs now is not kept in /boot.") + "\n")
 			b.WriteString("fi\n")
 			// what stays true after a boot, and is looked at whether the machine has started on the new kernel or not: package and configuration state
@@ -1310,6 +1370,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString(c.aptq())
 			b.WriteString("APT_ETC=/etc/apt\n")
 			b.WriteString("echo \"Block 8: after the restart.\"\n")
+			b.WriteString(c.freshNote())
 			// block 7 wrote the boot it ran in, unless it found the machine restarted already and ended without the checks: then there is no boot to compare
 			b.WriteString("if [ -s \"$BK/boot_id\" ]; then\n  [ \"$(cat /proc/sys/kernel/random/boot_id)\" != \"$(cat \"$BK/boot_id\")\" ] || " + stop("the machine has not been restarted since block 7: restart it first.") + "\nfi\n")
 			b.WriteString("grep -q '^VERSION_CODENAME=" + c.hop.To + "$' /etc/os-release || " + stop("this machine is not Debian 12 ("+c.hop.To+"): see the console, and the table at the end of this text.") + "\n")

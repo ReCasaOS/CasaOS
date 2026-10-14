@@ -1,6 +1,7 @@
 package osplan
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -237,12 +238,16 @@ func (b *shellBox) paths(code, planID string) string {
 		// the folders that other plans left (blocks 0 and 3 look at them) are in ./others
 		"/var/backups/casaos-os-upgrade-*", "./others/casaos-os-upgrade-*",
 	)
-	// the restore script is written as it is: the block reads it back and compares it with its hash
-	parts := strings.Split(code, restoreScript)
-	for i := range parts {
-		parts[i] = r.Replace(parts[i])
+	// the restore script is written as it is (the owner's, or the refresh's): the block reads it back and compares it with its hash
+	scripts := []string{restoreScriptRefresh, restoreScript}
+	for i, script := range scripts {
+		code = strings.ReplaceAll(code, script, fmt.Sprintf("\x00script%d\x00", i))
 	}
-	return strings.Join(parts, restoreScript)
+	code = r.Replace(code)
+	for i, script := range scripts {
+		code = strings.ReplaceAll(code, fmt.Sprintf("\x00script%d\x00", i), script)
+	}
+	return code
 }
 
 // run runs a block of the runbook and says what it printed and how it ended.
