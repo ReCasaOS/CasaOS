@@ -290,16 +290,11 @@ if [ -e "$HERE/apt-orig/sources.list" ]; then cp -a "$HERE/apt-orig/sources.list
 if [ -d "$HERE/apt-orig/sources.list.d" ]; then cp -a "$HERE/apt-orig/sources.list.d/." "$APT_ETC/sources.list.d/"; fi
 rm -f "$HERE/done-sources" "$HERE/done-download"
 mv "$HERE/apt-orig" "$HERE/apt-orig.restored.$$"
-echo "The sources are back as they were. Block 3 can be run again."
-TS="${CASAOS_TIMERS_STATE:-/var/backups/casaos-os-upgrade-timers.state}"
-if [ -s "$TS" ]; then
-  units="$(awk '$2 == "active" { print $1 }' "$TS" | tr '\n' ' ')"
-  if [ -n "$units" ]; then echo "The timers of apt that block 1 stopped are still stopped (block 3 stops them again when it runs). To give up the hop, start them again, as they were:  systemctl start $units  then:  rm -f $TS"; fi
-fi
+echo "The sources are back as they were."
 if [ -z "${CASAOS_NO_UPDATE:-}" ]; then apt-get update || echo "apt-get update did not go through (apt-get update does not wait for a lock: another package manager may hold it): run it again when it is free or the network is back."; fi
 CASAOS_EOF
 sh -n "$BK/restore-sources.sh" || { AUTOCLASS=integrity; echo "STOP: the restore script was damaged on its way here: it is not shell. Nothing is changed in /etc/apt. Run this block again."; exit 1; }
-[ "$(sha256sum < "$BK/restore-sources.sh" | awk '{ print $1 }')" = '681569b3bb4828bcd6cb219330c96682ea5395ed234b6a5f887f12bb9f9730f2' ] || { AUTOCLASS=integrity; echo "STOP: the restore script is not the one of this text: it was changed on its way here. Nothing is changed in /etc/apt. Run this block again."; exit 1; }
+[ "$(sha256sum < "$BK/restore-sources.sh" | awk '{ print $1 }')" = '88ccad303456880ee2ade03e0bd840f201ff6327d6947d1d6f56d4ce47a1ab03' ] || { AUTOCLASS=integrity; echo "STOP: the restore script is not the one of this text: it was changed on its way here. Nothing is changed in /etc/apt. Run this block again."; exit 1; }
 rm -rf "$BK/apt-orig.new"
 cp -a "$APT_ETC" "$BK/apt-orig.new"
 mv -f "$BK/apt-orig.new" "$BK/apt-orig"

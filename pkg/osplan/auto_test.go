@@ -130,6 +130,8 @@ func TestTheAutoBlocksAreTheOwnersBlocksButForTheHooksAndTheClasses(t *testing.T
 		body = strings.Replace(body, "warned=yes; echo \"WARNING: /boot/grub/grub.cfg", "warned=yes; printf '%s\\n' grub_cfg_missing >> \"$BK/warnings\"; echo \"WARNING: /boot/grub/grub.cfg", 1)
 		body = strings.Replace(body, "echo \"Block 8: after the restart.\"\n", "echo \"Block 8: after the restart.\"\nrm -f \"$BK/docker-source-note\"\n", 1)
 		body = strings.ReplaceAll(body, logWords, logWordsUnit)
+		body = strings.Replace(body, restoreScript, restoreScriptUnit, 1)
+		body = strings.Replace(body, restoreScriptHash(), restoreScriptHashOf(restoreScriptUnit), 1)
 		body = strings.ReplaceAll(body, (&rbCtx{}).dpkgWords(), (&rbCtx{auto: &AutoParams{}}).dpkgWords())
 		body = docker.ReplaceAllString(body, "<Docker's answers>\n")
 		want := "# casaos-os-upgrade " + blk.ID + " " + testRunID + "\n" + body
@@ -480,10 +482,10 @@ func TestAHeredocThatIsNotTheQuotedOneOfTheBlocksIsAutoDrift(t *testing.T) {
 func TestAutoBlock3HoldsTheRestoreScriptAndTheTreeByteForByte(t *testing.T) {
 	p, ar := realAuto(t)
 	b := autoBlockOf(t, ar, "sources")
-	if !strings.Contains(b, "<<'CASAOS_EOF'\n"+restoreScript+"CASAOS_EOF\n") {
-		t.Error("block 3 does not hold the restore script verbatim")
+	if !strings.Contains(b, "<<'CASAOS_EOF'\n"+restoreScriptUnit+"CASAOS_EOF\n") {
+		t.Error("block 3 does not hold the restore script of the unit verbatim")
 	}
-	if !strings.Contains(b, "sha256sum < \"$BK/restore-sources.sh\" | awk '{ print $1 }')\" = '"+restoreScriptHash()+"'") {
+	if !strings.Contains(b, "sha256sum < \"$BK/restore-sources.sh\" | awk '{ print $1 }')\" = '"+restoreScriptHashOf(restoreScriptUnit)+"'") {
 		t.Error("block 3 does not check the hash of the restore script")
 	}
 	if n := strings.Count(restoreScript, `echo "STOP: `); n != 2 || strings.Contains(restoreScript, "AUTOCLASS") {
@@ -516,9 +518,49 @@ func TestAutoBlock3HoldsTheRestoreScriptAndTheTreeByteForByte(t *testing.T) {
 		t.Fatalf("%d heredocs in the owner's block, %d in the unit's", len(want), len(have))
 	}
 	for i := range want {
+		// but for the restore script, which says nothing to a person at a console in the unit
+		if strings.Contains(want[i].opener, "restore-sources.sh") {
+			want[i].body = strings.TrimSuffix(restoreScriptUnit, "\n")
+		}
 		if want[i] != have[i] {
 			t.Errorf("heredoc %d is not the owner's: %q", i, have[i].opener)
 		}
+	}
+}
+
+// The restore script that the unit's block 3 writes is the owner's but for the advice to a person at a console: the sentence that sends them back to block 3 and the paragraph about
+// the timers that block 1 stopped, which the driver starts itself after the script ran. Everything that does the work is the same, and so is its hash apart from that.
+func TestTheRestoreScriptOfTheUnitDiffersFromTheOwnersOnlyInTheAdviceToAPerson(t *testing.T) {
+	owner := strings.Split(restoreScript, "\n")
+	unit := strings.Split(restoreScriptUnit, "\n")
+	for _, l := range unit {
+		if !slices.Contains(owner, l) && l != `echo "The sources are back as they were."` {
+			t.Errorf("a line that is the unit's only: %q", l)
+		}
+	}
+	for _, l := range owner {
+		if slices.Contains(unit, l) {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(l, `echo "The sources are back as they were.`), strings.HasPrefix(l, "TS="), strings.HasPrefix(l, `if [ -s "$TS" ]; then`), strings.HasPrefix(l, `  units="$(awk`),
+			strings.HasPrefix(l, `  if [ -n "$units" ]; then echo "The timers of apt that block 1 stopped`), l == "fi":
+		default:
+			t.Errorf("a line of the owner's script that the unit's leaves out: %q", l)
+		}
+	}
+	for _, word := range []string{"Block 3 can be run again", "timers of apt that block 1 stopped", "start them again"} {
+		if strings.Contains(restoreScriptUnit, word) || !strings.Contains(restoreScript, word) {
+			t.Errorf("%q: in the unit's script %v, in the owner's %v", word, strings.Contains(restoreScriptUnit, word), strings.Contains(restoreScript, word))
+		}
+	}
+	if !strings.Contains(restoreScriptUnit, `rm -f "$HERE/done-sources" "$HERE/done-download"`) || !strings.Contains(restoreScriptUnit, "apt-get update") || restoreScriptHashOf(restoreScriptUnit) == restoreScriptHash() {
+		t.Error("the work of the script is not all there, or the two scripts are one")
+	}
+	// the manual text keeps the owner's script, whatever the unit's says
+	rb, _ := BuildRunbook(*realPlan(t))
+	if !strings.Contains(rb.Text, restoreScript) || strings.Contains(rb.Text, restoreScriptUnit) {
+		t.Error("the runbook of the owner does not hold the owner's restore script")
 	}
 }
 

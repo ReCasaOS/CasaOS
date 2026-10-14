@@ -160,7 +160,7 @@ func TestTheClassOfAStopIsLeftInTheFolderOfTheRunForTheDriver(t *testing.T) {
 		{"apt cannot work out the upgrade", "sources", rb, func(b *shellBox) { sourcesBox(t, b); b.write("fake/sim-fails-1", "") }, "apt_failed"},
 		{"apt prints no summary", "sources", rb, func(b *shellBox) { sourcesBox(t, b); b.write("fake/sim.txt", "Reading package lists...\n") }, "apt_failed"},
 		{"the files written for apt are not the plan's", "sources", at(rb, "bookworm main", "bookwurm main"), func(b *shellBox) { sourcesBox(t, b) }, "plan"},
-		{"the restore script is not the one of the text", "sources", at(rb, "The sources are back as they were. Block 3 can be run again.", "The sources are back."), func(b *shellBox) { sourcesBox(t, b) }, "integrity"},
+		{"the restore script is not the one of the text", "sources", at(rb, "echo \"The sources are back as they were.\"", "echo \"The sources are back.\""), func(b *shellBox) { sourcesBox(t, b) }, "integrity"},
 		{"apt-orig is there", "sources", rb, func(b *shellBox) {
 			sourcesBox(t, b)
 			os.MkdirAll(filepath.Join(b.dir, "bk", "apt-orig"), 0o755)

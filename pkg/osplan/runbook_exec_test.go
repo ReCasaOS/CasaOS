@@ -1725,7 +1725,7 @@ func TestBlock3ReadsWhatItWroteBeforeItMovesAnything(t *testing.T) {
 		stops string
 	}{
 		{"a restore script that is not shell", `if [ -e "$HERE/apt-orig/sources.list" ]; then cp`, `if [ -e "$HERE/apt-orig/sources.list" ]; then then cp`, "the restore script was damaged on its way here"},
-		{"a restore script that is another one", "The sources are back as they were. Block 3 can be run again.", "The sources are back.", "the restore script is not the one of this text"},
+		{"a restore script that is another one", "The sources are back as they were", "The sources are back", "the restore script is not the one of this text"},
 		{"a restore script that lost a line", "rm -f \"$HERE/done-sources\" \"$HERE/done-download\"\n", "", "the restore script is not the one of this text"},
 	} {
 		b := newShellBox(t)

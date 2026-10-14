@@ -790,29 +790,39 @@ func restoreScriptHashOf(script string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// restoreScriptRefresh is the restore script that the refresh writes: the owner's, but for the two things it says that are about a hop and are untrue of a refresh, whose last block
-// starts the timers itself and which has no block 3 to run again. The unit runs it with its log in the page, and a refresh that ended well would show a line that sends the owner to
-// give up a hop. It is the only difference, and a test holds it to that.
-var restoreScriptRefresh = refreshRestoreScript(restoreScript)
+// restoreScriptUnit is the restore script that the blocks of the hop write when the unit runs them: the owner's, but for the two things it says that are advice to a person at a
+// console and untrue in the unit, whose driver starts the timers itself after it ran the script and has no block 3 for anybody to run again. The log of the unit is in the status, and
+// a clean unwind would show a line that sends the owner to start the timers that the driver is starting. It is the only difference, and a test holds it to that.
+var restoreScriptUnit = withoutAdviceOfAHop(restoreScript)
 
-func refreshRestoreScript(script string) string {
+// withoutAdviceOfAHop is the owner's restore script without the line that sends the owner back to block 3 and the paragraph about the timers that block 1 stopped.
+func withoutAdviceOfAHop(script string) string {
 	const again = ` Block 3 can be run again.`
 	i := strings.Index(script, "TS=\"${CASAOS_TIMERS_STATE:-")
 	j := strings.Index(script, `if [ -z "${CASAOS_NO_UPDATE:-}" ]`)
 	if !strings.Contains(script, again) || i < 0 || j < i {
-		panic("osplan: the restore script is not the one that the refresh's is made from")
+		panic("osplan: the restore script is not the one that the unit's and the refresh's are made from")
 	}
 	script = script[:i] + script[j:]
-	script = strings.Replace(script, again, "", 1)
+	return strings.Replace(script, again, "", 1)
+}
+
+// restoreScriptRefresh is the restore script that the refresh writes: the unit's, with the words about block 3 changed for the refresh's own block, which has no block 3.
+var restoreScriptRefresh = refreshRestoreScript(restoreScriptUnit)
+
+func refreshRestoreScript(script string) string {
 	script = strings.Replace(script, "# Puts /etc/apt/sources.list and sources.list.d back as they were before block 3 of the runbook, and forgets blocks 3 and 4 (block 3 can be run again).", "# Puts /etc/apt/sources.list and sources.list.d back as they were before the refresh wrote its own.", 1)
 	script = strings.Replace(script, "# The copy of /etc/apt that block 3 made is in apt-orig,", "# The copy of /etc/apt that the refresh made is in apt-orig,", 1)
 	return script
 }
 
-// restoreText is the restore script that the text of c writes: the refresh's own for a refresh.
+// restoreText is the restore script that the text of c writes: the refresh's own for a refresh, the unit's for the blocks of the hop that the unit runs, the owner's for the runbook.
 func (c *rbCtx) restoreText() string {
-	if c.refresh != nil {
+	switch {
+	case c.refresh != nil:
 		return restoreScriptRefresh
+	case c.auto != nil:
+		return restoreScriptUnit
 	}
 	return restoreScript
 }
