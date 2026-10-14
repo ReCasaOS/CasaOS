@@ -200,8 +200,11 @@ func (s *sim) snap() (Input, State) {
 	if st.Busy != busyOf(st.Name, st.PNR) {
 		s.fail("busy %v in %+v", st.Busy, st)
 	}
-	if st.PNR && !in.Files.DoneAfter && st.Name != StateIdle && !st.Busy {
+	if st.PNR && !in.Files.DoneAfter && !st.Closed && !st.Busy {
 		s.fail("P4: a machine past the point of no return, not done, is not busy: %+v", st)
+	}
+	if msg := busyWhereItHasToBe(in, st); msg != "" {
+		s.fail("P6: %s: %+v", msg, st)
 	}
 	if st.HalfUpgraded != (st.PNR && !in.Files.DonePrereboot) {
 		s.fail("half upgraded %v in %+v", st.HalfUpgraded, st)

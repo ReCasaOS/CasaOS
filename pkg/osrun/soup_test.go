@@ -111,8 +111,10 @@ func TestAnyMarkersInAnyOrderGiveAConsistentState(t *testing.T) {
 			t.Fatalf("an inconsistent state %+v for %+v", st, in)
 		case st.Closed && st.Name != StateIdle, st.Class != "" && !slices.Contains(Classes, st.Class):
 			t.Fatalf("an inconsistent state %+v for %+v", st, in)
-		case st.Name != StateIdle && st.PNR && !in.Files.DoneAfter && !st.Busy && !decidedForGood(st):
+		case st.PNR && !in.Files.DoneAfter && !st.Busy && !st.Closed && !decidedForGood(st):
 			t.Fatalf("P4: %+v for %+v", st, in)
+		case busyWhereItHasToBe(in, st) != "":
+			t.Fatalf("P6: %s: %+v for %+v", busyWhereItHasToBe(in, st), st, in)
 		case slices.Contains(buttons, ActionResume) && !st.Resumable, slices.Contains(buttons, ActionAbort) && (st.PNR || !st.Abortable),
 			slices.Contains(buttons, ActionReboot) && st.RebootBlocked:
 			t.Fatalf("buttons %v for %+v", buttons, st)

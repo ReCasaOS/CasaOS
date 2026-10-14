@@ -388,6 +388,14 @@ func Reduce(in Input) State {
 
 func decide(v *view, in Input, tm Timing) State {
 	if !v.valid || v.run == nil {
+		// A log that cannot place the run says nothing of whether something is going on, and the files and the unit do: packages
+		// that are being changed, or a unit that runs, with no run to explain them, are a machine that is not free.
+		if pnr := in.Files.PNR(); pnr || in.Unit.Active || in.Damaged {
+			return State{
+				Name: StateNeedsAttention, Reason: ReasonRunDamaged, PNR: pnr, Reversible: !pnr, Busy: true,
+				HalfUpgraded: pnr && !in.Files.DonePrereboot,
+			}
+		}
 		return State{Name: StateIdle, PNR: in.Files.PNR(), Reversible: !in.Files.PNR()}
 	}
 	return newCtxFrom(v, in, tm).decide()
@@ -436,6 +444,11 @@ func (c *ctx) decide() State {
 	}
 	a := c.a
 	if a == nil {
+		// No attempt that this run could have: packages that are being changed, or a unit that runs, are not the run's own and
+		// say that its log and its files do not agree.
+		if c.pnr || c.in.Unit.Active {
+			return c.attention(ReasonRunDamaged)
+		}
 		// The core wrote the run and no attempt: it was lost before it launched anything.
 		if c.age(v.queued) >= c.tm.StartLost {
 			s := c.st(StateFailed, v.queued)
