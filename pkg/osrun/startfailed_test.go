@@ -69,6 +69,8 @@ func TestAWordOfTheUnitAfterTheCoresDoubtIsTakenAndTheDoubtIsDropped(t *testing.
 		"a unit that is gone and quiet": func(in *Input) {
 			in.Now = in.Now.Add(time.Minute)
 		},
+		// systemd can say that a unit is gone before the last line of it lands: for a moment it is still the run's
+		"a unit that is gone a moment ago": func(in *Input) {},
 	} {
 		in1, in2 := base.input(), doubt.input()
 		tweak(&in1)
