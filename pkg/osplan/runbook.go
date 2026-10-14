@@ -97,6 +97,16 @@ type rbCtx struct {
 	auto  *AutoParams
 	cur   string
 	fired map[string]int
+	// bk is the backup folder when it is not the plan's (a refresh has no plan); "" is /var/backups/casaos-os-upgrade-<plan id>.
+	bk string
+}
+
+// backupFolder is the folder that the blocks keep what they write in.
+func (c *rbCtx) backupFolder() string {
+	if c.bk != "" {
+		return c.bk
+	}
+	return "/var/backups/casaos-os-upgrade-" + c.plan.PlanID
 }
 
 type blockSpec struct {
@@ -134,12 +144,8 @@ func newRbCtx(p Plan) (*rbCtx, []blockSpec, error) {
 	case p.Verdict == VerdictBlocked, !ok, len(blocks) == 0, len(p.Sources.Tree) == 0, !ValidPlanID(p.PlanID):
 		return nil, nil, ErrNoRunbook
 	}
-	for _, f := range p.Sources.Tree {
-		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK"} {
-			if strings.Contains(f.Content, bad) {
-				return nil, nil, ErrRunbookUnsafe
-			}
-		}
+	if !treeIsSafe(p.Sources.Tree) {
+		return nil, nil, ErrRunbookUnsafe
 	}
 	c := &rbCtx{plan: p, hop: hop}
 	for _, pr := range p.Problems {
@@ -150,6 +156,18 @@ func newRbCtx(p Plan) (*rbCtx, []blockSpec, error) {
 		}
 	}
 	return c, blocks, nil
+}
+
+// treeIsSafe says whether no line of the files of the tree has the word that ends a heredoc, or the marker of a block: the text could not be told from its own structure.
+func treeIsSafe(tree []TreeFile) bool {
+	for _, f := range tree {
+		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK"} {
+			if strings.Contains(f.Content, bad) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // BuildRunbook writes the runbook of a plan. It is refused (ErrNoRunbook) for a plan that is blocked, which has no runbook
@@ -395,6 +413,75 @@ const timerUnits = "apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.
 // their state); blocks 3, 5 and 6 do it again, because the timers are enabled units and a restart in the middle of the hop brings them back.
 func shTimers() string { return shTimersOf(timerUnits) }
 
+// shTimersState writes down the state of the timers the first time (TS is the file, timersState): block 1 of the hop does it before it stops them, and so does the first block of a
+// refresh. startsThem is what starts them again as they were, "block 8" or the end of the refresh, which the STOP line of a disk that has no room for the file says.
+func shTimersState(startsThem string) string {
+	var b strings.Builder
+	b.WriteString("if [ -e \"$TS\" ]; then\n")
+	b.WriteString("  echo \"$TS is there from an earlier run of this block (by this plan or by another): the state of the timers that it holds is the one of before the hop, and it is kept.\"\n")
+	b.WriteString("else\n")
+	// the state is read into a name of this run's own and published with ln, which fails when the name is taken: the first run to publish wins, whole, and a run
+	// that comes second adopts it (two runs that shared one name would write each other's lines and keep one line of three)
+	b.WriteString("  ( umask 077; : > \"$TS.$$\" )\n")
+	b.WriteString("  for unit in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do\n")
+	b.WriteString("    printf '%s %s\\n' \"$unit\" \"$(systemctl is-active \"$unit\" 2>/dev/null || true)\" >> \"$TS.$$\"\n")
+	b.WriteString("  done\n")
+	// ln fails when the name is taken, and it fails for other reasons too (a file system with no hard links, no room for the entry): the name is looked at
+	// after it, and when nothing is there the state that was read is kept by a rename (whole, and never mixed with another run's lines: at worst the last of two
+	// runs that both could not ln keeps its state), or the block stops with words of its own
+	b.WriteString("  if ! ln \"$TS.$$\" \"$TS\" 2> /dev/null; then\n")
+	b.WriteString("    if [ -e \"$TS\" ]; then\n")
+	b.WriteString("      echo \"$TS was put in place by another run of this block while this one was reading the timers: the state of that run is the one that is kept.\"\n")
+	b.WriteString("    else\n")
+	b.WriteString("      echo \"ln could not put $TS in place (a file system with no hard links, or no room for one more entry): the state that this run wrote down is kept by a rename instead.\"\n")
+	b.WriteString("      mv -f \"$TS.$$\" \"$TS\" || { rm -f \"$TS.$$\"; echo \"STOP: the state of the timers could not be put in $TS (is the disk full: df -h /var/backups): without it " + startsThem + " would start no timer. Free some room, then run this block again.\"; exit 1; }\n")
+	b.WriteString("    fi\n")
+	b.WriteString("  fi\n")
+	b.WriteString("  rm -f \"$TS.$$\"\n")
+	b.WriteString("fi\n")
+	return b.String()
+}
+
+// shTimersBack starts the timers that were running when shTimersState wrote them down, and says so when there is no state to read: block 8 of the hop does it, and so does
+// the last block of a refresh. It leaves the file where it is: the block removes it when it has done what it has to do after.
+func shTimersBack() string {
+	return "TS=" + timersState + "\nif [ -f \"$TS\" ]; then\n  while read -r unit state; do\n    if [ \"$state\" = active ]; then systemctl start \"$unit\"; fi\n  done < \"$TS\"\nelse\n  echo \"$TS is not there, so no timer of apt is started: if they were running before the hop, start them: systemctl start apt-daily.timer apt-daily-upgrade.timer\"\nfi\n"
+}
+
+// repairLadder is what a full upgrade does when its first dist-upgrade fails: the ladder of the release notes (configure what is half done, repair, the full upgrade again),
+// with the repair and the full upgrade after it simulated and read before they are run, as the full upgrade was read before the first. Block 6 of the hop runs it, and so does the
+// block of a refresh that upgrades. opts are added to every dist-upgrade of it and of its simulations (the refresh asks apt to include the phased updates; the hop adds none), and
+// more, when it is not nil, is the shell of the check that a block adds after the guard of each simulation, for what only that block refuses (the refresh allows no removal at all).
+func repairLadder(opts string, more func(file string) string) string {
+	after := func(file string) string {
+		if more == nil {
+			return ""
+		}
+		if s := more(file); s != "" {
+			return indentBy(s, "  ")
+		}
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("if ! aptq dist-upgrade" + opts + "; then\n")
+	b.WriteString("  echo \"The dist-upgrade failed once: configuring what is half done, repairing, then again.\"\n")
+	b.WriteString("  dpkg --configure -a --force-confdef --force-confold || " + stop("dpkg could not configure what is half done: what it printed is above, on this terminal only (dpkg run by hand does not write term.log): copy it. Do not undo anything: ask for help. "+logWords) + "\n")
+	// the repair removes a package that has an unmet dependency without a stop, and the full upgrade after it may want something else than before: each is simulated
+	// and read, as the full upgrade was before the first one
+	b.WriteString("  aptq -s -f install > \"$BK/repair.txt\" 2>&1 || { echo \"STOP: apt cannot work out the repair: see $BK/repair.txt. $help\"; exit 1; }\n")
+	b.WriteString(indentBy(checkSim("$BK/repair.txt", "$help"), "  "))
+	b.WriteString("  guard_removals \"$BK/repair.txt\" \"the repair\"\n")
+	b.WriteString(after("$BK/repair.txt"))
+	b.WriteString("  aptq -f install || " + stop("apt could not repair the packages. Do not undo anything: ask for help. "+logWords) + "\n")
+	b.WriteString("  aptq -s dist-upgrade" + opts + " > \"$BK/after-repair.txt\" 2>&1 || { echo \"STOP: apt cannot work out the full upgrade after the repair: see $BK/after-repair.txt. $help\"; exit 1; }\n")
+	b.WriteString(indentBy(checkSim("$BK/after-repair.txt", "$help"), "  "))
+	b.WriteString("  guard_removals \"$BK/after-repair.txt\" \"the full upgrade after the repair\"\n")
+	b.WriteString(after("$BK/after-repair.txt"))
+	b.WriteString("  aptq dist-upgrade" + opts + " || " + stop("the full upgrade failed again after the repair. Do not undo anything: ask for help. "+logWords) + "\n")
+	b.WriteString("fi\n")
+	return b.String()
+}
+
 // shTimersOf is shTimers for the units that it is given: the repair block of the unit stops the five units that the table at the end names.
 func shTimersOf(units string) string {
 	return shLines(
@@ -491,7 +578,7 @@ func indentBy(s, pad string) string {
 // plan, or the owner by hand, took it on. When this plan has begun, the machine turns Debian 12 as base-files is upgraded, and the blocks from there must run. Block 0 has its own
 // words for a machine that is not Debian 11.
 func head(c *rbCtx, prev string) string {
-	s := shHead + c.prologue() + "BK=/var/backups/casaos-os-upgrade-" + c.plan.PlanID + "\n"
+	s := shHead + c.prologue() + "BK=" + c.backupFolder() + "\n"
 	s += `[ ! -e "$BK/done-after" ] || { echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }` + "\n"
 	s += shLines(
 		`for fin in /var/backups/casaos-os-upgrade-*; do`,
@@ -532,6 +619,11 @@ func checkSim(file, tail string) string {
 // is read: the words are forward-only. Block 5 calls it after the minimal upgrade, block 6 before each catch-up pass (the first full upgrade may have changed
 // what the next one wants) and before each step of the repair ladder that can remove a package (apt-get -f install, and the full upgrade after it).
 func shGuard() string {
+	return shGuardSaying("The upgrade has begun. DO NOT UNDO ANYTHING. Ask for help, with $1. ")
+}
+
+// shGuardSaying is shGuard with the words that a stop ends with, before the words of the logs: the refresh has not begun the upgrade, and puts the machine back.
+func shGuardSaying(words string) string {
 	return shLines(
 		`guard_removals() {`,
 		`  what="${2:-the full upgrade}"`,
@@ -543,7 +635,7 @@ func shGuard() string {
 		`        why="protected" ;;`,
 		`      *) case "$(dpkg-query -W -f='${Essential} ${Priority}\n' "$base" 2> /dev/null || true)" in "yes "*|*" required") why="essential or required, as dpkg says" ;; esac ;;`,
 		`    esac`,
-		`    [ -z "$why" ] || { echo "STOP: $what would remove $name, which is $why. The upgrade has begun. DO NOT UNDO ANYTHING. Ask for help, with $1. `+logWords+`"; exit 1; }`,
+		`    [ -z "$why" ] || { echo "STOP: $what would remove $name, which is $why. `+words+logWords+`"; exit 1; }`,
 		`  done`,
 		`}`,
 	)
@@ -657,6 +749,22 @@ if [ -z "${CASAOS_NO_UPDATE:-}" ]; then apt-get update || echo "apt-get update d
 func restoreScriptHash() string {
 	sum := sha256.Sum256([]byte(restoreScript))
 	return hex.EncodeToString(sum[:])
+}
+
+// shSourcesBackup is what a block does before it changes a file of /etc/apt: it writes the restore script and reads it back, and copies /etc/apt whole (or not at all). Block 3
+// of the hop does it, and so does the block of a refresh that writes the sources. again is what the stops of the script say to do (run the block again, or start the refresh again).
+func shSourcesBackup(again string) string {
+	// the restore script is written and checked BEFORE the copy of /etc/apt, and the copy is made under another name and renamed when it is whole: the
+	// state "apt-orig is there" means that the script is there and the copy is complete (a copy that died half way, found by a restore script of an
+	// earlier cycle, would be taken for the truth and delete the sources)
+	var b strings.Builder
+	b.WriteString("cat > \"$BK/restore-sources.sh\" <<'" + heredocEnd + "'\n" + restoreScript + heredocEnd + "\n")
+	b.WriteString("sh -n \"$BK/restore-sources.sh\" || " + stop("the restore script was damaged on its way here: it is not shell. Nothing is changed in /etc/apt. "+again) + "\n")
+	fmt.Fprintf(&b, "[ \"$(sha256sum < \"$BK/restore-sources.sh\" | awk '{ print $1 }')\" = %s ] || %s\n", shQ(restoreScriptHash()), stop("the restore script is not the one of this text: it was changed on its way here. Nothing is changed in /etc/apt. "+again))
+	b.WriteString("rm -rf \"$BK/apt-orig.new\"\n")
+	b.WriteString("cp -a \"$APT_ETC\" \"$BK/apt-orig.new\"\n")
+	b.WriteString("mv -f \"$BK/apt-orig.new\" \"$BK/apt-orig\"\n")
+	return b.String()
 }
 
 // treeDest is where the file of the tree goes on the box, under APT_ETC.
@@ -852,28 +960,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString(head(c, prev))
 			b.WriteString("TS=" + timersState + "\n")
 			b.WriteString("echo \"Block 1: stopping the timers of apt.\"\n")
-			b.WriteString("if [ -e \"$TS\" ]; then\n")
-			b.WriteString("  echo \"$TS is there from an earlier run of this block (by this plan or by another): the state of the timers that it holds is the one of before the hop, and it is kept.\"\n")
-			b.WriteString("else\n")
-			// the state is read into a name of this run's own and published with ln, which fails when the name is taken: the first run to publish wins, whole, and a run
-			// that comes second adopts it (two runs that shared one name would write each other's lines and keep one line of three)
-			b.WriteString("  ( umask 077; : > \"$TS.$$\" )\n")
-			b.WriteString("  for unit in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do\n")
-			b.WriteString("    printf '%s %s\\n' \"$unit\" \"$(systemctl is-active \"$unit\" 2>/dev/null || true)\" >> \"$TS.$$\"\n")
-			b.WriteString("  done\n")
-			// ln fails when the name is taken, and it fails for other reasons too (a file system with no hard links, no room for the entry): the name is looked at
-			// after it, and when nothing is there the state that was read is kept by a rename (whole, and never mixed with another run's lines: at worst the last of two
-			// runs that both could not ln keeps its state), or the block stops with words of its own
-			b.WriteString("  if ! ln \"$TS.$$\" \"$TS\" 2> /dev/null; then\n")
-			b.WriteString("    if [ -e \"$TS\" ]; then\n")
-			b.WriteString("      echo \"$TS was put in place by another run of this block while this one was reading the timers: the state of that run is the one that is kept.\"\n")
-			b.WriteString("    else\n")
-			b.WriteString("      echo \"ln could not put $TS in place (a file system with no hard links, or no room for one more entry): the state that this run wrote down is kept by a rename instead.\"\n")
-			b.WriteString("      mv -f \"$TS.$$\" \"$TS\" || { rm -f \"$TS.$$\"; echo \"STOP: the state of the timers could not be put in $TS (is the disk full: df -h /var/backups): without it block 8 would start no timer. Free some room, then run this block again.\"; exit 1; }\n")
-			b.WriteString("    fi\n")
-			b.WriteString("  fi\n")
-			b.WriteString("  rm -f \"$TS.$$\"\n")
-			b.WriteString("fi\n")
+			b.WriteString(shTimersState("block 8"))
 			b.WriteString(shTimers())
 			b.WriteString(done("timers", 1))
 			return b.String()
@@ -967,15 +1054,7 @@ var debian11to12Blocks = []blockSpec{
 			fmt.Fprintf(&b, "[ \"$now\" = %s ] || %s\n", shQ(c.plan.Sources.HashCurrent), stop("the sources of apt are not the ones the plan was made from: something changed them since block 0. Nothing has been changed by this block. Ask for a new plan."))
 			b.WriteString(shTimers())
 			b.WriteString(busyCheck("Nothing has been changed by this block."))
-			// the restore script is written and checked BEFORE the copy of /etc/apt, and the copy is made under another name and renamed when it is whole: the
-			// state "apt-orig is there" means that the script is there and the copy is complete (a copy that died half way, found by a restore script of an
-			// earlier cycle, would be taken for the truth and delete the sources)
-			b.WriteString("cat > \"$BK/restore-sources.sh\" <<'" + heredocEnd + "'\n" + restoreScript + heredocEnd + "\n")
-			b.WriteString("sh -n \"$BK/restore-sources.sh\" || " + stop("the restore script was damaged on its way here: it is not shell. Nothing is changed in /etc/apt. Run this block again.") + "\n")
-			fmt.Fprintf(&b, "[ \"$(sha256sum < \"$BK/restore-sources.sh\" | awk '{ print $1 }')\" = %s ] || %s\n", shQ(restoreScriptHash()), stop("the restore script is not the one of this text: it was changed on its way here. Nothing is changed in /etc/apt. Run this block again."))
-			b.WriteString("rm -rf \"$BK/apt-orig.new\"\n")
-			b.WriteString("cp -a \"$APT_ETC\" \"$BK/apt-orig.new\"\n")
-			b.WriteString("mv -f \"$BK/apt-orig.new\" \"$BK/apt-orig\"\n")
+			b.WriteString(shSourcesBackup("Run this block again."))
 			b.WriteString("cat > \"$BK/expected-removed.txt\" <<'" + heredocEnd + "'\n")
 			for _, r := range c.plan.Removals {
 				b.WriteString(r.Name + "\n")
@@ -1088,20 +1167,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString(busyCheck("The upgrade has begun: do not undo anything."))
 			b.WriteString("echo \"Block 6: the full upgrade. It takes a while, and a package may be silent for minutes.\"\n")
 			b.WriteString("aptq --download-only dist-upgrade || " + stop("the download of the full upgrade did not go through: a lock held by another package manager, or the network (see what apt printed above). The upgrade has begun: run this block again when the lock is free or the network is back. A third cause: if apt printed dpkg was interrupted, or Unmet dependencies (dpkg was killed in the middle of its work, or a dependency is missing), running this block again changes nothing: "+interruptedTail) + "\n")
-			b.WriteString("if ! aptq dist-upgrade; then\n")
-			b.WriteString("  echo \"The dist-upgrade failed once: configuring what is half done, repairing, then again.\"\n")
-			b.WriteString("  dpkg --configure -a --force-confdef --force-confold || " + stop("dpkg could not configure what is half done: what it printed is above, on this terminal only (dpkg run by hand does not write term.log): copy it. Do not undo anything: ask for help. "+logWords) + "\n")
-			// the repair removes a package that has an unmet dependency without a stop, and the full upgrade after it may want something else than before: each is simulated
-			// and read, as the full upgrade was before the first one
-			b.WriteString("  aptq -s -f install > \"$BK/repair.txt\" 2>&1 || { echo \"STOP: apt cannot work out the repair: see $BK/repair.txt. $help\"; exit 1; }\n")
-			b.WriteString(indentBy(checkSim("$BK/repair.txt", "$help"), "  "))
-			b.WriteString("  guard_removals \"$BK/repair.txt\" \"the repair\"\n")
-			b.WriteString("  aptq -f install || " + stop("apt could not repair the packages. Do not undo anything: ask for help. "+logWords) + "\n")
-			b.WriteString("  aptq -s dist-upgrade > \"$BK/after-repair.txt\" 2>&1 || { echo \"STOP: apt cannot work out the full upgrade after the repair: see $BK/after-repair.txt. $help\"; exit 1; }\n")
-			b.WriteString(indentBy(checkSim("$BK/after-repair.txt", "$help"), "  "))
-			b.WriteString("  guard_removals \"$BK/after-repair.txt\" \"the full upgrade after the repair\"\n")
-			b.WriteString("  aptq dist-upgrade || " + stop("the full upgrade failed again after the repair. Do not undo anything: ask for help. "+logWords) + "\n")
-			b.WriteString("fi\n")
+			b.WriteString(repairLadder("", nil))
 			b.WriteString("pass=1\nconverged=no\n")
 			b.WriteString("while [ \"$pass\" -le 3 ]; do\n")
 			b.WriteString("  last=\"$BK/converge$pass.txt\"\n")
@@ -1256,8 +1322,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("echo \"--- ports that listen now and did not before:\"\ncomm -13 \"$BK/listening.txt\" \"$BK/listening-after.txt\" || true\n")
 			b.WriteString(auditCheck("Run dpkg --configure -a, then run this block again."))
 			b.WriteString("# the timers, as they were (block 1 wrote them down, in a file outside the folder of the plan)\n")
-			b.WriteString("TS=" + timersState + "\n")
-			b.WriteString("if [ -f \"$TS\" ]; then\n  while read -r unit state; do\n    if [ \"$state\" = active ]; then systemctl start \"$unit\"; fi\n  done < \"$TS\"\nelse\n  echo \"$TS is not there, so no timer of apt is started: if they were running before the hop, start them: systemctl start apt-daily.timer apt-daily-upgrade.timer\"\nfi\n")
+			b.WriteString(shTimersBack())
 			docker := false
 			for _, pa := range c.plan.Paused {
 				if pa.Docker {
