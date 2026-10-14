@@ -340,7 +340,7 @@ func TestAMachineThatCameBackIsToBeCheckedAndThenJudged(t *testing.T) {
 		t.Errorf("with only information: %+v", got)
 	}
 	rewrite(t, filepath.Join(run.Dir, "verify.json"), `{"findings":[{"code":"ports_missing","severity":"warn","arg":"445"}]}`)
-	if got := box.GetSystemOSUpgradeStatus(); got.State != osrun.StateSucceededWithFindings || got.Busy || !reflect.DeepEqual(got.Actions, []string{osrun.ActionAcknowledge}) {
+	if got := box.GetSystemOSUpgradeStatus(); got.State != osrun.StateSucceededWithFindings || got.Busy || !reflect.DeepEqual(got.Actions, []string{osrun.ActionResume, osrun.ActionAcknowledge}) {
 		t.Errorf("with a warning: %+v", got)
 	}
 }

@@ -351,11 +351,11 @@ func TestTheSwitchIsRefusedWhileARunIsOpen(t *testing.T) {
 }
 
 // Every code that the engine refuses with is a 409 with the code in data.error_code, the English reason in message and in data.error, and what makes the code precise in data.data;
-// except the two that are the owner's mistake of a field, which is 400, and the two that are the machine's failure to do what was asked, which are 500.
+// except the one that is the owner's mistake of a field, which is 400, and the three that are the machine's failure to do what was asked, which are 500.
 func TestEveryRefusalOfTheEngineIsA409WithItsCodeExceptTheOnesWithAStatusOfTheirOwn(t *testing.T) {
 	codes := append(append(append([]string{}, service.OSUpgradeStartCodes...), service.OSUpgradeRefreshCodes...), service.OSUpgradeActionCodes...)
 	codes = append(codes, service.OSUpgradeOpen)
-	own := map[string]int{service.OSUpgradeBadRequest: 400, service.OSUpgradeStartFailed: 500, service.OSUpgradeRebootFailed: 500}
+	own := map[string]int{service.OSUpgradeBadRequest: 400, service.OSUpgradeStartFailed: 500, service.OSUpgradeRebootFailed: 500, service.OSUpgradeCloseFailed: 500}
 	seen := map[string]bool{}
 	for _, code := range codes {
 		if seen[code] {

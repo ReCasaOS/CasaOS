@@ -49,7 +49,7 @@ func (b *upgradeBox) withAVoice() *aVoice {
 // The states that the owner is told of, and those that they are not: a unit that is doing what it should, a repair that is on its way, and a run that will be undone say nothing.
 func TestTheOwnerIsToldOfTheStatesThatNeedThemAndOfNoOther(t *testing.T) {
 	told := []osrun.State{
-		{Name: osrun.StateAwaitingReboot}, {Name: osrun.StateRebootStalled}, {Name: osrun.StateStoppedAtWaypoint, Class: osrun.ClassBusy, PNR: true},
+		{Name: osrun.StateAwaitingReboot}, {Name: osrun.StateRebootFirst}, {Name: osrun.StateRebootStalled}, {Name: osrun.StateStoppedAtWaypoint, Class: osrun.ClassBusy, PNR: true},
 		{Name: osrun.StateInterrupted, PNR: true}, {Name: osrun.StateFailed, Reason: osrun.ReasonVerify, PNR: true}, {Name: osrun.StateFailed, Reason: osrun.ReasonHalf, PNR: true},
 		{Name: osrun.StateFailed, Reason: osrun.ReasonStart, PNR: true}, {Name: osrun.StateFailed, Reason: osrun.ClassNetwork}, {Name: osrun.StateNeedsAttention, Reason: osrun.ReasonSystemdSilent},
 		{Name: osrun.StateSucceeded}, {Name: osrun.StateSucceededWithFindings}, {Name: osrun.StateRehearsalDone},
@@ -62,7 +62,7 @@ func TestTheOwnerIsToldOfTheStatesThatNeedThemAndOfNoOther(t *testing.T) {
 		}
 	}
 	for _, name := range []string{
-		osrun.StateIdle, osrun.StateRefreshing, osrun.StateRebootFirst, osrun.StateRefreshed, osrun.StateRehearsing, osrun.StateRehearsed, osrun.StateRunning, osrun.StateUnwinding,
+		osrun.StateIdle, osrun.StateRefreshing, osrun.StateRefreshed, osrun.StateRehearsing, osrun.StateRehearsed, osrun.StateRunning, osrun.StateUnwinding,
 		osrun.StateRecovering, osrun.StateRebooting, osrun.StateResuming, osrun.StateVerifying, osrun.StateManual, osrun.StateManualDone,
 	} {
 		if key, sentence, ok := osUpgradeAlertFor(osrun.State{Name: name, RunID: "0b8f3a52-6c1e-4d0a-9a53-7f1c2d4e8b19", Attempt: 1}); ok {

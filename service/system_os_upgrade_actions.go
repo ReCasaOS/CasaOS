@@ -30,16 +30,31 @@ const (
 	OSUpgradeNotTerminal  = "not_terminal"
 	OSUpgradeWordRequired = "word_required"
 	OSUpgradeBadWord      = "bad_word"
+	// OSUpgradeCloseFailed: the run could not be closed (its backup could not be put away, a file could not be removed): it is as it was.
+	OSUpgradeCloseFailed = "close_failed"
 )
 
 // OSUpgradeActionCodes are the codes that the buttons can refuse with, besides the ones that every request can be refused with.
 var OSUpgradeActionCodes = []string{
 	OSUpgradeNoRun, OSUpgradeRunUnreadable, OSUpgradeNotAbortable, OSUpgradeNotAwaitingReboot, OSUpgradeBarrierFailed, OSUpgradeUnitActive, OSUpgradeDpkgLocked,
-	OSUpgradeRebootFailed, OSUpgradeNotResumable, OSUpgradeNotTerminal, OSUpgradeWordRequired, OSUpgradeBadWord, OSUpgradeBusy,
+	OSUpgradeRebootFailed, OSUpgradeNotResumable, OSUpgradeNotTerminal, OSUpgradeWordRequired, OSUpgradeBadWord, OSUpgradeCloseFailed, OSUpgradeBusy,
 }
 
 // osUpgradeCurrent is the latest run and its state, for a button: no_run when there is none, and run_unreadable when there is one that cannot be read.
 func (s *systemService) osUpgradeCurrent() (*osUpgradeRun, osrun.State, *OSUpgradeRefusal) {
+	return s.osUpgradeCurrentWith(s.osUpgradeSharedUnit())
+}
+
+// osUpgradeSharedUnit is what systemd says of the unit, through the question that requests share, and nothing is asked when there is no run.
+func (s *systemService) osUpgradeSharedUnit() osrun.Unit {
+	if _, current := currentOSUpgrade(); current == osUpgradeNoRun {
+		return osrun.Unit{Answered: true}
+	}
+	return s.systemPackageUpdater().osUpgradeUnit()
+}
+
+// osUpgradeCurrentWith is osUpgradeCurrent with the answer of systemd that the caller has: a caller that holds the lock asked before it took it.
+func (s *systemService) osUpgradeCurrentWith(unit osrun.Unit) (*osUpgradeRun, osrun.State, *OSUpgradeRefusal) {
 	id, current := currentOSUpgrade()
 	switch current {
 	case osUpgradeNoRun:
@@ -51,5 +66,5 @@ func (s *systemService) osUpgradeCurrent() (*osUpgradeRun, osrun.State, *OSUpgra
 	if err != nil {
 		return nil, osrun.State{}, refuseUpgrade(OSUpgradeRunUnreadable, "the upgrade that is open cannot be read", map[string]any{"run_id": id})
 	}
-	return run, osrun.Reduce(s.osUpgradeInput(run)), nil
+	return run, osrun.Reduce(s.osUpgradeInputWith(run, unit)), nil
 }

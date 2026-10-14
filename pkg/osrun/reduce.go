@@ -888,7 +888,9 @@ func (c *ctx) verdict(r result) State {
 		s.Reason, s.Resumable = ReasonVerify, true
 		return s
 	case c.in.Verify.Warnings > 0:
-		return c.st(StateSucceededWithFindings, r.at)
+		s := c.st(StateSucceededWithFindings, r.at)
+		s.Resumable = true
+		return s
 	}
 	return c.st(StateSucceeded, r.at)
 }

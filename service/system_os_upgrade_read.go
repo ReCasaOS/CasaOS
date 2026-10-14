@@ -169,10 +169,7 @@ var osUpgradeUnitFlight singleflight.Group[osrun.Unit]
 
 // osUpgradeUnit is what systemd says of the unit of an upgrade: Answered is false when it did not answer in the time it is given.
 func (u *systemPackageUpdater) osUpgradeUnit() osrun.Unit {
-	unit, _, _ := osUpgradeUnitFlight.Do("unit", func() (osrun.Unit, error) {
-		active, answered := u.unitState(systemOSUpgradeUnit)
-		return osrun.Unit{Active: active, Answered: answered}, nil
-	})
+	unit, _, _ := osUpgradeUnitFlight.Do("unit", func() (osrun.Unit, error) { return u.askOSUpgradeUnit(), nil })
 	return unit
 }
 
@@ -186,13 +183,20 @@ type osUpgradeBarrierDoc struct {
 type osUpgradeVerifyDoc struct {
 	At       time.Time          `json:"at"`
 	Findings []osverify.Finding `json:"findings"`
+	// NotJudged are the facts of the machine that could not be taken and were to be judged: the verdict does not say that they are well.
+	NotJudged []string `json:"not_judged,omitempty"`
 }
 
 // readOSUpgradeFacts is what the machine was before the hop, as the start took it: the zero Facts when the file is lost or cannot be read, which says that nothing was
 // taken and is judged by what is known.
 func readOSUpgradeFacts(run *osUpgradeRun) osverify.Facts {
+	return readOSUpgradeFactsFile(run, osUpgradeFactsFile)
+}
+
+// readOSUpgradeFactsFile is a file of facts of the run folder: the zero Facts when it is not there or cannot be read.
+func readOSUpgradeFactsFile(run *osUpgradeRun, name string) osverify.Facts {
 	var facts osverify.Facts
-	data, err := readOSUpgradeFile(filepath.Join(run.Dir, osUpgradeFactsFile), 4<<20)
+	data, err := readOSUpgradeFile(filepath.Join(run.Dir, name), 4<<20)
 	if err != nil || json.Unmarshal(data, &facts) != nil {
 		return osverify.Facts{}
 	}
@@ -243,6 +247,17 @@ func readOSUpgradeVerify(run *osUpgradeRun) *osUpgradeVerifyDoc {
 	return &doc
 }
 
+// osUpgradeRunLineDiffers says that the RUN line of the log is not of the run that the folder is: another run, another kind or another plan. A log that was copied from another run, or
+// written over, says what it likes, and the run is not trusted.
+func osUpgradeRunLineDiffers(run *osUpgradeRun) bool {
+	for _, m := range run.Markers {
+		if m.Kind == osrun.MkRun {
+			return m.RunID != run.Meta.RunID || m.RunKind != run.Meta.Kind || m.PlanID != run.Meta.PlanID || m.Hop != run.Meta.Hop
+		}
+	}
+	return false
+}
+
 // osUpgradeInput is everything that the reducer reads of a run, at the time of the updater's clock: the log, the files, what systemd says of the unit, the boot, the
 // output of the unit, and the two results that the settling writes. It takes no lock and runs nothing but the question to systemd. A run whose files are not what the
 // core wrote, or whose log is longer than it is read, is damaged.
@@ -258,7 +273,7 @@ func (s *systemService) osUpgradeInputWith(run *osUpgradeRun, unit osrun.Unit) o
 		Markers: run.Markers, Ignored: run.Ignored, Files: run.Files,
 		Unit: unit, Boot: osrun.Boot{Now: boot, OK: ok},
 		Now: u.now().UTC(), LastActivity: run.OutputAt.UTC(),
-		Damaged: run.TooLarge || verifyOSUpgradeRun(run.Dir, run.Meta.Kind) != nil,
+		Damaged: run.TooLarge || osUpgradeRunLineDiffers(run) || verifyOSUpgradeRun(run.Dir, run.Meta.Kind) != nil,
 		Timing:  osUpgradeTiming,
 	}
 	if barrier := readOSUpgradeBarrier(run); barrier != nil {

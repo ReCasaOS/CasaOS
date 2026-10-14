@@ -150,8 +150,8 @@ func TestAResumeThatComesTwiceRepairsOnce(t *testing.T) {
 	}
 }
 
-// A check that found the machine not as it was is made again when the owner has mended what it found: the click starts the check, and the verdict that was written is taken away
-// so that the new one is not taken for the old.
+// A check that found the machine not as it was is made again when the owner has mended what it found: the click takes the verdict that was written away, and the core's next look
+// judges the machine as it is then. No unit is started for it: the check's own blocks ended, and what is to be looked at again is the machine.
 func TestTheOwnerChecksTheMachineAgainAfterAVerdictThatFailed(t *testing.T) {
 	box := newUpgradeBox(t)
 	box.readyToResume()
@@ -168,15 +168,20 @@ func TestTheOwnerChecksTheMachineAgainAfterAVerdictThatFailed(t *testing.T) {
 	if _, err := box.ResumeSystemOSUpgrade(); err != nil {
 		t.Fatal(err)
 	}
-	attempts := box.attemptsOf(run)
-	if len(attempts) != 3 || attempts[2].Phase != osrun.PhaseVerify || attempts[2].Who != osrun.WhoOwner {
-		t.Fatalf("the attempts are %+v", attempts)
-	}
-	if got := readText(t, filepath.Join(run.Dir, "lists", "3.list")); got != "after\n" {
-		t.Errorf("the list of the check is %q", got)
+	if attempts := box.attemptsOf(run); len(attempts) != 2 || len(box.startedUnits()) != 0 {
+		t.Fatalf("the attempts are %+v, and %d units were started", attempts, len(box.startedUnits()))
 	}
 	if box.verdict(run) != nil {
 		t.Error("the verdict of the check before is still there: the new one would be taken for it")
+	}
+	if state := box.state(run); state.Name != osrun.StateVerifying {
+		t.Errorf("a machine that waits to be judged is %+v", state)
+	}
+	// what the owner mended: the machine runs the kernel that the upgrade installed
+	takesFacts(t, osverify.Facts{Taken: true, At: box.now(), Kernel: "6.1.0-18-amd64", System: "running", DpkgQuiet: true})
+	box.tick()
+	if state := box.state(run); state.Name != osrun.StateSucceeded && state.Name != osrun.StateSucceededWithFindings {
+		t.Errorf("the machine was judged again and the run is %+v", state)
 	}
 }
 

@@ -122,27 +122,32 @@ var (
 // else: a run that is open goes on when it is turned off, so that a machine that is half upgraded is never trapped behind a switch; and so it is not turned off
 // while one is open (run_open).
 func (s *systemService) SetSystemOSUpgradeBeta(enabled bool) error {
-	osUpgradeMu.Lock()
-	defer osUpgradeMu.Unlock()
+	// systemd is asked before the lock is taken, and only when there is a run that it could be a unit of
+	unit := osrun.Unit{Answered: true}
 	if !enabled {
-		if refusal := s.osUpgradeOpenRefusal(); refusal != nil {
-			return refusal
+		unit = s.osUpgradeUnitIfRun()
+	}
+	return withOSUpgradeLock(func() error {
+		if !enabled {
+			if refusal := s.osUpgradeOpenRefusal(unit); refusal != nil {
+				return refusal
+			}
+			if err := os.Remove(osUpgradeBetaFile); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
 		}
-		if err := os.Remove(osUpgradeBetaFile); err != nil && !os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(osUpgradeBetaFile), 0o755); err != nil {
 			return err
 		}
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(osUpgradeBetaFile), 0o755); err != nil {
-		return err
-	}
-	return osUpgradeWriteFile(osUpgradeBetaFile, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+		return osUpgradeWriteFile(osUpgradeBetaFile, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+	})
 }
 
 // osUpgradeOpenRefusal is run_open when a run is open: busy, or ended well and not yet closed, or one that cannot be read; nil when there is none or the latest has
 // been closed or left (a refresh, a rehearsal, a failure before the point of no return).
-func (s *systemService) osUpgradeOpenRefusal() *OSUpgradeRefusal {
-	_, _, refusal := s.osUpgradeLatest()
+func (s *systemService) osUpgradeOpenRefusal(unit osrun.Unit) *OSUpgradeRefusal {
+	_, _, refusal := s.osUpgradeLatestWith(unit)
 	return refusal
 }
 

@@ -36,6 +36,8 @@ type upgradeBox struct {
 	// what systemctl says of the units it is asked about: is-active for a unit that is not here is "inactive", and is-system-running is "running" unless a test says another word
 	active map[string]string
 	system string
+	// loaded says that systemd has the unit of the upgrade loaded, whatever its state
+	loaded bool
 	// stopErr is what stopping a unit says, and onStop is called (with the box's lock held) when the unit of the upgrade is stopped
 	stopErr error
 	onStop  func()
@@ -149,6 +151,13 @@ func (b *upgradeBox) command(_ context.Context, name string, args ...string) ([]
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.commands = append(b.commands, name+" "+strings.Join(args, " "))
+	if name == "systemctl" && len(args) >= 3 && args[0] == "show" && args[2] == "--property=LoadState" {
+		// whether systemd has a unit by that name, loaded: only a test that says so makes it so
+		if args[1] == systemOSUpgradeUnit && b.loaded {
+			return []byte("loaded\n"), nil
+		}
+		return []byte("not-found\n"), nil
+	}
 	if name == "systemctl" && len(args) >= 2 && args[0] == "show" {
 		if args[1] == systemOSUpgradeUnit {
 			if b.unit == "" {

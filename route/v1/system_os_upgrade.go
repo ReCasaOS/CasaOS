@@ -24,7 +24,7 @@ const osUpgradeBodyMax = 64 << 10
 // osUpgradeInternal is what a failure that is no refusal says: the error may hold a path of the machine or a line of what its files say, and it is in the log.
 const osUpgradeInternal = "the request could not be carried out"
 
-// osUpgradeFailed says what went wrong with a request: a refusal of the engine is a 409 with its code (400 for a field that is not valid, 500 for a start or a restart that the
+// osUpgradeFailed says what went wrong with a request: a refusal of the engine is a 409 with its code (400 for a field that is not valid, 500 for a start, a restart or a close that the
 // machine could not carry out), anything else a 500 that says only that it is internal.
 func osUpgradeFailed(ctx echo.Context, err error) error {
 	var refusal *service.OSUpgradeRefusal
@@ -33,7 +33,7 @@ func osUpgradeFailed(ctx echo.Context, err error) error {
 		switch refusal.Code {
 		case service.OSUpgradeBadRequest:
 			status = http.StatusBadRequest
-		case service.OSUpgradeStartFailed, service.OSUpgradeRebootFailed:
+		case service.OSUpgradeStartFailed, service.OSUpgradeRebootFailed, service.OSUpgradeCloseFailed:
 			status = http.StatusInternalServerError
 		}
 		return osPlanAnswer(ctx, status, refusal.Detail, osPlanRefusalData{ErrorCode: refusal.Code, Error: refusal.Detail, Data: refusal.Data})

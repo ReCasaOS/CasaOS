@@ -189,15 +189,15 @@ func (s *systemService) osUpgradeSettleOnce(ctx context.Context) (tick osUpgrade
 	}
 	tick.RunID = id
 	in := s.osUpgradeInput(run)
-	state := osrun.Reduce(in)
-	s.osUpgradeKeepFlag(run, state)
+	state := osUpgradeStateOf(run, in)
+	s.osUpgradeKeepFlag(run, state, in.Unit)
 
 	// a boot that the log has not seen, while the run holds the machine
 	if boot, ok := osUpgradeBootID(); ok && state.Busy && !osrun.BootKnown(run.Markers, boot) {
-		s.osUpgradeSeeBoot(ctx, run, boot)
+		s.osUpgradeSeeBoot(ctx, run, boot, state)
 		if again, err := readOSUpgradeRun(id); err == nil {
 			run, in = again, s.osUpgradeInput(again)
-			state = osrun.Reduce(in)
+			state = osUpgradeStateOf(run, in)
 		}
 	}
 	tick.State = state.Name
@@ -207,15 +207,25 @@ func (s *systemService) osUpgradeSettleOnce(ctx context.Context) (tick osUpgrade
 		in.Ready = s.osUpgradeReady(ctx, run)
 	}
 	// what stands before the restart is asked again at every look: it only reads, and it is no action
-	s.osUpgradeKeepBarrier(ctx, run, state)
+	barrier := s.osUpgradeKeepBarrier(ctx, run, state)
 	action := osrun.NextAction(state, in)
 	tick.Action = action.Kind
 	if done := s.osUpgradeDo(ctx, run, state, action); done != "" {
 		tick.Done = append(tick.Done, done)
 	}
-	s.osUpgradeTellOf(state, action)
+	s.osUpgradeTellOf(state, action, barrier != nil && !barrier.OK)
 	s.osUpgradeKeepQuiet(state)
 	return tick
+}
+
+// osUpgradeStateOf is the state of a run, with the run's id in it when the log could not say whose it is: the folder's own is the run's, and what is told of the run (the
+// alerts are kept by it) is told of this one and not of "no run".
+func osUpgradeStateOf(run *osUpgradeRun, in osrun.Input) osrun.State {
+	state := osrun.Reduce(in)
+	if state.RunID == "" {
+		state.RunID = run.ID
+	}
+	return state
 }
 
 // osUpgradeDropStrayFlag takes away the flag of an upgrade that has no run: the pointer is read again under the lock, since a start that is being written has put its flag
@@ -242,15 +252,22 @@ func osUpgradeHolds(state osrun.State) bool {
 // osUpgradeKeepFlag makes the flag of the open upgrade what the state says: there while the run holds the machine, gone when it does not. A run that is not the latest any
 // more by the time the lock is taken has no say. A flag is taken away only after the run has been read again under the lock: a start that wrote its pointer while this look was
 // reading is on its way, and its flag is not this look's to remove. A flag that already says the state is not written again.
-func (s *systemService) osUpgradeKeepFlag(run *osUpgradeRun, state osrun.State) {
-	osUpgradeMu.Lock()
-	defer osUpgradeMu.Unlock()
+func (s *systemService) osUpgradeKeepFlag(run *osUpgradeRun, state osrun.State, unit osrun.Unit) {
+	_ = withOSUpgradeLock(func() error {
+		s.osUpgradeKeepFlagLocked(run, state, unit)
+		return nil
+	})
+}
+
+// osUpgradeKeepFlagLocked is osUpgradeKeepFlag for a caller that holds the lock. systemd is not asked under it: the answer that the look had is the one that is read the run again with,
+// and an attempt that was written since is in the log, which says that the unit is on its way.
+func (s *systemService) osUpgradeKeepFlagLocked(run *osUpgradeRun, state osrun.State, unit osrun.Unit) {
 	if id, current := currentOSUpgrade(); current != osUpgradeHasRun || id != run.ID {
 		return
 	}
 	if !osUpgradeHolds(state) {
 		fresh, err := readOSUpgradeRun(run.ID)
-		if err != nil || osUpgradeHolds(osrun.Reduce(s.osUpgradeInput(fresh))) {
+		if err != nil || osUpgradeHolds(osrun.Reduce(s.osUpgradeInputWith(fresh, unit))) {
 			return
 		}
 		if held, _ := osUpgradeFlagOpen(); !held {
@@ -288,19 +305,29 @@ func readOSUpgradeBusyFlag() (osUpgradeBusyFlag, bool) {
 
 // osUpgradeSeeBoot is the first thing the core does of a boot that the run has not seen, and which holds the machine: the units that change packages by themselves come back with
 // a boot, and are stopped again, and the boot is written down once. The units are stopped first: a look that is cut short between the two does both again.
-func (s *systemService) osUpgradeSeeBoot(ctx context.Context, run *osUpgradeRun, boot string) {
-	s.osUpgradeStopAptUnits(ctx)
+func (s *systemService) osUpgradeSeeBoot(ctx context.Context, run *osUpgradeRun, boot string, state osrun.State) {
+	if osUpgradeHoldsTimers(run, state) {
+		s.osUpgradeStopAptUnits(ctx)
+	}
 	if !osrun.ValidNonce(run.Nonce) {
 		return
 	}
-	osUpgradeMu.Lock()
-	defer osUpgradeMu.Unlock()
-	seen := osrun.Marker{Kind: osrun.MkBootSeen, Boot: boot, At: s.systemPackageUpdater().now().UTC()}
-	if err := appendOSUpgradeMarker(run.Dir, run.Nonce, seen); err != nil {
+	err := withOSUpgradeLock(func() error {
+		seen := osrun.Marker{Kind: osrun.MkBootSeen, Boot: boot, At: s.systemPackageUpdater().now().UTC()}
+		return appendOSUpgradeMarker(run.Dir, run.Nonce, seen)
+	})
+	if err != nil {
 		logger.Error("the log of an upgrade of the operating system could not say that a boot was seen", zap.String("run", run.ID), zap.Error(err))
 		return
 	}
 	logger.Info("a boot of the machine was seen by an upgrade of the operating system that is open", zap.String("run", run.ID))
+}
+
+// osUpgradeHoldsTimers says whether the run still holds the timers of apt: they were stopped by its first block, and are put back by the block that checks the machine after the
+// restart (or by the last block of a refresh). After that the units that change packages by themselves are the machine's again, and a run that stays open for days does not stop them
+// at every boot.
+func osUpgradeHoldsTimers(run *osUpgradeRun, state osrun.State) bool {
+	return !run.Files.DoneAfter && state.Name != osrun.StateRebootFirst
 }
 
 // osUpgradeStopAptUnits stops the units of apt that run by themselves, each only if it is active: a unit that is not there is not a failure.
@@ -366,8 +393,12 @@ func (s *systemService) osUpgradeDo(ctx context.Context, run *osUpgradeRun, stat
 			logger.Error("the core could not start a unit for an upgrade of the operating system", zap.String("run", run.ID), zap.String("action", action.Kind), zap.Error(err))
 		}
 	case osrun.DoJudge:
-		if err := s.osUpgradeJudge(ctx, run); err != nil {
-			logger.Error("the machine could not be judged after an upgrade of the operating system", zap.String("run", run.ID), zap.Error(err))
+		if err := s.osUpgradeJudge(ctx, run, state.Since); err != nil {
+			if errors.Is(err, errOSUpgradeWaitsForContainers) {
+				logger.Info("the containers of the machine that have a restart policy are waited for before it is judged", zap.String("run", run.ID))
+			} else {
+				logger.Error("the machine could not be judged after an upgrade of the operating system", zap.String("run", run.ID), zap.Error(err))
+			}
 			return ""
 		}
 		logger.Info("the machine was judged after an upgrade of the operating system", zap.String("run", run.ID))

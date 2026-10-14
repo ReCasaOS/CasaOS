@@ -39,7 +39,10 @@ type OSUpgradeStatus struct {
 	LastActivityAt *time.Time `json:"last_activity_at"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 	// Failure is what stopped a run: the block, the class (the page has a sentence for each), the status, and the line of the unit's output that said it.
-	Failure     *OSUpgradeFailure      `json:"failure,omitempty"`
+	Failure *OSUpgradeFailure `json:"failure,omitempty"`
+	// Hint is what the owner can do at the console about a unit that runs and has printed nothing for a long time.
+	Hint        *OSUpgradeHint         `json:"hint,omitempty"`
+	NotJudged   []string               `json:"not_judged,omitempty"`
 	Reboot      *OSUpgradeReboot       `json:"reboot,omitempty"`
 	Barrier     *OSUpgradeBarrier      `json:"barrier,omitempty"`
 	Findings    []OSUpgradeFinding     `json:"findings,omitempty"`
@@ -71,6 +74,15 @@ type OSUpgradeFailure struct {
 	DetailLine string `json:"detail_line,omitempty"`
 	// Hint is a word for what the owner can do about it, when there is one (osrun.HintOf).
 	Hint string `json:"hint,omitempty"`
+}
+
+// OSUpgradeHint is a word for what the owner can do at the console. Code is "unit_quiet": the unit of the upgrade runs and has printed nothing for QuietSeconds. There is no button for it:
+// stopping a unit that changes the packages is the owner's own act at the console, and with the unit stopped the run says where it stands and is closed, or gone on with, as any run is
+// (with the typed word, when the machine is half upgraded).
+type OSUpgradeHint struct {
+	Code         string   `json:"code"`
+	QuietSeconds int      `json:"quiet_seconds"`
+	Commands     []string `json:"commands"`
 }
 
 // OSUpgradeReboot is a restart that was asked for.
@@ -210,6 +222,7 @@ func (s *systemService) osUpgradeStatusOf(status OSUpgradeStatus, run *osUpgrade
 	if state.Name == osrun.StateFailed || state.Name == osrun.StateStoppedAtWaypoint {
 		status.Failure = osUpgradeFailureOf(state, tail)
 	}
+	status.Hint = osUpgradeHintOf(run, in, state)
 	if at, ok := osUpgradeRebootRequested(run); ok && (state.Name == osrun.StateRebooting || state.Name == osrun.StateRebootStalled) {
 		status.Reboot = &OSUpgradeReboot{RequestedAt: at, Stalled: state.Stalled}
 	}
@@ -225,6 +238,7 @@ func (s *systemService) osUpgradeStatusOf(status OSUpgradeStatus, run *osUpgrade
 	case osrun.StateVerifying, osrun.StateSucceeded, osrun.StateSucceededWithFindings, osrun.StateFailed:
 		if verify := readOSUpgradeVerify(run); verify != nil {
 			status.Findings, status.NotReturned = osUpgradeFindings(verify.Findings)
+			status.NotJudged = verify.NotJudged
 		}
 	}
 	return status
@@ -282,6 +296,10 @@ func osUpgradeFailureOf(state osrun.State, tail []string) *OSUpgradeFailure {
 	if failure.Stage == "" {
 		failure.Stage = state.Phase
 	}
+	if state.Class == "" {
+		// nothing stopped: a run that did not start has no line of its own, and the one that the output has is of an attempt before it
+		return failure
+	}
 	for i := len(tail) - 1; i >= 0; i-- {
 		if strings.HasPrefix(tail[i], "STOP:") {
 			failure.DetailLine = tail[i]
@@ -290,6 +308,22 @@ func osUpgradeFailureOf(state osrun.State, tail []string) *OSUpgradeFailure {
 		}
 	}
 	return failure
+}
+
+// osUpgradeHintOf is the hint for a unit that systemd says runs and that has printed nothing for as long as osrun.Timing.HungQuiet: stopping it is the owner's own act at the
+// console. No hint is made for a unit that is not asked about.
+func osUpgradeHintOf(run *osUpgradeRun, in osrun.Input, state osrun.State) *OSUpgradeHint {
+	if !live(state.Name) || !in.Unit.Active || !in.Unit.Answered {
+		return nil
+	}
+	quiet := in.Now.Sub(osUpgradeLastActivity(run, in))
+	if limit := osUpgradeTiming.HungQuiet; limit <= 0 || quiet < limit {
+		return nil
+	}
+	return &OSUpgradeHint{
+		Code: "unit_quiet", QuietSeconds: int(quiet / time.Second),
+		Commands: []string{"tail -n 60 " + osUpgradeUnitRoot + "/" + run.ID + "/" + osUpgradeOutputFile, "systemctl status " + systemOSUpgradeUnit, "systemctl stop " + systemOSUpgradeUnit},
+	}
 }
 
 // osUpgradeRebootRequested is when the restart was last asked for. Whether the request stands (a restart that failed is taken back) is the state's to say, and the

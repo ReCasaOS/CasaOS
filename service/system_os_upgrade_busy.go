@@ -21,7 +21,10 @@ const systemOSUpgradeUnit = "casaos-os-upgrade.service"
 // It is read fail closed: only a flag that is not there is no flag. A folder that cannot be read, a disk that answers with an error, a name that is
 // not valid, anything but "no such file" says nothing of whether the upgrade is open, and an upgrade that is open and not seen is a backup that reads a
 // machine that dpkg is rewriting.
-var osUpgradeBusyFile = "/var/lib/casaos/os-upgrade/busy"
+var osUpgradeBusyFile = osUpgradeBusyPath
+
+// osUpgradeBusyPath is where the flag is on a machine, and the file that AppManagement and the other readers look at.
+const osUpgradeBusyPath = "/var/lib/casaos/os-upgrade/busy"
 
 // osUpgradeFlagOpen says whether the flag of an open upgrade is there. When it could not be told err says why, and the answer is open all the same.
 func osUpgradeFlagOpen() (open bool, err error) {

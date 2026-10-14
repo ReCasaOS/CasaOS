@@ -165,11 +165,11 @@ func TestTheFlagOfAnotherRunIsNotMoved(t *testing.T) {
 	}
 	box.putInRoot(osUpgradeCurrentFile, other+"\n")
 
-	box.osUpgradeKeepFlag(run, osrun.State{Name: osrun.StateAwaitingReboot, Busy: true})
+	box.osUpgradeKeepFlag(run, osrun.State{Name: osrun.StateAwaitingReboot, Busy: true}, osrun.Unit{Answered: true})
 	if flag := readText(t, osUpgradeBusyFile); !strings.Contains(flag, other) {
 		t.Errorf("the flag of the latest run was written over: %q", flag)
 	}
-	box.osUpgradeKeepFlag(run, osrun.State{Name: osrun.StateSucceeded})
+	box.osUpgradeKeepFlag(run, osrun.State{Name: osrun.StateSucceeded}, osrun.Unit{Answered: true})
 	if !box.flagIsThere() {
 		t.Error("the flag of the latest run was taken away by another's state")
 	}
@@ -182,7 +182,7 @@ func TestAFlagIsNotTakenAwayOnAStateThatIsOutOfDate(t *testing.T) {
 	run := box.aHopAtItsRestart()
 	box.own(run, osrun.StateAwaitingReboot)
 
-	box.osUpgradeKeepFlag(run, osrun.State{Name: osrun.StateIdle, RunID: ""})
+	box.osUpgradeKeepFlag(run, osrun.State{Name: osrun.StateIdle, RunID: ""}, osrun.Unit{Answered: true})
 	if !box.flagIsThere() {
 		t.Fatal("the flag of a run that waits for its restart was taken away on a state that was read before the run began")
 	}

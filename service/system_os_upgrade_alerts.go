@@ -44,6 +44,8 @@ func osUpgradeAlertFor(state osrun.State) (key, sentence string, ok bool) {
 	switch state.Name {
 	case osrun.StateAwaitingReboot:
 		return key, "The upgrade of the operating system is ready for its restart. Restart the machine from the dashboard when it suits you; until then backups and automatic updates stay paused.", true
+	case osrun.StateRebootFirst:
+		return key, "The refresh of the operating system asks for a restart before the upgrade can be planned. Restart the machine from the dashboard when it suits you; until then backups and automatic updates stay paused.", true
 	case osrun.StateRebootStalled:
 		return key, "The machine was asked to restart a while ago and has not. Look at it, and ask again from the dashboard. Backups and automatic updates stay paused until the upgrade is closed.", true
 	case osrun.StateStoppedAtWaypoint:
@@ -76,8 +78,12 @@ func osUpgradeAlertFor(state osrun.State) (key, sentence string, ok bool) {
 
 // osUpgradeReminderSentence is what is said again of a machine that still waits for its restart.
 func osUpgradeReminderSentence() string {
-	return "The upgraded machine still waits for its restart. Until the upgrade is closed, backups and automatic updates stay paused."
+	return "The machine still waits for its restart. Until the upgrade is closed, backups and automatic updates stay paused."
 }
+
+// osUpgradeBlockedSentence is what is said of an upgrade that is done up to its restart, when something that stands before the restart is not well: the dashboard does not offer the
+// restart then, and the owner is not told to restart.
+const osUpgradeBlockedSentence = "The upgrade of the operating system is done, but something that stands before its restart is not well, and the dashboard does not offer the restart until it is mended. Open the dashboard to see what. Backups and automatic updates stay paused."
 
 // osUpgradeWord is a word of the core's own (a class of stop, a reason), which is only ever lower case letters and underscores, and "" for anything else.
 func osUpgradeWord(word string) string {
@@ -156,8 +162,11 @@ func (s *systemService) osUpgradeTell(key, sentence string) {
 }
 
 // osUpgradeTellOf tells the owner what a state asks to be told, once. A machine that waits for its restart is spoken of again at the times the reducer gives.
-func (s *systemService) osUpgradeTellOf(state osrun.State, action osrun.Action) {
-	if key, sentence, ok := osUpgradeAlertFor(state); ok {
+func (s *systemService) osUpgradeTellOf(state osrun.State, action osrun.Action, barrierRed bool) {
+	if state.Name == osrun.StateAwaitingReboot && barrierRed {
+		// the restart is not offered: the owner is not told to restart, and is told when it is
+		s.osUpgradeTell(state.RunID+":awaiting_reboot_blocked:"+strconv.Itoa(state.Attempt), osUpgradeBlockedSentence)
+	} else if key, sentence, ok := osUpgradeAlertFor(state); ok {
 		s.osUpgradeTell(key, sentence)
 	}
 	if action.Kind == osrun.DoRemind {

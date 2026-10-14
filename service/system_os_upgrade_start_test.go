@@ -500,12 +500,14 @@ func TestTheFieldsOfARequestAreHeldToTheirShapeBeforeAnythingIsLookedAt(t *testi
 	if _, err := box.StartSystemOSUpgrade(req); refusalOf(t, err).Data["field"] != "paused_sources" {
 		t.Errorf("201 sources: %v", err)
 	}
-	for _, name := range []string{"sources.list:12", "docker.list", "a_b-c.d.list", "sources.list:999999"} {
+	// apt's own rule for the name of a file of sources lets a colon through, and so does the readiness report and the plan: a plan that pauses a file that has one is a plan that can
+	// be started
+	for _, name := range []string{"sources.list:12", "docker.list", "a_b-c.d.list", "sources.list:999999", "x:y.list", "x:y.list:3", "a:b:c"} {
 		if !osUpgradePausedPattern.MatchString(name) {
 			t.Errorf("%s is refused", name)
 		}
 	}
-	for _, name := range []string{"sources.list:", "x:1:2", "a b", "", "sources.list:1234567", strings.Repeat("a", 201)} {
+	for _, name := range []string{"a b", "", "a/b", "../x", "x\ny", "a;b", strings.Repeat("a", 201)} {
 		if osUpgradePausedPattern.MatchString(name) {
 			t.Errorf("%q is let through", name)
 		}

@@ -25,7 +25,7 @@ import (
 var (
 	osUpgradeHostPattern   = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
 	osUpgradeNamePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9+.:~-]{0,127}$`)
-	osUpgradePausedPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,200}(:[0-9]{1,6})?$`)
+	osUpgradePausedPattern = regexp.MustCompile(`^[A-Za-z0-9_:.-]{1,200}$`)
 )
 
 const (
@@ -97,6 +97,11 @@ func osUpgradeBadField(req OSUpgradeStartRequest) string {
 // osUpgradeLatest is the latest run, as the checks of a start and of the switch read it: the run, what the reducer says of it, and run_open when it keeps a new one
 // from starting. A pointer that says nothing, and a run that cannot be read, are a run that is open and needs attention: the machine is not known to be free of it.
 func (s *systemService) osUpgradeLatest() (*osUpgradeRun, osrun.State, *OSUpgradeRefusal) {
+	return s.osUpgradeLatestWith(s.osUpgradeSharedUnit())
+}
+
+// osUpgradeLatestWith is osUpgradeLatest with the answer of systemd that the caller has, so that a caller that holds the lock does not ask.
+func (s *systemService) osUpgradeLatestWith(unit osrun.Unit) (*osUpgradeRun, osrun.State, *OSUpgradeRefusal) {
 	id, current := currentOSUpgrade()
 	switch current {
 	case osUpgradeNoRun:
@@ -108,7 +113,7 @@ func (s *systemService) osUpgradeLatest() (*osUpgradeRun, osrun.State, *OSUpgrad
 	if err != nil {
 		return nil, osrun.State{Name: osrun.StateNeedsAttention}, refuseUpgrade(OSUpgradeRunOpen, "a run is open and cannot be read", map[string]any{"state": osrun.StateNeedsAttention, "run_id": id})
 	}
-	state := osrun.Reduce(s.osUpgradeInput(run))
+	state := osrun.Reduce(s.osUpgradeInputWith(run, unit))
 	if osUpgradeBlocksStart(state) {
 		return run, state, refuseUpgrade(OSUpgradeRunOpen, "an upgrade is open: it has to be finished or closed first", map[string]any{"state": state.Name, "run_id": run.ID})
 	}
@@ -287,6 +292,10 @@ func (s *systemService) StartSystemOSUpgrade(req OSUpgradeStartRequest) (OSUpgra
 	if refusal != nil {
 		return OSUpgradeStatus{}, refusal
 	}
+	if latest != nil {
+		// a refresh that ended and has not been looked at yet by the loop: its end is written down now, so that a plan made before it is refused
+		s.osUpgradeNoteRefresh(latest)
+	}
 	if refusal := osUpgradeNewerRefresh(plan); refusal != nil {
 		return OSUpgradeStatus{}, refusal
 	}
@@ -339,98 +348,7 @@ func (s *systemService) StartSystemOSUpgrade(req OSUpgradeStartRequest) (OSUpgra
 		Driver: osrun.Driver, Blocks: auto.Blocks, Forward: auto.Forward, Plan: planJSON, Manual: manual.Text, Facts: facts,
 	}
 
-	osUpgradeMu.Lock()
-	err = s.osUpgradeBegin(spec, nonce, phase, busyState)
-	osUpgradeMu.Unlock()
-	if err != nil {
-		return OSUpgradeStatus{}, err
-	}
-	if err := pruneOSUpgradeRuns(osUpgradeKeepRuns); err != nil {
-		logger.Error("the old runs of the upgrade could not be removed", zap.Error(err))
-	}
-	s.nudgeOSUpgradeSettle()
-	return s.GetSystemOSUpgradeStatus(), nil
-}
-
-// osUpgradeBegin makes the run and starts its first attempt. The caller holds osUpgradeMu. It looks at the switch and at the latest run again, since another request
-// may have come in while the checks were made, and closes a run that ended or was undone, which the new one takes the place of.
-func (s *systemService) osUpgradeBegin(spec osUpgradeRunSpec, nonce, phase, busyState string) error {
-	u := s.systemPackageUpdater()
-	if !osUpgradeBetaOn() {
-		return refuseUpgrade(OSUpgradeBetaOff, "the upgrade of the operating system is not switched on", nil)
-	}
-	previous, _, refusal := s.osUpgradeLatest()
-	if refusal != nil {
-		return refusal
-	}
-	runID := spec.Meta.RunID
-	abandon := func() {
-		clearOSUpgradeCurrent()
-		clearOSUpgradeBusy()
-		os.RemoveAll(osUpgradeRunFolder(runID))
-	}
-	if previous != nil {
-		if err := s.closeOSUpgradeRun(previous, "acknowledge"); err != nil {
-			return osUpgradeStartFailed("the run before could not be closed", err)
-		}
-	}
-	if err := writeOSUpgradeRun(spec); err != nil {
-		return osUpgradeStartFailed("the folder of the run could not be written", err)
-	}
-	if err := setOSUpgradeBusy(runID, busyState, u.now()); err != nil {
-		abandon()
-		return osUpgradeStartFailed("the flag of the open upgrade could not be written", err)
-	}
-	if err := setOSUpgradeCurrent(runID); err != nil {
-		abandon()
-		return osUpgradeStartFailed("the pointer to the run could not be written", err)
-	}
-	dir := osUpgradeRunFolder(runID)
-	boot, _ := osUpgradeBootID()
-	if err := createOSUpgradeMarkers(dir, nonce, u.now().UTC()); err != nil {
-		abandon()
-		return osUpgradeStartFailed("the log of the run could not be made", err)
-	}
-	if err := appendOSUpgradeMarker(dir, nonce, osrun.Marker{Kind: osrun.MkRun, RunID: runID, Hop: spec.Meta.Hop, PlanID: spec.Meta.PlanID, RunKind: spec.Meta.Kind, Boot: boot}); err != nil {
-		abandon()
-		return osUpgradeStartFailed("the log of the run could not be written", err)
-	}
-	if err := s.launchAttemptLocked(runID, phase, osrun.WhoOwner); err != nil {
-		var launch *osUpgradeLaunchError
-		switch {
-		case errors.As(err, &launch) && launch.Kind == launchUnitBusy:
-			abandon()
-			return refuseUpgrade(OSUpgradeBusy, "a unit of the upgrade runs, or systemd does not answer", map[string]any{"reason": launch.Kind})
-		case errors.As(err, &launch) && launch.Kind == launchStartFailed:
-			// the log says that the unit did not start, and nothing was changed: the run stays as the story of it, and the machine is free
-			clearOSUpgradeBusy()
-			return osUpgradeStartFailed("the unit could not be started", err)
-		}
-		abandon()
-		return osUpgradeStartFailed("the unit could not be started", err)
-	}
-	return nil
-}
-
-// closeOSUpgradeRun closes a run: the owner has no more to do with it. The ACK is appended, the pointer to the latest run and the flag of the open upgrade are taken
-// away, and the backup folder of a hop that ended is moved into the run folder, because the blocks of a later run stop at any folder that says that a hop ended. A backup
-// folder that is not finished stays where it is, for the owner who finishes it by hand. The caller holds osUpgradeMu.
-func (s *systemService) closeOSUpgradeRun(run *osUpgradeRun, how string) error {
-	if run.Nonce != "" {
-		ack := osrun.Marker{Kind: osrun.MkAck, Result: how, At: s.systemPackageUpdater().now().UTC()}
-		if err := appendOSUpgradeMarker(run.Dir, run.Nonce, ack); err != nil {
-			return err
-		}
-	}
-	if run.BK != "" && run.Files.DoneAfter && filepath.Dir(run.BK) != run.Dir {
-		if err := os.Rename(run.BK, filepath.Join(run.Dir, osUpgradeBKDone)); err != nil {
-			return err
-		}
-	}
-	if err := clearOSUpgradeCurrent(); err != nil {
-		return err
-	}
-	return clearOSUpgradeBusy()
+	return s.osUpgradeStartRun(ctx, probe, spec, nonce, phase, busyState)
 }
 
 // osUpgradeNewerRefresh is plan_older_than_refresh: the old release was brought to its latest state after the plan was made, and a plan is of the machine as it was.
@@ -528,7 +446,15 @@ func (s *systemService) osUpgradeCheckMachine(ctx context.Context, probe osReadi
 		return refuseUpgrade(OSUpgradeBusy, "a unit of the upgrade runs, or systemd does not answer", map[string]any{"reason": "unit"})
 	}
 
-	appsCtx, cancel := context.WithTimeout(ctx, osPlanAskTimeout)
+	if refusal := osUpgradeAppsRefusal(ctx, probe, osPlanAskTimeout); refusal != nil {
+		return refusal
+	}
+	return s.osUpgradeCheckRoom(ctx, u)
+}
+
+// osUpgradeAppsRefusal is apps_busy when AppManagement has an operation, or does not say whether it has, within the time it is given.
+func osUpgradeAppsRefusal(ctx context.Context, probe osReadinessProbe, limit time.Duration) *OSUpgradeRefusal {
+	appsCtx, cancel := context.WithTimeout(ctx, limit)
 	apps, err := probe.AppOperations(appsCtx)
 	cancel()
 	switch {
@@ -537,7 +463,7 @@ func (s *systemService) osUpgradeCheckMachine(ctx context.Context, probe osReadi
 	case len(apps) > 0:
 		return refuseUpgrade(OSUpgradeAppsBusy, "an app has an operation in progress", map[string]any{"apps": apps})
 	}
-	return s.osUpgradeCheckRoom(ctx, u)
+	return nil
 }
 
 func orEmptyChecks(checks []map[string]any) []map[string]any {

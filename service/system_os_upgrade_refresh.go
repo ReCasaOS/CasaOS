@@ -7,12 +7,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
 	"github.com/ReCasaOS/CasaOS/pkg/osverify"
-	"go.uber.org/zap"
 )
 
 // The refresh of the release that the machine runs: the owner's click that brings it to its last state before the plan is made. It is a run of its own kind (osrun.RunRefresh), with
@@ -128,17 +126,7 @@ func (s *systemService) StartSystemOSUpgradeRefresh(req OSUpgradeRefreshRequest)
 		// no facts: the judge compares a machine with itself across a restart, and a refresh has nothing to judge
 		Driver: osrun.Driver, Blocks: auto.Blocks, Forward: auto.Forward, Plan: record, Manual: osUpgradeRefreshManual, Facts: osverify.Facts{},
 	}
-	osUpgradeMu.Lock()
-	err = s.osUpgradeBegin(spec, nonce, osrun.PhaseRefresh, osrun.StateRefreshing)
-	osUpgradeMu.Unlock()
-	if err != nil {
-		return OSUpgradeStatus{}, err
-	}
-	if err := pruneOSUpgradeRuns(osUpgradeKeepRuns); err != nil {
-		logger.Error("the old runs of the upgrade could not be removed", zap.Error(err))
-	}
-	s.nudgeOSUpgradeSettle()
-	return s.GetSystemOSUpgradeStatus(), nil
+	return s.osUpgradeStartRun(ctx, probe, spec, nonce, osrun.PhaseRefresh, osrun.StateRefreshing)
 }
 
 // osUpgradeSourceRefusal is the refusal for sources that the refresh cannot write: what the rewrite says of the file and the line (the plan's own words for them), or, for an error

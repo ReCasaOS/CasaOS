@@ -163,3 +163,26 @@ func TestARefreshThatWantsItsRestartIsSpokenOfAgainAsAHopIs(t *testing.T) {
 		}
 	}
 }
+func TestAMachineThatCanBeCheckedAgainOffersTheCheckWhenItHadFindings(t *testing.T) {
+	in := hopVerified(t).input()
+	in.Boot.Now = bootB
+	in.Verify = &VerifyResult{Warnings: 1}
+	s := reduced(t, in)
+	is(t, s, StateSucceededWithFindings, "")
+	if want := []string{ActionResume, ActionAcknowledge}; !slices.Equal(ActionsFor(s), []string{ActionResume, ActionAcknowledge}) {
+		t.Errorf("%v, want %v", ActionsFor(s), want)
+	}
+	if s.Busy {
+		t.Errorf("%+v", s)
+	}
+	// A success has nothing to check again.
+	in.Verify = &VerifyResult{}
+	if s := reduced(t, in); slices.Contains(ActionsFor(s), ActionResume) {
+		t.Errorf("%+v", s)
+	}
+	// A check that failed is offered again, as it was.
+	in.Verify = &VerifyResult{Errors: 1}
+	if s := reduced(t, in); !slices.Contains(ActionsFor(s), ActionResume) {
+		t.Errorf("%+v", s)
+	}
+}

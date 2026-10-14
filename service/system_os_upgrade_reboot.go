@@ -62,29 +62,36 @@ func (s *systemService) RebootSystemOSUpgrade() (OSUpgradeStatus, error) {
 	}
 
 	u := s.systemPackageUpdater()
-	osUpgradeMu.Lock()
-	run, state, refusal = s.osUpgradeCurrent()
-	if refusal == nil && !osUpgradeCanRestart(state) {
-		refusal = refuseUpgrade(OSUpgradeNotAwaitingReboot, "the machine does not wait for its restart", map[string]any{"state": state.Name})
+	if run.Meta.Kind == osrun.RunHop {
+		// the machine as it is when the restart is asked for: what the owner changed since the hop is not what the restart did to it
+		s.osUpgradeTakeRestartFacts(ctx, run)
 	}
-	if refusal == nil {
-		if err := appendOSUpgradeMarker(run.Dir, run.Nonce, osrun.Marker{Kind: osrun.MkRebootRequested, At: u.now().UTC()}); err != nil {
-			osUpgradeMu.Unlock()
-			return OSUpgradeStatus{}, osUpgradeStartFailed("the log of the upgrade could not say that the restart was asked for", err)
+	unit := s.osUpgradeUnitNow()
+	err := withOSUpgradeLock(func() error {
+		var refusal *OSUpgradeRefusal
+		run, state, refusal = s.osUpgradeCurrentWith(unit)
+		switch {
+		case refusal != nil:
+			return refusal
+		case !osUpgradeCanRestart(state):
+			return refuseUpgrade(OSUpgradeNotAwaitingReboot, "the machine does not wait for its restart", map[string]any{"state": state.Name})
 		}
-	}
-	osUpgradeMu.Unlock()
-	if refusal != nil {
-		return OSUpgradeStatus{}, refusal
+		if err := appendOSUpgradeMarker(run.Dir, run.Nonce, osrun.Marker{Kind: osrun.MkRebootRequested, At: u.now().UTC()}); err != nil {
+			return osUpgradeStartFailed("the log of the upgrade could not say that the restart was asked for", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return OSUpgradeStatus{}, err
 	}
 
 	osUpgradeSync()
 	logger.Info("the owner restarts the machine for an upgrade of the operating system", zap.String("run", run.ID))
 	if err := osUpgradePowerAction("reboot"); err != nil {
 		logger.Error("the machine could not be restarted for an upgrade of the operating system", zap.String("run", run.ID), zap.Error(err))
-		osUpgradeMu.Lock()
-		appendErr := appendOSUpgradeMarker(run.Dir, run.Nonce, osrun.Marker{Kind: osrun.MkRebootFailed, At: u.now().UTC()})
-		osUpgradeMu.Unlock()
+		appendErr := withOSUpgradeLock(func() error {
+			return appendOSUpgradeMarker(run.Dir, run.Nonce, osrun.Marker{Kind: osrun.MkRebootFailed, At: u.now().UTC()})
+		})
 		if appendErr != nil {
 			logger.Error("the log of the upgrade could not say that the restart failed", zap.String("run", run.ID), zap.Error(appendErr))
 		}

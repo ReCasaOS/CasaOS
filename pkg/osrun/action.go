@@ -102,8 +102,12 @@ func ActionsFor(s State) []string {
 	case StateRebootFirst:
 		on(ActionReboot, true)
 		on(ActionAcknowledge, true)
-	case StateRefreshed, StateRehearsalDone, StateSucceeded, StateSucceededWithFindings, StateManual, StateManualDone:
+	case StateRefreshed, StateRehearsalDone, StateSucceeded, StateManual, StateManualDone:
 		on(ActionAcknowledge, true)
+	case StateSucceededWithFindings:
+		// The check can be made again: what the owner mended, or what was slow to come back, is looked at anew.
+		on(ActionAcknowledge, true)
+		on(ActionResume, s.Resumable)
 	case StateRehearsed:
 		on(ActionDiscard, true)
 	case StateFailed:
