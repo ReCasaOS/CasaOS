@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
+	"strings"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
@@ -47,9 +49,9 @@ func badOSUpgradeRequest(field string) *service.OSUpgradeRefusal {
 	return &service.OSUpgradeRefusal{Code: service.OSUpgradeBadRequest, Detail: "a field of the request is not valid: " + field, Data: map[string]any{"field": field}}
 }
 
-// readOSUpgradeBody reads the body of a request into a value, strictly: one JSON object and nothing after it, no field that the value does not have, and no more than
-// osUpgradeBodyMax bytes. What is wrong is a bad_request that names the field when it was a field of the body, and says "body" when it was the body; it never repeats what
-// the owner sent.
+// readOSUpgradeBody reads the body of a request into a value, strictly: one JSON object and nothing after it, no field that the value does not have, no name spelled otherwise than
+// the value spells it, no name twice, and no more than osUpgradeBodyMax bytes. What is wrong is a bad_request that names the field when it was a field of the body, and says "body"
+// when it was the body; it never repeats what the owner sent.
 func readOSUpgradeBody(ctx echo.Context, into any) error {
 	raw, err := io.ReadAll(io.LimitReader(ctx.Request().Body, osUpgradeBodyMax+1))
 	if err != nil || len(raw) > osUpgradeBodyMax {
@@ -57,6 +59,9 @@ func readOSUpgradeBody(ctx echo.Context, into any) error {
 	}
 	if trimmed := bytes.TrimLeft(raw, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' {
 		return badOSUpgradeRequest("body")
+	}
+	if err := checkOSUpgradeBodyKeys(raw, into); err != nil {
+		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -69,6 +74,38 @@ func readOSUpgradeBody(ctx echo.Context, into any) error {
 	}
 	if _, err := decoder.Token(); err != io.EOF {
 		return badOSUpgradeRequest("body")
+	}
+	return nil
+}
+
+// checkOSUpgradeBodyKeys holds the keys of the object to what a client that reads it by name sees: each is one of the names of the fields of the value, spelled exactly (Go's decoder
+// would take ENABLED for enabled), and none comes twice (it would take the last). It is the body as a whole that is wrong then, and the answer does not repeat the key.
+func checkOSUpgradeBodyKeys(raw []byte, into any) error {
+	allowed := map[string]bool{}
+	if t := reflect.TypeOf(into); t != nil && t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct {
+		for i := 0; i < t.Elem().NumField(); i++ {
+			name, _, _ := strings.Cut(t.Elem().Field(i).Tag.Get("json"), ",")
+			if name != "" && name != "-" {
+				allowed[name] = true
+			}
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return badOSUpgradeRequest("body")
+	}
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		key, isString := token.(string)
+		if err != nil || !isString || !allowed[key] || seen[key] {
+			return badOSUpgradeRequest("body")
+		}
+		seen[key] = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return badOSUpgradeRequest("body")
+		}
 	}
 	return nil
 }
