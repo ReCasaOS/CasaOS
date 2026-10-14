@@ -244,8 +244,9 @@ func TestWhatActsOnTheUpgradeTakesTheAccessTokenInTheHeaderAndNoOther(t *testing
 			if slices.Contains(osUpgradeRoutes, method+" "+path) {
 				continue
 			}
-			if got := call(method, path, `{}`, access, ""); got >= 200 && got < 300 {
-				t.Errorf("%s %s = %d", method, path, got)
+			// the router says 404 or 405, depending on which method it is asked with: neither does anything
+			if got := call(method, path, `{}`, access, ""); got != http.StatusNotFound && got != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s = %d, want 404 or 405", method, path, got)
 			}
 		}
 	}
