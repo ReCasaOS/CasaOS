@@ -18,12 +18,13 @@ import (
 //
 //	apt-get -y -q -o Dpkg::Use-Pty=0 update --error-on=any                                                   chroot-d11-refresh-update (status 0)
 //	apt-get -y -q -o Dpkg::Use-Pty=0 -s dist-upgrade -o APT::Get::Always-Include-Phased-Updates=true         chroot-d11-refresh-dist-upgrade (status 0): thirty packages, none removed
-//	dpkg-query -W -f='${db:Status-Abbrev} ${Package} ${Version}\n' 'linux-image-*'                           chroot-d11-kernels-*: two kernel packages that are installed, the same
-//	                                                                                                         two after a new kernel came, and the answer of dpkg when there is none (status 1)
+//	dpkg-query -W -f='${db:Status-Abbrev} ${Package} ${Version}\n' 'linux-image-*'                           chroot-d11-kernels-*: two packages with the names of kernels (made for the test and installed
+//	                                                                                                         with dpkg -i), the same two after a new version came, and the answer of dpkg when there
+//	                                                                                                         is none (it says so on its error output, and ends with 1)
 //
-// The whole refresh (the four blocks, as the unit runs them, with a gate that reads a file of cgroups of the test's) was also run there, for real, with the blocks of this text: the
-// upgrade of the thirty packages, libc6 and dpkg among them, ended with dpkg quiet, /etc/apt as it was, and the word of the restart that the files said (no restart, a new kernel,
-// a file that says reboot-required): see the commit that holds these tests.
+// The whole refresh (the four blocks, as the unit runs them, with a gate that reads a file of cgroups of the test's) was also run there, for real: the upgrade of the thirty packages,
+// libc6 and dpkg among them, ended with dpkg quiet and /etc/apt as it was, and the word of the restart was the one that the files said (no restart; a kernel that came; a file that
+// says reboot-required). That root has no systemd, so the timers were not part of it.
 
 // the text of one command of apt, as the stub of apt-get prints it
 func (b *refreshBox) aptSays(name string) {

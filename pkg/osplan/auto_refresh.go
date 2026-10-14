@@ -119,7 +119,7 @@ const refreshKernels = `dpkg-query -W -f='${db:Status-Abbrev} ${Package} ${Versi
 const refreshRoomWords = " Free some room there (apt-get clean empties the cache of downloaded packages; remove what you do not need), then start the refresh again."
 
 // shHelpRefresh is what the STOP lines of R2 end with: the refresh has no point of no return, and the unit puts the machine back.
-var shHelpRefresh = "help=\"The refresh stops here: the unit puts the sources and the timers back, and finishes what dpkg left half done. Do not undo anything by hand, and ask for help if the machine is not as it was. " + logWords + "\"\n"
+const shHelpRefresh = "help=\"The refresh stops here: the unit puts the sources and the timers back, and finishes what dpkg left half done. Do not undo anything by hand, and ask for help if the machine is not as it was. " + logWords + "\"\n"
 
 // shNoRemovals defines no_removals: the refresh brings the release that is left to its last state and removes nothing, so a simulation that lists a removal is a stop, whatever
 // the package is (what is protected is stopped first, by guard_removals, with its own words).
@@ -131,7 +131,7 @@ const shNoRemovals = `no_removals() {
 }
 `
 
-// refreshBlock ends a block of the refresh: its marker, and what it says.
+// refreshDone ends a block of the refresh: its marker, and what it says.
 func refreshDone(id, label string) string {
 	return fmt.Sprintf(": > \"$BK/done-%s\"\necho \"Block %s done.\"\n", id, label)
 }
