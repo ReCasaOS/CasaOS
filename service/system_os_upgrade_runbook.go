@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
+	"github.com/ReCasaOS/CasaOS/pkg/osrun"
 )
 
 // OSUpgradeRunbook is the text for the owner who takes a run over (or who looks at where it stands): the owner's own text of the hop of the run that is open, as it was written
@@ -24,6 +25,9 @@ func (s *systemService) GetSystemOSUpgradeRunbook() (*OSUpgradeRunbook, error) {
 	run, _, refusal := s.osUpgradeCurrent()
 	if refusal != nil {
 		return nil, refusal
+	}
+	if run.Meta.Kind == osrun.RunRefresh {
+		return nil, refuseUpgrade(OSUpgradeNoRun, "the run that is open is a refresh of the old release, which has no text to run by hand", map[string]any{"run_id": run.ID, "kind": run.Meta.Kind})
 	}
 	unreadable := refuseUpgrade(OSUpgradeRunUnreadable, "the text of the upgrade cannot be read", map[string]any{"run_id": run.ID})
 	text, err := readOSUpgradeFile(filepath.Join(run.Dir, osUpgradeManualFile), osplan.MaxRunbookBytes)

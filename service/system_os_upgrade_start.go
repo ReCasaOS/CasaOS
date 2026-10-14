@@ -296,7 +296,7 @@ func (s *systemService) StartSystemOSUpgrade(req OSUpgradeStartRequest) (OSUpgra
 	if refusal := s.osUpgradeCheckSources(ctx, hop, plan, probe); refusal != nil {
 		return OSUpgradeStatus{}, refusal
 	}
-	if refusal := s.osUpgradeCheckMachine(ctx, probe); refusal != nil {
+	if refusal := s.osUpgradeCheckMachine(ctx, probe, nil); refusal != nil {
 		return OSUpgradeStatus{}, refusal
 	}
 	// the report took a while: a newer plan may have replaced the one that the owner read
@@ -500,13 +500,14 @@ func (s *systemService) osUpgradeCheckSources(ctx context.Context, hop osplan.Ho
 
 // osUpgradeCheckMachine asks the machine: the readiness report (which is where the pending restart, a broken dpkg, held packages, the boot loader, the room and the
 // age of the backup speak), whether something else changes the packages, whether an app has an operation, and whether there is room for the run folder and the backup.
-// The unit of the upgrade is the caller's own, which is not counted against it.
-func (s *systemService) osUpgradeCheckMachine(ctx context.Context, probe osReadinessProbe) *OSUpgradeRefusal {
+// The unit of the upgrade is the caller's own, which is not counted against it. stands says which checks of the report are refusals for the caller: nil is all of them, and a
+// refresh gives the few that it stands on (osRefreshStands).
+func (s *systemService) osUpgradeCheckMachine(ctx context.Context, probe osReadinessProbe, stands func(code string) bool) *OSUpgradeRefusal {
 	u := probe.updater
 	report := runOSReadiness(ctx, probe, osreadiness.Options{})
 	var checks []map[string]any
 	for _, f := range report.Checks {
-		if f.Severity == osreadiness.Refuse {
+		if f.Severity == osreadiness.Refuse && (stands == nil || stands(f.Code)) {
 			checks = append(checks, map[string]any{"code": f.Code, "action": string(f.Action)})
 		}
 	}

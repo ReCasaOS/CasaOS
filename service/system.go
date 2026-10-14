@@ -94,6 +94,8 @@ type SystemService interface {
 	// StartSystemOSUpgrade starts the upgrade (or its rehearsal) for the plan that the owner read; the owner's buttons below act on
 	// the run that it makes. Each of them answers the status that follows it, and an *OSUpgradeRefusal says why it did not act.
 	StartSystemOSUpgrade(req OSUpgradeStartRequest) (OSUpgradeStatus, error)
+	// StartSystemOSUpgradeRefresh brings the release that the machine runs to its last state, before a plan is made: a run of its own kind, with no point of no return.
+	StartSystemOSUpgradeRefresh(req OSUpgradeRefreshRequest) (OSUpgradeStatus, error)
 	RebootSystemOSUpgrade() (OSUpgradeStatus, error)
 	ResumeSystemOSUpgrade() (OSUpgradeStatus, error)
 	AbortSystemOSUpgrade() (OSUpgradeStatus, error)

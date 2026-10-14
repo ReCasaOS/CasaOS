@@ -253,6 +253,10 @@ func osUpgradeLastActivity(run *osUpgradeRun, in osrun.Input) time.Time {
 // osUpgradeManualOf is where the blocks of the run stand, from the files that they leave: what the owner needs to take the run over.
 func osUpgradeManualOf(run *osUpgradeRun, state osrun.State) OSUpgradeManual {
 	manual := OSUpgradeManual{BlocksDone: []string{}, PNR: state.PNR, BKPath: run.Meta.BK}
+	if run.Meta.Kind == osrun.RunRefresh {
+		// a refresh has no text for the owner to run by hand, and none of the blocks of a hop: there is no block to say that comes next
+		return manual
+	}
 	if run.BK == "" {
 		manual.NextBlock = osrun.BlockVerify
 		return manual
