@@ -27,6 +27,16 @@ type HopSpec struct {
 	Later []string
 	// Firmware says that the target has the component non-free-firmware, which is put beside non-free.
 	Firmware bool
+	// Refresh says that the sources are written for bringing the release that is left up to its last state, and not for the next one: the lines of that release are kept as they are
+	// (its suite, its host, its components, its backports), and what is not Debian's is put aside as it is for a hop. Only ForRefresh sets it.
+	Refresh bool
+}
+
+// ForRefresh is the hop as the refresh of the release that is left reads the sources: the same refusals, the same third-party sources put aside, and no line moved to the
+// next release. What Firmware says is of no use to it (it adds a component of the next release): Refresh is what rewriteDistro looks at first.
+func (h HopSpec) ForRefresh() HopSpec {
+	h.Refresh = true
+	return h
 }
 
 // planHops is the one table of the hops a plan can be made for. Debian 12 to 13 (deb822, non-free-firmware, new clues) and
@@ -356,17 +366,20 @@ func (h HopSpec) rewriteDistro(l *srcLine) (text, why string, dropped bool, p *l
 	case base != h.From:
 		return "", "", false, &lineProblem{CodeSourcesFormat, "suite"}
 	}
-	var suite string
 	switch suffix {
-	case "":
-		suite = h.To
-	case "-updates", "-security":
-		suite = h.To + suffix
+	case "", "-updates", "-security":
 	case "-backports", "-backports-sloppy", "/updates", "-proposed-updates":
-		return droppedMark + strings.TrimSpace(l.text), "dropped", true, nil
+		if !h.Refresh {
+			return droppedMark + strings.TrimSpace(l.text), "dropped", true, nil
+		}
 	default:
 		return "", "", false, &lineProblem{CodeSourcesFormat, "suite"}
 	}
+	if h.Refresh {
+		// the machine keeps this line as it has it: its release, its host, its components and its backports are the ones that are brought up to date (why is "": nothing changed)
+		return l.text, "", false, nil
+	}
+	suite := h.To + suffix
 	reasons := []string{"suite"}
 	uri, moved := moveHost(l.uri)
 	if moved {
@@ -571,6 +584,10 @@ func RewriteSources(ctx context.Context, hop HopSpec, files []osreadiness.Source
 						out.FirmwareAdded++
 					}
 				}
+				if why == "" {
+					// a refresh keeps the line: it is no change, and no longer than the file had it
+					continue
+				}
 			}
 			// what the rewrite writes (a component added, the mark of a paused or of a dropped line) can make a line that was
 			// within the limit longer than it: it is refused here, in the words of the file, and is not the tree's own bug
@@ -635,7 +652,7 @@ func joinLines(lines []srcLine) string {
 }
 
 // checkTree is the tree read again by the strict parser: a line that it does not accept, or a distribution line that is not
-// of the target, is the rewrite's own bug, and nothing is returned.
+// of the target, is the rewrite's own bug, and nothing is returned. A refresh has no target: its lines are of the release that is left.
 func checkTree(hop HopSpec, tree []TreeFile) error {
 	for _, f := range tree {
 		lines, bad, n := parseSourceFile([]byte(f.Content))
@@ -646,7 +663,7 @@ func checkTree(hop HopSpec, tree []TreeFile) error {
 			if !l.repo {
 				continue
 			}
-			if base, _ := osreadiness.SplitSuite(l.suite); base == hop.From {
+			if base, _ := osreadiness.SplitSuite(l.suite); base == hop.From && !hop.Refresh {
 				return failf(CodeInternal, nil, "the tree's %s line %d is still of %s", f.Path, l.n, hop.From)
 			}
 		}

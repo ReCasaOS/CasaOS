@@ -17,11 +17,7 @@ var update = flag.Bool("update", false, "rewrite the golden files of testdata, w
 func realRunbook(t *testing.T) (*Plan, *Runbook) {
 	t.Helper()
 	p := realPlan(t)
-	rb, err := BuildRunbook(*p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return p, rb
+	return p, buildFor(t, *p)
 }
 
 func TestTheRunbookOfTheRealBoxIsTheGolden(t *testing.T) {
