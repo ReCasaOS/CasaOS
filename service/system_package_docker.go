@@ -60,11 +60,11 @@ const systemDockerUpdateUnit = "casaos-docker-update.service" // reserved for an
 // systemMaintenanceUnits are the transient units that change the box's packages or the
 // ReCasaOS release: at most one of them runs at a time, and none while a package manager
 // holds dpkg's lock.
-var systemMaintenanceUnits = []string{common.UPDATE_UNIT + ".service", systemPackageUpdateUnit, systemDockerUpdateUnit}
+var systemMaintenanceUnits = []string{common.UPDATE_UNIT + ".service", systemPackageUpdateUnit, systemDockerUpdateUnit, systemOSUpgradeUnit}
 
 // maintenanceBusy says whether the box is being changed by something else than the unit
 // named in except (the caller's own, which it checks in its own way): another of the units
-// above is active, or, on a host that has dpkg, a package manager holds its lock. Systemd
+// above is active, an operating system upgrade is open (its flag is there, or cannot be read), or, on a host that has dpkg, a package manager holds its lock. Systemd
 // not answering is not busy: a refusal that cannot be explained helps nobody.
 func (u *systemPackageUpdater) maintenanceBusy(ctx context.Context, except string) (string, bool) {
 	reason, busy, _ := u.maintenanceState(ctx, except, u.command)
@@ -89,6 +89,10 @@ func (u *systemPackageUpdater) maintenanceState(ctx context.Context, except stri
 		case "active", "activating", "deactivating":
 			return fmt.Sprintf("%s is running", strings.TrimSuffix(unit, ".service")), true, nil
 		}
+	}
+	// an operating system upgrade that is open (its flag, read fail closed) keeps every caller away but its own
+	if reason, busy := osUpgradeBusyReason(except); busy {
+		return reason, true, nil
 	}
 	// the lock is dpkg's: a host that has no dpkg has none to hold
 	state := u.dpkgLockState
