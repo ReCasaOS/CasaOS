@@ -181,7 +181,7 @@ func StartSystemOSUpgradeRefresh(ctx echo.Context) error {
 }
 
 // @Summary  restart the machine that waits for its restart
-// @Description The owner's click on "restart now". Valid when the machine waits for its restart (awaiting_reboot, reboot_stalled, or a refresh that asks for one), with no unit of the upgrade running, no other package manager at work and, for a hop, what stands before the restart green (asked again now). Works whatever the switch says. The body is {}. 202 with the status (rebooting); 409 with data.error_code: no_run, not_awaiting_reboot (data.data.state), barrier_failed (data.data.checks), unit_active, dpkg_locked; 500 reboot_failed when systemd would not restart the machine. The token goes in the Authorization header, and is not the refresh token.
+// @Description The owner's click on "restart now". Valid when the machine waits for its restart (awaiting_reboot, reboot_stalled, or a refresh that asks for one), with no unit of the upgrade running, no other package manager at work and, for a hop, what stands before the restart green (asked again now). Works whatever the switch says. The body is {}. 202 with the status (rebooting); 409 with data.error_code: no_run, run_unreadable, not_awaiting_reboot (data.data.state), barrier_failed (data.data.checks), unit_active, dpkg_locked; 500 reboot_failed when systemd would not restart the machine, start_failed when the log of the run could not say that the restart was asked for (nothing was asked), internal for anything else. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Accept   application/json
 // @Tags sys
@@ -195,7 +195,7 @@ func RebootSystemOSUpgrade(ctx echo.Context) error {
 }
 
 // @Summary  go on with an upgrade that stopped half way
-// @Description The owner's click on "go on": starts a unit of its own that mends what the stop left and runs the blocks that remain. Valid for a run that stopped or was interrupted after its point of no return, for a class of stop that can be gone on from. Works whatever the switch says. The body is {}. 202 with the status; 409 with data.error_code: no_run, not_resumable (data.data.state, data.data.class), unit_active, busy. The token goes in the Authorization header, and is not the refresh token.
+// @Description The owner's click on "go on": starts a unit of its own that mends what the stop left and runs the blocks that remain. Valid for a run that stopped or was interrupted after its point of no return, for a class of stop that can be gone on from. Works whatever the switch says. The body is {}. 202 with the status; 409 with data.error_code: no_run, run_unreadable, not_resumable (data.data.state, data.data.class), unit_active, busy; 500 start_failed when the unit could not be started, internal for anything else. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Accept   application/json
 // @Tags sys
@@ -208,7 +208,7 @@ func ResumeSystemOSUpgrade(ctx echo.Context) error {
 }
 
 // @Summary  call off an upgrade before its point of no return
-// @Description The owner's click on "stop": the unit is stopped and the machine is put back as it was. Valid while the unit runs the blocks that can be undone (refreshing, rehearsing, running before block 5); after that nothing can be called off. Works whatever the switch says. The body is {}. 202 with the status; 409 with data.error_code: no_run, not_abortable (data.data.reason: point_of_no_return, past_block or not_running). The token goes in the Authorization header, and is not the refresh token.
+// @Description The owner's click on "stop": the unit is stopped and the machine is put back as it was. Valid while the unit runs the blocks that can be undone (refreshing, rehearsing, running before block 5); after that nothing can be called off. Works whatever the switch says. The body is {}. 202 with the status; 409 with data.error_code: no_run, run_unreadable, not_abortable (data.data.reason: point_of_no_return, past_block or not_running); 500 internal when the flag of the call could not be written. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Accept   application/json
 // @Tags sys
@@ -221,7 +221,7 @@ func AbortSystemOSUpgrade(ctx echo.Context) error {
 }
 
 // @Summary  the owner's word on an upgrade that is not running
-// @Description action is acknowledge (close a run that ended or stopped, which lets backups and automatic updates go on), discard (the same, and drop the plan it was made for; for a rehearsal, put the machine back) or manual (take the run over: the core stops acting, and the owner finishes the hop by hand from its text). A machine that is half upgraded is let go of only with the word that the status gives in ack_word, typed in word. Works whatever the switch says. 200 with the status; 400 bad_request for a field that is not valid; 409 with data.error_code: no_run, run_unreadable, not_terminal (data.data.state), word_required, bad_word, unit_active. The token goes in the Authorization header, and is not the refresh token.
+// @Description action is acknowledge (close a run that ended or stopped, which lets backups and automatic updates go on), discard (the same, and drop the plan it was made for; for a rehearsal, put the machine back) or manual (take the run over: the core stops acting, and the owner finishes the hop by hand from its text). A machine that is half upgraded is let go of only with the word that the status gives in ack_word, typed in word. Works whatever the switch says. 200 with the status; 400 bad_request for a field that is not valid; 409 with data.error_code: no_run, run_unreadable, not_terminal (data.data.state), word_required, bad_word, unit_active; 500 close_failed when the backup folder could not be put away (the run is as it was), start_failed when the log could not say that the owner took the run over. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Accept   application/json
 // @Tags sys
