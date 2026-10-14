@@ -41,19 +41,21 @@ const (
 	CodeDockerVersionChanged    = "docker_version_changed"    // the daemon is not the one of before
 	CodeDockerSourceUnreachable = "docker_source_unreachable" // Docker's repository could not be asked, and its source stays paused
 	CodeContainerNotReturned    = "container_not_returned"    // a container that has a restart policy ran before, and does not now
+	CodeFactsIncomplete         = "facts_incomplete"          // what the machine is now could not be taken in full: what was not taken is not judged
 	// Information.
 	CodeDockerSourceNotPublished = "docker_source_not_published" // Docker publishes nothing for the new release yet
 	CodeDockerSourcePaused       = "docker_source_paused"        // Docker's source is still paused
 	CodeDpkgDistNew              = "dpkg_dist_new"               // files that dpkg left beside the ones the owner edited, since the upgrade began
 	CodeSourcesLeftPaused        = "sources_left_paused"         // sources of apt that the upgrade paused and that are still paused
+	CodeChangedSinceSnapshot     = "changed_since_snapshot"      // something that was there when the hop began, and was not there when the owner asked for the restart
 )
 
 // Codes are the findings, errors first, in the order that Judge lists them.
 var Codes = []string{
 	CodeKernelUnexpected, CodeCasaosUnitDown, CodeDockerDown, CodeMountsMissing, CodeDpkgNotQuiet, CodeSystemNotReady,
 	CodeUnitsFailedNew, CodePortsMissing, CodeSambaUsersChanged, CodeRouteMissing, CodeDNSMissing, CodeDockerVersionChanged,
-	CodeDockerSourceUnreachable, CodeContainerNotReturned,
-	CodeDockerSourceNotPublished, CodeDockerSourcePaused, CodeDpkgDistNew, CodeSourcesLeftPaused,
+	CodeDockerSourceUnreachable, CodeContainerNotReturned, CodeFactsIncomplete,
+	CodeDockerSourceNotPublished, CodeDockerSourcePaused, CodeDpkgDistNew, CodeSourcesLeftPaused, CodeChangedSinceSnapshot,
 }
 
 var severities = map[string]string{
@@ -61,7 +63,9 @@ var severities = map[string]string{
 	CodeDpkgNotQuiet: SeverityError, CodeSystemNotReady: SeverityError,
 	CodeUnitsFailedNew: SeverityWarn, CodePortsMissing: SeverityWarn, CodeSambaUsersChanged: SeverityWarn, CodeRouteMissing: SeverityWarn,
 	CodeDNSMissing: SeverityWarn, CodeDockerVersionChanged: SeverityWarn, CodeDockerSourceUnreachable: SeverityWarn, CodeContainerNotReturned: SeverityWarn,
+	CodeFactsIncomplete:          SeverityWarn,
 	CodeDockerSourceNotPublished: SeverityInfo, CodeDockerSourcePaused: SeverityInfo, CodeDpkgDistNew: SeverityInfo, CodeSourcesLeftPaused: SeverityInfo,
+	CodeChangedSinceSnapshot: SeverityInfo,
 }
 
 // SeverityOf is how serious a finding is, "" for a code that is not one.
@@ -183,9 +187,13 @@ func clean(s string) string {
 
 type judge struct {
 	before, after Facts
-	bk            BKFiles
-	out           []Finding
-	count         map[string]int
+	// restart are the facts of the machine when the owner asked for its restart, which may be long after the hop: the zero Facts
+	// when they were not taken. changed are the things that were not there then and were there when the hop began.
+	restart Facts
+	changed []string
+	bk      BKFiles
+	out     []Finding
+	count   map[string]int
 }
 
 // add lists a finding, and gives it back so that what is particular to its code can be put in it; nil when the code has
@@ -203,12 +211,25 @@ func (j *judge) add(code, arg string, apps ...string) *Finding {
 	return &j.out[len(j.out)-1]
 }
 
+// Options are what the judge is told besides the facts of before and after and the files of the backup folder.
+type Options struct {
+	// Restart are the facts that were taken when the owner asked for the restart. The machine waits for it, sometimes for days,
+	// and the owner may stop an app or a unit of ReCasaOS meanwhile: what was running when the hop began and was not when the
+	// restart was asked for is what the owner changed, and is told as that (changed_since_snapshot), not as what the restart did.
+	// The zero Facts say that none were taken.
+	Restart Facts
+}
+
 // Judge compares the machine after the upgrade with the machine before it, and with what the blocks of the hop wrote down
 // of it, and says what is not as it was. The facts of before are those that Take took when the hop was started, or the zero
-// Facts when they are lost; what the facts of after do not know is not judged. The findings are listed with the errors first,
-// then the warnings, then the information, each in the order of Codes and, within a code, by name. It is never nil.
-func Judge(before, after Facts, bk BKFiles) []Finding {
-	j := &judge{before: before, after: after, bk: bk, out: []Finding{}, count: map[string]int{}}
+// Facts when they are lost; what the facts of after do not know is not judged, and what is not judged is said (facts_incomplete)
+// where it was known before. The findings are listed with the errors first, then the warnings, then the information, each in
+// the order of Codes and, within a code, by name. It is never nil.
+func Judge(before, after Facts, bk BKFiles) []Finding { return JudgeWith(before, after, bk, Options{}) }
+
+// JudgeWith is Judge with the options.
+func JudgeWith(before, after Facts, bk BKFiles, opts Options) []Finding {
+	j := &judge{before: before, after: after, restart: opts.Restart, bk: bk, out: []Finding{}, count: map[string]int{}}
 	j.kernel()
 	j.casaosUnits()
 	j.dockerDown()
@@ -225,6 +246,8 @@ func Judge(before, after Facts, bk BKFiles) []Finding {
 	j.containers()
 	j.dpkgFiles()
 	j.paused()
+	j.incomplete()
+	j.addChanged()
 	rank := func(code string) int { return slices.Index(Codes, code) }
 	sort.SliceStable(j.out, func(a, b int) bool { return rank(j.out[a].Code) < rank(j.out[b].Code) })
 	return j.out
@@ -263,15 +286,42 @@ func (j *judge) casaosUnits() {
 			continue
 		}
 		// a unit that has no file any more is a unit that does not run, and one that systemd could not be asked about is not said down
+		// (it is said that it could not be: incomplete)
 		state := j.after.Units[unit]
 		if state != unitUnknown && !slices.Contains(upStates, state) {
+			// a unit that the owner had stopped by the time they asked for the restart did not stop because of it
+			if j.restart.Knows(FactUnits) && j.restart.Units[unit] == "inactive" {
+				j.changed = append(j.changed, "unit:"+unit)
+				continue
+			}
 			j.add(CodeCasaosUnitDown, unit)
 		}
 	}
 }
 
+// bkRunning are the containers that block 2 saw running, by name, with their restart policy.
+func (j *judge) bkRunning() map[string]string {
+	lines, _ := bkLines(j.bk, BKContainers)
+	running := map[string]string{}
+	for _, line := range lines {
+		if m := containerLine.FindStringSubmatch(line); m != nil && m[3] == "running" {
+			running[m[1]] = m[2]
+		}
+	}
+	return running
+}
+
 func (j *judge) dockerDown() {
-	if j.before.Knows(FactDocker) && j.before.Docker.State == DockerUp && j.after.Knows(FactDocker) && j.after.Docker.State != DockerUp {
+	if !j.after.Knows(FactDocker) || j.after.Docker.State == DockerUp {
+		return
+	}
+	// Docker ran if the facts of before say so; when they cannot say (they were lost, or Docker could not be asked) the list that
+	// block 2 wrote does, if it has containers that ran.
+	ran := len(j.bkRunning()) > 0
+	if j.before.Knows(FactDocker) {
+		ran = j.before.Docker.State == DockerUp
+	}
+	if ran {
 		j.add(CodeDockerDown, j.after.Docker.State)
 	}
 }
@@ -294,14 +344,74 @@ func (j *judge) appsUnder(mountPoint string) []string {
 	return apps
 }
 
+// within says whether a path is the other or below it.
+func within(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/")
+}
+
+// appsOn are the containers of the facts of before that have a directory mounted into themselves that depends on this mount
+// point: one at it, below it (the mount is where it is kept) or above it (it is a mount of a part of what is mounted).
+func (j *judge) appsOn(mountPoint string) []string {
+	var apps []string
+	if !j.before.Knows(FactContainers) {
+		return nil
+	}
+	for _, c := range j.before.Docker.Containers {
+		if slices.ContainsFunc(c.Binds, func(bind string) bool { return within(bind, mountPoint) || within(mountPoint, bind) }) {
+			apps = append(apps, c.Name)
+		}
+	}
+	return apps
+}
+
+// The mounts that matter, and that are not there after the restart, are told: a pool that is not mounted, a pool that has lost
+// a branch, a disk that is a branch of a pool, and any mount that an app has a directory in (its files and its configuration are
+// then written into the empty directory that is left). A mount that no pool and no app depends on is not the machine's to
+// miss: the owner mounts and unmounts what they like.
 func (j *judge) mounts() {
 	if !j.before.Knows(FactMounts) || !j.after.Knows(FactMounts) {
 		return
 	}
+	apps := map[string][]string{}
+	say := func(mountPoint string, found []string) {
+		apps[mountPoint] = append(apps[mountPoint], found...)
+	}
 	for _, mountPoint := range j.before.Mergerfs {
 		if !slices.Contains(j.after.Mergerfs, mountPoint) {
-			j.add(CodeMountsMissing, mountPoint, j.appsUnder(mountPoint)...)
+			say(mountPoint, j.appsUnder(mountPoint))
 		}
+	}
+	var branchOf = map[string][]string{}
+	for _, pool := range sortedKeys(j.before.Pools) {
+		for _, branch := range branchMounts(j.before.Pools[pool], j.before.Mounts) {
+			branchOf[branch] = append(branchOf[branch], pool)
+		}
+		if !slices.Contains(j.after.Mergerfs, pool) {
+			continue
+		}
+		for _, branch := range j.before.Pools[pool] {
+			if !slices.Contains(j.after.Pools[pool], branch) {
+				say(branch, j.appsUnder(pool))
+			}
+		}
+	}
+	for _, mountPoint := range j.before.Mounts {
+		if mountPoint == "/" || slices.Contains(j.after.Mounts, mountPoint) {
+			continue
+		}
+		found := j.appsOn(mountPoint)
+		if len(found) == 0 && len(branchOf[mountPoint]) == 0 {
+			continue
+		}
+		say(mountPoint, found)
+		for _, pool := range branchOf[mountPoint] {
+			say(mountPoint, j.appsUnder(pool))
+		}
+	}
+	for _, mountPoint := range sortedKeys(apps) {
+		found := slices.Clone(apps[mountPoint])
+		slices.Sort(found)
+		j.add(CodeMountsMissing, mountPoint, slices.Compact(found)...)
 	}
 }
 
@@ -330,9 +440,15 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+// The lists of the units that fail and of the ports that are listened on: before, they are the ones that block 2 wrote down at
+// the hop; after, they are the machine's now when it could be asked, and what block 8 wrote down after the restart when it could
+// not (a look that is made again, a long time after the check, reads the machine and not a list that is old).
 func (j *judge) failedUnits() {
 	before, okBefore := bkLines(j.bk, BKFailedUnits)
 	after, okAfter := bkLines(j.bk, BKFailedUnitsAfter)
+	if j.after.Knows(FactFailed) {
+		after, okAfter = j.after.Failed, true
+	}
 	if !okBefore || !okAfter {
 		return
 	}
@@ -377,6 +493,9 @@ func portsOf(lines []string) map[int]bool {
 func (j *judge) ports() {
 	before, okBefore := bkLines(j.bk, BKListening)
 	after, okAfter := bkLines(j.bk, BKListeningAfter)
+	if j.after.Knows(FactListening) {
+		after, okAfter = j.after.Listening, true
+	}
 	if !okBefore || !okAfter {
 		return
 	}
@@ -470,13 +589,98 @@ func NotReturned(bk BKFiles, after Facts) []dockerpkg.NotReturned {
 	return gone
 }
 
+// stoppedBeforeRestart are the containers that ran when block 2 wrote them down and did not run when the owner asked for the
+// restart: the restart is not what stopped them.
+func (j *judge) stoppedBeforeRestart() map[string]bool {
+	stopped := map[string]bool{}
+	r := j.restart
+	if !r.Knows(FactDocker) || !r.Knows(FactContainers) || r.Docker.State != DockerUp {
+		return stopped
+	}
+	running := map[string]bool{}
+	for _, c := range r.Docker.Containers {
+		running[c.Name] = true
+	}
+	for name := range j.bkRunning() {
+		if !running[name] {
+			stopped[name] = true
+		}
+	}
+	return stopped
+}
+
 func (j *judge) containers() {
+	stopped := j.stoppedBeforeRestart()
 	for _, c := range NotReturned(j.bk, j.after) {
 		if c.RestartPolicy != "" && c.RestartPolicy != "no" {
+			if stopped[c.Name] {
+				j.changed = append(j.changed, "container:"+c.Name)
+				continue
+			}
 			if finding := j.add(CodeContainerNotReturned, c.Name); finding != nil {
 				finding.Policy = c.RestartPolicy
 			}
 		}
+	}
+}
+
+// incomplete says what of the machine could not be taken and was to be judged: a fact that the facts of before knew, or that
+// the files of block 2 are the reference of, and that the facts of after do not have (a command that did not answer, a time that
+// ran out), and a file of the backup folder that is there and cannot be read. What was not taken is not judged, and a machine
+// that was judged on part of what it is is not said to be well on the strength of it: the owner is told, and can ask again.
+func (j *judge) incomplete() {
+	if !j.after.Taken {
+		j.add(CodeFactsIncomplete, "all")
+		return
+	}
+	var missing []string
+	need := func(fact string, because bool) {
+		if because && !j.after.Knows(fact) && !slices.Contains(missing, fact) {
+			missing = append(missing, fact)
+		}
+	}
+	kernel, _ := bkLines(j.bk, BKKernel)
+	_, hasFailed := bkLines(j.bk, BKFailedUnits)
+	_, hasListening := bkLines(j.bk, BKListening)
+	running := len(j.bkRunning()) > 0
+	dockerBefore := j.before.Knows(FactDocker) && j.before.Docker.State == DockerUp || !j.before.Knows(FactDocker) && running
+	need(FactKernel, len(kernel) > 0 && kernelPattern.MatchString(kernel[0]))
+	need(FactSystem, true)
+	need(FactDpkg, true)
+	need(FactUnits, len(casaosUnitStates(j.bk)) > 0)
+	need(FactSources, true)
+	need(FactFailed, hasFailed)
+	need(FactListening, hasListening)
+	need(FactSamba, j.before.Knows(FactSamba))
+	need(FactMounts, j.before.Knows(FactMounts) && len(j.before.Mounts)+len(j.before.Mergerfs) > 0)
+	need(FactRoute, j.before.Knows(FactRoute) && j.before.Route != "")
+	need(FactDNS, j.before.Knows(FactDNS) && j.before.DNS)
+	need(FactDocker, dockerBefore)
+	need(FactContainers, dockerBefore && j.after.Docker.State == DockerUp && (running || j.before.Knows(FactContainers) && len(j.before.Docker.Containers) > 0))
+	// a unit that was running and that systemd could not be asked about
+	if j.after.Knows(FactUnits) {
+		for unit, state := range casaosUnitStates(j.bk) {
+			if state == "active" && !slices.Contains(transientUnits, unit) && j.after.Units[unit] == unitUnknown && !slices.Contains(missing, FactUnits) {
+				missing = append(missing, FactUnits)
+			}
+		}
+	}
+	for _, fact := range j.after.Unknown {
+		if strings.HasPrefix(fact, UnreadablePrefix) && !slices.Contains(missing, fact) {
+			missing = append(missing, fact)
+		}
+	}
+	if len(missing) > 0 {
+		slices.Sort(missing)
+		j.add(CodeFactsIncomplete, strings.Join(missing, ","))
+	}
+}
+
+// addChanged tells what the owner changed between the hop and the restart, once each and sorted.
+func (j *judge) addChanged() {
+	slices.Sort(j.changed)
+	for _, what := range slices.Compact(j.changed) {
+		j.add(CodeChangedSinceSnapshot, what)
 	}
 }
 

@@ -2,6 +2,7 @@ package osverify
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"maps"
 	"math/rand"
@@ -47,6 +48,26 @@ func TestAFileOfTheBackupFolderThatCannotBeReadIsNotThere(t *testing.T) {
 	}
 	if text, ok := got[BKDpkgFiles]; !ok || text != "" {
 		t.Errorf("a file that is empty is not a file that is not there: %q, %v", text, ok)
+	}
+}
+
+func TestAFileOfTheBackupFolderThatIsThereAndCannotBeReadIsNamed(t *testing.T) {
+	f := newFake()
+	f.set(bkDir+"/kernel", "6.1.0-25-amd64\n")
+	f.set(bkDir+"/listening.txt", strings.Repeat("x", 1<<20+1))
+	f.fail(bkDir+"/containers.txt", &fs.PathError{Op: "open", Path: "x", Err: fs.ErrPermission})
+	f.fail(bkDir+"/casaos-units.txt", &fs.PathError{Op: "open", Path: "x", Err: errors.New("input/output error")})
+	// a file that is not there is not one that cannot be read
+	f.fail(bkDir+"/dpkg-files.txt", notExist("open", bkDir+"/dpkg-files.txt"))
+	got, unreadable := ReadBKUnreadable(context.Background(), f, bkDir)
+	if len(got) != 1 || got[BKKernel] == "" {
+		t.Errorf("read %v", got)
+	}
+	if want := []string{BKListening, BKCasaosUnits, BKContainers}; !slices.Equal(sorted(unreadable), sorted(want)) {
+		t.Errorf("unreadable = %v, want %v", unreadable, want)
+	}
+	if _, none := ReadBKUnreadable(context.Background(), f, "/etc"); len(none) != 0 {
+		t.Errorf("a folder that is not a backup folder has files that cannot be read: %v", none)
 	}
 }
 
