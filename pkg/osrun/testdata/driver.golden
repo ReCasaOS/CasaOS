@@ -75,7 +75,8 @@ while read -r id; do
   case "$id" in verify|timers|snapshot|sources|download|minimal|full|prereboot|after|forward|rcheck|rsources|rupgrade|rdone) ;; *) stopat "$idx" list 1 integrity ;; esac
   if [ -e "$BK/done-$id" ]; then mark BLOCK_SKIPPED "$idx" "$id"; continue; fi
   rm -f "$D/stop-class"
-  mark BLOCK_START "$idx" "$id" "$(ts)"
+  # a block that the log does not say began is not run: the log is where the core reads what the unit did, and a hop that runs on without it can only be found in its files
+  mark BLOCK_START "$idx" "$id" "$(ts)" || stopat "$idx" "$id" 1 integrity
   # the owner's call to stop is read AFTER the start of the block is written: the core writes the flag, then reads the markers, and one of the two sees the other
   if [ -e "$D/abort" ] && ! pnr; then stopat "$idx" "$id" 0 abort; fi
   [ "$id" != minimal ] || sync

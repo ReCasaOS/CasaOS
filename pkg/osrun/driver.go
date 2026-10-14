@@ -11,7 +11,7 @@ package osrun
 //
 // What it must keep: no pipeline (a reader that leaves early kills the writer with status 141), no trap (a stop kills the unit, and the core reads a lost unit from the files),
 // no command that restarts the machine, no job control, no tracing (block 3 holds the owner's sources, credentials included), the standard input of every child is
-// /dev/null, the nonce is in no child's environment, every marker is one printf, and the exit status is 0 whatever happened (the markers say what happened). The tests of the
+// /dev/null, the nonce is in no child's environment, every marker is one printf, and the exit status is 0 whatever happened (the markers say what happened), but for a log of the run that cannot be opened for appending: that is 2, and nothing has been done. The tests of the
 // text are here (driver_test.go: the golden, these properties, the closed sets), and the tests that run it are in pkg/osplan (driver_*_test.go), beside the blocks that it runs.
 const Driver = `#!/bin/sh
 # casaos-os-upgrade driver. It runs the blocks that the core listed for ONE attempt, writes one marker line for each event, undoes what the blocks changed while the point of
@@ -90,7 +90,8 @@ while read -r id; do
   case "$id" in verify|timers|snapshot|sources|download|minimal|full|prereboot|after|forward|rcheck|rsources|rupgrade|rdone) ;; *) stopat "$idx" list 1 integrity ;; esac
   if [ -e "$BK/done-$id" ]; then mark BLOCK_SKIPPED "$idx" "$id"; continue; fi
   rm -f "$D/stop-class"
-  mark BLOCK_START "$idx" "$id" "$(ts)"
+  # a block that the log does not say began is not run: the log is where the core reads what the unit did, and a hop that runs on without it can only be found in its files
+  mark BLOCK_START "$idx" "$id" "$(ts)" || stopat "$idx" "$id" 1 integrity
   # the owner's call to stop is read AFTER the start of the block is written: the core writes the flag, then reads the markers, and one of the two sees the other
   if [ -e "$D/abort" ] && ! pnr; then stopat "$idx" "$id" 0 abort; fi
   [ "$id" != minimal ] || sync

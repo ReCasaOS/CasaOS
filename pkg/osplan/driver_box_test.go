@@ -199,7 +199,7 @@ func (b *driverBox) driverText() string {
 		text = replaceOnce(t, text, `printf '%s\n' "$line" >> "$D/markers"; }`, `printf '%s\n' "$line" >> "$D/markers";`+hooks.String()+` }`)
 	}
 	if b.gateIdx > 0 {
-		const start, flag = "  mark BLOCK_START \"$idx\" \"$id\" \"$(ts)\"\n", "  if [ -e \"$D/abort\" ] && ! pnr; then stopat \"$idx\" \"$id\" 0 abort; fi\n"
+		const start, flag = "  mark BLOCK_START \"$idx\" \"$id\" \"$(ts)\" || stopat \"$idx\" \"$id\" 1 integrity\n", "  if [ -e \"$D/abort\" ] && ! pnr; then stopat \"$idx\" \"$id\" 0 abort; fi\n"
 		if i, j := strings.Index(text, start), strings.Index(text, flag); i < 0 || j < 0 || strings.Count(text, start) != 1 || strings.Count(text, flag) != 1 {
 			t.Fatal("the driver has no marker of the start of a block, or no read of the flag, where the gates of the test are put")
 		} else {
