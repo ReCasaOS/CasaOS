@@ -109,6 +109,8 @@ type Hub struct {
 	// OSSupport is the operating system and how long its security updates last, as the service says
 	// it: only the last two states that end it are told.
 	OSSupport func() ossupport.Report
+	// OSUpgradeRetries are the waits before a notice of the upgrade of the operating system that no channel took is sent again; a test shortens them.
+	OSUpgradeRetries []time.Duration
 
 	modifying   sync.Mutex // serialises Update's read-modify-writes of alerts.json
 	mu          sync.Mutex // guards sent and lastFailure
@@ -136,19 +138,20 @@ var Default = New("/")
 // Latest, AutoUpdates, Muted, LastDockerRun and OSSupport are left to the caller.
 func New(root string) *Hub {
 	return &Hub{
-		Root:          root,
-		RuntimePath:   func() string { return config.CommonInfo.RuntimePath },
-		Now:           time.Now,
-		Hostname:      os.Hostname,
-		Address:       func() string { return "" },
-		Send:          send,
-		Latest:        func() string { return "" },
-		Current:       version.CurrentVersion,
-		AutoUpdates:   func() bool { return true },
-		Muted:         func() bool { return false },
-		LastDockerRun: func() DockerRun { return DockerRun{} },
-		OSSupport:     func() ossupport.Report { return ossupport.Report{} },
-		sent:          map[string]*record{},
+		Root:             root,
+		RuntimePath:      func() string { return config.CommonInfo.RuntimePath },
+		Now:              time.Now,
+		Hostname:         os.Hostname,
+		Address:          func() string { return "" },
+		Send:             send,
+		Latest:           func() string { return "" },
+		Current:          version.CurrentVersion,
+		AutoUpdates:      func() bool { return true },
+		Muted:            func() bool { return false },
+		LastDockerRun:    func() DockerRun { return DockerRun{} },
+		OSSupport:        func() ossupport.Report { return ossupport.Report{} },
+		OSUpgradeRetries: osUpgradeRetries,
+		sent:             map[string]*record{},
 	}
 }
 
