@@ -1,7 +1,6 @@
 package osplan
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReCasaOS/CasaOS/pkg/osplan/boxtest"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 )
 
@@ -54,116 +54,15 @@ type shellBox struct {
 func newShellBox(t *testing.T) *shellBox {
 	t.Helper()
 	b := &shellBox{t: t, dir: t.TempDir(), auto: suiteAuto}
-	for _, d := range []string{"bin", "fake", "bk", "run", "etc-apt/sources.list.d", "boot/grub", "archives", "root/etc"} {
-		if err := os.MkdirAll(filepath.Join(b.dir, filepath.FromSlash(d)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	b.write("cgroup", "0::/system.slice/casaos-os-upgrade.service\n")
-	// sync says whether the marker of the point of no return was on the disk's way when it ran
-	b.fake("sync", "echo \"sync begun-upgrade=$([ -e ./bk/begun-upgrade ] && echo yes || echo no)\" >> \"$FAKE/calls.log\"")
-	b.fake("id", "[ \"$1\" = -u ] && echo 0 || echo root")
-	b.fake("hostname", "echo testbox")
-	b.fake("uname", "if [ \"$1\" = -r ]; then if [ -f \"$FAKE/uname-r\" ]; then cat \"$FAKE/uname-r\"; else echo 5.10.0-46-cloud-amd64; fi; else echo Linux; fi")
-	b.fake("tmux", "exit 0")
-	b.fake("df", "p=\"$2\"; k=\"$(echo \"$p\" | tr / _)\"; if [ -f \"$FAKE/avail$k\" ]; then a=$(cat \"$FAKE/avail$k\"); else a=$(cat \"$FAKE/avail\"); fi; echo Filesystem 1024-blocks Used Available Capacity Mounted; echo \"/dev/x 1 1 $a 1% $p\"")
-	b.fake("ps", "[ -f \"$FAKE/ps.txt\" ] && cat \"$FAKE/ps.txt\" || true")
-	b.fake("date", "if [ \"$1\" = +%s ]; then cat \"$FAKE/now\"; else /bin/date \"$@\"; fi")
-	b.fake("tty", "cat \"$FAKE/tty\" 2>/dev/null || echo /dev/pts/0")
-	b.fake("ss", "cat \"$FAKE/ss.txt\" 2>/dev/null || true")
-	b.fake("readlink", "[ -f \"$FAKE/resolv-link\" ] && cat \"$FAKE/resolv-link\" || exit 1")
-	b.fake("lsinitramfs", "exit $(cat \"$FAKE/lsinitramfs.rc\" 2>/dev/null || echo 0)")
-	b.fake("update-alternatives", `case "$*" in
-  *"--query iptables"*) if [ -f "$FAKE/iptables-now" ]; then printf 'Name: iptables\nLink: /usr/sbin/iptables\nStatus: auto\nValue: %s\n' "$(cat "$FAKE/iptables-now")"; else echo "update-alternatives: error: no alternatives for iptables" >&2; exit 2; fi ;;
-esac`)
-	b.fake("dpkg-query", `for last; do :; done
-case "$last" in
-  linux-image-*) grep " linux-image-[0-9]" "$FAKE/kernels.txt" 2>/dev/null || true ;;
-  -f*) cat "$FAKE/packages.tsv" 2>/dev/null || true ;;
-  *) case "$*" in
-       *'${Essential}'*) echo " optional" ;;
-       *) if [ -f "$FAKE/pkg-$last" ]; then cat "$FAKE/pkg-$last"; else echo "dpkg-query: no packages found matching $last" >&2; exit 1; fi ;;
-     esac ;;
-esac`)
-	b.fake("docker", `echo "docker $*" >> "$FAKE/calls.log"
-case "$1" in
-  ps) if [ "$2" = -aq ]; then cat "$FAKE/docker-ids.txt" 2>/dev/null || true; else cat "$FAKE/docker-ps.txt" 2>/dev/null || true; fi ;;
-  inspect) if [ "$#" -lt 4 ]; then echo "docker inspect requires at least 1 argument."; exit 1; fi; cat "$FAKE/docker-inspect.txt" ;;
-esac
-exit 0`)
-	// curl says the status that it was asked to write (-w) as FAKE_CURL_CODE, and ends with FAKE_CURL_EXIT
-	b.fake("curl", "echo \"curl $*\" >> \"$FAKE/calls.log\"; case \"$*\" in *http_code*) echo \"${FAKE_CURL_CODE:-200}\" ;; esac; exit ${FAKE_CURL_EXIT:-0}")
-	b.fake("dkms", "cat \"$FAKE/dkms.txt\" 2>/dev/null || true")
-	b.fake("debconf-communicate", `read -r cmd
-case "$cmd" in
-  "get grub-pc/install_devices") echo "0 $(cat "$FAKE/grub-devices" 2>/dev/null)" ;;
-  "get grub-pc/install_devices_empty") echo "0 $(cat "$FAKE/grub-empty" 2>/dev/null || echo false)" ;;
-  *) echo "10 $cmd doesn't exist" ;;
-esac`)
-	// sshd -t and sshd -T need /run/sshd, which only a running ssh.service makes: without it -t fails (255) and -T says so and prints nothing
-	b.fake("sshd", "echo \"sshd $*\" >> \"$FAKE/calls.log\"\nif [ ! -d ./run-sshd ]; then echo 'Missing privilege separation directory: /run/sshd' >&2; [ \"$1\" = -t ] && exit 255; exit 0; fi\ncase \"$1\" in -t) exit $(cat \"$FAKE/sshd-t.rc\" 2>/dev/null || echo 0);; -T) cat \"$FAKE/sshd-T.txt\" 2>/dev/null || true;; esac")
-	b.fake("dpkg", `echo "dpkg $*" >> "$FAKE/calls.log"
-case "$1" in
-  --audit) if [ -f "$FAKE/audit-error.txt" ]; then cat "$FAKE/audit-error.txt" >&2; exit 2; fi; cat "$FAKE/audit.txt" 2>/dev/null || true ;;
-  --get-selections) ls -ld ./bk | awk '{ print $1 }' > "$FAKE/bkmode"; echo "bash install" ;;
-  --configure) [ ! -f "$FAKE/dpkg-fails" ] || exit 1 ;;
-esac
-exit 0`)
-	b.fake("systemctl", `echo "systemctl $*" >> "$FAKE/calls.log"
-case "$1" in
-  is-active) if [ -f "$FAKE/active-$2" ]; then echo active; else echo inactive; exit 3; fi ;;
-  stop) rm -f "$FAKE/active-$2" ;;
-  start) : > "$FAKE/active-$2" ;;
-  --failed) cat "$FAKE/failed.txt" 2>/dev/null || true ;;
-  list-units) cat "$FAKE/casaos-units.txt" 2>/dev/null || true ;;
-esac
-exit 0`)
-	b.fake("apt-get", `echo "apt-get $*" >> "$FAKE/calls.log"
-echo "DEBIAN_FRONTEND=${DEBIAN_FRONTEND-unset} APT_LISTCHANGES_FRONTEND=${APT_LISTCHANGES_FRONTEND-unset} NEEDRESTART_SUSPEND=${NEEDRESTART_SUSPEND-unset} for: $*" >> "$FAKE/env.log"
-case "$*" in
-  *"-s dist-upgrade"*)
-    n=$(cat "$FAKE/sim.n" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$FAKE/sim.n"
-    if [ -f "$FAKE/sim-fails-$n" ]; then echo "E: Unable to correct problems, you have held broken packages."; exit 100; fi
-    if [ -f "$FAKE/sim$n.txt" ]; then cat "$FAKE/sim$n.txt"; else cat "$FAKE/sim.txt"; fi ;;
-  *--download-only*) if [ -f "$FAKE/download-fails" ]; then exit 100; fi ;;
-  *"-s -f install"*)
-    if [ -f "$FAKE/fixsim-fails" ]; then echo "E: Unmet dependencies."; exit 100; fi
-    if [ -f "$FAKE/fixsim.txt" ]; then cat "$FAKE/fixsim.txt"; else cat "$FAKE/sim.txt"; fi ;;
-  *" -f install"*) if [ -f "$FAKE/fix-fails" ]; then exit 100; fi ;;
-  *" dist-upgrade"*)
-    n=$(cat "$FAKE/dist.n" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$FAKE/dist.n"
-    if [ -f "$FAKE/dist-fails-$n" ]; then exit 100; fi ;;
-  *" upgrade"*)
-    if [ -e ./bk/begun-upgrade ]; then echo yes >> "$FAKE/begun-at-upgrade"; else echo no >> "$FAKE/begun-at-upgrade"; fi
-    # an upgrade that did something before it failed: dpkg's status was rewritten, or it was killed and left its journal
-    if [ -f "$FAKE/upgrade-touches-status" ]; then echo "Package: apt-touched" >> ./dpkg-status; fi
-    if [ -f "$FAKE/upgrade-leaves-journal" ]; then mkdir -p ./dpkg-updates; : > ./dpkg-updates/0001; fi
-    if [ -f "$FAKE/upgrade-fails" ]; then exit 100; fi ;;
-  *update*) if [ -f "$FAKE/update-fails" ]; then exit 100; fi ;;
-  *check*) if [ -f "$FAKE/check-fails" ]; then exit 100; fi ;;
-esac
-exit 0`)
-	b.write("fake/avail", "99999999\n")
-	b.write("dpkg-status", "Package: bash\nStatus: install ok installed\n")
-	// the box is Debian 11 until a test says otherwise: every block after the first stops on a machine that is not, unless its plan has begun the upgrade
-	b.write("os-release", "VERSION_CODENAME=bullseye\n")
-	b.write("bootid", "boot-0\n")
-	b.write("fake/sim.txt", converged)
-	b.write("fake/now", strconv.FormatInt(planMadeAt.Add(time.Hour).Unix(), 10)+"\n")
+	boxtest.Install(t, b.dir, planMadeAt.Add(time.Hour).Unix())
 	return b
 }
 
-const converged = "Reading package lists...\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"
+const converged = boxtest.Converged
 
 func (b *shellBox) write(rel, content string) {
 	b.t.Helper()
-	p := filepath.Join(b.dir, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		b.t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-		b.t.Fatal(err)
-	}
+	boxtest.Write(b.t, b.dir, rel, content)
 }
 
 // sized makes a file of n bytes (zeros, and no time spent on them).
@@ -185,10 +84,7 @@ func (b *shellBox) sized(rel string, n int64) {
 
 func (b *shellBox) fake(name, body string) {
 	b.t.Helper()
-	p := filepath.Join(b.dir, "bin", name)
-	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
-		b.t.Fatal(err)
-	}
+	boxtest.Fake(b.t, b.dir, name, body)
 }
 
 func (b *shellBox) exists(rel string) bool {
@@ -213,41 +109,7 @@ func (b *shellBox) mode(rel string) os.FileMode {
 
 // paths point the paths of the machine that a block names at the directory of the test.
 func (b *shellBox) paths(code, planID string) string {
-	r := strings.NewReplacer(
-		"PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH", "PATH=\"$PWD/bin:$PATH\"; export PATH",
-		"BK=/var/backups/casaos-os-upgrade-"+planID, "BK=./bk",
-		"TS="+timersState, "TS=./timers.state",
-		"/var/lib/dpkg/status", "./dpkg-status",
-		"/var/lib/dpkg/updates", "./dpkg-updates",
-		"/proc/mounts", "./mounts",
-		"/sys/firmware/efi", "./sys-efi",
-		// the EFI system partition keeps its name (only the files of /boot are moved to the directory of the test): the fake df asks for avail_boot_efi
-		"avail /boot/efi", "avail /boot/efi",
-		"' /boot/efi '", "' /boot/efi '",
-		"/proc/sys/kernel/random/boot_id", "./bootid",
-		"/etc/os-release", "./os-release",
-		"cd /etc/apt", "cd ./etc-apt",
-		"APT_ETC=/etc/apt", "APT_ETC=./etc-apt",
-		"/boot/", "./boot/",
-		"/var/cache/apt/archives/*.deb", "./archives/*.deb",
-		"find / -xdev", "find . -xdev",
-		"/var/lib/apt/extended_states", "./extended_states",
-		"/run/sshd", "./run-sshd",
-		"[ -S /run/docker.sock ]", "[ -f ./docker.sock ]",
-		"tar -C / -czf", "tar -C ./root -czf",
-		// the folders that other plans left (blocks 0 and 3 look at them) are in ./others
-		"/var/backups/casaos-os-upgrade-*", "./others/casaos-os-upgrade-*",
-	)
-	// the restore script is written as it is (the owner's, or the refresh's): the block reads it back and compares it with its hash
-	scripts := []string{restoreScriptRefresh, restoreScript}
-	for i, script := range scripts {
-		code = strings.ReplaceAll(code, script, fmt.Sprintf("\x00script%d\x00", i))
-	}
-	code = r.Replace(code)
-	for i, script := range scripts {
-		code = strings.ReplaceAll(code, fmt.Sprintf("\x00script%d\x00", i), script)
-	}
-	return code
+	return boxtest.Paths(code, boxtest.PathVars{PlanID: planID, TimersState: timersState})
 }
 
 // run runs a block of the runbook and says what it printed and how it ended.

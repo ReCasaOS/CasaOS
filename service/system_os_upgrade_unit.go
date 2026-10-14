@@ -20,7 +20,10 @@ var osUpgradeWhy = "an operating system upgrade is running"
 // measured hop ran under it; it is no guard: root's restart is not refused), with a clean environment and the nonce, the folder, the run, the phase and the number of
 // the attempt in it. The shape is closed: the phase is one of osrun.Phases, the nonce is 32 lower case hex digits, the attempt is from 1 to 999 and dir is exactly
 // osUpgradeUnitRoot/<the run id of the attempt>. No word of it holds a dollar sign or a percent sign: systemd replaces ${NAME} and $$ in the words of a command
-// before the shell sees them, and takes % for the start of a specifier. The nonce is only ever in this environment, and in the markers that it signs.
+// before the shell sees them, and takes % for the start of a specifier. The nonce is in the unit's environment, and so in the arguments of systemd-run while it runs and in what
+// systemctl shows of the unit, which a local user can read; the driver takes it out of its own environment before it starts a block, so that no command of the upgrade sees it. That is
+// enough, because what the nonce guards is the log of the run (a line without it is not read), and the log is a file of root's in a folder of root's: whoever could write a line
+// into it needs no nonce, and whoever can only read the nonce cannot write one.
 func osUpgradeUnitArgs(a osrun.Attempt, dir string) ([]string, error) {
 	if err := a.Validate(); err != nil {
 		return nil, err

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReCasaOS/CasaOS/pkg/osplan/boxtest"
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
 )
 
@@ -184,12 +185,7 @@ func replaceOnce(t *testing.T, text, from, to string) string {
 // driverText is the driver as this box runs it: the paths of the machine are the box's, and the lines that the test added are in.
 func (b *driverBox) driverText() string {
 	t := b.t
-	text := osrun.Driver
-	text = replaceOnce(t, text, "PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH\n", "PATH=\"$(cd '"+b.root+"/bin' && pwd):/usr/sbin:/usr/bin:/sbin:/bin\"; export PATH\n")
-	text = replaceOnce(t, text, "/proc/sys/kernel/random/boot_id", b.root+"/bootid")
-	text = replaceOnce(t, text, "case \"$BK\" in /var/backups/casaos-os-upgrade-*) ;;", "case \"$BK\" in "+b.bkCase+") ;;")
-	text = replaceOnce(t, text, "case \"$BK\" in /var/backups/casaos-os-upgrade-refresh-*) return 0 ;;", "case \"$BK\" in "+b.refreshCase+") return 0 ;;")
-	text = replaceOnce(t, text, "/var/backups/casaos-os-upgrade-timers.state", b.root+"/timers.state")
+	text := boxtest.Driver(t, osrun.Driver, boxtest.DriverVars{Root: b.root, BKCase: b.bkCase, RefreshCase: b.refreshCase})
 	if len(b.afterLine) > 0 {
 		var hooks strings.Builder
 		keys := make([]int, 0, len(b.afterLine))

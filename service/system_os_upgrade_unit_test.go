@@ -149,7 +149,7 @@ func TestSystemdLeavesTheCommandLineOfTheUnitAsItIsWritten(t *testing.T) {
 		if got := systemdExpandArgv(command, hostile); !reflect.DeepEqual(got, command) {
 			t.Errorf("the unit is started with a command that is not the one written, with a hostile environment:\n%s", firstDifference(strings.Join(command, " "), strings.Join(got, " ")))
 		}
-		// what the unit's environment is: the eleven variables of the spec, and the nonce only here
+		// what the unit's environment is: eleven variables (four for the apt tools, the path and the locale, the folder and the id of the run, the phase and the number of the attempt, and the nonce, which is only here)
 		wantNames := []string{
 			"APT_LISTCHANGES_FRONTEND", "CASAOS_OSU_ATTEMPT", "CASAOS_OSU_DIR", "CASAOS_OSU_NONCE", "CASAOS_OSU_PHASE", "CASAOS_OSU_RUN",
 			"DEBIAN_FRONTEND", "LC_ALL", "NEEDRESTART_SUSPEND", "PATH", "UCF_FORCE_CONFFOLD",

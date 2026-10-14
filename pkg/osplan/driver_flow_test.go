@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ReCasaOS/CasaOS/pkg/osplan/boxtest"
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
 )
 
@@ -25,36 +26,14 @@ type flowBox struct {
 func flowSetup(t *testing.T, sb *shellBox) {
 	t.Helper()
 	setupVerify(t, sb)
-	sb.write("bootid", driverBootA+"\n")
-	// block 1: two of the timers are running, and the stub of systemctl says so
-	sb.write("fake/active-apt-daily.timer", "")
-	sb.write("fake/active-unattended-upgrades.service", "")
-	// block 2
-	sb.write("root/etc/hosts", "127.0.0.1 localhost\n")
-	sb.write("fake/packages.tsv", "ii \tbash\t5.1-2\nii \tlinux-image-5.10.0-46-cloud-amd64\t5.10.209-2\n")
-	sb.write("fake/ss.txt", "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\n")
-	sb.write("fake/sshd-T.txt", "port 22\nlistenaddress 0.0.0.0:22\npermitrootlogin without-password\npasswordauthentication no\n")
+	boxtest.Flow(t, sb.dir, driverBootA)
 	// blocks 3 and 5 simulate the full upgrade and find the removals of the plan; block 6 finds nothing left
 	sb.write("fake/sim1.txt", resimOf("fuse", "libsemanage1"))
 	sb.write("fake/sim2.txt", resimOf("fuse", "libsemanage1"))
-	sb.write("fake/sim.txt", converged)
-	// block 4
-	sb.write("archives/a.deb", "x")
-	// block 7: the new kernel is there, with its initrd and a boot loader that names it, and the old one is kept
-	sb.write("fake/kernels.txt", "ii  linux-image-5.10.0-46-cloud-amd64\nii  linux-image-6.1.0-53-cloud-amd64\n")
-	sb.write("fake/pkg-systemd-timesyncd", "ii ")
-	sb.write("boot/vmlinuz-6.1.0-53-cloud-amd64", "k")
-	sb.sized("boot/initrd.img-6.1.0-53-cloud-amd64", initrdOK)
-	sb.write("boot/vmlinuz-5.10.0-46-cloud-amd64", "k")
-	sb.write("boot/grub/grub.cfg", "menuentry { linux /boot/vmlinuz-6.1.0-53-cloud-amd64 }\n")
 }
 
 // restartFlowBox makes the box the machine after its restart: another boot, Debian 12, the kernel that block 7 looked at.
-func restartFlowBox(sb *shellBox) {
-	sb.write("bootid", driverBootB+"\n")
-	sb.write("os-release", "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nVERSION_CODENAME=bookworm\n")
-	sb.write("fake/uname-r", "6.1.0-53-cloud-amd64\n")
-}
+func restartFlowBox(sb *shellBox) { boxtest.Restarted(sb.t, sb.dir, driverBootB) }
 
 // flowOn makes the driver's box over a shellBox that has the blocks' machine in it. The folder of the log of markers is the one that the box already has when it is the copy of
 // another box (the log is copied with it).

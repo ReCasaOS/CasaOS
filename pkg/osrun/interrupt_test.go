@@ -8,7 +8,8 @@ import (
 )
 
 // The cells below are the ways a run can be interrupted, and what the core does of each: a row for every cell of the table of
-// events and phases that the design keeps, and for every step of a hop at which the power can go.
+// events (the core restarts, the unit is killed, the power is cut, a lock is held, the network is down, the disk is full) against the phases (before the point of no return,
+// after it, waiting for the restart, restarting, checking), and for every step of a hop at which the power can go.
 
 var (
 	unwindAuto  = Action{Kind: DoUnwind, Phase: PhaseUnwind, Who: WhoAuto}
