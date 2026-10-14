@@ -1,0 +1,184 @@
+===== build:S1 DONE_WITH_CONCERNS ['f15819f', 'be9ab2e', 'bf717ca']
+SUMMARY: Slice S1 is done: the new leaf package pkg/osrun (stdlib only, 20 files, 3 local commits on feat/os-engine from 74d6363). It holds the vocabulary, ParseMarkers and Marker.Line, Reduce with all 15 rules and the boot rules, NextAction, ActionsFor, ClassBehavior, Retryable, HintOf, Timing (AutoRecoverTries 0 pinned), the Attempt type, and the tests (T1 with a fuzz target and committed corpus, T2 properties, interruption and crash tables as rows). No driver. The tree is clean and nothing outside pkg/osrun changed. Concerns for the reviewers: the package is about 1.8k lines of code and 4k of tests, over 2.5 times the estimate; the rule table was refined where the spec was silent (see deviations); and the implementation of each file was written before its tests, which were then mutation-checked.
+DEVIATIONS
+  - State also carries Kind, RunID, Hop, PlanID, RC, Abortable, RebootBlocked, Closed (needed by status, by ActionsFor which takes only a State, and by cleanup).
+  - Input also has Reminded (reminders already sent) and Damaged (run files or log cannot be trusted: needs_attention run_damaged); Barrier and Verify are small structs Barrier{OK,Checks} and VerifyResult{Errors,Warnings}.
+  - Timing has one more field, AutoRecoverWave (default 1), the wave that Retryable is asked with; ClassBehavior returns Behavior{Resumable,Wave}; an unknown class is not resumable and never automatic.
+  - Rule additions where the table is silent: an attempt written whose unit has not begun and is not yet lost shows the state of its phase (a verify launch after the restart stays resuming); a run with RUN and no ATTEMPT is idle then failed(start) after 30 s; no matching rule after an ended attempt is needs_attention run_damaged (a check that ended with no word is resuming).
+  - The log is read as a run: attempt numbers must be consecutive, phases must fit the run kind, words of a unit only count between its UNIT_START and UNIT_END, first STOP and first result win. After a run is decided for good (succeeded, refreshed, rehearsal_done, failed before the point of no return other than start, takeover) later markers are ignored except ACK; this is how P1 holds.
+  - Files override markers for dead units: a run or recover unit lost after done-prereboot reads as awaiting_reboot or resuming from BootIDFile; done-after wins over any marker in the check; a BootIDFile that is not a UUID gives awaiting_reboot with BootUnknown, empty means restarted already.
+  - ParseMarkers on a file over 1 MiB returns the prefix with ErrMarkersTooLarge (callers set Input.Damaged); a STOP class that is not one of the 20 reads as unknown; times with a fraction of a second are refused; a RUN line can reach 257 bytes and is then refused by Line.
+  - failed(half) needs the class to be one the core would repair by itself; an interrupted unit counts as class unknown for automatic repair (wave 2 only); failed(half) and the alert action have no state-level dedupe: alert is returned every tick and the hub dedupes.
+  - StartLostSilent applies to a not-started attempt when the unit is not active even if recent output keeps it from the systemd silence bound; SystemdSilence also bounds an attempt with no UNIT_START.
+  - Extra exports: NextAttempt, BootKnown, FirstMissing, BlockList, ValidNonce, ValidUUID, FormatTime, Attempt.Validate, State.NeedsAckWord. BeforeMinimal was dropped as unneeded.
+  - Worktree files of the new package are LF (gofmt clean); blobs are LF as for all files.
+NOT_VERIFIED
+  - Nothing ran on Linux: the package is pure Go and was only cross-compiled and vetted for Linux; go test -race is CI only (no goroutines in the tests).
+  - The driver of the spec was not run against ParseMarkers; its mark calls were compared by hand to the schemas and match, but S3 must test it for real.
+  - service and route tests were not run (they do not build on Windows at the base); only GOOS=linux go vet of them.
+  - The fuzz target ran 20 s once; the random-run test is fixed seed 2500 runs by default.
+  - The numbers of Timing are the spec guesses and untimed on a real machine.
+CONTRACT: All in pkg/osrun, files vocab.go, timing.go, marker.go, reduce.go, action.go, imports nothing outside the standard library. Vocabulary: constants Phase*, Run*, Block* (14 ids), StopDriver, StopList, StopUnwind, Class* (20), State* (23), Reason*, Cause*, Action* (buttons), Mk* (21 marker kinds), Do* 
+===== build:S9 DONE_WITH_CONCERNS ['f5d6a3b']
+SUMMARY: RunDueBackups now skips while /var/lib/casaos/os-upgrade/busy exists or cannot be stat-ed for any reason other than not-exist. Held tick records nothing, so the slot stays owed and runs once after the flag clears. The flag is checked before each backup of a tick, one log line per held tick with the waiting count and the error when stat failed, and a tick with nothing due says nothing. Local commit f5d6a3b on branch feat/os-upgrade-busy in the clean worktree AppManagement-busy. Exact diff 4 files, 398 insertions, 1 deletion: backup_upgrade_hold.go +45, backup_scheduler.go +21 -1, backup_scheduler_internal_test.go +3, new backup_upgrade_hold_internal_test.go +330 (about 66 code lines and 333 test lines against an estimate of 100 plus 150). The dirty working tree of CasaOS-AppManagement was not touched (still 24 entries, same branch).
+DEVIATIONS
+  - BASE: the brief says origin/main debfa31, but origin of that clone is the IceWhale upstream and debfa31 has no backup_scheduler.go or RunDueBackups at all. The worktree was therefore made from inkly/main b073da7 (the distribution main, which contains RunDueBackups at service/backup_scheduler.go:96). This needs the orchestrator to confirm that the merge target of S9 is the inkly fork, not upstream.
+  - I ran git fetch inkly as well as git fetch origin in the dirty clone (only adds remote-tracking refs, working tree untouched).
+  - The gitignored generated folder codegen/ was created inside the new worktree (oapi-codegen v1.12.4 on the committed openapi.yaml, plus message_bus/api.go copied from the dirty clone) so the package compiles. It is not committed and was left in place.
+  - Size is 1.6 times the estimate, mostly tests (7 tests, 13 mutations each caught by a named test). No split made: the slice is one seam.
+  - Log level is Warn and a held tick logs every minute while something is due and the flag stays (per the one line per cycle rule); no rate limiter added.
+NOT_VERIFIED
+  - Real behaviour as a non-root user against the real /var/lib/casaos/os-upgrade directory (mode 0755 expected from the core): only simulated with injected errors.
+  - The full service suite under dash or Debian chroot and with -race: only the Alpine WSL run without -race; CI runs go test -race ./... for the repository.
+  - git, docker and compose tests of the service package could not run here (70 git plus 1 docker failures are environmental), so the claim that they are unaffected rests on them failing identically with and without the change and not touching the scheduler.
+  - Windows native go test of service: not possible, the package does not build on Windows because of pkg/git.
+CONTRACT: The only thing the core must provide is the file /var/lib/casaos/os-upgrade/busy: AppManagement looks only at whether it exists (os.Stat, content never read, no JSON parsed), so the core must remove the file to free backups and must keep its parent directory searchable by non-root (mode 0755). Any s
+===== build:S4 DONE_WITH_CONCERNS ['d544063', 'bf445c6', '2cecfee', '4ce799c']
+SUMMARY: Slice S4 is done and committed locally. pkg/osverify is new: Take reads the facts of a machine (Samba users, mergerfs pools, default route, resolver, Docker state, version, engine id and running containers, ReCasaOS units, kernel, systemd state, dpkg, paused sources), and Judge turns before facts, after facts and the backup folder files into the 18 closed findings (6 error, 8 warn, 4 info). In pkg/osreadiness the only change is the allow-list row for pdbedit with exactly -L, pinned by its tests. The package is bigger than the estimate (about 920 lines of code and 1490 of tests against 450 and 900), so it went in as two commits, facts then judge.
+DEVIATIONS
+  - The function that takes the facts is named Take, not Facts: Go cannot have a type and a function both named Facts and the spec needs the type. TakeWith adds a Resolver seam for the DNS lookup (Take uses Go's resolver).
+  - Finding has two fields beyond Code, Severity, Arg: Apps (the containers under a missing mergerfs mount point) and Policy (restart policy, only for container_not_returned, whose Arg is the container name). NotReturned lists every container that did not return, policy no or empty included, for the status field not_returned.
+  - Docker engine id is read with ReadFile from /var/lib/docker/engine-id because the only new command allowed is pdbedit -L. A changed id with the same version is reported as docker_version_changed with Arg engine_id, since the closed list has no code of its own.
+  - holds.txt is not read: no finding uses it. docker_source_paused and sources_left_paused come from Facts.Paused (renamed .casaos-paused files and lines commented with the casaos-paused mark), not from a backup file.
+  - Samba, route, resolver and the mounts are compared only when both sides are known: after facts that could not count users give no finding.
+  - ReCasaOS units are found by Take from the unit directories (casaos names ending service socket timer path) and asked for ActiveState; the transient units casaos-os-upgrade, casaos-update, casaos-package-update and casaos-docker-update are left out on both sides, because the upgrade unit is itself listed active in casaos-units.txt.
+  - system_not_ready is judged from the state systemd gives when the after facts are taken; there is no memory of readiness before.
+  - Ports below 32768 only are compared, by port number whatever the address: the kernel hands out the others at random.
+  - One extra commit beyond the slice list: bf445c6 softens the allow-list comment about what pdbedit may leave. Size is over 1.5 times the estimate; no seam was named, so it is split facts then judge.
+NOT_VERIFIED
+  - Nothing ran on a real machine: the texts of pdbedit -L, docker inspect, /proc/mounts and /proc/net/route in testdata are shaped from the known formats, not captured.
+  - The path /var/lib/docker/engine-id and what pdbedit -L may create or upgrade in /var/lib/samba come from knowledge of Moby and Samba, never seen; the comment says may.
+  - go build ./... fails on Windows in service/connections.go (unix.Mount undefined), a file this slice did not touch; Linux build and vet pass. The service and route suites cannot compile here, so they were only compiled for Linux, not run.
+  - pkg/osplan tests were not run on purpose (another slice works there in the same tree). Its modified files are uncommitted work of that slice and are not in my commits; the manual golden had no diff at my last check.
+  - go test -race not run (no cgo); the code and tests use one goroutine.
+  - container_not_returned is judged at once: the caller decides when to take the after facts, and containers with a restart policy need some seconds after Docker is up.
+CONTRACT: All in pkg/osverify (facts.go, judge.go, bk.go; fixtures in testdata). Imports stdlib, dockerpkg, osreadiness and osrun only. Facts: type Facts with Taken, At, Unknown, Kernel, System, DpkgQuiet, SambaUsers, Mergerfs, Route, DNS, Units (map unit to ActiveState), Paused, Docker (Docker with State, Ve
+===== build:S2 DONE ['25c4dbc', 'c86cccf', '721771a']
+SUMMARY: Slice S2 is done in pkg/osplan only. BuildAuto runs the same block bodies as the manual runbook with eight hook methods on rbCtx (H1 trap and unit gate, H2 hostname, H3 removals, H4 confirm, H5 no terminal, H6 aptq with Use-Pty=0, H7 sync after begun-upgrade, H8 Docker answers are notes). Each hook gives the owner text when c.auto is nil, so the manual golden is byte identical (git diff of it is empty). A heredoc-aware class pass with one table stopClasses (about 90 keys) puts AUTOCLASS before each echo STOP outside heredocs. Block F, ErrAutoDrift, SanitizeLine export, the auto golden, the exec suites run on both texts (55 tests in autoSuite, 6 in manualOnly with reasons, guard test by go/parser), auto-only exec tests and the second-hop tripwire are in.
+DEVIATIONS
+  - go build ./... on Windows fails in service/connections.go (unix.Mount undefined): not touched by this slice, present before it; GOOS=linux go build ./... passes
+  - BuildAuto answers ErrRunbookUnsafe (no new error) for a run id that is not a UUID, a hostname that fails the pattern, a CgroupFile that is not a plain path, and a text with a carriage return
+  - H8: the three former exit 1 branches print their lines without the word STOP, since they are no stop in the unit; the 403/404/410 branch also writes not_published
+  - classes chosen where the families left room: no package was downloaded is network; the point of no return confirm check is integrity; block 3 state stops (began, ended, next is block 4) are integrity; block 3 of another plan is identity; coarse floors of block 0 (archives, /) are disk; type the names of the removals is plan
+  - block F is built from rbCtx so its BK is the plan folder; S8 must write its own forward text for the refresh folder with its BK; F keeps dpkgstate defined (shDpkgState) though it does not call it, as listed
+  - the manual runbook builder was split in two (newRbCtx shared by BuildRunbook and BuildAuto) and shTimers became shTimersOf(units) with the same output
+  - shellOrSkip still picks sh (bash under Git Bash on Windows); the dash proof is the WSL chroot run, not a dash on Windows
+  - TestEveryExecTestIsInTheAutoSetOrManualOnly reads runbook_exec_test.go and runbook_states_test.go from the working directory, so a test binary run elsewhere needs those two files beside testdata
+NOT_VERIFIED
+  - the auto text never ran under a real systemd unit: the gate relies on /proc/self/cgroup naming casaos-os-upgrade.service, proved only with a file of cgroups
+  - real apt, dpkg and a booted machine: the blocks ran with stub commands only, as the manual text did
+  - the Windows full run was made before the last three unit tests and the gofmt pass; those were run natively one by one and the whole package was run under dash after them
+  - service and route tests were run only as Linux binaries in the chroot; they do not build on Windows
+  - keys of the class table for the refresh blocks R0 to R3 do not exist yet (S8 adds them and extends the coverage test)
+  - whether dash across the replacement of dash and libc6 keeps the block shells alive (PR 6)
+CONTRACT: All in CasaOS/pkg/osplan, branch feat/os-engine on top of S4. auto.go: type AutoParams{RunID, Hostname, CgroupFile string} (CgroupFile empty means /proc/self/cgroup, only tests set it), AutoBlock{ID, Title, Text}, AutoRunbook{RunID, PlanID string; Blocks []AutoBlock; Forward 
+===== build:S3 DONE ['356dfe2', '914ec7e', 'ddab0f8']
+SUMMARY: Slice S3 done. pkg/osrun has the Driver constant, testdata/driver.golden and static tests (golden, closed sets equal to BlockIDs, Phases, marker kinds, stop ids and classes; no pipeline, trap, tracing, job control or restart command). pkg/osplan has the tests that run it: stub blocks under dash and bash, the real auto blocks through the driver, hand-off both ways, kill after every marker line, abort interleavings. Tree clean, manual golden untouched.
+DEVIATIONS
+  - The spec function halt is named stopat: a halt left undefined would run the system halt command
+  - boot() prints a dash unless the boot id is a lower case UUID, the same for the boot id of REBOOT_PENDING; kernel, refresh reason and class words are cut to what a marker takes, else unknown or none
+  - List lines are counted with grep -c not wc -l so a last line without a newline is caught; an unwind attempt must be given an empty list; the attempt number must be 1 to 999
+  - The end of each phase needs the done file of its last block: done-prereboot for run and recover, done-download, done-rdone, done-after; else STOP list integrity and no result marker is written
+  - The integrity STOP at the sums carries the real pnr from the files, not always 0
+  - Block F also runs in the unwind phase of a refresh, decided by the folder name casaos-os-upgrade-refresh-, not only when PH is refresh
+  - The tests that run the driver are in pkg/osplan (they need shellBox and the auto blocks), not in pkg/osrun; osrun keeps golden and static tests
+  - The kill hook is shell after the printf of mark with -ne K instead of -lt K; gates for the abort test are another test only change, each change of the driver text must apply once
+  - The crash matrix runs fully on Linux; on Windows only three sequences unless -fullcrash is given
+  - On Windows the manual hand-off test pre-creates bk because MSYS mkdir -m 700 fails there
+NOT_VERIFIED
+  - Never run under a real systemd-run unit with systemd-inhibit, the cgroup gate of the blocks, or across the replacement of dash and libc6
+  - Real apt and dpkg: blocks ran with stub commands; real restore-sources.sh ran on box files
+  - go test -race: CI only, no cgo here
+  - go build ./... fails on Windows in service/connections.go (unix.Mount), not from this slice; Linux build and vet pass, service and route suites ran only in the Linux chroot
+  - The core side of the abort protocol is a model in the test, to be replaced by S6
+  - Only dash and bash --posix tried, not busybox ash
+  - Full crash matrix not run on Windows
+CONTRACT: Consumed by S5 and S6: osrun.Driver is a string constant, the whole text of driver.sh, LF only, with testdata/driver.golden rewritten only by go test ./pkg/osrun -run DriverIsTheGolden -update. The core writes it to the run folder as driver.sh and starts it as /bin/sh driver.sh with CASAOS_OSU_NONCE
+===== build:S5 DONE_WITH_CONCERNS ['20c5d18', '38209fa', '254ddaa', 'af3e873', 'ca42dfc', 'e022dba', '2ee1649', 'e8c06e6']
+SUMMARY: S5 done in 8 local commits on feat/os-engine, tree clean: busy flag clause in maintenanceState, closed unit command line, run folder with SHA256SUMS and launchAttempt, status assembly, the start contract with all 24 codes, facts and result readers. Only service/ changed, plus one field in the readiness probe. The slice is 2.4x the code estimate and 2.6x the test estimate, split at the seams of the commits.
+DEVIATIONS
+  - launchAttempt takes (runID, phase, who); the from block is computed (FirstMissing for recover) and the run is re-read under the lock
+  - osUpgradeUnitArgs also refuses a percent sign (systemd specifiers), not only a dollar sign; no validator for args built elsewhere, the builder is the closed shape
+  - run.json also holds blocks (id, title) so the status can show titles; status findings carry an extra apps field; after_reboot_hint is also sent in reboot_stalled
+  - A hostname that fails the hostname pattern is bad_request (field hostname), a well formed wrong one is hostname_mismatch
+  - The start asks systemd itself and refuses busy when the unit is active or systemd is silent, before writing anything; the units part of maintenanceState stays fail open as before
+  - An unreadable or unparsable last-refresh file is ignored and logged, it is not a refusal
+  - SystemService interface not extended and no route touched: S7 adds the methods
+  - A start closes a previous run that is not busy (ACK, pointer and flag removed, BK moved to bk-done only with done-after) through closeOSUpgradeRun, which the ack route of S6 can reuse
+  - Retention orders runs by the mtime of run.json and never removes the current run
+  - A run that cannot be read, or a pointer that says nothing, shows as needs_attention run_damaged and busy
+NOT_VERIFIED
+  - A real systemd-run, a unit started on a real machine, the driver run from a folder the core wrote, and the cgroup gate: PR 6
+  - go test -race: CI only here; every helper touched from several goroutines has its lock
+  - Defaults of osUpgradeRewrite and osUpgradeTakeFacts and the real readiness report were stubbed, not run on a real box
+  - The real systemctl show answer for the unit; the tests fake systemd
+  - Windows native run of the service package is impossible (connections.go does not build)
+  - Nothing of S6 exists yet: settle, reboot, resume, abort, ack routes, barrier writer use, judge wiring, alerts
+CONTRACT: All in service/, package service. Unit: const systemOSUpgradeUnit and osUpgradeUnitRoot, func osUpgradeUnitArgs(a osrun.Attempt, dir string) ([]string, error). Busy: var osUpgradeBusyFile, osUpgradeFlagOpen(), osUpgradeBusyReason(except), setOSUpgradeBusy(runID, state, since), clearOSUpgradeBusy(); 
+===== build:S6 DONE_WITH_CONCERNS ['dbc339d', 'bc86463', 'b270f22', '3c6ee05', '253e57d', '10d7a7d', '243ffe5', 'b400cc4', '6a58ec2', '4a6a288', '8b3f1b1', '2766bfe', '3a15d9a', '7305c77', '0d14501']
+SUMMARY: Slice S6 is done on feat/os-engine in 15 local commits and the tree is clean: the settling loop (flag, new boot and apt stop, readiness, the one NextAction, refresh time, prune), the barrier and CheckByCode, the judge wiring, abort with the flag-first protocol, reboot, resume, ack with the typed word, discard and takeover, the rehearsal path, the runbook of the open run, alerts and mute, plus two end-to-end flow tests. Concerns: size is about 1.3k code and 3.7k test lines, over 1.5x the estimate (cut into commits at the seams), and one reducer quirk found in S1 (see deviations).
+DEVIATIONS
+  - Alert keys are run:state:attempt (spec says run:state) so a stop that comes again after a resume is told again; reminders are run:reminder:N. Input.Reminded is not used: the notified file dedupes by key and NextAction DoRemind carries N.
+  - Resume of a failed or interrupted check after the restart launches the verify phase as the owner (not recover) and deletes verify.json first, so the old verdict is not taken for the new one.
+  - The barrier is also asked again at the reboot click, not only at each look: a file that said green is not the last word.
+  - The status of a run that cannot be read now offers only acknowledge with the typed word (S5 also offered takeover; its status test was changed); ack of such a run works with the word, manual and discard answer run_unreadable.
+  - BOOT_SEEN and the stop of the five apt units happen only while the run holds the machine (busy), not for a succeeded run the owner has not closed yet, whose timers block 8 restored.
+  - Readiness of a restarted machine waits for docker.service and a default route only if facts-before say they existed before the hop; is-system-running must say running or degraded.
+  - Abort: a systemctl stop that fails still answers with the status (the flag stands and the driver stops at its next block); no lock is held across the stop. The interleaving test states the invariant as: an accepted call never lets the minimal block run, and the unit is never stopped while that block body runs. After a stop the state shows running for up to 30 s (GraceQuiet) before interrupted.
+  - Added beyond the list: Hub.OSUpgradeNotice in pkg/alerts, osverify.DefaultRoute export, the loop nudge after every button and after start, last-refresh written by the settling and by ack, the flag put back for a run that cannot be read, a closed run forgotten by the next look, prune of old runs at the first look.
+  - S1 finding left alone: scan seals the log at the first UNIT_END using the final files, so State.Attempt, Phase and Since of a succeeded run report the first attempt; cosmetic, but the alert key and the quiet time use them (the quiet time is taken from the look that removes the flag instead). Also in reboot_first the state stays reboot_first after the click, so status.reboot stays nil.
+  - Size over 1.5x the estimate, split into commits: one per seam (check by code, hub, route export, settling, barrier and judge, abort, reboot, resume, ack, alerts, unread run, nudge, flow tests).
+NOT_VERIFIED
+  - Real systemd: systemctl stop through the inhibitor, the words of is-active and is-system-running, and what apt-daily units do at a boot, only a fake systemd was used.
+  - Delivery through the real alerts hub and channels (the hub method is tested with a fake sender), a real sync and restart, and anything on a booted machine: that is PR 6.
+  - service and route do not build on Windows at baseline (service/connections.go uses unix.Mount), so go build ./... on Windows fails before and after this slice; Linux build and vet of everything pass, and pkg builds on Windows.
+  - The service suite ran as a Linux binary in the Alpine WSL distro (busybox sh), not under dash in the Debian chroot: this slice starts no shell, the older shell tests of the package passed there too, the dash run is the CI one.
+  - go test -race (no cgo here): every helper touched by several goroutines has its lock and the shared vars are set before goroutines start, checked by reading.
+  - pkg/osplan and pkg/osrun were run only natively with -short (untouched by this slice); the long dash exec suites were not rerun.
+  - The judge runs right after the check ends and counts a container that is still starting as not returned: no wait for containers is in the spec and none was added.
+  - Abort of a refresh during its upgrade block is allowed because the reducer says so (no point of no return); the unwind then runs block F if dpkg is not quiet, which no test exercises.
+CONTRACT: All in package service on systemService unless said. Settling in system_os_upgrade_settle.go: StartSystemOSUpgradeSettle(ctx) starts the one loop (first look at once, then every osUpgradeTiming.SettleEvery) and StopSystemOSUpgradeSettle(wait) ends it; osUpgradeSettleOnce(ctx) is one look; vars osUpg
+===== build:S7 DONE ['f18e432', 'e22d735', '373cb0c', '76c81d7', '2e9f2d7', '9934255', 'bf03354']
+SUMMARY: S7 is done in 7 local commits on feat/os-engine. It adds the 8 routes (status, start, reboot, resume, abort, ack, beta, and runbook with run=current) with every POST behind headerTokenOnly, osUpgradeFailed, the guard on SystemReboot and SystemShutdown with its 409 mapping in PutSystemState, route wiring, swagger comments, the main.go wiring (mute, notifier, settle start after READY, settle stop at the core end), docs/os-upgrade-beta.md, and the complete T8 proof that the product is unchanged with the flag file absent. The manual golden has an empty diff, nothing was pushed, and the tree is clean.
+DEVIATIONS
+  - SystemService gains 12 methods: SetSystemOSUpgradeBeta, GetSystemOSUpgradeStatus, Start, Reboot, Resume, Abort and Ack of the upgrade, GetSystemOSUpgradeRunbook, StartSystemOSUpgradeSettle, StopSystemOSUpgradeSettle, OSUpgradeMuted, SetOSUpgradeNotifier
+  - Status mapping of refusals: bad_request is 400, start_failed and reboot_failed are 500 (the spec says 500 reboot_failed), every other code 409; the S6 comment named only two statuses
+  - A button body must be exactly the empty object: an empty body, null, an array or any field is 400; beta needs enabled said (a missing one is 400, never read as off)
+  - PostKillCasaOS and the signal handler in main.go also end the settle loop before the plan, so the existing test TestRestartEndsThePlanBeforeItEndsTheCore and its fake were extended
+  - A query that cannot be read and contains run is a 400 on the runbook route (an unreadable query without run is read as before)
+  - osUpgradeFailed is in route/v1/system_os_upgrade.go and not in system_os_plan.go; internal errors answer 500 with error_code internal and a fixed sentence, the error goes to the log
+  - The guard refuses exactly 7 states (refreshing rehearsing running unwinding recovering verifying resuming), takes no lock, and lets a run that cannot be read through
+  - The T8 test is in package service_test with a test-only export_test.go (TheUpgradeBox) because the internal tests cannot import route; it drives the real router, real engine and real guard on the upgradeBox
+  - The refresh route is not here (S8): the route test lists the exact set of paths under /v1/sys/os/upgrade, so S8 must add POST refresh to osUpgradeRoutes in route/os_upgrade_test.go
+  - aRefreshWith in the settlebox test file was split in two so that aRefreshAtWork gives a refresh whose unit has not ended, with the same behaviour for the old callers
+NOT_VERIFIED
+  - main.go wiring is only compiled and vetted (package main cannot be tested: its init reads config and opens the db); the mute closure, the notifier, the settle start after READY and the stop in the signal handler were never run
+  - service and route do not build on Windows (service/connections.go uses unix.Mount, before this slice), so go build ./... on Windows fails there as before; the tests ran as Linux binaries under the Alpine busybox shell of WSL, not dash, and not with -race
+  - pkg/autoupdate and pkg/telemetry tests fail natively on Windows and were not touched
+  - Nothing here ran against a real systemd, a real unit or a real machine; the docs claim of AppManagement skipping backups depends on slice S9 which is another repository
+  - go build ./... natively on Windows is not possible for the whole tree, only for pkg
+CONTRACT: Routes are in route/v1/system_os_upgrade.go: GetSystemOSUpgradeStatus, StartSystemOSUpgrade, RebootSystemOSUpgrade, ResumeSystemOSUpgrade, AbortSystemOSUpgrade, AckSystemOSUpgrade, SetSystemOSUpgradeBeta, plus osUpgradeFailed(ctx, err), readOSUpgradeBody(ctx, into) with osUpgradeBodyMax of 64 KiB, a
+===== build:S8 DONE_WITH_CONCERNS ['7cdbf1c', '11e04bd', '50569cb', '7a7e095', 'b193b90', '5ea20e3', 'e5a5e34', '4b63cb4']
+SUMMARY: S8 is done on feat/os-engine in 8 local commits and the tree is clean. HopSpec.ForRefresh and the refresh rewrite, blocks R0 to R3 (rcheck, rsources, rupgrade, rdone), the shared functions for the timers state, the repair ladder and the copy of the sources, POST /v1/sys/os/upgrade/refresh and the guide are in. The two goldens of the hop (manual and auto) and pkg/osrun are byte-identical to before. The four blocks were also run for real in a Debian 11.11 root with apt 2.2.4: 30 packages upgraded including libc6 and dpkg, dpkg quiet and etc/apt unchanged at the end, and the restart word was right in 3 cases (new kernel, reboot-required, nothing). The concern is what could not be run: no real systemd, no QEMU, and the exact apt text for a changed release info.
+DEVIATIONS
+  - RefreshInputs has one more field than the spec, CgroupFile, which only tests set as AutoParams does. BuildRefresh refuses a hop that is not HopSpec.ForRefresh (ErrNoRunbook).
+  - R0 writes done-timers right after the state of the timers, before it stops them, not after. A stop that fails half way has stopped some timers and the unwind restarts them only when it finds that file.
+  - The zero-removals rule is also in the repair ladder of R2 (a function argument of repairLadder), not only after the first simulation.
+  - Found by a driver test: the unwind of a refresh restores the timers and then runs block F, which stops the five apt units again, leaving them stopped. F of a refresh now records the timers that run when it begins and starts them again at the end. F of a hop is unchanged. The driver was not touched.
+  - The release-info stop of R1 is class identity with the sentence 'This must be accepted explicitly before updates for this repository can be applied' in its own line, because the status computes failure.hint from that STOP line by osrun.HintOf.
+  - The refresh run has no facts (zero Facts in facts-before.json), plan.json holds a small record of the tree and hashes, manual-runbook.sh is a short note, GET runbook?run=current answers 409 no_run for it, and status.manual does not name a next block of the hop.
+  - osUpgradeCheckMachine got a third argument, the filter of which refusals of the report stand (nil for a start). The refresh calls it with a fixed table osRefreshChecks plus every code that starts with sources_.
+  - Order of the refresh checks: switch, identity, run open, manual folder, report, busy, apps, room, then the sources rewrite. A *osplan.Failure from the rewrite becomes source_unrecognized with file, line, reason and the failure code. Any other error becomes start_failed (500).
+  - head() has refresh wording for a machine that is not Debian 11 any more and for a missing previous block. hop_not_planned, run_open and the others are the start's.
+  - Could not reproduce apt's release-info error text: apt 2.2.4 raised nothing for a signed local repository whose Suite changed (tried over file: and http:). R1 and its tests use the two sentences read from libapt-pkg's own strings, and the fixture for that case is inline in a test and not among the real files.
+  - The restore script that R3 runs prints 'Block 3 can be run again.' into the refresh log: it is the shared constant that the manual golden pins by hash.
+  - Real finding on 2026-10-14: with sources that still say security.debian.org for bullseye, the refresh's download (R2) gets 404 for the security packages and stops with class network. Said in the guide.
+NOT_VERIFIED
+  - Real systemd: the Debian 11 root has no systemd, so every unit was inactive. The stop and start of the timers, systemctl stop of the unit through systemd-inhibit, and the unit gate's cgroup under a real unit were not run for a refresh.
+  - The full path core to unit to driver to settle to refreshed or reboot_first on a machine that booted (PR 6 QEMU). The driver was exercised with the real blocks under dash on Windows and in the Debian 11 chroot, not under systemd-run.
+  - Abort of a refresh while dpkg runs in R2: the owner's call stops the unit and the unwind runs block F when dpkg is not quiet. Tested with stubs only.
+  - The exact text apt 2.2.4 prints when a repository changes its release information, and a real run with the accept option.
+  - A refresh with Docker's source or a third-party file put aside, run for real in a root (done only by rewrite tests, stub box tests and apt --print-uris).
+  - Debian 12 apt 2.6.1 chroot, Ubuntu, arm64, a machine whose hostname does not match the hostname pattern (it cannot refresh, as it cannot start a hop).
+  - go test -race (CI only, no cgo here); the tests of the new code use no goroutines.
+CONTRACT: New in pkg/osplan: HopSpec.Refresh bool and HopSpec.ForRefresh() (rewrite.go); with it rewriteDistro keeps a distribution line verbatim (no suite move, no host move, no firmware, backports kept) and checkTree skips the still-of-From rule. auto_refresh.go has const RefreshFolderPrefix = /var/backups/

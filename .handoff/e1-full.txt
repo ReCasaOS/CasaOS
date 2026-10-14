@@ -1,0 +1,355 @@
+#1 [major] (engine-r1:appmanagement) AppManagement-busy/service/backup_scheduler.go:141
+  SUMMARY: Schedules are saved only at the end of a tick, and cron has no skip-if-running, so the catch-up after a hold is repeated by every following minute tick
+  SCENARIO: After a hold every owed schedule is due at once. The first tick runs them one by one and records nothing until its loop ends. Each next minute cron starts another RunDueBackups that reads the same unrecorded schedules. Test in a scratch copy under Alpine: first tick blocked in its first backup, tick one minute later ran: calls immich immich jellyfin nextcloud jellyfin nextcloud, every app twice. With hold-still they wait 10 min then fail as app busy and are recorded as failed runs; without it two copies run at once. Retention then drops older good runs. A schedule edit saved during the long tick is also overwritten by the stale list. The claim that it runs once when the upgrade closes is false whenever the owed backups last over a minute. Cause predates S9 (base b073da7 has it) but S9 makes it the normal first minute after every upgrade.
+  FIX: Serialise ticks in RunDueBackups with a package mutex TryLock and return when a tick is running, and record each LastRun right after its backup by read-modify-write under backupScheduleLock instead of saving the whole stale list at the end. Add a test with two overlapping ticks.
+
+#2 [major] (engine-r1:appmanagement) CasaOS/service/system_os_upgrade_start.go:380
+  SUMMARY: The start asks AppManagement for running operations (line 532) before the busy flag exists and never asks again, and the backup looks at the flag before it marks itself in progress, so a backup that begins in between runs through the whole upgrade
+  SCENARIO: osUpgradeCheckMachine asks AppOperations, then the start re-reads the plan, builds both texts, takes the facts (bound 2 min: pdbedit, docker, 5 s DNS) and writes the run folder, and only then setOSUpgradeBusy at line 380 and the unit. A tick in that window (a due slot at the minute the owner clicks, or a catch-up) sees no flag, passes RunDueBackups line 120, and only then does the runner list compose apps and markInProgress (backup_run.go line 76). Nothing waits for it: the driver busyCheck sees only package managers, settle never asks again. A hold-still backup then stops containers and copies while dpkg replaces libc6 and the rest.
+  FIX: Core: in osUpgradeBegin after setOSUpgradeBusy and before launchAttemptLocked ask AppOperations again; if any, abandon and refuse apps_busy (flag first, then ask). AppManagement: in RunDueBackups call markInProgress(schedule.App, backup) before osUpgradeOpen and release it when held (mark first, then look at the flag).
+
+#3 [major] (engine-r1:appmanagement) AppManagement-busy/service/git_deploy.go:560
+  SUMMARY: Automatic git deployments (5 minute CheckGitApps, webhooks, Check now) ignore the busy flag, so only backups are held and that is not enough
+  SCENARIO: deployGitAppAutomatically is the one funnel (git_lifecycle.go line 39 and git_apps.go line 545). With AutoDeploy on, a push or the tick runs git fetch (the system git binary, replaced by dpkg in this hop), docker build and compose up while the unit runs, or during the days in awaiting_reboot. Any failure goes through failGitDeploy, which calls st.attempt(commit), and an interrupted deploy at the restart is attempted by RecoverGitApps; gitMayDeployAutomatically skips attempted commits, so the app silently stays on the old version until the owner deploys by hand. The build also writes GBs under /var/lib/docker on the disk dpkg needs. Image updates are owner clicks only (CheckImageUpdates only reads registries) and RecoverAppsWaitingForStorage only runs after an AppManagement start, so they are acceptable for the beta. The core alerts say automatic updates stay paused, which a git app owner will read as covering this.
+  FIX: At the top of deployGitAppAutomatically: if osUpgradeOpen() says open, call end() and return, leaving the commit unattempted so the first tick after the flag clears deploys it. Add a test that no deploy starts while the flag is open.
+
+#4 [major] (engine-r1:auto-text) pkg/osplan/auto_forward.go:37
+  SUMMARY: Block F stops with dpkg_broken when dpkg --configure -a fails, but the owner table it copies goes on to apt-get -s -f install and apt-get -f install, which is the fix for that failure.
+  SCENARIO: A package is unpacked whose dependency is not unpacked yet or is still the old version (a cut during a Breaks driven upgrade, a power cut, a kill). Run for real in the Debian 11 chroot (dash, dpkg 1.20.13, apt 2.2.4): the generated forward block ends rc 1, stop-class dpkg_broken, nothing repaired; the table steps right after (-s -f install, then -f install) end rc 0 and both packages are configured. After the point of no return dpkg_broken is resumable, so resume runs F first and meets the same stop again, with no progress; only takeover gets out. Test BlockFStopsWhereTheTableWouldNotGoOn (case dpkg cannot configure) pins the stop, and F is only tested with a stub dpkg.
+  FIX: In F keep the exit status of dpkg --configure -a, print a note and go on to the simulation, the guard, the expected-removed check and apt -f install; stop with dpkg_broken only if dpkg --audit is still not quiet after apt -f install. Change the test case.
+
+#5 [major] (engine-r1:driver-shell) pkg/osrun/driver.go:54
+  SUMMARY: A stop, abort or kill inside block 1 after the first systemctl stop leaves the apt timers stopped, while the run says failed and clean
+  SCENARIO: The unwind restarts timers only if done-timers exists, but block 1 writes it last (auto golden lines 136-140). Run under dash: unattended-upgrades.service stays active after its stop so block 1 stops busy, or the unit is killed after the first stop. Result: UNWOUND ok, state failed with busy false, apt-daily.timer inactive, timers.state left behind. Kill after the second stop leaves both off. The beta guide (line 110) says every stop before the point of no return starts the timers again.
+  FIX: Add an auto hook in block 1 that writes a marker file before the first systemctl stop (refresh R0 already writes done-timers first), make the unwind restore when done-timers or that file exists, and test a kill at stop 2 and 3.
+
+#6 [major] (engine-r1:driver-shell) pkg/osrun/driver.go:60
+  SUMMARY: When the restore script fails the driver still moves the backup folder away, and the run can then be acknowledged with no word while the sources are still Debian 12
+  SCENARIO: Make restore-sources.sh exit 1 after block 3 swapped the sources (disk full, EIO) and block 4 stops. Run: UNWOUND partial, state needs_attention busy, actions acknowledge and takeover, NeedsAckWord false because pnr is false, sources not the originals, folder moved to run folder bk-aborted. status bk_path and the manual table name a folder that no longer exists, next action is none so nothing retries. Acknowledge drops the busy flag (service/system_os_upgrade_ack.go line 102) and a later apt upgrade mixes the releases.
+  FIX: Move the folder only when ok stays ok; keep it in place on partial, offer a retry of the unwind, require the typed word to acknowledge when apt-orig or paused files show the sources were not restored, and say where the folder is.
+
+#7 [major] (engine-r1:integration) service/system_os_upgrade_launch.go:108
+  SUMMARY: A failed(verify) run made by a STOP of block 8 can never be resumed: the status offers resume and every launch is refused
+  SCENARIO: After the restart block 8 stops (old kernel, not Debian 12, dpkg not quiet): status says failed reason verify with actions resume acknowledge takeover, and POST resume answers 409 not_resumable. launchAttemptLocked calls NextAttempt with an Input that holds only markers: with no files pnr is false, Reduce says failed(verify) reversible, sealedBy seals the log at that UNIT_END, the new ATTEMPT line is dropped and launchAttempt returns not_allowed. Reproduced end to end as root in a Debian 11 chroot with the real core, driver and blocks, also after a power cut after block 7 that boots a machine not yet Debian 12. A failed(verify) made by the judge is not hit. The beta guide promises resume for this state.
+  FIX: Build the check from the input already made in that function: copy in, set Markers to run.Markers plus the attempt, call NextAttempt on it (tried with an overlay: launchAttempt then returns nil). Or make NextAttempt count ATTEMPT lines whatever the seal. Add a test that resumes a failed(verify) caused by a STOP of block 8.
+
+#8 [major] (engine-r1:judge) service/system_os_upgrade_judge.go:38
+  SUMMARY: The judge writes a clean verdict when its facts were cut short by a cancelled or expired context.
+  SCENARIO: The core gets SIGTERM or the stop route while a look runs the judge: the settle context is cancelled (main.go 340, route/v1/system.go 383), Take returns every fact unknown, ReadBK returns nothing, Judge returns an empty list, and verify.json is written empty, so the run reads succeeded for good because nothing judges again. Reproduced with a Linux build of the service tests: osUpgradeJudge with a cancelled context returned nil, wrote empty findings and the state was succeeded, though facts-before said Docker up, 3 Samba users and a pool. The 2 minute osUpgradeFactsLimit ends the same way.
+  FIX: After Take and ReadBK, return an error without writing verify.json when factsCtx.Err is not nil, so the next look judges again.
+
+#9 [major] (engine-r1:judge) pkg/osverify/judge.go:210
+  SUMMARY: A fact known before and impossible to take after reads as healthy, and one hung command blinds all the facts taken after it.
+  SCENARIO: pdbedit -L or systemctl hangs and eats the shared 2 minute budget (facts.go 169-181 has no per command bound): mounts, route, dns, units, docker, containers and sources become unknown and every Judge guard skips them. Reproduced with a 400 ms budget and pdbedit hung: docker.service inactive and casaos-gateway inactive gave zero findings, so succeeded. With facts-before lost or Docker unknown before, a stopped Docker is not said although containers.txt lists running containers (a test pins that). verify.json never says what was not judged, and ReadBK (bk.go 22) turns an unreadable file into an absent one.
+  FIX: Bound each command to about 20 s; when a fact is known before and unknown after, emit a finding (error for system and units, warn for the rest) with arg unknown; write a not_judged list in verify.json and the status.
+
+#10 [major] (engine-r1:judge) pkg/osverify/facts.go:292
+  SUMMARY: A pool that returns with fewer branches, or without its branch or bind mounts, reads as healthy: only the pool mount point is compared.
+  SCENARIO: Before: sdb1 at /media/disk1, sdc1 at /media/disk2, pool /DATA over both. After: only disk1 and the pool over disk1. Facts.Mergerfs is DATA on both sides and Judge returns only the info finding (reproduced). The product does exactly this: LocalStorage mounts a pool with only the volumes that are mounted (CasaOS-LocalStorage service/v2/merge.go 399-401 and 104) and bind mounts AppData over the pool (data_layout.go 69-103), so apps get half a library or empty config folders and the verdict is succeeded.
+  FIX: Keep field 0 (the branches) of each mergerfs line and every non pseudo mount point; report mounts_missing when a branch, a bind mount or a mount under a container bind source is gone or the branch list shrank.
+
+#11 [major] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:147
+  SUMMARY: START_FAILED outranks a live unit (spec rule 5 comes before rule 6): open() is false once START_FAILED is read, and a later UNIT_START is refused (line 256).
+  SCENARIO: systemd-run exits non-zero after queueing the job (bus timeout or reset during a daemon re-exec), the core appends START_FAILED, the unit starts anyway. Experiment: ATTEMPT, START_FAILED, UNIT_START, BLOCK_START with Unit.Active true gives failed/start, busy=false, buttons acknowledge and discard, while blocks 0 to 4 run. AckSystemOSUpgrade skips the unit check for a non busy state, so one click closes the run, removes current and the flag, and the orphan unit goes on to block 5 untracked. Once begun-upgrade exists it flips to failed(start) with pnr.
+  FIX: Make open() depend only on UNIT_END and let Unit.Active win over START_FAILED in live(); accept UNIT_START after START_FAILED (clear the flag) or at least stay busy while the unit is active; add a test. The one-line open() change passes the current suite, so nothing pins the old behaviour.
+
+#12 [major] (engine-r1:reducer) CasaOS/pkg/osrun/action.go:183
+  SUMMARY: NextAction asks for the judge while systemd does not answer; the verdict is then a false success.
+  SCENARIO: Verify attempt ended with VERIFY_DONE, Unit.Answered false: experiment gives verifying and next=judge (also after 2 h). With systemd silent osverify marks system and unit facts unknown (facts_test: bus error means unknown, no finding), so verify.json holds no finding, the state becomes succeeded, busy is released and the run can be closed. Spec rule 4 and the S1 mutation list say no verdict while systemd is silent; only launches are gated by Answered in the tests.
+  FIX: In the StateVerifying case require c.in.Unit.Answered (mutant with that change passes the whole current suite, so add a test that fails without it); have the judge write nothing when its own systemctl questions went unanswered.
+
+#13 [major] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:388
+  SUMMARY: A log that cannot place the run gives idle with Busy false even when the files say pnr or a unit is active, against spec P4; the service then removes the busy flag.
+  SCENARIO: Markers with a damaged line 1 or no RUN line, begun-upgrade present, unit active: Reduce gives idle, RunID empty, busy=false (also 39k of 400k random states). osUpgradeHolds (settle.go 239) is false for it, so osUpgradeKeepFlag deletes the flag: backups, auto update and the packages window run on a half upgraded machine and status says idle. Same if a RUN kind fits no attempt (RUN says refresh, unit runs phase run): idle then failed(start) busy=false with Unit.Active. Nothing compares the RUN line with run.json. The tests exempt idle from P4 (property_test.go 203, soup_test.go 114).
+  FIX: When there is no placed run but Files.PNR or Unit.Active, answer needs_attention run_damaged (busy); in readOSUpgradeRun set Damaged when the RUN line run id, kind or plan differ from run.json; drop the idle exemption from P4.
+
+#14 [major] (engine-r1:refresh) pkg/osrun/driver.go:59
+  SUMMARY: When block F fails inside the unwind of a refresh, the apt timers are left stopped, against the promise that the unit puts the timers back whenever the refresh stops.
+  SCENARIO: R2 dist-upgrade hits a package whose postinst keeps failing (real dpkg 1.20 and apt 2.2.4 in the Debian 11 chroot, stub systemctl). The ladder fails, STOP dpkg_broken, unwind restores sources and starts the 3 timers (line 56), then F (line 59) stops them again, dpkg --configure -a fails, and F restarts its saved units only at its last line (auto_forward.go:49), never reached. Result UNWOUND partial, needs_attention, timers log stop x3, start x3, stop x3, nothing after. settle re-stops the apt units at every boot while the run is open, so apt-daily and unattended-upgrades stay off until the owner acknowledges and restarts. Control run with a network failure (no F) ends with the timers started. Swagger and guide say the unit puts the timers back when it stops.
+  FIX: In unwind() run block F before the timers step so the timers are started last from the state file, or make F start its saved units from an EXIT trap on every path; add a driver test where F fails and the timers must end started.
+
+#15 [major] (engine-r1:routes-flag) docs/os-upgrade-beta.md:60
+  SUMMARY: Barrier check network_names is a constant Info stub, yet the README says the core checks card names before the restart
+  SCENARIO: checkNetworkNames in pkg/osreadiness/checks_network.go lines 84-90 ignores its probe and always returns Info. osUpgradeBarrier counts anything but Refuse as ok, so barrier.checks always shows network_names ok (pinned at service/system_os_upgrade_barrier_test.go line 134), and fstab_network is Warn only so it never goes red either. Nothing in the engine reads or pins card names: block 7 itself prints NOT checked for them (pkg/osplan/runbook.go lines 1208, 1284). README lines 60 and 160 say they are checked, and the Info text at checks_network.go line 87 promises a step that pins names which does not exist. A headless box whose NIC is renamed by the new kernel comes back with no network after a green barrier.
+  FIX: Drop network_names from osUpgradeBarrierChecks (service/system_os_upgrade_barrier.go line 19) or give it a real read-only check. Rewrite README lines 60 and 160 and the text at checks_network.go line 87 to say card names are not checked and a console is needed.
+
+#16 [major] (engine-r1:service-settle) service/system_os_upgrade_launch.go:150
+  SUMMARY: Any systemd-run error writes START_FAILED, but the unit may exist and start; the reducer then drops its markers and ack ignores the live unit.
+  SCENARIO: systemd-run times out on the bus while PID 1 is busy, yet the transient unit is created and starts. State becomes failed(start), busy false, settle removes the busy flag, and the unit goes on through blocks 3 and 4 (sources swapped) while the page says nothing changed. Ack then closes the run: ack.go:91 checks the unit only when Busy. Confirmed by a throwaway test (unit active, UNIT_START and BLOCK markers written: state failed, busy false, flag gone, ack accepted, pointer cleared). If the unit runs to the end, the hop shows failed(start) with pnr and awaiting_reboot is never reached, so no reboot button.
+  FIX: After a systemd-run error ask unitState; if the unit is active or activating, or systemd does not answer, do not write START_FAILED. Let the reducer accept UNIT_START after START_FAILED for the same attempt (reduce.go:256). Make ack and takeover require a quiet unit in every state, not only when Busy.
+
+#17 [major] (engine-r1:service-settle) service/system_os_upgrade_judge.go:41
+  SUMMARY: A verdict made from facts that could not be taken is written as green and final.
+  SCENARIO: osverify.Judge skips every fact it does not know, and the judge writes verify.json even when the context is cancelled or the 2 minute budget is used up. Confirmed: with a cancelled context and before-facts saying Docker was up, verify.json has zero findings and the run is succeeded. Triggers: the core told to stop while judging (main.go:340 cancels the loop context and waits for the tick, so the green file is written), a hung docker info or systemctl using the whole budget, or systemd not answering (action.go:183 returns judge with Unit.Answered false; confirmed). Nothing in the status says facts were unknown.
+  FIX: Do not write the verdict when ctx.Err() is set, or when after-facts are Unknown for kernel, system, dpkg, units or docker where the before-facts knew them; retry next tick a few times, then write a warn finding such as facts_unknown. Skip the judge while Unit.Answered is false.
+
+#18 [major] (engine-r1:service-settle) service/system_os_upgrade_settle.go:196
+  SUMMARY: BOOT_SEEN stops the apt timers again on any new boot of a busy run, even after block 8 put them back.
+  SCENARIO: Hop reaches failed(verify) after block 8 (done-after exists, timers restored, state file removed). The owner reboots the box days later. Settle sees a new boot, the run is still busy, and stops apt-daily.timer and apt-daily-upgrade.timer. Resume or ack never restarts them because block 8 is skipped by done-after. Automatic security updates stay off until the next reboot. Confirmed with a throwaway test (stops issued after the new boot). Same after a power cut inside the verify window.
+  FIX: In osUpgradeSeeBoot skip the unit stops when Files.DoneAfter is true (still write BOOT_SEEN), or restore the timers from the state file after the stop.
+
+#19 [major] (engine-r1:service-start) service/system_os_upgrade_launch.go:149
+  SUMMARY: Any systemd-run error is written as START_FAILED, but a systemd-run that timed out may have queued the unit, and the reducer then ignores that unit.
+  SCENARIO: PID 1 stalls longer than the 25 s bus timeout (for example after a half-done dpkg), systemd-run exits 1 after queuing the job, the core appends START_FAILED, start.go 404-407 drops the busy flag and answers start_failed (nothing changed). The unit then starts. I ran this: reduce.go 256 drops UNIT_START after START_FAILED, so the state is failed(start), busy false, flag removed by the next settle tick, actions acknowledge and discard; ack.go 91 only checks the unit for busy states, so ack closes the run while the unit still swaps sources. With pnr true it is failed(start) with resume and takeover, later REBOOT_PENDING is ignored, resume answers nothing left to run, no reboot button. The only test (start_test 1025) covers a clean failure. u.start (system_package.go 141) has no timeout and runs under osUpgradeMu.
+  FIX: After a systemd-run error ask systemd (LoadState and ActiveState); if the unit exists or systemd does not answer, do not write START_FAILED (let the 30 s or 30 min bound close it) or stop the unit first. Bound u.start with a context. Make ack and discard always require a quiet unit. Let the reducer accept UNIT_START after START_FAILED of the same attempt. Add a test with a late unit.
+
+#20 [major] (engine-r1:spec-hygiene) pkg/osrun/reduce.go:403
+  SUMMARY: A needs_attention run before the point of no return is closed with one plain click, though the sources of Debian 12 may still be in place
+  SCENARIO: HalfUpgraded is pnr && !DonePrereboot (line 403) so NeedsAckWord (line 122) is false when pnr is false. Hop in block 5 with apt-orig and done-timers in the backup folder, then the run files stop passing SHA256SUMS (run_damaged) or the unwind ends partial (unwind_partial): status says needs_attention, reversible true, half_upgraded false, no ack_word, actions acknowledge and takeover. Service-level experiment in a scratch copy: POST ack acknowledge with no word returns 200, flag and pointer are removed, status becomes idle. The packages window, auto updates and backups then run on a box with bookworm sources and stopped timers, and nothing says so. An unreadable run does require the word (status.go osUpgradeDamaged), so the rule is inconsistent. The spec R11 criterion (pnr) misses this case.
+  FIX: Require the typed word for every needs_attention state, and for any state where apt-orig exists and no UNWOUND ok was seen; show it as half_upgraded or a new sources_swapped field, not reversible true; add tests for run_damaged and unwind_partial before the point of no return; correct the needs_attention row of docs/os-upgrade-beta.md.
+
+#21 [major] (engine-r1:spec-hygiene) pkg/osrun/reduce.go:552
+  SUMMARY: Abort is offered, and accepted, while the refresh upgrade block runs dpkg
+  SCENARIO: running() sets Abortable = !pnr && !pastMinimal(LastStart) and pastMinimal (line 558) lists only hop blocks, so a refresh whose last BLOCK_START is rupgrade stays abortable. Experiment in a scratch copy: refresh log with BLOCK_START rupgrade reduces to refreshing, abortable true, actions abort. The click runs systemctl stop, which sends SIGTERM to apt-get and dpkg in the middle of an unpack (libc6, systemd, dpkg possible); the page then reads failed(abort) reversible, and the hop rule never to kill dpkg is the reason it has a point of no return. Recovery relies on block F after the unwind, and no test exercises an abort during rupgrade (the S6 report says so).
+  FIX: For a refresh make Abortable false once rupgrade has begun (add rupgrade, rdone and forward to pastMinimal for run kind refresh), or at least add a driver test that aborts in rupgrade and checks dpkg --audit, block F and the final state; say it in the guide.
+
+#22 [minor] (engine-r1:appmanagement) AppManagement-busy/service/backup_upgrade_hold.go:28
+  SUMMARY: No test uses the production defaults of the two seams, so a fail-open wiring passes the whole suite
+  SCENARIO: Mutation run under Alpine: osUpgradeBusyStat default replaced by a function that always answers not-exist, and separately logBackupsHeld default replaced by a no-op: all 20 scheduler and hold tests still pass. schedulerInTempDir installs the fake in every test and TestTheRealFilesystemIsReadTheSameWay overrides the var itself, so os.Stat and logger.Warn as wired in production are never run, and the path constant is only compared through the fake.
+  FIX: Make osUpgradeBusyPath a var and let the real-filesystem test set only the path, leaving the default stat in place; assert the default log seam is logger.Warn or call it once. Seen failing with the mutation.
+
+#23 [minor] (engine-r1:appmanagement) AppManagement-busy/service/backup_upgrade_hold.go:39
+  SUMMARY: Backups read the flag with os.Stat and the core with os.Lstat, so a dangling symlink at the flag path is open for the core and free for backups
+  SCENARIO: Test under Alpine: symlink busy to a missing target gives Stat ENOENT so osUpgradeOpen is false, while the core osUpgradeFlagOpen (system_os_upgrade_busy.go line 28, Lstat) says open. Spec R7 says every reader treats only ENOENT of the flag itself as free. Only root can make it, but it is the readers disagreeing and no test pins it.
+  FIX: Use os.Lstat as the default of osUpgradeBusyStat and add a dangling symlink case to TestTheRealFilesystemIsReadTheSameWay.
+
+#24 [minor] (engine-r1:auto-text) pkg/osrun/driver.go:54
+  SUMMARY: Block 1 writes done-timers after it has stopped the timers, and the unwind restores them only with done-timers, so a stop or a kill inside block 1 leaves the apt timers stopped while the run reads failed and reversible.
+  SCENARIO: Block 1 wrote the state file and stopped apt-daily.timer, then unattended-upgrades.service stays active (STOP busy) or the unit is killed (PR 6 leg f, kill at block 1): the unwind finds no done-timers, runs no systemctl start, leaves the state file, and the timers stay off until the next reboot. TestTheUnwindStartsTheTimersOnlyWhenItsOwnFolderStoppedThem uses a stub block that fails before any stop, so it does not see it. S8 fixed the same thing in R0 by writing done-timers first.
+  FIX: Let the unwind also restore when the state file was written by this run (for example newer than driver.sh of the run folder), or add a hook that writes done-timers right after the state file in block 1 of the auto text.
+
+#25 [minor] (engine-r1:auto-text) pkg/osplan/auto.go:182
+  SUMMARY: With Dpkg::Use-Pty=0 term.log no longer gets what dpkg and the maintainer scripts print, but 16 auto lines (help, the guards, the stops of blocks 5 and 6, and F) still send the owner to /var/log/apt/term.log.
+  SCENARIO: Debian 11 chroot, apt-get -o Dpkg::Use-Pty=0 install of a package whose postinst echoes two lines: both lines go to apt stdout (output.log in the unit) and term.log holds only Log started and Log ended; with the pty on, term.log holds them. After the point of no return the detail line on the page and in a help request names an empty file.
+  FIX: Give the auto text its own words for the log (output.log of the run) through a hook like H6, or have the status add the right path next to the detail line.
+
+#26 [minor] (engine-r1:auto-text) pkg/osplan/testdata/runbook-d11-12.auto.golden:571
+  SUMMARY: The WARNING lines of block 7 (initrd under 5 MiB, no grub.cfg) ask a person to check by hand and restart only if it is right, and have no channel in the unit.
+  SCENARIO: A box with another boot loader or a small initrd: block 7 prints WARNING, ends 0, REBOOT_PENDING, awaiting_reboot; barrier.json holds only the Go readiness checks, so the reboot button is offered with no mark, and the warning is only in the log tail.
+  FIX: Have the unit keep a warned note in the backup folder (a ninth hook) that settle shows as a warn check beside the reboot button.
+
+#27 [minor] (engine-r1:auto-text) pkg/osplan/auto.go:285
+  SUMMARY: Block 8 writes docker-source-note on the failing Docker branches but never removes it on the branch where Docker answers, and the judge reads the note whatever became of the source.
+  SCENARIO: A verify attempt reaches the Docker branch, writes unreachable, and is cut (a second restart, a kill) before done-after; the next verify attempt gets 200, puts the source back, and the old note stays: the judge adds docker_source_unreachable, a false warn, and the run reads succeeded_with_findings.
+  FIX: In the auto text remove the note at the start of the Docker section (rm -f on docker-source-note), as one more hook on the same site as H8.
+
+#28 [minor] (engine-r1:driver-shell) pkg/osplan/auto_forward.go:48
+  SUMMARY: A stop in block F during the unwind of a refresh leaves the apt timers stopped and their state file already deleted
+  SCENARIO: The driver starts the timers and removes timers.state (driver.go lines 54-58), then runs F, which stops them again and restarts them only at its end. Run with dpkg half done and a repair that wants to remove fuse: UNWOUND partial, apt-daily.timer and unattended-upgrades inactive, timers.state gone, so nothing remembers they ran.
+  FIX: Run F before the timers step, or restart the units that F stopped on every exit of F including its stop lines, and keep timers.state until F has ended.
+
+#29 [minor] (engine-r1:driver-shell) pkg/osrun/driver.go:79
+  SUMMARY: A fresh run skips blocks whose done files it did not write
+  SCENARIO: A hand run of blocks 0 to 2 for the same plan leaves done-verify, done-timers, done-snapshot in the plan's folder with no apt-orig, so start does not answer manual_run_found (service/system_os_upgrade_start.go line 177) and the folder name is the same. Run: BLOCK_SKIPPED for verify, timers and snapshot, so the timers are not stopped and the state before is stale.
+  FIX: At start refuse or move aside an existing backup folder of the plan, or let the driver ignore done files on attempt 1 of run, rehearse and refresh.
+
+#30 [minor] (engine-r1:driver-shell) pkg/osplan/driver_crash_test.go:244
+  SUMMARY: The kill tests miss the timers gap and one test asserts the wrong outcome as right
+  SCENARIO: The kill inside block 1 happens only at the first systemctl stop, and TestTheUnwindStartsTheTimersOnlyWhenItsOwnFolderStoppedThem (driver_stops_test.go line 104) requires the timers to stay stopped after a block 1 stop. A mutant that hides a failed mv of the folder in the unwind (marks ok instead of partial) survived every behavioural test, and no test kills the driver inside the unwind itself. The other 47 of 49 mutants I made of the driver were caught, abort interleavings included.
+  FIX: Add kills at stop 2 and 3 of block 1 and a test for a failing mv in the unwind giving UNWOUND partial, and change the block 1 test once the timers are restored.
+
+#31 [minor] (engine-r1:driver-shell) service/system_os_upgrade_unit.go:35
+  SUMMARY: The nonce is in the argv of systemd-run and in the unit environment, not only in the driver process
+  SCENARIO: The argument --setenv=CASAOS_OSU_NONCE=n shows in ps while systemd-run runs, and systemd keeps the unit environment readable to local users (systemctl show, transient unit file; known systemd behaviour, not run here). The markers file is root only so no forgery follows.
+  FIX: Let the driver read the nonce from line 1 of its own markers file and drop the --setenv.
+
+#32 [minor] (engine-r1:integration) pkg/osrun/driver.go:54
+  SUMMARY: A STOP inside block 1 leaves the timers of apt stopped although the run ends failed and not busy
+  SCENARIO: apt-daily.timer and apt-daily-upgrade.timer are stopped, then unattended-upgrades.service stays up: block 1 stops with class busy before it writes done-timers. The unwind starts timers only when done-timers exists, so none is started: status failed(busy), busy false, flag removed, timers off until the next boot, state file kept. Reproduced in the chroot. The guide says every stop before the point of no return starts the timers again.
+  FIX: Start the timers of the state file also when the folder has done-verify and the state file is not empty, or have block 1 write done-timers before its stop loop as R0 already does.
+
+#33 [minor] (engine-r1:integration) pkg/osrun/driver.go:60
+  SUMMARY: needs_attention(unwind_partial) is closed with no typed word while the sources may still be Debian 12, and the folder that holds apt-orig has already left /var/backups
+  SCENARIO: restore-sources.sh fails or is missing: the driver sets ok=partial but still moves BK to bk-aborted. Status needs_attention with actions acknowledge and takeover and an empty ack_word (HalfUpgraded is false before the point of no return). One ack drops the flag: state idle, /var/backups empty, apt sources still bookworm on a Debian 11 box, backups and auto updates resume, and manual_run_found no longer sees the folder. Reproduced in the chroot.
+  FIX: Leave BK in /var/backups when the unwind is partial, and ask the typed word for unwind_partial (NeedsAckWord in pkg/osrun/reduce.go).
+
+#34 [minor] (engine-r1:integration) pkg/osrun/driver.go:59
+  SUMMARY: The unwind of a refresh runs block F when dpkg --audit is not quiet even when R0 stopped before it made the backup folder, and F dies
+  SCENARIO: R0 stops on its dpkg audit check (an apt run began after the readiness check): the unwind sees audit output and runs forward.sh, which stops the five apt units and dies at pkg/osplan/auto_forward.go line 36 (cannot create expected-removed.txt: Directory nonexistent). Result UNWOUND partial, needs_attention, timers stopped, nothing mended. Reproduced in the chroot; the window is small because the readiness check refuses a non-quiet dpkg first.
+  FIX: Run F in the unwind only when the backup folder exists, and let F make the folder or skip that file when it is absent.
+
+#35 [minor] (engine-r1:integration) service/system_os_upgrade_flow_test.go:89
+  SUMMARY: The flow tests that claim a rehearsal and a hop through the core are a model, so they stay green with the finding above
+  SCENARIO: TestAHopFromItsStartToItsClosing and TestARehearsalFromItsStartToItsClosing write the markers with box.say and the backup files with box.leave, and systemd-run is only recorded: the real driver and blocks never run behind the core. The driver tests in pkg/osplan write their own SHA256SUMS, bk-path and lists, so no test joins the core writer, the driver and the blocks.
+  FIX: Add a Linux-only end to end test with a fake systemd-run that execs the unit command under dash, stub apt and systemctl, a cgroup named for the unit. Mine is in the scratchpad folder lint-e2e (zz_e2e_test.go to zz_e2e4_test.go, stubs, setup.sh, run.sh, go.ps1) and 40 scenarios pass but the one above.
+
+#36 [minor] (engine-r1:integration) service/system_os_upgrade_busy.go:24
+  SUMMARY: Older tests that call maintenanceState without a seam read the real busy file, so they fail on a machine where it exists
+  SCENARIO: With /var/lib/casaos/os-upgrade/busy present (a leftover run, as root in the chroot) 40 and more existing tests fail with an operating system upgrade is open: TestMaintenanceBusyIsTheUpdatersOwnQuestion, TestStartDockerUpdate*, TestSystemPackageUpdate*. They pass on a clean box only.
+  FIX: Set osUpgradeBusyFile to a temp path in a TestMain of package service.
+
+#37 [minor] (engine-r1:integration) service/system_os_upgrade_status.go:277
+  SUMMARY: failure.detail_line of a failed(start) run is the STOP line of an earlier attempt
+  SCENARIO: A hop stops at block 6 (apt could not repair), the owner clicks resume and systemd-run fails: status says failed reason start with class start and shows the old line STOP: apt could not repair the packages, with its hint, as if it were the reason of the start failure.
+  FIX: Take the STOP line only when the attempt of the state wrote a STOP, and leave detail_line empty for reason start.
+
+#38 [minor] (engine-r1:judge) pkg/osplan/auto.go:286
+  SUMMARY: Block 8 never removes docker-source-note, and a resumed check skips block 8, so the lists the judge reads are never taken again.
+  SCENARIO: A first block 8 meets a network blip, writes unreachable, and is cut before done-after; the second run puts Docker source back but the note still says unreachable (reproduced: docker.list restored, note unchanged) and the judge adds a warn. After failed(verify) the owner fixes a unit and resumes: done-after makes the driver skip block 8 (the verify list is only after), so failed-units-after.txt and listening-after.txt stay those of the first look and units_failed_new or ports_missing stay.
+  FIX: rm -f the note at the start of the Docker section in auto mode; on a verify resume let block 8 take the lists again, or have Take read them.
+
+#39 [minor] (engine-r1:judge) service/system_os_upgrade_start.go:326
+  SUMMARY: The baseline is taken at the start and at block 2, but the restart can come days later, so what the owner changed meanwhile is judged.
+  SCENARIO: The run waits in awaiting_reboot with reminders at 1 h, 24 h, then daily. The owner stops an app or disables a ReCasaOS unit before clicking restart: containers.txt, casaos-units.txt and facts-before are old, so container_not_returned warns and casaos_unit_down is an error, and the run reads failed(verify) for a change the owner made.
+  FIX: Retake facts-before and the block 2 lists when the restart is requested (REBOOT_REQUESTED), or refresh them in block 7 and at the click.
+
+#40 [minor] (engine-r1:judge) pkg/osverify/facts.go:323
+  SUMMARY: A default route that rejects or blackholes counts as a default route.
+  SCENARIO: A kernel unreachable default route shows in /proc/net/route as star interface, flags 0201 (a blackhole shows 0001): defaultRoute returns other (reproduced). If the real route is lost while that placeholder stays, route_missing never fires, and osUpgradeReady (settle.go 343) takes the network for back and launches verify early.
+  FIX: Skip entries whose flags have RTF_REJECT (0x200) or whose interface is a star.
+
+#41 [minor] (engine-r1:judge) pkg/osverify/judge_test.go:417
+  SUMMARY: Tests that do not test: mutants survive and one assertion checks a struct literal.
+  SCENARIO: Mutated copies still pass when: maxLines is raised, the Docker paused match becomes a prefix docker, the Samba line digits become zero or more, the Docker activating state is mapped to stopped, the paused mark is matched anywhere in the line. Lines 417-419 check fields of a literal VerifyResult, not the reducer. Nothing keeps a readiness check from asking pdbedit -L, whose allow-list row is global and may write in /var/lib/samba, and the invariance proof hashes no samba folder.
+  FIX: Add one case per survivor, drop the literal assertion, and add a test that no registered readiness check asks pdbedit.
+
+#42 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:515
+  SUMMARY: Silent systemd is bounded only for an open attempt, so states after UNIT_END are dead ends, and needs_attention(systemd_silent) offers buttons that always fail.
+  SCENARIO: Hop ended with REBOOT_PENDING, boot differs, systemd silent for 24 h: experiment gives resuming, busy, no buttons, next=none, for ever (canLaunch false, rule 4 never applies). Interrupted before pnr with an ended attempt is the same. In needs_attention(systemd_silent) ActionsFor offers takeover and acknowledge, but the ack route (ack.go 78, reboot.go 20) answers unit_active whenever systemd does not answer, so only the console helps.
+  FIX: Apply the SystemdSilence bound to every busy state that has no live unit (not rebooting): needs_attention(systemd_silent); and let the owner leave that state with the typed word without the unit check, or do not list buttons that cannot work.
+
+#43 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:721
+  SUMMARY: Result markers outrank the files for the end of the hop: REBOOT_PENDING without done-prereboot gives awaiting_reboot with the reboot button.
+  SCENARIO: Experiment: REBOOT_PENDING marker, done-prereboot absent, barrier green gives awaiting_reboot, half_upgraded=true, actions reboot and takeover. RebootBlocked looks only at the Go barrier (fstab, names), not at block 7's kernel, initrd and grub checks, so a lying or damaged log lets the owner restart a machine whose block 7 never ended. VERIFY_DONE without done-after likewise gives succeeded and frees the flag. Only damage can do it today; the driver checks the files first.
+  FIX: Set RebootBlocked when !Files.DonePrereboot, and treat a VERIFY_DONE without done-after as verifying or damaged.
+
+#44 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:597
+  SUMMARY: interrupted() ignores the class of a STOP that has no UNIT_END, so a guard, converge, unit or integrity stop becomes resumable.
+  SCENARIO: Experiment: STOP guard after pnr, no UNIT_END, unit gone gives interrupted(killed), resumable, buttons resume, acknowledge, takeover; with UNIT_END it correctly gives stopped_at_waypoint(guard) with no resume. The window is small (driver killed or power cut between STOP and UNIT_END) and the block would stop again, but it contradicts the class table.
+  FIX: In lost() and interrupted(), when a.Stop is set use its class for Resumable and State.Class.
+
+#45 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/hostile_test.go:103
+  SUMMARY: Several guards the spec asks for have tests that cannot fail: of about 85 mutants of a copy, 10 survive and at least 6 are real.
+  SCENARIO: Survivors: maxBlockEvents set to 2^30 (the flood test passes, it never depended on the cap); second STOP wins; a result accepted after a STOP; UNWOUND accepted after a STOP with pnr 1; UNIT_START with another phase than its ATTEMPT; rehearsal TTL at exactly ExpiresAt. These are the late or forged word cannot move the run rules of spec section 7.
+  FIX: Add one test per survivor (a late forged line in each position must leave the state unchanged) and make the flood test assert that block words past the cap do not move Block.
+
+#46 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/property_test.go:363
+  SUMMARY: The property simulation cannot see the fail-open and dead-end paths above, and adds little over the unit tests.
+  SCENARIO: launch() forces Unit.Active false on START_FAILED, the unit is always Answered, there is never an unplaceable log, P4 exempts idle, and the transition graph legal() gives interrupted 14 successors. Mutating a copy: only 2 of 81 mutants were killed by property tests alone (canLaunch ignoring Active, abortable ignoring pnr); the simulation alone killed none uniquely. It does fail on busy, sealing and pnr mutants, so P1, P4 and P5 are able to fail.
+  FIX: Let the simulation draw Answered false for stretches, START_FAILED with an active unit, damaged first lines, and assert: Unit.Active or Files.PNR implies busy unless closed; tighten legal() for interrupted.
+
+#47 [minor] (engine-r1:refresh) pkg/osplan/auto_refresh.go:151
+  SUMMARY: The unwind of a refresh runs block F whenever dpkg --audit is not empty, even when the refresh stopped before it touched dpkg, so a refused refresh can end as needs_attention.
+  SCENARIO: Another package manager is mid-install (dpkg -i held in a preinst, real dpkg in the chroot) when R0 runs. R0 runs auditCheck before busyCheck and stops with dpkg_broken, the driver unwind sees a non-empty audit and runs F, F refuses with a busy STOP after stopping the apt units, UNWOUND partial, needs_attention, busy flag held, and the last STOP line shown as detail is F's, not R0's. Rare timing window, but nothing had been changed by the refresh.
+  FIX: Run F in unwind only when the refresh reached R2 (done-rsources exists), and in R0 put busyCheck before auditCheck.
+
+#48 [minor] (engine-r1:refresh) docs/os-upgrade-beta.md:50
+  SUMMARY: The guide, the swagger of POST refresh and the R1 fixture say apt refuses the Suite change stable to oldstable; apt 2.2.4 does not.
+  SCENARIO: Tested with a signed InRelease in the Debian 11 chroot and apt-get -y -q update --error-on=any: Suite stable to oldstable to oldoldstable and Version 11.10 to 11.11 are accepted silently (rc 0); only Origin, Label and Codename changes stop it with E: Repository changed its X value (rc 100), and then the R1 grep matches and --allow-releaseinfo-change accepts (both tested). The owner click for the bullseye change described in route/v1/system_os_upgrade.go:124, service/system_os_upgrade_refresh.go:33 and auto_refresh_real_test.go:103 never happens on real bullseye.
+  FIX: Reword the three texts to Origin, Label or Codename changes and use a Label example in the test fixture.
+
+#49 [minor] (engine-r1:refresh) service/system_os_upgrade_refresh.go:48
+  SUMMARY: After a partial unwind of a refresh the owner is told nothing about where the copy of /etc/apt is, and the status points at a folder that no longer exists.
+  SCENARIO: The driver moves the refresh folder to the run folder (bk-aborted) even when UNWOUND is partial, but status.manual.bk_path (system_os_upgrade_status.go:255) still names /var/backups/casaos-os-upgrade-refresh-ID, and the takeover note says the unit puts the sources and timers back. With needs_attention the owner has no text to restore the sources or start the timers by hand.
+  FIX: Report the moved folder as bk_path and say in the note: sh RUN/bk-aborted/restore-sources.sh, then start apt-daily.timer, apt-daily-upgrade.timer and unattended-upgrades.
+
+#50 [minor] (engine-r1:refresh) pkg/osrun/action.go:129
+  SUMMARY: A refresh left in reboot_first holds the busy flag (backups, auto update) with no reminder and no alert.
+  SCENARIO: NextAction reminds at +1h, +24h and daily only for awaiting_reboot and reboot_stalled, and the alerts have no row for reboot_first. A refresh that asked for a restart and is not acted on pauses AppManagement backups and automatic updates silently for days.
+  FIX: Treat reboot_first like awaiting_reboot for reminders and the alert.
+
+#51 [minor] (engine-r1:refresh) pkg/osplan/auto_refresh_real_test.go:172
+  SUMMARY: The real apt test of the refresh runs whatever apt-get the machine has with --print-uris update, which only parses the sources; the real run of the four blocks is only a comment.
+  SCENARIO: On the Linux runner this runs the runner's apt, not apt 2.2.4, and proves nothing about update, dist-upgrade, the zero-removals stop, the restore or the unwind. I ran the real driver and blocks in a Debian 11 chroot (happy run, third-party line and file paused and put back byte-identical, removal stop, kill in preinst and postinst repaired by F) and all worked, but no test in the repository can repeat it.
+  FIX: Add a test gated on a Debian 11 chroot path that runs the driver on a local repository, as the header comment claims was done by hand.
+
+#52 [minor] (engine-r1:refresh) pkg/osplan/runbook.go:748
+  SUMMARY: The shared restore script prints hop wording into the log of a successful refresh.
+  SCENARIO: With the timers active, R3 runs restore-sources.sh and the log tail the owner reads says the timers that block 1 stopped are still stopped, to give up the hop start them again and remove the state file, and Block 3 can be run again, while R3 itself starts them on the next lines (checked with a stub systemctl). Misleading, and following it would delete the state R3 needs.
+  FIX: Let the refresh call the restore script with a variable that silences the two hop lines (the script text is pinned by hash, so change it once with the golden) or filter them from the refresh log tail.
+
+#53 [minor] (engine-r1:routes-flag) docs/os-upgrade-beta.md:60
+  SUMMARY: README says the owner is told and that a page shows state, but by default nobody is told and no page exists; scheduled backups keep running
+  SCENARIO: alerts.json has no channel by default, so raiseAs returns false and nothing is sent, while osUpgradeTell has already written the key to the notified file (service/system_os_upgrade_alerts.go lines 145-156), so adding a channel later tells nothing of the past. Lines 31, 82, 165 speak of a page that is a later change. Line 74 only forbids a backup by hand, but the scheduled AppManagement backups still run during the hop until its separate release carries the flag check. An API-only beta run that stops after the point of no return at night tells nobody.
+  FIX: Add prerequisites to the README: set an Updates alert channel first, poll /status, turn scheduled backups off until AppManagement commit f5d6a3b is installed. Reword the page sentences as later work.
+
+#54 [minor] (engine-r1:routes-flag) docs/os-upgrade-beta.md:103
+  SUMMARY: The needs_attention row offers manual for a run folder that cannot be read, but only acknowledge with the typed word works
+  SCENARIO: osUpgradeAckLocked (service/system_os_upgrade_ack.go lines 72-77) answers run_unreadable to manual and discard on an unreadable run, and osUpgradeDamaged (service/system_os_upgrade_status.go lines 154-159) offers only acknowledge. An owner who follows the row and clicks manual gets 409 run_unreadable.
+  FIX: Split the row: for an unreadable run the only way out is acknowledge with the word from ack_word.
+
+#55 [minor] (engine-r1:routes-flag) docs/os-upgrade-beta.md:57
+  SUMMARY: README says discard puts the machine back byte for byte and as it was, but the downloaded Debian 12 packages stay in the apt cache
+  SCENARIO: Block 4 downloads the minimal upgrade into /var/cache/apt/archives; the unwind in pkg/osrun/driver.go and restoreScript in pkg/osplan/runbook.go restore sources and timers and move the backup folder, and never clean the cache. After discard, the half hour end or a restart the box keeps those debs. Lines 93 and 110 repeat the claim.
+  FIX: Say that sources and timers are restored and that downloaded packages stay in the apt cache, or run apt-get clean in the unwind.
+
+#56 [minor] (engine-r1:routes-flag) route/v1/system_os_upgrade.go:63
+  SUMMARY: Body keys are matched without case and duplicate keys are accepted, so strict JSON is not enforced
+  SCENARIO: Tried in a copy of the repo: ENABLED and Enabled are read as enabled, and a body with enabled true then enabled false reads as false because the last key wins. Spec section 9 says an unknown field is 400. A client, proxy or log that reads by exact name or first key sees another value than the one the engine acts on.
+  FIX: Before Decode walk the top-level tokens and refuse any key that is not an exact json tag of the target, or that appears twice.
+
+#57 [minor] (engine-r1:routes-flag) service/system_os_upgrade_start.go:342
+  SUMMARY: Handlers lock osUpgradeMu without defer, so a panic that echo recovers leaves it locked and wedges the engine
+  SCENARIO: In a copy I injected a panic in osUpgradeWriteFile during StartSystemOSUpgrade: afterwards SetSystemOSUpgradeBeta and AckSystemOSUpgrade block for good, and with a run open the settle look blocks in osUpgradeKeepFlag while holding tickMu. The loop has a recover (system_os_upgrade_settle.go line 160) but start, refresh (system_os_upgrade_refresh.go line 131), ack (system_os_upgrade_ack.go line 46), resume (system_os_upgrade_resume.go line 37) and reboot (system_os_upgrade_reboot.go line 65) have none. No natural panic was found, only the mechanism is proven.
+  FIX: Put each locked section in a small function with defer osUpgradeMu.Unlock().
+
+#58 [minor] (engine-r1:service-settle) service/system_os_upgrade_power.go:18
+  SUMMARY: A unit that is active but hung after the point of no return has no way out from the page.
+  SCENARIO: ActionsFor offers abort only before block 5, nothing for running, recovering, verifying. The reducer has no bound for an active unit that is silent for hours. The owner reboot route is refused with os_upgrade_open in exactly those states. A box without ssh access can only be power cycled, which is the power cut during dpkg the design wants to avoid.
+  FIX: After a long silence (output.log mtime older than a set time, say 30 minutes, with systemd answering) offer a stop action or allow the owner reboot with the typed word.
+
+#59 [minor] (engine-r1:service-settle) pkg/osrun/action.go:183
+  SUMMARY: The judge runs once at the first tick after VERIFY_DONE and its verdict is final, so slow starters become permanent findings.
+  SCENARIO: A container with restart policy always that Docker restarts a minute after Ready is listed as container_not_returned and the run ends succeeded_with_findings, which offers only acknowledge. errors such as casaos_unit_down or mounts_missing from a service that is slow to come up give failed(verify) until the owner clicks resume. The status keeps showing the stale not_returned list.
+  FIX: Give the judge a settle window after Ready (re-take the facts for a few ticks and keep the last stable answer), or offer resume for succeeded_with_findings.
+
+#60 [minor] (engine-r1:service-settle) service/system_os_upgrade_start.go:425
+  SUMMARY: closeOSUpgradeRun appends ACK before os.Rename of the backup folder, and rename fails across file systems.
+  SCENARIO: /var/backups on its own mount (PR 6 leg A even mounts a tmpfs there). Ack of a succeeded hop: ACK is written, rename gives EXDEV, the route answers 500 start_failed after the run is already closed. The finished backup folder stays in /var/backups with done-after, and head() of every later block stops on any folder with done-after.
+  FIX: Move the folder first, with a copy and remove fallback like the driver mv, and only then append ACK; use a code other than start_failed.
+
+#61 [minor] (engine-r1:service-settle) service/system_os_upgrade_settle.go:216
+  SUMMARY: The awaiting_reboot push is sent in the tick that just found the barrier red.
+  SCENARIO: osUpgradeKeepBarrier runs first, finds a bad fstab line, and osUpgradeTellOf still sends: ready for its restart, restart the machine from the dashboard. The reboot button is not offered, so the owner is told to do what the page refuses.
+  FIX: Send the awaiting_reboot alert only when the barrier is green, or use another sentence for a red barrier.
+
+#62 [minor] (engine-r1:service-start) service/system_os_upgrade_start.go:425
+  SUMMARY: closeOSUpgradeRun moves the finished backup folder with os.Rename, which fails across file systems, after the ACK is already written.
+  SCENARIO: Run folder under /var/lib/casaos and /var/backups on two file systems. I ran it on tmpfs plus ext4: rename gives invalid cross-device link, ack answers 500 start_failed, the log already holds ACK so the run reads as closed while current and the flag stay, and every later hop start answers start_failed the run before could not be closed. The driver uses mv, which copes; the no_room check itself treats the two volumes as possibly different.
+  FIX: Fall back to copy then remove on EXDEV (or exec mv), and write ACK only after the move and the pointer removal succeeded. Add a test on two file systems.
+
+#63 [minor] (engine-r1:service-start) service/system_os_upgrade_start.go:372
+  SUMMARY: A start that fails to write its run folder has already closed the previous run, against the start_failed promise that nothing was changed.
+  SCENARIO: Previous run failed(busy) and unread; second start where plan.json cannot be written answers start_failed. I ran it: the previous run now has an ACK, current is removed and the status reads idle, so the owner loses the failure report. closeOSUpgradeRun runs at line 373 before writeOSUpgradeRun at line 377.
+  FIX: Close the previous run only after the new folder, flag and pointer are written, or restore the pointer on failure.
+
+#64 [minor] (engine-r1:service-start) service/system_os_upgrade_start.go:28
+  SUMMARY: The paused_sources pattern rejects apt source file names that contain a colon, which apt, the readiness code and the golden accept.
+  SCENARIO: Plan pauses a file named x:y.list (aptSourceName allows colons). aGoodRequest gives paused_sources x:y.list and the start answers bad_request field paused_sources; I ran it. The owner can never satisfy paused_mismatch on that box. The spec pattern allows a colon in file names.
+  FIX: Use ^[A-Za-z0-9_:.-]{1,200}$ for files plus the sources.list:N line form, and add a test with a colon name.
+
+#65 [minor] (engine-r1:service-start) service/system_os_upgrade_start.go:290
+  SUMMARY: plan_older_than_refresh can be skipped because a start closes a refreshed run without writing the last-refresh time that settle or ack would write.
+  SCENARIO: Plan made, refresh ends, owner starts that old plan before the next settle tick (up to 30 s). I ran it: the start succeeds, last-refresh does not exist, and since osUpgradeBegin closes the refresh run (line 372) nobody writes it afterwards, so later old plans are not refused. Block 3 re-simulation is the only remaining guard.
+  FIX: Call osUpgradeNoteRefresh on the latest run in osUpgradeNewerRefresh and in osUpgradeBegin before closing, and add a test.
+
+#66 [minor] (engine-r1:spec-hygiene) service/system_os_upgrade_settle.go:246
+  SUMMARY: osUpgradeMu is held across systemctl show and systemd-run, against the rule that it never is
+  SCENARIO: osUpgradeKeepFlag takes the mutex and then calls osUpgradeInput, which asks systemctl show (10 s bound); SetSystemOSUpgradeBeta(false) (system_os_upgrade.go line 125) does the same through osUpgradeLatest; launchAttemptLocked calls unitState and then u.start (system_package.go line 141), which is exec.Command with no context, so a systemd busy in a daemon-reexec stalls every button that takes the mutex (start, resume, ack, reboot) for the D-Bus timeout. Contradicts system_os_upgrade_dir.go line 60 and spec section 8. Status and abort take no lock, so the page still answers.
+  FIX: Read the unit state before taking the mutex and pass it in, give u.start a context with a bound (for example 30 s), and keep the mutex for the marker append and the systemd-run call only.
+
+#67 [minor] (engine-r1:spec-hygiene) pkg/osverify/testdata/proc-net-route:1
+  SUMMARY: git diff --check fails: trailing whitespace on lines 1 to 4 of the fixture
+  SCENARIO: git diff --check 74d6363..HEAD reports four lines of pkg/osverify/testdata/proc-net-route (the kernel pads the columns). Any CI or hook that runs the check will refuse the branch.
+  FIX: Trim the padding if the parser allows it, or add a gitattributes line for that file with -whitespace; rerun git diff --check.
+
+#68 [minor] (engine-r1:spec-hygiene) pkg/osverify/testdata/pdbedit-L:2
+  SUMMARY: A fixture carries a real-looking person name and login (gary:1000:Gary D)
+  SCENARIO: The same text is in pkg/osverify/judge_test.go line 562. It is public test data in the repository and matches the developer account name; the report of S4 says the fixtures were shaped, not captured.
+  FIX: Use neutral names such as alice and bob in both places.
+
+#69 [minor] (engine-r1:spec-hygiene) service/system_os_upgrade_unit_test.go:152
+  SUMMARY: A comment refers to the private spec; another refers to the design
+  SCENARIO: Line 152 says the eleven variables of the spec, and pkg/osrun/interrupt_test.go line 11 says the design keeps events and phases. Nothing in the repository holds either document. Grep for absolute paths, user names, review labels, trailers and Claude footers in code, tests, fixtures and all 51 commit messages found nothing else.
+  FIX: Say what the eleven variables are, and name the phases directly.
+
+#70 [minor] (engine-r1:spec-hygiene) PR body:0
+  SUMMARY: What the PR body must say, so that the evidence is not overstated
+  SCENARIO: Size: 51 commits, 145 files, about 31k lines (8.2k code, 21.2k tests, 1.4k goldens and fixtures, 173 docs) against the 15.5k estimate; S8 refresh can ship alone. Proven by tests here: reducer tables, 90k extra random runs and a 90 s fuzz run; the whole osplan suite passes under Debian 11 dash 0.5.11 with real apt 2.2.4, with the full crash matrix and abort interleavings, also with an empty environment like the unit; service and route suites pass as Linux binaries under Alpine busybox, not dash and not with race; 9 service and 15 driver mutations were killed by named tests except one equivalent (the second pnr guard in stopat). Only reasoned: the gate on proc self cgroup in a real unit, systemctl stop through the inhibitor, real systemd-run and systemctl show output, dash across the libc6 and dash replacement, Dpkg::Use-Pty=0 while STOP lines still name term.log (apt may leave dpkg output out of it), the apt text for a release info change, the refresh with real timers, a core restart at each step. Only PR 6 proves those plus the boot id across a real restart, kill and reset legs and a network cut. First-beta limits: AutoRecoverTries is 0; API only, no page, no French or English texts; hop row still report; the AppManagement hold is a separate commit f5d6a3b based on ReCasaOS inkly main b073da7 (origin of that clone is upstream and has no RunDueBackups), so backups are not held until it ships and its target must be the ReCasaOS fork; a core that does not come back after the restart launches nothing; constants are guesses; refresh needs bullseye mirrors (archive gap seen on 2026-10-09); go test with race and a Windows build of service were not run here.
+  FIX: Put these paragraphs in the PR description, with the evidence key M, R, N of the guide, and list the two majors above as fixed or accepted.
+
+#71 [minor] (engine-r1:spec-hygiene) git history:0
+  SUMMARY: Squash proposal: 8 contiguous ranges, about 8 logical commits, nothing to reorder
+  SCENARIO: I built and vetted (GOOS=linux, go build and go vet of pkg, service, route) the last commit of each range from git archive; all eight pass, so each squashed commit builds. Ranges: 1 f15819f..bf717ca feat(osrun): reduce the log of an upgrade run to its state and next step; 2 d544063..4ce799c feat(osverify): judge a machine after an upgrade against what it was (with the pdbedit row); 3 25c4dbc..721771a feat(osplan): write the blocks of the hop for the unit of the dashboard; 4 356dfe2..ddab0f8 feat(osrun): the driver that runs the blocks in the unit; 5 20c5d18..e8c06e6 feat(service): run folder, start, status and busy flag of an upgrade; 6 dbc339d..f18e432 feat(service): settle loop, restart, resume, abort, ack, alerts and power guard (with CheckByCode, the alerts hub method and the DefaultRoute export); 7 e22d735..bf03354 feat(route): routes, wiring in main and the guide of the beta; 8 7cdbf1c..4b63cb4 feat(osplan): refresh of the old release, with its service, route and guide. Optionally keep 11e04bd as its own refactor commit before 8, to show the manual golden stays byte identical. 27 of 51 subjects exceed 72 characters, which the squash fixes; no commit has a trailer or footer.
+  FIX: Do it with git reset --soft per range or an interactive rebase with fixup, run go build and the short tests after each, then open the AppManagement commit f5d6a3b as its own PR to the ReCasaOS fork.
+

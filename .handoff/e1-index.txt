@@ -1,0 +1,71 @@
+#1 [major] (engine-r1:appmanagement) AppManagement-busy/service/backup_scheduler.go:141 - Schedules are saved only at the end of a tick, and cron has no skip-if-running, so the catch-up after a hold is repeated by every following minute tick
+#2 [major] (engine-r1:appmanagement) CasaOS/service/system_os_upgrade_start.go:380 - The start asks AppManagement for running operations (line 532) before the busy flag exists and never asks again, and the backup looks at the flag before it marks itself in progress, so a backup that be
+#3 [major] (engine-r1:appmanagement) AppManagement-busy/service/git_deploy.go:560 - Automatic git deployments (5 minute CheckGitApps, webhooks, Check now) ignore the busy flag, so only backups are held and that is not enough
+#4 [major] (engine-r1:auto-text) pkg/osplan/auto_forward.go:37 - Block F stops with dpkg_broken when dpkg --configure -a fails, but the owner table it copies goes on to apt-get -s -f install and apt-get -f install, which is the fix for that failure.
+#5 [major] (engine-r1:driver-shell) pkg/osrun/driver.go:54 - A stop, abort or kill inside block 1 after the first systemctl stop leaves the apt timers stopped, while the run says failed and clean
+#6 [major] (engine-r1:driver-shell) pkg/osrun/driver.go:60 - When the restore script fails the driver still moves the backup folder away, and the run can then be acknowledged with no word while the sources are still Debian 12
+#7 [major] (engine-r1:integration) service/system_os_upgrade_launch.go:108 - A failed(verify) run made by a STOP of block 8 can never be resumed: the status offers resume and every launch is refused
+#8 [major] (engine-r1:judge) service/system_os_upgrade_judge.go:38 - The judge writes a clean verdict when its facts were cut short by a cancelled or expired context.
+#9 [major] (engine-r1:judge) pkg/osverify/judge.go:210 - A fact known before and impossible to take after reads as healthy, and one hung command blinds all the facts taken after it.
+#10 [major] (engine-r1:judge) pkg/osverify/facts.go:292 - A pool that returns with fewer branches, or without its branch or bind mounts, reads as healthy: only the pool mount point is compared.
+#11 [major] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:147 - START_FAILED outranks a live unit (spec rule 5 comes before rule 6): open() is false once START_FAILED is read, and a later UNIT_START is refused (line 256).
+#12 [major] (engine-r1:reducer) CasaOS/pkg/osrun/action.go:183 - NextAction asks for the judge while systemd does not answer; the verdict is then a false success.
+#13 [major] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:388 - A log that cannot place the run gives idle with Busy false even when the files say pnr or a unit is active, against spec P4; the service then removes the busy flag.
+#14 [major] (engine-r1:refresh) pkg/osrun/driver.go:59 - When block F fails inside the unwind of a refresh, the apt timers are left stopped, against the promise that the unit puts the timers back whenever the refresh stops.
+#15 [major] (engine-r1:routes-flag) docs/os-upgrade-beta.md:60 - Barrier check network_names is a constant Info stub, yet the README says the core checks card names before the restart
+#16 [major] (engine-r1:service-settle) service/system_os_upgrade_launch.go:150 - Any systemd-run error writes START_FAILED, but the unit may exist and start; the reducer then drops its markers and ack ignores the live unit.
+#17 [major] (engine-r1:service-settle) service/system_os_upgrade_judge.go:41 - A verdict made from facts that could not be taken is written as green and final.
+#18 [major] (engine-r1:service-settle) service/system_os_upgrade_settle.go:196 - BOOT_SEEN stops the apt timers again on any new boot of a busy run, even after block 8 put them back.
+#19 [major] (engine-r1:service-start) service/system_os_upgrade_launch.go:149 - Any systemd-run error is written as START_FAILED, but a systemd-run that timed out may have queued the unit, and the reducer then ignores that unit.
+#20 [major] (engine-r1:spec-hygiene) pkg/osrun/reduce.go:403 - A needs_attention run before the point of no return is closed with one plain click, though the sources of Debian 12 may still be in place
+#21 [major] (engine-r1:spec-hygiene) pkg/osrun/reduce.go:552 - Abort is offered, and accepted, while the refresh upgrade block runs dpkg
+#22 [minor] (engine-r1:appmanagement) AppManagement-busy/service/backup_upgrade_hold.go:28 - No test uses the production defaults of the two seams, so a fail-open wiring passes the whole suite
+#23 [minor] (engine-r1:appmanagement) AppManagement-busy/service/backup_upgrade_hold.go:39 - Backups read the flag with os.Stat and the core with os.Lstat, so a dangling symlink at the flag path is open for the core and free for backups
+#24 [minor] (engine-r1:auto-text) pkg/osrun/driver.go:54 - Block 1 writes done-timers after it has stopped the timers, and the unwind restores them only with done-timers, so a stop or a kill inside block 1 leaves the apt timers stopped while the run reads failed and reversible.
+#25 [minor] (engine-r1:auto-text) pkg/osplan/auto.go:182 - With Dpkg::Use-Pty=0 term.log no longer gets what dpkg and the maintainer scripts print, but 16 auto lines (help, the guards, the stops of blocks 5 and 6, and F) still send the owner to /var/log/apt/term.log.
+#26 [minor] (engine-r1:auto-text) pkg/osplan/testdata/runbook-d11-12.auto.golden:571 - The WARNING lines of block 7 (initrd under 5 MiB, no grub.cfg) ask a person to check by hand and restart only if it is right, and have no channel in the unit.
+#27 [minor] (engine-r1:auto-text) pkg/osplan/auto.go:285 - Block 8 writes docker-source-note on the failing Docker branches but never removes it on the branch where Docker answers, and the judge reads the note whatever became of the source.
+#28 [minor] (engine-r1:driver-shell) pkg/osplan/auto_forward.go:48 - A stop in block F during the unwind of a refresh leaves the apt timers stopped and their state file already deleted
+#29 [minor] (engine-r1:driver-shell) pkg/osrun/driver.go:79 - A fresh run skips blocks whose done files it did not write
+#30 [minor] (engine-r1:driver-shell) pkg/osplan/driver_crash_test.go:244 - The kill tests miss the timers gap and one test asserts the wrong outcome as right
+#31 [minor] (engine-r1:driver-shell) service/system_os_upgrade_unit.go:35 - The nonce is in the argv of systemd-run and in the unit environment, not only in the driver process
+#32 [minor] (engine-r1:integration) pkg/osrun/driver.go:54 - A STOP inside block 1 leaves the timers of apt stopped although the run ends failed and not busy
+#33 [minor] (engine-r1:integration) pkg/osrun/driver.go:60 - needs_attention(unwind_partial) is closed with no typed word while the sources may still be Debian 12, and the folder that holds apt-orig has already left /var/backups
+#34 [minor] (engine-r1:integration) pkg/osrun/driver.go:59 - The unwind of a refresh runs block F when dpkg --audit is not quiet even when R0 stopped before it made the backup folder, and F dies
+#35 [minor] (engine-r1:integration) service/system_os_upgrade_flow_test.go:89 - The flow tests that claim a rehearsal and a hop through the core are a model, so they stay green with the finding above
+#36 [minor] (engine-r1:integration) service/system_os_upgrade_busy.go:24 - Older tests that call maintenanceState without a seam read the real busy file, so they fail on a machine where it exists
+#37 [minor] (engine-r1:integration) service/system_os_upgrade_status.go:277 - failure.detail_line of a failed(start) run is the STOP line of an earlier attempt
+#38 [minor] (engine-r1:judge) pkg/osplan/auto.go:286 - Block 8 never removes docker-source-note, and a resumed check skips block 8, so the lists the judge reads are never taken again.
+#39 [minor] (engine-r1:judge) service/system_os_upgrade_start.go:326 - The baseline is taken at the start and at block 2, but the restart can come days later, so what the owner changed meanwhile is judged.
+#40 [minor] (engine-r1:judge) pkg/osverify/facts.go:323 - A default route that rejects or blackholes counts as a default route.
+#41 [minor] (engine-r1:judge) pkg/osverify/judge_test.go:417 - Tests that do not test: mutants survive and one assertion checks a struct literal.
+#42 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:515 - Silent systemd is bounded only for an open attempt, so states after UNIT_END are dead ends, and needs_attention(systemd_silent) offers buttons that always fail.
+#43 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:721 - Result markers outrank the files for the end of the hop: REBOOT_PENDING without done-prereboot gives awaiting_reboot with the reboot button.
+#44 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/reduce.go:597 - interrupted() ignores the class of a STOP that has no UNIT_END, so a guard, converge, unit or integrity stop becomes resumable.
+#45 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/hostile_test.go:103 - Several guards the spec asks for have tests that cannot fail: of about 85 mutants of a copy, 10 survive and at least 6 are real.
+#46 [minor] (engine-r1:reducer) CasaOS/pkg/osrun/property_test.go:363 - The property simulation cannot see the fail-open and dead-end paths above, and adds little over the unit tests.
+#47 [minor] (engine-r1:refresh) pkg/osplan/auto_refresh.go:151 - The unwind of a refresh runs block F whenever dpkg --audit is not empty, even when the refresh stopped before it touched dpkg, so a refused refresh can end as needs_attention.
+#48 [minor] (engine-r1:refresh) docs/os-upgrade-beta.md:50 - The guide, the swagger of POST refresh and the R1 fixture say apt refuses the Suite change stable to oldstable; apt 2.2.4 does not.
+#49 [minor] (engine-r1:refresh) service/system_os_upgrade_refresh.go:48 - After a partial unwind of a refresh the owner is told nothing about where the copy of /etc/apt is, and the status points at a folder that no longer exists.
+#50 [minor] (engine-r1:refresh) pkg/osrun/action.go:129 - A refresh left in reboot_first holds the busy flag (backups, auto update) with no reminder and no alert.
+#51 [minor] (engine-r1:refresh) pkg/osplan/auto_refresh_real_test.go:172 - The real apt test of the refresh runs whatever apt-get the machine has with --print-uris update, which only parses the sources; the real run of the four blocks is only a comment.
+#52 [minor] (engine-r1:refresh) pkg/osplan/runbook.go:748 - The shared restore script prints hop wording into the log of a successful refresh.
+#53 [minor] (engine-r1:routes-flag) docs/os-upgrade-beta.md:60 - README says the owner is told and that a page shows state, but by default nobody is told and no page exists; scheduled backups keep running
+#54 [minor] (engine-r1:routes-flag) docs/os-upgrade-beta.md:103 - The needs_attention row offers manual for a run folder that cannot be read, but only acknowledge with the typed word works
+#55 [minor] (engine-r1:routes-flag) docs/os-upgrade-beta.md:57 - README says discard puts the machine back byte for byte and as it was, but the downloaded Debian 12 packages stay in the apt cache
+#56 [minor] (engine-r1:routes-flag) route/v1/system_os_upgrade.go:63 - Body keys are matched without case and duplicate keys are accepted, so strict JSON is not enforced
+#57 [minor] (engine-r1:routes-flag) service/system_os_upgrade_start.go:342 - Handlers lock osUpgradeMu without defer, so a panic that echo recovers leaves it locked and wedges the engine
+#58 [minor] (engine-r1:service-settle) service/system_os_upgrade_power.go:18 - A unit that is active but hung after the point of no return has no way out from the page.
+#59 [minor] (engine-r1:service-settle) pkg/osrun/action.go:183 - The judge runs once at the first tick after VERIFY_DONE and its verdict is final, so slow starters become permanent findings.
+#60 [minor] (engine-r1:service-settle) service/system_os_upgrade_start.go:425 - closeOSUpgradeRun appends ACK before os.Rename of the backup folder, and rename fails across file systems.
+#61 [minor] (engine-r1:service-settle) service/system_os_upgrade_settle.go:216 - The awaiting_reboot push is sent in the tick that just found the barrier red.
+#62 [minor] (engine-r1:service-start) service/system_os_upgrade_start.go:425 - closeOSUpgradeRun moves the finished backup folder with os.Rename, which fails across file systems, after the ACK is already written.
+#63 [minor] (engine-r1:service-start) service/system_os_upgrade_start.go:372 - A start that fails to write its run folder has already closed the previous run, against the start_failed promise that nothing was changed.
+#64 [minor] (engine-r1:service-start) service/system_os_upgrade_start.go:28 - The paused_sources pattern rejects apt source file names that contain a colon, which apt, the readiness code and the golden accept.
+#65 [minor] (engine-r1:service-start) service/system_os_upgrade_start.go:290 - plan_older_than_refresh can be skipped because a start closes a refreshed run without writing the last-refresh time that settle or ack would write.
+#66 [minor] (engine-r1:spec-hygiene) service/system_os_upgrade_settle.go:246 - osUpgradeMu is held across systemctl show and systemd-run, against the rule that it never is
+#67 [minor] (engine-r1:spec-hygiene) pkg/osverify/testdata/proc-net-route:1 - git diff --check fails: trailing whitespace on lines 1 to 4 of the fixture
+#68 [minor] (engine-r1:spec-hygiene) pkg/osverify/testdata/pdbedit-L:2 - A fixture carries a real-looking person name and login (gary:1000:Gary D)
+#69 [minor] (engine-r1:spec-hygiene) service/system_os_upgrade_unit_test.go:152 - A comment refers to the private spec; another refers to the design
+#70 [minor] (engine-r1:spec-hygiene) PR body:0 - What the PR body must say, so that the evidence is not overstated
+#71 [minor] (engine-r1:spec-hygiene) git history:0 - Squash proposal: 8 contiguous ranges, about 8 logical commits, nothing to reorder

@@ -1,0 +1,33 @@
+# Resume here: PR 4 of the OS upgrade, the engine behind the dashboard button (branch `wip/os-engine`)
+
+This folder is a hand-off for a session that continues the work. It is NOT part of the product: it is never merged, and the branch `wip/os-engine` is a work branch (unreviewed, unfinished). Delete `.handoff/` from the branch before the squash that becomes the pull request.
+
+## The project in five lines
+ReCasaOS (a fork of CasaOS, GitHub org `ReCasaOS`) is getting a button that upgrades the Debian the box runs on (Debian 11 to 12 first), from the dashboard, as root, behind a flag that is OFF by default (`/etc/casaos/os-upgrade.beta`). Rungs already released: the support badge (v0.5.23), the read-only readiness report (v0.5.25), the plan and its hand-run runbook (v0.5.27, its QEMU proof 47/47 green). THIS branch is rung 4, the engine that runs the nine runbook blocks from a transient systemd unit; the dashboard page for it is rung 5 and the end-to-end QEMU proof is rung 6 (both later, separate).
+
+## Read first (all in this folder, flat)
+1. `os-engine-spec.md`: the BINDING spec of the engine (architecture, vocabulary, reducer, driver, auto text, API, slices, test requirements).
+2. `os-engine-fixes-1.md`: the rulings E1 to E15 and the streams ENG-A, ENG-B, ENG-C that fix the first review round; `e1-full.txt` has the 71 findings (numbered `#N`, with scenario and fix; `e1-index.txt` is the index).
+3. `engine-build-report.txt`: what each of the nine builders declared (deviations, what they could not verify).
+4. For why the existing code is the way it is: `os-plan-spec.md`, `os-plan-fixes-1.md`, `-2.md`, `-3.md` (the previous rung, whose nine runbook blocks the engine executes; they were reviewed five times with real apt 2.2.4), and `os-upgrade-design.md` (the French design of the whole staged ladder).
+
+## State of the branch
+`git log inkly/main..HEAD` (or `origin/main..HEAD`): the nine slices S1 to S9 (pkg/osrun, pkg/osplan auto text and driver, pkg/osverify, service/system_os_upgrade*.go, routes, refresh), then the first fixes of review round 1: ENG-A is PARTLY done (commits `fix(osrun)`, `fix(osverify)`, `test(osrun)` up to `feat(osverify): say what could not be judged...`) and the last commit `wip(service)` holds the rest of ENG-A's service edits, which build for linux but were never reviewed or tested as a whole: treat it as a draft to finish and verify, not as done. ENG-B (driver, auto text, refresh, block F, the timers, the end-to-end test with the REAL driver: ruling E15) and ENG-C (routes, the owner guide `docs/os-upgrade-beta.md`, strict JSON, hygiene) have NOT been started. The AppManagement side (S9 and ruling E10) is done on the separate branch `wip/os-upgrade-busy` of `ReCasaOS/CasaOS-AppManagement` (6 commits, nothing more to do there except its pull request).
+
+## What to do, in order
+1. Finish ENG-A: go through the findings assigned to it in `os-engine-fixes-1.md` (the list under "Streams") against the current code, check each is fixed (tests that fail without the fix), finish what the `wip(service)` commit left half done, run everything, commit in small commits with real messages (the `wip` commit is replaced).
+2. ENG-B, then ENG-C, as written.
+3. A second independent adversarial review round of the whole engine (several independent reviewers, read-only, each with a different lens as the first round had: reducer, driver shell, auto text and block F, service start, settle and owner actions, routes and flag, refresh, judge, AppManagement, integration (trace one complete run through the REAL driver and blocks), spec conformance and hygiene), fix what is confirmed, repeat until only minor findings remain. The first round found no blocker and 21 majors; the earlier rung needed four rounds.
+4. When clean: remove `.handoff/`, squash the branch into about eight logical commits with short subjects in the repository style (look at `git log` of main), run `gofmt`, `go vet`, `go build ./...`, `go test -short` of the touched packages and the long shell suites under dash, and open a pull request to `ReCasaOS/CasaOS` (and one for the AppManagement branch to `ReCasaOS/CasaOS-AppManagement`). The pull request body must say honestly: what the tests prove, what was only reasoned, and what only the later QEMU proof (rung 6) can prove: nothing here ever ran under a real systemd unit or on a booted machine.
+
+## Rules that bind you (the owner's, not negotiable)
+- Never push to `main`, never merge a pull request, never tag, never dispatch a workflow without the owner's explicit approval in the chat. Opening a pull request is allowed once the work is clean.
+- NO `Co-Authored-By` line naming an assistant and NO "Generated with ..." footer anywhere: commit messages, pull request bodies, comments, files, branch names. (A pull request check refuses them.)
+- Nothing in committed text may cite review rounds, the spec, ruling or finding numbers, or hand-off files: write as a maintainer would, describing behaviour and reason.
+- The engine stays behind the flag, OFF by default; with the flag absent the product must be byte-for-byte unchanged (a test proves it; keep it).
+- Never run anything on a real machine. Never rewrite published history. Nothing destructive in the working tree you did not create (no `git reset --hard`, `git clean`, `rm -rf` of anything else).
+- Answer the owner in French, short, conclusion first; no ceremony. Report faithfully: if a test fails or was not run, say so.
+- Facts that cost days to learn: dpkg resets a held package to install; systemd expands `${...}` and `%` in a transient unit command line; `set -o pipefail` with `head` or `awk exit` gives SIGPIPE 141; apt reads `Dir::Etc::parts` before its options (use `APT_CONFIG`), and its config is a language, so use allow-lists never text filters; a `Remv` followed by an `Inst` of the same package is not a removal; after the point of no return only forward is safe; dash is `/bin/sh` on Debian and on CI runners; the real hop restarts ssh, smbd and cron at libc6; a core running from a deleted binary must not be exec-ed.
+
+## Environment notes
+You are on Linux in the cloud, so `go build ./...` works (the Windows-only problem of `service/connections.go` does not exist here) and the shell suites run natively under dash: use `go test ./pkg/osplan -timeout 20m` for the full exec suites. The earlier real-apt experiments used a Debian 11 root (apt 2.2.4) in a WSL chroot that does not exist here: rebuild one if you need it (`debootstrap --arch=amd64 bullseye /tmp/deb11 http://deb.debian.org/debian` or a `debian:11` container), ONE copy at a time, and remove it. `go test -race` is available here: run it on `pkg/osrun`, `pkg/osverify` and `service` (it never ran before).
