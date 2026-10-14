@@ -22,9 +22,10 @@ import (
 //	                                                                                                         with dpkg -i), the same two after a new version came, and the answer of dpkg when there
 //	                                                                                                         is none (it says so on its error output, and ends with 1)
 //
-// The whole refresh (the four blocks, as the unit runs them, with a gate that reads a file of cgroups of the test's) was also run there, for real: the upgrade of the thirty packages,
-// libc6 and dpkg among them, ended with dpkg quiet and /etc/apt as it was, and the word of the restart was the one that the files said (no restart; a kernel that came; a file that
-// says reboot-required). That root has no systemd, so the timers were not part of it.
+// The whole refresh (the four blocks, as the unit runs them, with a gate that reads a file of cgroups of the test's) was also run there once, by hand, and no test of this repository
+// repeats that run: it needs a root of Debian 11 and the right to enter it. The upgrade of the thirty packages, libc6 and dpkg among them, ended with dpkg quiet and /etc/apt as it was,
+// and the word of the restart was the one that the files said (no restart; a kernel that came; a file that says reboot-required). That root has no systemd, so the timers were not
+// part of it. What the tests of this file hold is the text that those commands printed there, read by the blocks and by the parser; the run itself is not held.
 
 // the text of one command of apt, as the stub of apt-get prints it
 func (b *refreshBox) aptSays(name string) {
@@ -100,7 +101,7 @@ func TestR1ShowsTheRealUpdateAndStopsOnTheRealOneThatCouldNotReachItsMirror(t *t
 // details."): R1 tells it from them, in either, and the line of the stop is the one that the page reads the hint from. An update that failed for another reason is not it.
 func TestR1ToldTheChangeOfReleaseInformationFromTheSentencesThatAptHoldsAndOnlyFromThem(t *testing.T) {
 	both := "Hit:1 http://deb.debian.org/debian-security bullseye-security InRelease\nGet:2 http://deb.debian.org/debian bullseye InRelease [75.1 kB]\n" +
-		"E: Repository 'http://deb.debian.org/debian bullseye InRelease' changed its 'Suite' value from 'stable' to 'oldstable'\n" +
+		"E: Repository 'http://deb.debian.org/debian bullseye InRelease' changed its 'Label' value from 'Debian' to 'Debian-Archive'\n" +
 		"N: This must be accepted explicitly before updates for this repository can be applied. See apt-secure(8) manpage for details.\n"
 	for _, tc := range []struct {
 		name, says string
@@ -168,7 +169,8 @@ func TestTheKernelsAreReadFromWhatDpkgOfDebian11SaysAndAKernelThatCameIsFound(t 
 
 // apt itself, where there is one: the sources of a refresh are read by it and say Debian 11 (it would fetch the release files of bullseye, its updates and its security archive),
 // what is put aside is not there, and nothing of the next release is. The control is the rewrite of the hop, which says bookworm. apt-get --print-uris update reads the sources and
-// the options and fetches nothing: it needs no network, and no more of the machine than a folder of its own.
+// the options and fetches nothing: it needs no network, and no more of the machine than a folder of its own. It is the apt-get of the machine that runs the test, not apt 2.2.4, and
+// it proves how that apt reads these sources: not an update, a dist-upgrade, the stop for removals, the restore or the unwind.
 func TestRealAptReadsTheSourcesOfARefreshAsTheReleaseThatIsLeft(t *testing.T) {
 	bin, err := exec.LookPath("apt-get")
 	if err != nil {

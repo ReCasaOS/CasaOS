@@ -108,8 +108,8 @@ var stopClasses = []stopClass{
 	{"another plan of this machine", osrun.ClassIdentity},
 	{"block 3 of another plan", osrun.ClassIdentity},
 	{"the upgrade has begun (block 5 was started)", osrun.ClassIdentity},
-	// apt refuses a repository whose release information changed ("stable" becoming "oldstable"): the owner says whether the change is wanted, and the page takes the hint from
-	// the line (osrun.HintOf), so the line names what apt said
+	// apt refuses a repository whose release information changed (its Origin, Label or Codename; a new Suite or Version it takes without a word): the owner says whether the change
+	// is wanted, and the page takes the hint from the line (osrun.HintOf), so the line names what apt said
 	{"apt refuses a repository whose release", osrun.ClassIdentity},
 
 	// a tool that the block uses is not there

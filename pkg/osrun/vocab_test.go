@@ -152,6 +152,8 @@ func TestTheWavesOfRepairsByThemselves(t *testing.T) {
 	}
 }
 
+// The hint is told from apt's sentences for any of the five fields that apt's text can name (apt 2.2.4 stops for Origin, Label and Codename only; a field that it takes without a
+// word never reaches this function), and from nothing else.
 func TestTheHintForAnUpdateThatAptRefused(t *testing.T) {
 	for line, want := range map[string]string{
 		"E: Repository 'http://deb.debian.org/debian bullseye InRelease' changed its 'Suite' value from 'stable' to 'oldstable'":        HintReleaseInfoChange,

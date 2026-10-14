@@ -331,7 +331,7 @@ func TestR1GivesAptTheOptionThatTheOwnerAccepted(t *testing.T) {
 }
 
 func TestR1StopsWithItsClassAndTheCopyIsThereWheneverTheSourcesMayHaveChanged(t *testing.T) {
-	releaseInfo := "E: Repository 'http://deb.debian.org/debian bullseye InRelease' changed its 'Suite' value from 'stable' to 'oldstable'\nN: This must be accepted explicitly before updates for this repository can be applied. See apt-secure(8) manpage for details.\n"
+	releaseInfo := "E: Repository 'http://deb.debian.org/debian bullseye InRelease' changed its 'Label' value from 'Debian' to 'Debian-Archive'\nN: This must be accepted explicitly before updates for this repository can be applied. See apt-secure(8) manpage for details.\n"
 	for _, tc := range []struct {
 		name, class, saying string
 		set                 func(b *refreshBox)

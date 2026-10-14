@@ -191,7 +191,7 @@ func TestAStopThatAptSaysItsRepositoryChangedCarriesTheHint(t *testing.T) {
 		osrun.Marker{Kind: osrun.MkStop, N: 1, Index: 4, ID: osrun.BlockSources, RC: 1, Class: osrun.ClassNetwork},
 		osrun.Marker{Kind: osrun.MkUnwound, N: 1, Result: "ok"},
 		osrun.Marker{Kind: osrun.MkUnitEnd, N: 1, Result: "stopped"})
-	rewrite(t, filepath.Join(run.Dir, "output.log"), "E: Repository 'http://deb.example.org/debian bookworm InRelease' changed its 'Suite' value from 'stable' to 'oldstable'\nSTOP: apt-get update does not go through\n")
+	rewrite(t, filepath.Join(run.Dir, "output.log"), "E: Repository 'http://deb.example.org/debian bookworm InRelease' changed its 'Label' value from 'Debian' to 'Debian-Archive'\nSTOP: apt-get update does not go through\n")
 	box.advance(time.Minute)
 	got := box.GetSystemOSUpgradeStatus()
 	if got.State != osrun.StateFailed || got.Failure == nil || got.Failure.Class != osrun.ClassNetwork {
@@ -200,7 +200,7 @@ func TestAStopThatAptSaysItsRepositoryChangedCarriesTheHint(t *testing.T) {
 	if got.Failure.Hint != "" {
 		t.Errorf("the hint is %q: the line that says it is not the STOP line", got.Failure.Hint)
 	}
-	rewrite(t, filepath.Join(run.Dir, "output.log"), "STOP: E: Repository 'http://deb.example.org/debian bookworm InRelease' changed its 'Suite' value from 'stable' to 'oldstable'\n")
+	rewrite(t, filepath.Join(run.Dir, "output.log"), "STOP: E: Repository 'http://deb.example.org/debian bookworm InRelease' changed its 'Label' value from 'Debian' to 'Debian-Archive'\n")
 	if got := box.GetSystemOSUpgradeStatus(); got.Failure == nil || got.Failure.Hint != osrun.HintReleaseInfoChange {
 		t.Errorf("the failure is %+v", got.Failure)
 	}

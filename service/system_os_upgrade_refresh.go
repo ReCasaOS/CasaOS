@@ -27,8 +27,9 @@ var OSUpgradeRefreshCodes = []string{
 	OSUpgradeReadinessRefuses, OSUpgradeBusy, OSUpgradeAppsBusy, OSUpgradeNoRoom, OSUpgradeSourceUnrecognized, OSUpgradeRunbookUnsafe, OSUpgradeRunbookTooLarge, OSUpgradeStartFailed,
 }
 
-// OSUpgradeRefreshRequest is the body of the start of a refresh. AcceptReleaseInfoChange is the owner's word that a repository whose release information changed ("stable" that
-// became "oldstable" when Debian 12 came out) is to be taken: apt refuses it unless it is told, and the refresh that stopped for it says so (failure.hint, releaseinfo_change).
+// OSUpgradeRefreshRequest is the body of the start of a refresh. AcceptReleaseInfoChange is the owner's word that a repository whose release information changed (its
+// Origin, Label or Codename: apt 2.2.4 takes a new Suite or Version without a word) is to be taken: apt refuses it unless it is told, and the refresh that stopped for it says so
+// (failure.hint, releaseinfo_change).
 type OSUpgradeRefreshRequest struct {
 	AcceptReleaseInfoChange bool `json:"accept_releaseinfo_change"`
 }
