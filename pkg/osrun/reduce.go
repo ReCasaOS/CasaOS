@@ -143,8 +143,9 @@ type attemptView struct {
 	events    int
 }
 
-// open is whether the attempt has not ended and has not been told that it never will.
-func (a *attemptView) open() bool { return !a.Ended && !a.StartFailed }
+// open is whether the attempt has not ended. A START_FAILED does not end it: the core writes it when it could not tell that the
+// unit was started, and a unit that exists after all is the unit's own word, whenever it comes.
+func (a *attemptView) open() bool { return !a.Ended }
 
 // maxBlockEvents is how many block markers an attempt can have: three for each of the blocks of its list, with room to spare.
 const maxBlockEvents = 64
@@ -253,8 +254,9 @@ func (v *view) add(m Marker, in Input, tm Timing) {
 			a.StartFailed = true
 		}
 	case MkUnitStart:
-		if a != nil && m.N == a.N && !a.Started && !a.StartFailed && m.Phase == a.Phase {
-			a.Started, a.StartAt, a.StartBoot = true, m.At, m.Boot
+		// A unit that begins after the core said it did not start is the unit that was started: the word of the unit is the later one.
+		if a != nil && m.N == a.N && !a.Started && m.Phase == a.Phase {
+			a.Started, a.StartFailed, a.StartAt, a.StartBoot = true, false, m.At, m.Boot
 			v.touch(m.At)
 		}
 	default:
@@ -482,13 +484,21 @@ func (c *ctx) systemdSilent() bool {
 }
 
 // active is whether the latest attempt is effectively running: its unit is, or the unit cannot be asked and has given a sign
-// of life lately, or it is gone but spoke a moment ago (systemd can say so before the last line lands).
+// of life lately, or it is gone but spoke a moment ago (systemd can say so before the last line lands). A unit that systemd says
+// is running is running whatever the log says of how it was started; an attempt that was told never to have started is not
+// running on anything less.
 func (c *ctx) active() bool {
 	a := c.a
 	if a == nil || !a.open() {
 		return false
 	}
-	return c.in.Unit.Active || !c.in.Unit.Answered || a.Started && c.age(c.la) < c.tm.GraceQuiet
+	if c.in.Unit.Active {
+		return true
+	}
+	if a.StartFailed {
+		return false
+	}
+	return !c.in.Unit.Answered || a.Started && c.age(c.la) < c.tm.GraceQuiet
 }
 
 // startLost is whether the attempt that never said it began has been waited for long enough, or was told to have failed.
