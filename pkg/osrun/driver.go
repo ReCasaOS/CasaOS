@@ -41,23 +41,35 @@ case "$BK" in /var/backups/casaos-os-upgrade-*) ;; *) BK=/nonexistent ;; esac
 pnr() { [ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ]; }
 # nothing of this folder is trusted when its sums do not hold: the driver says so, undoes nothing and ends
 sha256sum -c --quiet SHA256SUMS > /dev/null 2>&1 && [ "$BK" != /nonexistent ] || { p=0; pnr && p=1; mark STOP 0 driver 1 integrity "$p" "$(ts)"; end stopped; }
+# a fresh attempt begins where nothing is done: a done file that this run did not write (a block that the owner ran by hand, another run) would make it skip a block, and the folder
+# that holds it is nobody's to undo
+if [ "$AT" = 1 ]; then
+  case "$PH" in run|rehearse|refresh)
+    set -- "$BK/"done-*
+    if [ -e "$1" ]; then p=0; pnr && p=1; mark STOP 0 driver 1 integrity "$p" "$(ts)"; end stopped; fi ;;
+  esac
+fi
 # a run of the refresh has no point of no return, and what it left half done is dpkg's: block F finishes it when dpkg says so
 refreshing() { [ "$PH" != refresh ] || return 0; case "$BK" in /var/backups/casaos-os-upgrade-refresh-*) return 0 ;; esac; return 1; }
-# before the point of no return only, and in the order of the table at the end of the owner's runbook: the sources, the timers, what dpkg left, then the folder
+# before the point of no return only, and in the order of the table at the end of the owner's runbook: the sources, what dpkg left (a refresh only, and only once it began to
+# change packages), the timers, then the folder. The timers come last because the block that mends what dpkg left stops them again, and they come back whenever the folder says
+# that it was about to stop them or did. The folder is put aside only when all of that was put back: one that is not stays where it is, with its copy of /etc/apt.
 unwind() {
   pnr && return 1
   ok=ok
   if [ -d "$BK/apt-orig" ]; then
     if [ -f "$BK/restore-sources.sh" ]; then sh "$BK/restore-sources.sh" < /dev/null || ok=partial; else ok=partial; fi
   fi
+  if refreshing && [ -d "$BK" ] && [ -e "$BK/begun-rupgrade" ] && [ -f "$D/blocks/forward.sh" ] && [ -n "$(dpkg --audit 2>&1)" ]; then sh "$D/blocks/forward.sh" < /dev/null || ok=partial; fi
   TS=/var/backups/casaos-os-upgrade-timers.state
-  if [ -e "$BK/done-timers" ] && [ -s "$TS" ]; then
-    back=ok
-    for u in $(awk '$2 == "active" { print $1 }' "$TS"); do systemctl start "$u" || back=partial; done
-    [ "$back" = ok ] && rm -f "$TS" || ok=partial
+  if [ -e "$BK/done-timers" ] || [ -e "$BK/timers-stopping" ]; then
+    if [ -s "$TS" ]; then
+      back=ok
+      for u in $(awk '$2 == "active" { print $1 }' "$TS"); do systemctl start "$u" || back=partial; done
+      [ "$back" = ok ] && rm -f "$TS" || ok=partial
+    fi
   fi
-  if refreshing && [ -f "$D/blocks/forward.sh" ] && [ -n "$(dpkg --audit 2>&1)" ]; then sh "$D/blocks/forward.sh" < /dev/null || ok=partial; fi
-  if [ -d "$BK" ]; then mv "$BK" "$D/bk-aborted" || ok=partial; fi
+  if [ -d "$BK" ] && [ "$ok" = ok ]; then mv "$BK" "$D/bk-aborted" || ok=partial; fi
   mark UNWOUND "$ok" "$(ts)"
 }
 # a block ended with a status that is not 0, or the owner asked to stop: $1 the place in the list, $2 the id, $3 the status, $4 the class
