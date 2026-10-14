@@ -221,6 +221,7 @@ func TestEveryButtonThatIsOfferedWorksAndEveryOneThatIsNotIsRefused(t *testing.T
 	for name, setup := range theRunsOfEveryState() {
 		probe := newUpgradeBox(t)
 		probe.readyToResume()
+		probe.greenBarrier()
 		probe.aMachineThatRestartsWith(nil)
 		setup(probe)
 		offered := probe.GetSystemOSUpgradeStatus().Actions

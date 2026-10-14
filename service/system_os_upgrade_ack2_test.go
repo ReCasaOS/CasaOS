@@ -51,16 +51,19 @@ func TestNothingIsClosedWhileAUnitMayRunInAnyState(t *testing.T) {
 
 // A run that needs attention is closed with the word before the point of no return as after it: the sources of the next release may be in place.
 func TestARunThatNeedsAttentionIsClosedWithTheWordWhateverThePointOfNoReturn(t *testing.T) {
-	for name, setup := range map[string]func(b *upgradeBox) *osUpgradeRun{
-		"an unwind that was partial": func(b *upgradeBox) *osUpgradeRun { return theRunsOfEveryState()["an unwind that was partial"](b) },
-		"files that are not the ones that were written": func(b *upgradeBox) *osUpgradeRun {
+	for name, c := range map[string]struct {
+		setup func(b *upgradeBox) *osUpgradeRun
+		pnr   bool
+	}{
+		"an unwind that was partial": {func(b *upgradeBox) *osUpgradeRun { return theRunsOfEveryState()["an unwind that was partial"](b) }, false},
+		"files that are not the ones that were written": {func(b *upgradeBox) *osUpgradeRun {
 			return theRunsOfEveryState()["a run whose files are not the ones that were written"](b)
-		},
+		}, true},
 	} {
 		box := newUpgradeBox(t)
-		run := setup(box)
+		run := c.setup(box)
 		status := box.GetSystemOSUpgradeStatus()
-		if status.State != osrun.StateNeedsAttention || status.PNR || status.AckWord != osrun.AckWord {
+		if status.State != osrun.StateNeedsAttention || status.PNR != c.pnr || status.AckWord != osrun.AckWord {
 			t.Fatalf("%s: the status is %q pnr %v, word %q", name, status.State, status.PNR, status.AckWord)
 		}
 		for _, c := range []struct{ word, code string }{{"", OSUpgradeWordRequired}, {"I-KNOW", OSUpgradeBadWord}} {
