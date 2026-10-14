@@ -377,8 +377,10 @@ var exitCore = os.Exit
 // @Router /sys/stop [post]
 func PostKillCasaOS(ctx echo.Context) error {
 	// os.Exit does not go through the handler of main.go that ends the plan of the upgrade of the operating system that is being
-	// made (it cancels the job, and waits for it to remove the directory it made in /var/tmp): this does the same first, so that
-	// a restart asked for here removes that directory as a signal does
+	// made (it cancels the job, and waits for it to remove the directory it made in /var/tmp), and the loop that looks at an
+	// upgrade that is open (it waits for the look that is being made, so that no unit is started by a core that is going): this
+	// does the same first, so that a restart asked for here ends them as a signal does
+	service.MyService.System().StopSystemOSUpgradeSettle(service.OSPlanStopWait)
 	service.MyService.System().StopSystemOSPlan(service.OSPlanStopWait)
 	exitCore(0)
 	return nil
@@ -554,6 +556,11 @@ func PutSystemState(ctx echo.Context) error {
 		err = service.MyService.System().SystemReboot()
 	}
 	if err != nil {
+		// an upgrade of the operating system that works on the machine keeps the owner's restart and shutdown away: a refusal, with its code
+		var refusal *service.OSUpgradeRefusal
+		if errors.As(err, &refusal) {
+			return osUpgradeFailed(ctx, err)
+		}
 		return ctx.JSON(http.StatusInternalServerError, model.Result{
 			Success: common_err.SERVICE_ERROR,
 			Message: err.Error(),

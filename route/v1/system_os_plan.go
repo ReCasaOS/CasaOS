@@ -67,14 +67,26 @@ func GetSystemOSPlan(ctx echo.Context) error {
 }
 
 // @Summary  the text with which to do the hop to the next release of the operating system by hand
-// @Description Written from the plan that is there, for this machine: a shell file of blocks, each to be read and pasted into a console, with its blocks listed. 409 with data.error_code no_plan (data.data.reason: idle, running, failed, expired, blocked) when there is no plan to write it from, no_runbook when the text could not be written safely. It has what the files of the box say, so the token goes in the Authorization header, and is not the refresh token.
+// @Description Written from the plan that is there, for this machine: a shell file of blocks, each to be read and pasted into a console, with its blocks listed. 409 with data.error_code no_plan (data.data.reason: idle, running, failed, expired, blocked) when there is no plan to write it from, no_runbook when the text could not be written safely. With run=current it is the text of the upgrade that is open instead (the one that was written when it began, which does not need the plan to be alive), with from_run true, for the owner who takes the run over: 409 no_run when there is none, run_unreadable when its text cannot be read; any other value of run is a 400. It has what the files of the box say, so the token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Tags sys
 // @Security ApiKeyAuth
+// @Param    run query string false "current: the text of the upgrade that is open, and not of the plan"
 // @Success 200 {object} model.Result
-// @Failure 409 {object} model.Result "no plan, or no runbook: data.error_code says which"
+// @Failure 400 {object} model.Result "run is asked for and is not current"
+// @Failure 409 {object} model.Result "no plan, or no runbook, or no run: data.error_code says which"
 // @Router /sys/os/upgrade/runbook [get]
 func GetSystemOSRunbook(ctx echo.Context) error {
+	if values, asked := ctx.QueryParams()["run"]; asked {
+		if len(values) != 1 || values[0] != "current" {
+			return osUpgradeFailed(ctx, badOSUpgradeRequest("run"))
+		}
+		runbook, err := service.MyService.System().GetSystemOSUpgradeRunbook()
+		if err != nil {
+			return osUpgradeFailed(ctx, err)
+		}
+		return osPlanAnswer(ctx, http.StatusOK, common_err.GetMsg(common_err.SUCCESS), runbook)
+	}
 	runbook, err := service.MyService.System().GetSystemOSRunbook()
 	if err != nil {
 		return osPlanFailed(ctx, err)
