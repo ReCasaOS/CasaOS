@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -209,6 +210,25 @@ func TestAStartThatClosesARefreshWritesItsEndDown(t *testing.T) {
 	}
 }
 
+// A refresh that begins while the refresh before it has ended, and the loop has not looked at that yet, writes the end of the one before down: a plan is of the machine as the last
+// refresh left it, and one that was made earlier is refused.
+func TestARefreshThatClosesARefreshWritesItsEndDown(t *testing.T) {
+	box := newUpgradeBox(t)
+	earlier := box.aRefresh()
+	box.point(earlier)
+	box.advance(time.Hour)
+	box.aMachineThatCanRefresh()
+	if _, err := os.Stat(filepath.Join(box.root, osUpgradeLastRefreshFile)); err == nil {
+		t.Fatal("the end of the refresh is written down already")
+	}
+	if _, err := box.StartSystemOSUpgradeRefresh(OSUpgradeRefreshRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if text := readText(t, filepath.Join(box.root, osUpgradeLastRefreshFile)); text == "" {
+		t.Error("the end of the refresh before was not written down")
+	}
+}
+
 func (b *upgradeBox) assertNoNewRun(known ...string) {
 	b.t.Helper()
 	for _, folder := range b.runFolders() {
@@ -321,25 +341,37 @@ func TestALogWhoseRunLineIsOfAnotherRunIsNotTrusted(t *testing.T) {
 		"another plan": {Kind: osrun.MkRun, RunID: "0b8f3a52-6c1e-4d0a-9a53-7f1c2d4e8b19", Hop: "debian-11-12", RunKind: osrun.RunHop, PlanID: "p1-ffffffffffffffffffffffffffffffff"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			// a log that is whole and well formed, with a unit that runs in it, but for the RUN line: nothing else in it says that it is not the run's
 			box := newUpgradeBox(t)
-			plan := box.anUpgradePlan(osplan.VerdictOK, nil)
-			run := box.aRun(plan, osrun.RunHop)
-			if line.PlanID == "" {
-				line.PlanID = plan.PlanID
+			run := box.aHopInTheFullUpgrade()
+			if state := box.state(run); state.Name != osrun.StateRunning {
+				t.Fatalf("the run is %q before its log is touched", state.Name)
 			}
-			queued, err := osrun.Marker{Kind: osrun.MkQueued, At: box.now()}.Line(run.Nonce)
-			if err != nil {
-				t.Fatal(err)
+			if line.PlanID == "" {
+				line.PlanID = run.Meta.PlanID
 			}
 			runLine, err := line.Line(run.Nonce)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(run.Dir, osUpgradeMarkersFile), []byte(queued+runLine), 0o600); err != nil {
+			path := filepath.Join(run.Dir, osUpgradeMarkersFile)
+			data, err := os.ReadFile(path)
+			if err != nil {
 				t.Fatal(err)
 			}
-			box.leave(run, "begun-upgrade")
-			box.point(run)
+			lines := strings.SplitAfter(string(data), "\n")
+			replaced := false
+			for i, l := range lines {
+				if strings.HasPrefix(l, "CASAOS_OSU_RUN ") {
+					lines[i], replaced = runLine, true
+				}
+			}
+			if !replaced {
+				t.Fatal("the log has no RUN line")
+			}
+			if err := os.WriteFile(path, []byte(strings.Join(lines, "")), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			status := box.GetSystemOSUpgradeStatus()
 			if status.State != osrun.StateNeedsAttention || status.Reason != osrun.ReasonRunDamaged || !status.Busy {
 				t.Errorf("the status is %q %q busy %v", status.State, status.Reason, status.Busy)

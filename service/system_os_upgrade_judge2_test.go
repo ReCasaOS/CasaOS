@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
 	"github.com/ReCasaOS/CasaOS/pkg/osverify"
 )
@@ -37,6 +38,26 @@ func TestTheJudgeWritesNothingWhenTheCoreIsToldToStopWhileItLooks(t *testing.T) 
 	takesFacts(t, factsOfAMachine(box))
 	if tick := box.tick(); len(tick.Done) != 1 || box.verdict(run) == nil {
 		t.Errorf("the next look did %+v", tick)
+	}
+}
+
+// A core that is told to stop after every fact was taken, while the backup folder is read, writes no verdict either: the guard is the context, and not only the facts that are missing.
+func TestTheJudgeWritesNothingWhenTheCoreIsToldToStopAfterTheFactsWereTaken(t *testing.T) {
+	box := newUpgradeBox(t)
+	run := box.aHopThatWasChecked()
+	box.theFactsBefore(run, factsOfAMachine(box))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	was := osUpgradeTakeFacts
+	osUpgradeTakeFacts = func(context.Context, osreadiness.Probe) osverify.Facts {
+		facts := factsOfAMachine(box)
+		cancel()
+		return facts
+	}
+	t.Cleanup(func() { osUpgradeTakeFacts = was })
+	err := box.osUpgradeJudge(ctx, run, time.Time{})
+	if !errors.Is(err, errOSUpgradeNotJudged) || box.verdict(run) != nil {
+		t.Errorf("err %v, verdict %+v", err, box.verdict(run))
 	}
 }
 
