@@ -626,11 +626,11 @@ func (s *systemService) GetCPUPower() map[string]string {
 }
 
 func (s *systemService) SystemReboot() error {
-	return runSystemctlPowerAction("reboot")
+	return s.systemPower("reboot")
 }
 
 func (s *systemService) SystemShutdown() error {
-	return runSystemctlPowerAction("poweroff")
+	return s.systemPower("poweroff")
 }
 
 func runSystemctlPowerAction(action string) error {

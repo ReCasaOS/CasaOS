@@ -117,6 +117,17 @@ func (b *upgradeBox) aRefresh() *osUpgradeRun { return b.aRefreshWith("no", "non
 // aRefreshWith is a refresh that ended and says whether the machine needs a restart, and why.
 func (b *upgradeBox) aRefreshWith(restart, why string) *osUpgradeRun {
 	b.t.Helper()
+	run := b.aRefreshAtWork()
+	b.advance(time.Minute)
+	run = b.say(run, osrun.Marker{Kind: osrun.MkRefreshDone, N: 1, Result: restart, Why: why})
+	run = b.end(run, 1, "ok")
+	b.setUnit("inactive")
+	return b.read(run.ID)
+}
+
+// aRefreshAtWork is a refresh whose unit has begun and has not ended.
+func (b *upgradeBox) aRefreshAtWork() *osUpgradeRun {
+	b.t.Helper()
 	runID := "5a1d9e44-2b6f-4a8e-8d35-1e0f6a9b3c28"
 	var blocks []osplan.AutoBlock
 	for _, id := range osUpgradeRefreshBlock {
@@ -141,13 +152,7 @@ func (b *upgradeBox) aRefreshWith(restart, why string) *osUpgradeRun {
 	if err := appendOSUpgradeMarker(dir, nonce, osrun.Marker{Kind: osrun.MkRun, RunID: runID, Hop: "debian-11-12", RunKind: osrun.RunRefresh, Boot: boxBoot1}); err != nil {
 		b.t.Fatal(err)
 	}
-	run := b.read(runID)
-	run = b.attempt(run, 1, osrun.PhaseRefresh, osrun.WhoOwner)
-	b.advance(time.Minute)
-	run = b.say(run, osrun.Marker{Kind: osrun.MkRefreshDone, N: 1, Result: restart, Why: why})
-	run = b.end(run, 1, "ok")
-	b.setUnit("inactive")
-	return b.read(run.ID)
+	return b.attempt(b.read(runID), 1, osrun.PhaseRefresh, osrun.WhoOwner)
 }
 
 // actuallyBusy says whether the flag of the open upgrade is there.
