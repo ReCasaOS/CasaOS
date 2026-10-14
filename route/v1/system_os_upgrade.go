@@ -120,6 +120,29 @@ func StartSystemOSUpgrade(ctx echo.Context) error {
 	return osPlanAnswer(ctx, http.StatusAccepted, "accepted", status)
 }
 
+// @Summary  bring the old release up to its last state
+// @Description Starts the unit that brings the release that the machine runs to its last state (apt-get update and apt-get dist-upgrade with the phased updates, removing nothing, with the sources that are not Debian's put aside and put back), which the plan is made after: a plan that was made before it is not good for a start. It has no point of no return: when it stops, the unit puts the sources and the timers back. It ends as refreshed, or as reboot_first when the machine wants a restart (the restart button is then valid). accept_releaseinfo_change, false when it is not said, is the owner's word that a repository whose release information changed (the suite that went from stable to oldstable when Debian 12 came out) is to be taken: a refresh that apt stopped for it is failed with failure.hint releaseinfo_change, and is asked again with it said. The body is strict JSON with no field besides that. 202 with the status when the unit was started; 400 bad_request (data.data.field) for a body or a field that is not valid; 409 with data.error_code when it is refused (beta_off, not_root, identity_unsupported, hop_not_planned, run_open, manual_run_found, readiness_refuses, busy, apps_busy, no_room, source_unrecognized with data.data.file and line, runbook_unsafe, runbook_too_large); 500 start_failed when nothing could be started, and nothing was changed. The token goes in the Authorization header, and is not the refresh token.
+// @Produce  application/json
+// @Accept   application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 202 {object} model.Result "the unit was started: data is the status"
+// @Failure 400 {object} model.Result "the body or a field is not valid: data.error_code is bad_request"
+// @Failure 409 {object} model.Result "refused: data.error_code says why"
+// @Failure 500 {object} model.Result "start_failed: nothing was changed"
+// @Router /sys/os/upgrade/refresh [post]
+func StartSystemOSUpgradeRefresh(ctx echo.Context) error {
+	var req service.OSUpgradeRefreshRequest
+	if err := readOSUpgradeBody(ctx, &req); err != nil {
+		return osUpgradeFailed(ctx, err)
+	}
+	status, err := service.MyService.System().StartSystemOSUpgradeRefresh(req)
+	if err != nil {
+		return osUpgradeFailed(ctx, err)
+	}
+	return osPlanAnswer(ctx, http.StatusAccepted, "accepted", status)
+}
+
 // @Summary  restart the machine that waits for its restart
 // @Description The owner's click on "restart now". Valid when the machine waits for its restart (awaiting_reboot, reboot_stalled, or a refresh that asks for one), with no unit of the upgrade running, no other package manager at work and, for a hop, what stands before the restart green (asked again now). Works whatever the switch says. The body is {}. 202 with the status (rebooting); 409 with data.error_code: no_run, not_awaiting_reboot (data.data.state), barrier_failed (data.data.checks), unit_active, dpkg_locked; 500 reboot_failed when systemd would not restart the machine. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json

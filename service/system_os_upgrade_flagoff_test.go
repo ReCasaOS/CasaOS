@@ -115,6 +115,8 @@ func TestWithTheFlagFileAbsentTheProductIsAsItWas(t *testing.T) {
 		code               int
 		errorCode          string
 	}{
+		{http.MethodPost, base + "refresh", `{}`, http.StatusConflict, "beta_off"},
+		{http.MethodPost, base + "refresh", `{"accept_releaseinfo_change":true}`, http.StatusConflict, "beta_off"},
 		{http.MethodPost, base + "start", startBody, http.StatusConflict, "beta_off"},
 		{http.MethodPost, base + "start", rehearsalBody, http.StatusConflict, "beta_off"},
 		{http.MethodPost, base + "reboot", `{}`, http.StatusConflict, "no_run"},

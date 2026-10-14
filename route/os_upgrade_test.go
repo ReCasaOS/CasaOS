@@ -19,12 +19,11 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// The routes of the upgrade of the operating system, exactly: the status that anyone with the token may read, the six calls that act (all of them behind the token in the header),
-// the runbook with the plan's, and the plan's own. Nothing else is registered below the path, so that a route is never added to it without this list being changed, and the
-// refresh, which is not in this change, is not there.
+// The routes of the upgrade of the operating system, exactly: the status that anyone with the token may read, the seven calls that act (all of them behind the token in the header),
+// the runbook with the plan's, and the plan's own. Nothing else is registered below the path, so that a route is never added to it without this list being changed.
 var osUpgradeRoutes = []string{
 	"GET /v1/sys/os/upgrade/plan", "POST /v1/sys/os/upgrade/plan", "GET /v1/sys/os/upgrade/runbook",
-	"GET /v1/sys/os/upgrade/status", "POST /v1/sys/os/upgrade/start", "POST /v1/sys/os/upgrade/reboot", "POST /v1/sys/os/upgrade/resume",
+	"GET /v1/sys/os/upgrade/status", "POST /v1/sys/os/upgrade/refresh", "POST /v1/sys/os/upgrade/start", "POST /v1/sys/os/upgrade/reboot", "POST /v1/sys/os/upgrade/resume",
 	"POST /v1/sys/os/upgrade/abort", "POST /v1/sys/os/upgrade/ack", "POST /v1/sys/os/upgrade/beta",
 }
 
@@ -72,6 +71,11 @@ func (f *fakeOSUpgradeSystem) GetSystemOSUpgradeStatus() service.OSUpgradeStatus
 
 func (f *fakeOSUpgradeSystem) StartSystemOSUpgrade(service.OSUpgradeStartRequest) (service.OSUpgradeStatus, error) {
 	f.calls = append(f.calls, "start")
+	return f.status(), nil
+}
+
+func (f *fakeOSUpgradeSystem) StartSystemOSUpgradeRefresh(service.OSUpgradeRefreshRequest) (service.OSUpgradeStatus, error) {
+	f.calls = append(f.calls, "refresh")
 	return f.status(), nil
 }
 
@@ -182,6 +186,7 @@ func TestWhatActsOnTheUpgradeTakesTheAccessTokenInTheHeaderAndNoOther(t *testing
 		call                     string
 	}{
 		{"start", http.MethodPost, "start", `{"plan_id":"p1-0123456789abcdef0123456789abcdef","hostname":"box1"}`, http.StatusAccepted, "start"},
+		{"refresh", http.MethodPost, "refresh", `{"accept_releaseinfo_change":false}`, http.StatusAccepted, "refresh"},
 		{"reboot", http.MethodPost, "reboot", `{}`, http.StatusAccepted, "reboot"},
 		{"resume", http.MethodPost, "resume", `{}`, http.StatusAccepted, "resume"},
 		{"abort", http.MethodPost, "abort", `{}`, http.StatusAccepted, "abort"},

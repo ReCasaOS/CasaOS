@@ -24,6 +24,7 @@ type fakeOSUpgradeService struct {
 
 	calls    []string
 	start    service.OSUpgradeStartRequest
+	refresh  service.OSUpgradeRefreshRequest
 	ack      service.OSUpgradeAckRequest
 	beta     []bool
 	planBook int
@@ -36,6 +37,11 @@ func (f *fakeOSUpgradeService) GetSystemOSUpgradeStatus() service.OSUpgradeStatu
 
 func (f *fakeOSUpgradeService) StartSystemOSUpgrade(req service.OSUpgradeStartRequest) (service.OSUpgradeStatus, error) {
 	f.calls, f.start = append(f.calls, "start"), req
+	return f.status, f.err
+}
+
+func (f *fakeOSUpgradeService) StartSystemOSUpgradeRefresh(req service.OSUpgradeRefreshRequest) (service.OSUpgradeStatus, error) {
+	f.calls, f.refresh = append(f.calls, "refresh"), req
 	return f.status, f.err
 }
 
@@ -147,6 +153,52 @@ func TestTheStartAnswersAcceptedWithTheStatusAndHandsOverTheBody(t *testing.T) {
 	upgradeRequest(t, StartSystemOSUpgrade, http.MethodPost, "/v1/sys/os/upgrade/start", `{"plan_id":"p1-0123456789abcdef0123456789abcdef","rehearsal":true,"hostname":"box1","acks":["no_interruption"]}`)
 	if !fake.start.Rehearsal || fake.start.Hostname != "box1" {
 		t.Errorf("the engine was handed %+v", fake.start)
+	}
+}
+
+// The refresh takes one word of the owner, said or not, and hands the engine exactly that; it answers 202 with the status that follows.
+func TestTheRefreshAnswersAcceptedWithTheStatusAndHandsOverTheOneWord(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		want       service.OSUpgradeRefreshRequest
+	}{
+		{"nothing said", `{}`, service.OSUpgradeRefreshRequest{}},
+		{"not accepted", `{"accept_releaseinfo_change":false}`, service.OSUpgradeRefreshRequest{}},
+		{"accepted", `{"accept_releaseinfo_change":true}`, service.OSUpgradeRefreshRequest{AcceptReleaseInfoChange: true}},
+	} {
+		fake := &fakeOSUpgradeService{status: aStatus("refreshing")}
+		withOSUpgradeService(t, fake)
+		recorder := upgradeRequest(t, StartSystemOSUpgradeRefresh, http.MethodPost, "/v1/sys/os/upgrade/refresh", c.body)
+		want := `{"success":202,"message":"accepted","data":` + statusJSON(t, fake.status) + `}`
+		if recorder.Code != http.StatusAccepted || body(recorder) != want || !reflect.DeepEqual(fake.calls, []string{"refresh"}) || fake.refresh != c.want {
+			t.Errorf("%s: status = %d, calls = %v, handed %+v, body = %s\nwant %s", c.name, recorder.Code, fake.calls, fake.refresh, body(recorder), want)
+		}
+	}
+	// what is not strict JSON, or is not what the word is, is a 400 that names the field and asks nothing of the engine
+	for _, c := range []struct{ name, body, field string }{
+		{"no body", ``, "body"}, {"an array", `[]`, "body"}, {"an unknown field", `{"force":true}`, "body"}, {"a word that is not true or false", `{"accept_releaseinfo_change":"yes"}`, "accept_releaseinfo_change"},
+		{"words after the object", `{} {}`, "body"},
+	} {
+		fake := &fakeOSUpgradeService{status: aStatus("refreshing")}
+		withOSUpgradeService(t, fake)
+		recorder := upgradeRequest(t, StartSystemOSUpgradeRefresh, http.MethodPost, "/v1/sys/os/upgrade/refresh", c.body)
+		var answer struct {
+			Data struct {
+				ErrorCode string         `json:"error_code"`
+				Data      map[string]any `json:"data"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || recorder.Code != http.StatusBadRequest || answer.Data.ErrorCode != "bad_request" || answer.Data.Data["field"] != c.field || len(fake.calls) != 0 {
+			t.Errorf("%s: status = %d, answer = %s, calls = %v", c.name, recorder.Code, body(recorder), fake.calls)
+		}
+	}
+	// a refusal of the engine is the plan's 409 with its code, and start_failed is a 500
+	for code, status := range map[string]int{service.OSUpgradeSourceUnrecognized: 409, service.OSUpgradeBetaOff: 409, service.OSUpgradeStartFailed: 500} {
+		withOSUpgradeService(t, &fakeOSUpgradeService{err: &service.OSUpgradeRefusal{Code: code, Detail: "d", Data: map[string]any{"file": "x.list", "line": 3}}})
+		recorder := upgradeRequest(t, StartSystemOSUpgradeRefresh, http.MethodPost, "/v1/sys/os/upgrade/refresh", `{}`)
+		if recorder.Code != status || !strings.Contains(body(recorder), `"error_code":"`+code+`"`) {
+			t.Errorf("%s: status = %d, body = %s", code, recorder.Code, body(recorder))
+		}
 	}
 }
 
@@ -301,7 +353,7 @@ func TestTheSwitchIsRefusedWhileARunIsOpen(t *testing.T) {
 // Every code that the engine refuses with is a 409 with the code in data.error_code, the English reason in message and in data.error, and what makes the code precise in data.data;
 // except the two that are the owner's mistake of a field, which is 400, and the two that are the machine's failure to do what was asked, which are 500.
 func TestEveryRefusalOfTheEngineIsA409WithItsCodeExceptTheOnesWithAStatusOfTheirOwn(t *testing.T) {
-	codes := append(append([]string{}, service.OSUpgradeStartCodes...), service.OSUpgradeActionCodes...)
+	codes := append(append(append([]string{}, service.OSUpgradeStartCodes...), service.OSUpgradeRefreshCodes...), service.OSUpgradeActionCodes...)
 	codes = append(codes, service.OSUpgradeOpen)
 	own := map[string]int{service.OSUpgradeBadRequest: 400, service.OSUpgradeStartFailed: 500, service.OSUpgradeRebootFailed: 500}
 	seen := map[string]bool{}
