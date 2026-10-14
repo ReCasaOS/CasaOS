@@ -331,6 +331,13 @@ var scenarios = []scenario{
 	{name: "the resolver is not known now", spoil: func(w *world) { w.after.DNS = false; unknown(&w.after, FactDNS) }, want: []Finding{incompleteF("dns")}},
 	{name: "the resolver was not known before", spoil: func(w *world) { w.before.DNS = false; unknown(&w.before, FactDNS); w.after.DNS = false }},
 
+	// the warnings of block 7
+	{name: "block 7 warned of a small initrd", spoil: func(w *world) { w.bk[BKWarnings] = "initrd_small\n" }, want: []Finding{infoF(CodePrerebootWarning, "initrd_small")}},
+	{name: "block 7 warned twice of one thing and of another", spoil: func(w *world) { w.bk[BKWarnings] = "grub_cfg_missing\ninitrd_small\ngrub_cfg_missing\n" },
+		want: []Finding{infoF(CodePrerebootWarning, "grub_cfg_missing"), infoF(CodePrerebootWarning, "initrd_small")}},
+	{name: "a warning that is not a word", spoil: func(w *world) { w.bk[BKWarnings] = "Not a word\n; rm -rf /\n\n" }},
+	{name: "no warnings", spoil: func(w *world) { delete(w.bk, BKWarnings) }},
+
 	// Docker's source
 	{name: "Docker's repository could not be reached", spoil: func(w *world) { w.bk[BKDockerSourceNote] = "unreachable\n" },
 		want: []Finding{warnF(CodeDockerSourceUnreachable, "unreachable")}},
@@ -520,7 +527,7 @@ func TestTheFindingsAreAClosedListWithTheirSeverity(t *testing.T) {
 		"kernel_unexpected": "error", "casaos_unit_down": "error", "docker_down": "error", "mounts_missing": "error", "dpkg_not_quiet": "error", "system_not_ready": "error",
 		"units_failed_new": "warn", "ports_missing": "warn", "samba_users_changed": "warn", "route_missing": "warn", "dns_missing": "warn",
 		"docker_version_changed": "warn", "docker_source_unreachable": "warn", "container_not_returned": "warn", "facts_incomplete": "warn",
-		"docker_source_not_published": "info", "docker_source_paused": "info", "dpkg_dist_new": "info", "sources_left_paused": "info", "changed_since_snapshot": "info",
+		"docker_source_not_published": "info", "docker_source_paused": "info", "dpkg_dist_new": "info", "sources_left_paused": "info", "changed_since_snapshot": "info", "prereboot_warning": "info",
 	}
 	if len(Codes) != len(want) {
 		t.Errorf("%d codes, want %d", len(Codes), len(want))

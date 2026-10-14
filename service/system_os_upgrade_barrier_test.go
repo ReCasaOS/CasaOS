@@ -277,3 +277,31 @@ func TestTheBarrierLooksThroughTheCoresOwnProbe(t *testing.T) {
 		t.Errorf("the probe is a %T", probe)
 	}
 }
+
+// What block 7 of the unit warned of (the initrd is small, the boot loader cannot be looked at) is shown beside the restart, once each, as a check that passes: the owner is told, and
+// the button is still offered. A word that is not a name, and a file that is not there, show nothing.
+func TestWhatBlock7WarnedOfIsShownBesideTheRestartAndDoesNotBlockIt(t *testing.T) {
+	box := newUpgradeBox(t)
+	theBarrierSees(t)
+	run := box.aHopAtItsRestart()
+	box.point(run)
+	if err := os.WriteFile(filepath.Join(box.backupOf(run), "warnings"), []byte("initrd_small\ngrub_cfg_missing\ninitrd_small\n$(reboot)\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	box.tick()
+	got := box.barrierOf(run)
+	if got == nil || !got.OK || len(got.Checks) != 5 {
+		t.Fatalf("the barrier is %+v", got)
+	}
+	warned := got.Checks[3:]
+	want := []OSUpgradeBarrierItem{
+		{Code: "prereboot_warning", OK: true, Severity: "warn", Arg: "grub_cfg_missing"}, {Code: "prereboot_warning", OK: true, Severity: "warn", Arg: "initrd_small"},
+	}
+	if !reflect.DeepEqual(warned, want) {
+		t.Errorf("the warnings are %+v, want %+v", warned, want)
+	}
+	if status := box.GetSystemOSUpgradeStatus(); !reflect.DeepEqual(status.Actions, []string{osrun.ActionReboot, osrun.ActionTakeover}) {
+		t.Errorf("the buttons are %v", status.Actions)
+	}
+	// and the judge says it after the restart: see the findings of the judge
+}

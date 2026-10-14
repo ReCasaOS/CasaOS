@@ -76,12 +76,13 @@ type OSUpgradeFailure struct {
 	Hint string `json:"hint,omitempty"`
 }
 
-// OSUpgradeHint is a word for what the owner can do at the console. Code is "unit_quiet": the unit of the upgrade runs and has printed nothing for QuietSeconds. There is no button for it:
-// stopping a unit that changes the packages is the owner's own act at the console, and with the unit stopped the run says where it stands and is closed, or gone on with, as any run is
-// (with the typed word, when the machine is half upgraded).
+// OSUpgradeHint is a word for what the owner can do at the console. Code is "unit_quiet": the unit of the upgrade runs and has printed nothing for QuietSeconds. There is no button for
+// it: stopping a unit that changes the packages is the owner's own act at the console, and with the unit stopped the run says where it stands and is closed, or gone on with, as
+// any run is (with the typed word, when the machine is half upgraded). Code is "unwind_partial": the unit could not put everything back, and the folder that holds the copy of
+// /etc/apt stays where it was; the commands say how to look at it and how to put back what was not.
 type OSUpgradeHint struct {
 	Code         string   `json:"code"`
-	QuietSeconds int      `json:"quiet_seconds"`
+	QuietSeconds int      `json:"quiet_seconds,omitempty"`
 	Commands     []string `json:"commands"`
 }
 
@@ -102,6 +103,8 @@ type OSUpgradeBarrierItem struct {
 	Code     string `json:"code"`
 	OK       bool   `json:"ok"`
 	Severity string `json:"severity"`
+	// Arg says what a check is about when the code alone does not: the word of a warning that block 7 printed.
+	Arg string `json:"arg,omitempty"`
 }
 
 // OSUpgradeFinding is something that the judge found after the restart.
@@ -313,6 +316,9 @@ func osUpgradeFailureOf(state osrun.State, tail []string) *OSUpgradeFailure {
 // osUpgradeHintOf is the hint for a unit that systemd says runs and that has printed nothing for as long as osrun.Timing.HungQuiet: stopping it is the owner's own act at the
 // console. No hint is made for a unit that is not asked about.
 func osUpgradeHintOf(run *osUpgradeRun, in osrun.Input, state osrun.State) *OSUpgradeHint {
+	if state.Name == osrun.StateNeedsAttention && state.Reason == osrun.ReasonUnwindPartial {
+		return osUpgradeUnwindHint(run)
+	}
 	if !live(state.Name) || !in.Unit.Active || !in.Unit.Answered {
 		return nil
 	}
@@ -323,6 +329,25 @@ func osUpgradeHintOf(run *osUpgradeRun, in osrun.Input, state osrun.State) *OSUp
 	return &OSUpgradeHint{
 		Code: "unit_quiet", QuietSeconds: int(quiet / time.Second),
 		Commands: []string{"tail -n 60 " + osUpgradeUnitRoot + "/" + run.ID + "/" + osUpgradeOutputFile, "systemctl status " + systemOSUpgradeUnit, "systemctl stop " + systemOSUpgradeUnit},
+	}
+}
+
+// osUpgradeUnwindHint is what the owner does at the console when the unit could not put everything back: the folder with the copy of /etc/apt is where it was, and the sources
+// and the timers are put back by hand from it. A refresh and a hop have the same folder in the same shape.
+func osUpgradeUnwindHint(run *osUpgradeRun) *OSUpgradeHint {
+	bk := run.Meta.BK
+	if bk == "" {
+		return nil
+	}
+	return &OSUpgradeHint{
+		Code: "unwind_partial",
+		Commands: []string{
+			"ls -la " + bk,
+			"sh " + bk + "/restore-sources.sh",
+			"cat /var/backups/casaos-os-upgrade-timers.state",
+			"systemctl start apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service",
+			"tail -n 60 " + osUpgradeUnitRoot + "/" + run.ID + "/" + osUpgradeOutputFile,
+		},
 	}
 }
 

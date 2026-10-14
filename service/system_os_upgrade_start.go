@@ -156,8 +156,23 @@ func (s *systemService) osUpgradePlan(planID string) (*osplan.Plan, *OSUpgradeRe
 	return plan, nil
 }
 
-// osUpgradeManualFolder is a backup folder that a hop that is not this engine's left half done: it has the copy of the sources or the marker of the point of no
-// return, and no mark that the hop ended. The latest run's own folder is not one. The error is a folder of backups that cannot be read.
+// hasDoneFile says whether a folder holds the mark of a block that ended (done-<block>): a block that the owner ran by hand and that went no further leaves nothing else, and a run
+// that began in its folder would skip the blocks that those marks name.
+func hasDoneFile(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "done-") {
+			return true
+		}
+	}
+	return false
+}
+
+// osUpgradeManualFolder is a backup folder that a hop that is not this engine's left half done: it has the copy of the sources, the marker of the point of no
+// return or the mark of a block that ended, and no mark that the hop ended. The latest run's own folder is not one. The error is a folder of backups that cannot be read.
 func osUpgradeManualFolder(current *osUpgradeRun) (string, error) {
 	entries, err := os.ReadDir(osUpgradeBackups)
 	if err != nil {
@@ -179,7 +194,7 @@ func osUpgradeManualFolder(current *osUpgradeRun) (string, error) {
 			continue
 		}
 		has := func(name string) bool { _, err := os.Lstat(filepath.Join(dir, name)); return err == nil }
-		if (has("apt-orig") || has("begun-upgrade")) && !has("done-after") {
+		if (has("apt-orig") || has("begun-upgrade") || hasDoneFile(dir)) && !has("done-after") {
 			return e.Name(), nil
 		}
 	}

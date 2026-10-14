@@ -2,11 +2,16 @@ package service
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
+	"strings"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
+	"github.com/ReCasaOS/CasaOS/pkg/osverify"
 	"go.uber.org/zap"
 )
 
@@ -26,7 +31,7 @@ const osUpgradeBarrierLimit = osreadiness.DefaultBudget
 
 // osUpgradeBarrier asks the checks and says what they found. A check that is not in the table, or could not be made (a refusal that says it does not know), is red: the machine is
 // restarted only when everything that stands before it is known to be well.
-func (s *systemService) osUpgradeBarrier(ctx context.Context) osUpgradeBarrierDoc {
+func (s *systemService) osUpgradeBarrier(ctx context.Context, run *osUpgradeRun) osUpgradeBarrierDoc {
 	askCtx, cancel := context.WithTimeout(ctx, osUpgradeBarrierLimit)
 	defer cancel()
 	probe := osUpgradeBarrierProbe(s.systemPackageUpdater())
@@ -40,8 +45,33 @@ func (s *systemService) osUpgradeBarrier(ctx context.Context) osUpgradeBarrierDo
 		doc.OK = doc.OK && item.OK
 		doc.Checks = append(doc.Checks, item)
 	}
+	// what block 7 warned of is shown beside the restart as a check that passes: the owner is told, and the restart is still theirs
+	for _, word := range osUpgradeWarningsOf(run) {
+		doc.Checks = append(doc.Checks, OSUpgradeBarrierItem{Code: osverify.CodePrerebootWarning, OK: true, Severity: string(osreadiness.Warn), Arg: word})
+	}
 	return doc
 }
+
+// osUpgradeWarningsOf are the warnings that block 7 of the unit wrote down, once each and sorted: lower case words, and nothing else is taken from a file that the unit wrote.
+func osUpgradeWarningsOf(run *osUpgradeRun) []string {
+	if run.BK == "" {
+		return nil
+	}
+	data, err := readOSUpgradeFile(filepath.Join(run.BK, osverify.BKWarnings), 4096)
+	if err != nil {
+		return nil
+	}
+	var words []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if osUpgradeWarningWord.MatchString(line) && !slices.Contains(words, line) {
+			words = append(words, line)
+		}
+	}
+	slices.Sort(words)
+	return words
+}
+
+var osUpgradeWarningWord = regexp.MustCompile(`^[a-z][a-z_]{0,39}$`)
 
 // osUpgradeKeepBarrier makes barrier.json what the machine says now, for a run that waits for its restart, and gives what it says; what the file already says is not written
 // again. For a state in which the barrier is not asked it does nothing, and gives nil.
@@ -49,7 +79,7 @@ func (s *systemService) osUpgradeKeepBarrier(ctx context.Context, run *osUpgrade
 	if state.Name != osrun.StateAwaitingReboot && state.Name != osrun.StateRebootStalled {
 		return nil
 	}
-	doc := s.osUpgradeBarrier(ctx)
+	doc := s.osUpgradeBarrier(ctx, run)
 	if was := readOSUpgradeBarrier(run); was != nil && reflect.DeepEqual(*was, doc) {
 		return &doc
 	}

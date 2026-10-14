@@ -48,6 +48,7 @@ const (
 	CodeDpkgDistNew              = "dpkg_dist_new"               // files that dpkg left beside the ones the owner edited, since the upgrade began
 	CodeSourcesLeftPaused        = "sources_left_paused"         // sources of apt that the upgrade paused and that are still paused
 	CodeChangedSinceSnapshot     = "changed_since_snapshot"      // something that was there when the hop began, and was not there when the owner asked for the restart
+	CodePrerebootWarning         = "prereboot_warning"           // block 7 warned of something that the owner was to look at before the restart (the word of it is the argument)
 )
 
 // Codes are the findings, errors first, in the order that Judge lists them.
@@ -55,7 +56,7 @@ var Codes = []string{
 	CodeKernelUnexpected, CodeCasaosUnitDown, CodeDockerDown, CodeMountsMissing, CodeDpkgNotQuiet, CodeSystemNotReady,
 	CodeUnitsFailedNew, CodePortsMissing, CodeSambaUsersChanged, CodeRouteMissing, CodeDNSMissing, CodeDockerVersionChanged,
 	CodeDockerSourceUnreachable, CodeContainerNotReturned, CodeFactsIncomplete,
-	CodeDockerSourceNotPublished, CodeDockerSourcePaused, CodeDpkgDistNew, CodeSourcesLeftPaused, CodeChangedSinceSnapshot,
+	CodeDockerSourceNotPublished, CodeDockerSourcePaused, CodeDpkgDistNew, CodeSourcesLeftPaused, CodeChangedSinceSnapshot, CodePrerebootWarning,
 }
 
 var severities = map[string]string{
@@ -65,7 +66,7 @@ var severities = map[string]string{
 	CodeDNSMissing: SeverityWarn, CodeDockerVersionChanged: SeverityWarn, CodeDockerSourceUnreachable: SeverityWarn, CodeContainerNotReturned: SeverityWarn,
 	CodeFactsIncomplete:          SeverityWarn,
 	CodeDockerSourceNotPublished: SeverityInfo, CodeDockerSourcePaused: SeverityInfo, CodeDpkgDistNew: SeverityInfo, CodeSourcesLeftPaused: SeverityInfo,
-	CodeChangedSinceSnapshot: SeverityInfo,
+	CodeChangedSinceSnapshot: SeverityInfo, CodePrerebootWarning: SeverityInfo,
 }
 
 // SeverityOf is how serious a finding is, "" for a code that is not one.
@@ -113,12 +114,14 @@ const (
 	BKDpkgFiles        = "dpkg-files.txt"
 	BKDpkgFilesAfter   = "dpkg-files-after.txt"
 	BKDockerSourceNote = "docker-source-note"
+	// BKWarnings holds the words of the warnings that block 7 printed before the restart, one on a line.
+	BKWarnings = "warnings"
 )
 
 // BKNames are the files of the backup folder that the judge reads.
 var BKNames = []string{
 	BKKernel, BKListening, BKListeningAfter, BKFailedUnits, BKFailedUnitsAfter, BKCasaosUnits, BKContainers,
-	BKDpkgFiles, BKDpkgFilesAfter, BKDockerSourceNote,
+	BKDpkgFiles, BKDpkgFilesAfter, BKDockerSourceNote, BKWarnings,
 }
 
 // BKFiles are those files, by name, as they were read. A file that is not there is not in it: a list that was not written
@@ -243,6 +246,7 @@ func JudgeWith(before, after Facts, bk BKFiles, opts Options) []Finding {
 	j.dns()
 	j.dockerVersion()
 	j.dockerSource()
+	j.prerebootWarnings()
 	j.containers()
 	j.dpkgFiles()
 	j.paused()
@@ -546,6 +550,27 @@ func (j *judge) dockerVersion() {
 		j.add(CodeDockerVersionChanged, b.Version+">"+a.Version)
 	case b.EngineID != "" && a.EngineID != "" && b.EngineID != a.EngineID:
 		j.add(CodeDockerVersionChanged, engineChanged)
+	}
+}
+
+// warningWord is the shape of a word that block 7 writes for a warning it printed: a lower case name.
+var warningWord = regexp.MustCompile(`^[a-z][a-z_]{0,39}$`)
+
+// prerebootWarnings lists the warnings of block 7, once each, sorted. They are information: the machine was restarted knowing them (the page showed them beside the restart), and it
+// came back or it did not; the report says that they were there.
+func (j *judge) prerebootWarnings() {
+	lines, _ := bkLines(j.bk, BKWarnings)
+	seen := map[string]bool{}
+	var words []string
+	for _, line := range lines {
+		if warningWord.MatchString(line) && !seen[line] {
+			seen[line] = true
+			words = append(words, line)
+		}
+	}
+	slices.Sort(words)
+	for _, word := range words {
+		j.add(CodePrerebootWarning, word)
 	}
 }
 

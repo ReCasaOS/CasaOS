@@ -31,7 +31,7 @@ func TestTheBackupFolderIsReadThroughTheProbe(t *testing.T) {
 			t.Errorf("%s was read", path)
 		}
 	}
-	if len(BKNames) != 10 {
+	if len(BKNames) != 11 {
 		t.Errorf("%d files are read", len(BKNames))
 	}
 }

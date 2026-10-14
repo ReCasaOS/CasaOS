@@ -321,3 +321,29 @@ func TestARunThatTheLogCannotPlaceIsToldOfByItsOwnId(t *testing.T) {
 		t.Error("the flag of a machine whose packages are being changed was taken away")
 	}
 }
+
+// A unit that could not put everything back leaves the folder with the copy of /etc/apt where it was, and the status says where it is and what to do at the console: the owner is
+// not left with a state that has a word for it and no way to act.
+func TestAnUnwindThatWasPartialSaysWhereTheCopyOfTheSourcesIsAndWhatToDo(t *testing.T) {
+	box := newUpgradeBox(t)
+	run := theRunsOfEveryState()["an unwind that was partial"](box)
+	status := box.GetSystemOSUpgradeStatus()
+	if status.State != osrun.StateNeedsAttention || status.Reason != osrun.ReasonUnwindPartial || status.Hint == nil || status.Hint.Code != "unwind_partial" {
+		t.Fatalf("the status is %q %q with the hint %+v", status.State, status.Reason, status.Hint)
+	}
+	if status.Manual.BKPath != run.Meta.BK {
+		t.Errorf("the status names %q as the folder, not %q", status.Manual.BKPath, run.Meta.BK)
+	}
+	joined := strings.Join(status.Hint.Commands, "\n")
+	for _, want := range []string{"ls -la " + run.Meta.BK, "sh " + run.Meta.BK + "/restore-sources.sh", "systemctl start apt-daily.timer", run.ID + "/" + osUpgradeOutputFile} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the commands do not name %q:\n%s", want, joined)
+		}
+	}
+	// the hint is for that state alone
+	other := newUpgradeBox(t)
+	other.aRunThatFailedBeforeItChangedAnything()
+	if status := other.GetSystemOSUpgradeStatus(); status.Hint != nil {
+		t.Errorf("a run that failed has the hint %+v", status.Hint)
+	}
+}
