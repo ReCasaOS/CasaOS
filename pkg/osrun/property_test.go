@@ -50,13 +50,40 @@ type sim struct {
 	snaps   int
 	sealed  int
 	cover   map[string]int
+	// silentSince and silentUntil are a stretch in which systemd does not answer: the reducer is asked with a unit that does not,
+	// and says since when. unplaced is a run whose log has no RUN line: nothing places it, whatever the machine does.
+	silentSince, silentUntil time.Time
+	unplaced                 bool
 }
 
 func newSim(t *testing.T, rng *rand.Rand, kind string) *sim {
 	s := &sim{t: t, rng: rng, kind: kind, clock: t0, unit: Unit{Answered: true}, boot: Boot{Now: bootA, OK: true}, seenID: bootA}
 	s.write(Marker{Kind: MkQueued})
+	if rng.IntN(40) == 0 {
+		s.unplaced = true
+		return s
+	}
 	s.write(Marker{Kind: MkRun, RunID: testRun, Hop: "debian-11-12", PlanID: "p1-0123456789abcdef0123456789abcdef", RunKind: kind, Boot: bootA})
 	return s
+}
+
+// silent says whether systemd does not answer now.
+func (s *sim) silent() bool { return s.clock.Before(s.silentUntil) }
+
+// maybeSilence begins a stretch in which systemd does not answer, now and then, for a minute to a couple of hours.
+func (s *sim) maybeSilence() {
+	if !s.silent() && s.rng.IntN(30) == 0 {
+		s.silentSince = s.clock
+		s.silentUntil = s.clock.Add(time.Duration(1+s.rng.IntN(150)) * time.Minute)
+	}
+}
+
+// unitNow is what systemd says now.
+func (s *sim) unitNow() Unit {
+	if s.silent() {
+		return Unit{SilentSince: s.silentSince}
+	}
+	return s.unit
 }
 
 func (s *sim) write(m Marker) {
@@ -80,7 +107,7 @@ func (s *sim) wait(d time.Duration) { s.clock = s.clock.Add(d) }
 
 func (s *sim) input() Input {
 	return Input{
-		Markers: s.ms[:len(s.ms):len(s.ms)], Files: s.files, Unit: s.unit, Boot: s.boot, Now: s.clock,
+		Markers: s.ms[:len(s.ms):len(s.ms)], Files: s.files, Unit: s.unitNow(), Boot: s.boot, Now: s.clock,
 		Verify: s.verify, Barrier: s.barrier, Ready: s.ready, BootSeenAt: s.seen, Reminded: s.remind,
 	}
 }
@@ -146,8 +173,9 @@ func legal(prev, cur State) bool {
 	case StateResuming:
 		return to(StateVerifying, StateInterrupted, StateFailed, StateNeedsAttention, StateManual, StateSucceeded, StateSucceededWithFindings)
 	case StateInterrupted:
-		return to(StateUnwinding, StateRecovering, StateVerifying, StateResuming, StateFailed, StateNeedsAttention, StateStoppedAtWaypoint,
-			StateAwaitingReboot, StateManual, StateRunning, StateRehearsing, StateRefreshing, StateSucceeded, StateSucceededWithFindings)
+		// Undone by the core (before the point of no return), repaired by the owner, checked again, or let go of: not a state that a
+		// run reaches the end of by itself.
+		return to(StateUnwinding, StateRecovering, StateVerifying, StateResuming, StateFailed, StateNeedsAttention, StateManual)
 	case StateStoppedAtWaypoint:
 		return to(StateRecovering, StateVerifying, StateInterrupted, StateFailed, StateNeedsAttention, StateManual, StateAwaitingReboot, StateResuming)
 	case StateFailed:
@@ -180,6 +208,7 @@ func decided(st State) bool {
 func (s *sim) snap() (Input, State) {
 	s.t.Helper()
 	s.snaps++
+	s.maybeSilence()
 	in := s.input()
 	st := Reduce(in)
 	if s.cover != nil {
@@ -209,7 +238,7 @@ func (s *sim) snap() (Input, State) {
 	if st.HalfUpgraded != (st.PNR && !in.Files.DonePrereboot) {
 		s.fail("half upgraded %v in %+v", st.HalfUpgraded, st)
 	}
-	if st.Name == StateIdle && st.Closed != (len(s.log) > 0 && strings.Contains(strings.Join(s.log, "\n"), "_ACK ")) {
+	if !s.unplaced && st.Name == StateIdle && st.Closed != (len(s.log) > 0 && strings.Contains(strings.Join(s.log, "\n"), "_ACK ")) {
 		s.fail("closed %v in %+v", st.Closed, st)
 	}
 	buttons := ActionsFor(st)
@@ -234,7 +263,24 @@ func (s *sim) snap() (Input, State) {
 		}
 	}
 
+	// A machine that is held, with nothing that runs, and a systemd that has been silent for as long as the bound says, is asked
+	// about: it is not left to wait for a systemd that does not come back.
+	if s.silent() && s.clock.Sub(s.silentSince) >= DefaultTiming.SystemdSilence && st.Busy && !s.unplaced {
+		var last time.Time
+		for _, m := range s.ms {
+			if m.At.After(last) {
+				last = m.At
+			}
+		}
+		if s.clock.Sub(last) >= DefaultTiming.SystemdSilence && st.Name != StateRebooting && st.Name != StateManual && st.Name != StateNeedsAttention {
+			s.fail("P7: systemd silent for %v and the run is %+v", s.clock.Sub(s.silentSince), st)
+		}
+	}
+
 	// What it asks the core to do is allowed.
+	if act.Kind == DoJudge && !in.Unit.Answered {
+		s.fail("a verdict while systemd does not answer: %+v", act)
+	}
 	switch act.Kind {
 	case DoUnwind, DoLaunchVerify, DoLaunchRecover:
 		if !in.Unit.Answered || in.Unit.Active {
@@ -249,14 +295,20 @@ func (s *sim) snap() (Input, State) {
 		}
 	}
 
-	if s.prev != nil && !legal(*s.prev, st) {
-		s.fail("P2: %s (%s %s %s) to %s (%s %s %s) is not a step a run can take", s.prev.Name, s.prev.Reason, s.prev.Cause, s.prev.Class, st.Name, st.Reason, st.Cause, st.Class)
+	// A systemd that does not answer is a reading, not a step, and the steps that the run takes meanwhile are not seen: the first
+	// reading after it is not compared with the one before.
+	if s.silent() {
+		s.prev = nil
+	} else if !s.unplaced {
+		if s.prev != nil && !legal(*s.prev, st) {
+			s.fail("P2: %s (%s %s %s) to %s (%s %s %s) is not a step a run can take", s.prev.Name, s.prev.Reason, s.prev.Cause, s.prev.Class, st.Name, st.Reason, st.Cause, st.Class)
+		}
+		cur := st
+		s.prev = &cur
 	}
-	cur := st
-	s.prev = &cur
 
 	// P1: once a run is decided, nothing that is written after it moves it.
-	if decided(st) && s.sealed < 3 || decided(st) && s.rng.IntN(9) == 0 {
+	if decided(st) && (s.sealed < 3 || s.rng.IntN(9) == 0) {
 		s.sealed++
 		extra := strays()
 		for _, one := range append([][]Marker{extra}, chunk(s.rng, extra, 4)...) {
@@ -365,9 +417,18 @@ func (s *sim) launch(phase, who, from string) {
 	s.snap()
 	switch r := s.rng.IntN(100); {
 	case r < 4:
+		// systemd-run said that it failed. Half of the time the unit exists after all, and says so as it begins.
 		s.unit.Active = false
 		s.write(Marker{Kind: MkStartFailed, N: n})
 		s.snap()
+		if s.rng.IntN(2) == 0 {
+			return
+		}
+		s.unit.Active = true
+		s.snap()
+		s.write(Marker{Kind: MkUnitStart, N: n, Phase: phase, Boot: s.boot.Now, PID: 1000 + n})
+		s.snap()
+		s.program(n, phase)
 		return
 	case r < 6:
 		// The core went away before systemd-run, or the unit never wrote a word.
@@ -516,6 +577,10 @@ func (s *sim) program(n int, phase string) {
 // owner is what the person at the dashboard does when the run waits for them.
 func (s *sim) owner(st State, in Input) {
 	buttons := ActionsFor(st)
+	if s.silent() && !(st.Name == StateNeedsAttention && st.Reason == ReasonSystemdSilent) {
+		// The routes ask the unit first, and a systemd that does not answer refuses them all.
+		buttons = nil
+	}
 	has := func(b string) bool { return slices.Contains(buttons, b) }
 	pick := s.rng.IntN(100)
 	switch {
