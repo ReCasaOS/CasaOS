@@ -3,6 +3,8 @@ package v1
 import (
 	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
@@ -77,7 +79,12 @@ func GetSystemOSPlan(ctx echo.Context) error {
 // @Failure 409 {object} model.Result "no plan, or no runbook, or no run: data.error_code says which"
 // @Router /sys/os/upgrade/runbook [get]
 func GetSystemOSRunbook(ctx echo.Context) error {
-	if values, asked := ctx.QueryParams()["run"]; asked {
+	query, err := url.ParseQuery(ctx.Request().URL.RawQuery)
+	values, asked := query["run"]
+	// a query that cannot be read loses the pairs that it cannot read, and the one that asks for the run may be among them: that is
+	// not a request for the plan's text
+	asked = asked || err != nil && strings.Contains(ctx.Request().URL.RawQuery, "run")
+	if asked {
 		if len(values) != 1 || values[0] != "current" {
 			return osUpgradeFailed(ctx, badOSUpgradeRequest("run"))
 		}

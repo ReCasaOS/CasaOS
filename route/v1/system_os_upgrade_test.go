@@ -376,7 +376,7 @@ func TestTheRunbookOfTheRunIsAskedForByName(t *testing.T) {
 
 	// any other thing asked for is a 400, and nothing is read
 	fake.calls, fake.planBook = nil, 0
-	for _, target := range []string{"?run=", "?run=latest", "?run=Current", "?run=current&run=current", "?run=current%00"} {
+	for _, target := range []string{"?run=", "?run=latest", "?run=Current", "?run=current&run=current", "?run=current%00", "?run=%zz", "?run=curr%zzent", "?token=x&run=%"} {
 		recorder := upgradeRequest(t, GetSystemOSRunbook, http.MethodGet, "/v1/sys/os/upgrade/runbook"+target, "")
 		if recorder.Code != http.StatusBadRequest || !strings.Contains(body(recorder), `"field":"run"`) {
 			t.Errorf("%s: status = %d, body = %s", target, recorder.Code, body(recorder))
@@ -385,6 +385,12 @@ func TestTheRunbookOfTheRunIsAskedForByName(t *testing.T) {
 	if len(fake.calls) != 0 || fake.planBook != 0 {
 		t.Errorf("something was read: %v, %d", fake.calls, fake.planBook)
 	}
+
+	// a query that cannot be read, and does not ask for the run, is read as it always was
+	if recorder := upgradeRequest(t, GetSystemOSRunbook, http.MethodGet, "/v1/sys/os/upgrade/runbook?token=%zz", ""); recorder.Code != http.StatusOK || fake.planBook != 1 {
+		t.Errorf("a query that does not ask for the run: status = %d, plan's runbook %d times", recorder.Code, fake.planBook)
+	}
+	fake.planBook = 0
 
 	// no run is a 409 with its code
 	withOSUpgradeService(t, &fakeOSUpgradeService{err: &service.OSUpgradeRefusal{Code: service.OSUpgradeNoRun, Detail: "there is no upgrade of the operating system to act on"}})
