@@ -80,6 +80,7 @@ func TestTheConstantsAreTheShippedOnes(t *testing.T) {
 		MaxVerifyAttempts: 3, MaxUnwindAttempts: 3, AutoRecoverTries: 0, AutoRecoverWave: 1,
 		Backoff:    [2]time.Duration{2 * time.Minute, 10 * time.Minute},
 		Reminders:  [3]time.Duration{time.Hour, 24 * time.Hour, 24 * time.Hour},
+		HungQuiet:  30 * time.Minute,
 		MarkersMax: 1024 * 1024, MarkerLineMax: 256, LogTail: 128 * 1024,
 	}
 	if DefaultTiming != want {

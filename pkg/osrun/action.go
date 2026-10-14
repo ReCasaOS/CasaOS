@@ -122,7 +122,9 @@ func ActionsFor(s State) []string {
 		on(ActionTakeover, forward)
 		on(ActionAcknowledge, forward)
 	case StateNeedsAttention:
-		on(ActionTakeover, true)
+		// A systemd that does not answer is a machine where only the owner's word works: taking over asks the unit, and the
+		// owner has nothing to do with a run they cannot see the unit of but to let go of it.
+		on(ActionTakeover, s.Reason != ReasonSystemdSilent)
 		on(ActionAcknowledge, true)
 	}
 	out := []string{}
@@ -181,7 +183,9 @@ func NextAction(s State, in Input) Action {
 	case StateStoppedAtWaypoint:
 		return c.afterStop(s)
 	case StateVerifying:
-		if !c.active() && !c.inFlight() {
+		// No verdict is made while systemd does not answer: the facts that come from it are unknown then, and a machine that
+		// nothing was asked of is not one that is well.
+		if c.in.Unit.Answered && !c.active() && !c.inFlight() {
 			return Action{Kind: DoJudge}
 		}
 	case StateAwaitingReboot, StateRebootStalled:
@@ -189,6 +193,12 @@ func NextAction(s State, in Input) Action {
 			return Action{Kind: DoRemind, N: due}
 		}
 		return Action{Kind: DoBarrier}
+	case StateRebootFirst:
+		// A refresh that asked for a restart holds the machine as a hop does, and is spoken of as one: nobody comes to a machine
+		// that nobody told. It has no barrier to compute.
+		if due := remindersDue(c.age(s.Since), c.tm.Reminders); due > c.in.Reminded {
+			return Action{Kind: DoRemind, N: due}
+		}
 	}
 	return Action{Kind: DoNone}
 }

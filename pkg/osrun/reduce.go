@@ -6,9 +6,12 @@ import (
 )
 
 // Unit is what systemd says of the upgrade's unit. Answered is false when systemd did not answer within the bound the
-// caller gave it: nothing is then inferred from the unit, and nothing is launched.
+// caller gave it: nothing is then inferred from the unit, and nothing is launched. SilentSince is when systemd was first seen
+// not answering, in the run of unanswered questions that is still going on; it is zero when the caller does not know, and the
+// time since the last sign of life of the run stands for it then.
 type Unit struct {
 	Active, Answered bool
+	SilentSince      time.Time
 }
 
 // Boot is the id of the boot the machine is in now; OK is false when it could not be read.
@@ -118,9 +121,11 @@ func busyOf(name string, pnr bool) bool {
 	return true
 }
 
-// NeedsAckWord is whether closing the run takes the typed word: a machine that is half upgraded.
+// NeedsAckWord is whether closing the run takes the typed word: a machine that is half upgraded, and one that needs attention,
+// where the sources of the next release may be in place and packages may be changing, whether or not the point of no return was
+// passed: closing the run drops the flag that keeps backups and automatic updates away from it.
 func (s State) NeedsAckWord() bool {
-	return s.HalfUpgraded && slices.Contains(ActionsFor(s), ActionAcknowledge)
+	return (s.HalfUpgraded || s.Name == StateNeedsAttention) && slices.Contains(ActionsFor(s), ActionAcknowledge)
 }
 
 // An attemptView is what the log says of one attempt.
@@ -460,6 +465,18 @@ func (c *ctx) decide() State {
 	if s, ok := c.live(); ok {
 		return s
 	}
+	s := c.settled()
+	if s.Busy && s.Name != StateRebooting && s.Name != StateNeedsAttention && c.silentForLong() {
+		// Nothing runs and the machine is held, and systemd has not answered for as long as the bound says: whatever the state
+		// would be, nothing can be launched or judged while it is silent, and the way on is the owner's.
+		return c.attention(ReasonSystemdSilent)
+	}
+	return s
+}
+
+// settled is the state of a run whose latest attempt is not running: it is lost, it ended, or its launch never came to anything.
+func (c *ctx) settled() State {
+	a := c.a
 	if a.Started && a.Phase == PhaseVerify && a.Stop == nil && c.in.Files.DoneAfter {
 		return c.byResult()
 	}
@@ -493,7 +510,25 @@ func (c *ctx) attention(reason string) State {
 // systemdSilent is whether the unit's state cannot be had and nothing has been heard of it for long enough that the run is
 // not to be judged.
 func (c *ctx) systemdSilent() bool {
-	return !c.in.Unit.Answered && c.age(c.la) >= c.tm.SystemdSilence
+	if c.in.Unit.Answered || c.age(c.la) < c.tm.SystemdSilence {
+		return false
+	}
+	// A run that has been quiet for a day and finds systemd not answering for a moment is not one whose systemd is silent.
+	since := c.in.Unit.SilentSince
+	return since.IsZero() || c.age(since) >= c.tm.SystemdSilence
+}
+
+// silentForLong is systemdSilent for a run that has no unit that runs, where the sign of life of the run is old whatever
+// systemd does: a machine that waits for its restart for days is not one whose systemd has been silent for days. It is the time
+// that systemd has been silent that counts, when the caller says it, and otherwise the time since the run last spoke.
+func (c *ctx) silentForLong() bool {
+	if c.in.Unit.Answered {
+		return false
+	}
+	if since := c.in.Unit.SilentSince; !since.IsZero() {
+		return c.age(since) >= c.tm.SystemdSilence
+	}
+	return c.age(c.la) >= c.tm.SystemdSilence
 }
 
 // active is whether the latest attempt is effectively running: its unit is, or the unit cannot be asked and has given a sign
@@ -572,15 +607,17 @@ func (c *ctx) running() State {
 	s.Block = a.Block
 	switch name {
 	case StateRefreshing, StateRehearsing, StateRunning:
-		s.Abortable = !c.pnr && !pastMinimal(a.LastStart)
+		s.Abortable = !c.pnr && !pastAbort(a.LastStart)
 	}
 	return s
 }
 
-// pastMinimal is whether the last block that began is the minimal upgrade or one after it.
-func pastMinimal(id string) bool {
+// pastAbort is whether the last block that began is one that a run cannot be called off in: the minimal upgrade or one after
+// it, and in a refresh the block that upgrades packages (stopping dpkg half way is what the point of no return is there to
+// keep from), the block that puts the sources back, and the repair.
+func pastAbort(id string) bool {
 	switch id {
-	case BlockMinimal, BlockFull, BlockPrereboot, BlockAfter, BlockForward:
+	case BlockMinimal, BlockFull, BlockPrereboot, BlockAfter, BlockForward, BlockRUpgrade, BlockRDone:
 		return true
 	}
 	return false
@@ -624,7 +661,25 @@ func (c *ctx) interrupted(cause string, bootUnknown bool) State {
 	}
 	s := c.st(StateInterrupted, c.la)
 	s.Cause, s.BootUnknown, s.Resumable = cause, bootUnknown, c.pnr
+	if a.Stop != nil && a.Phase != PhaseUnwind {
+		// The unit said why it stopped and was cut short before it ended: the word is still the class of the stop, and a class that
+		// says the repair is not to be trusted is not resumed because the unit was lost a moment later.
+		class := c.stopClass(a.Stop)
+		s = c.stopped(s, a.Stop, class)
+		if c.pnr && a.Phase != PhaseVerify {
+			s.Resumable = ClassBehavior(class).Resumable
+		}
+	}
 	return s
+}
+
+// stopClass is the class of a stop as the run takes it: a plan that no longer holds, when packages are already being changed,
+// is the guard's word.
+func (c *ctx) stopClass(stop *Marker) string {
+	if stop.Class == ClassPlan && c.pnr {
+		return ClassGuard
+	}
+	return stop.Class
 }
 
 // stoppedBefore is a stop that the unit ended after, before the point of no return.
@@ -791,6 +846,10 @@ func (c *ctx) byResult() State {
 	case MkRebootNotNeeded:
 		return c.st(StateResuming, r.at)
 	}
+	if !c.in.Files.DoneAfter {
+		// The check says it ended and the file of its last block is not there: the files are the truth, and no verdict is made of that.
+		return c.attention(ReasonRunDamaged)
+	}
 	return c.verdict(r)
 }
 
@@ -812,7 +871,9 @@ func (c *ctx) waiting(r result) State {
 	}
 	s.BootUnknown = unknown
 	if s.Name != StateRebooting && c.v.run.RunKind == RunHop {
-		s.RebootBlocked = c.in.Barrier == nil || !c.in.Barrier.OK
+		// The files are the truth of whether the last block before the restart ended: a log that says it did, and a folder that
+		// does not, is a machine that is not to be restarted on the log's word.
+		s.RebootBlocked = c.in.Barrier == nil || !c.in.Barrier.OK || !c.in.Files.DonePrereboot
 	}
 	return s
 }

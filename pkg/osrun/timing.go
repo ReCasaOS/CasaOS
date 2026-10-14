@@ -36,6 +36,9 @@ type Timing struct {
 	// Reminders are when a machine that waits for its restart is spoken of again, counted from when it began to wait:
 	// the first, the second, and then every third interval.
 	Reminders [3]time.Duration
+	// HungQuiet is how long a unit that systemd says runs may print nothing before the status says that it may be stuck, and what
+	// the owner can do at the console about it.
+	HungQuiet time.Duration
 	// MarkersMax is how much of the log of markers is read, MarkerLineMax how long a line of it may be (without its
 	// newline), and LogTail how much of the unit's output the status shows.
 	MarkersMax, MarkerLineMax, LogTail int
@@ -57,6 +60,7 @@ var DefaultTiming = Timing{
 	AutoRecoverWave:   1,
 	Backoff:           [2]time.Duration{2 * time.Minute, 10 * time.Minute},
 	Reminders:         [3]time.Duration{time.Hour, 24 * time.Hour, 24 * time.Hour},
+	HungQuiet:         30 * time.Minute,
 	MarkersMax:        markersMax,
 	MarkerLineMax:     markerLineMax,
 	LogTail:           128 << 10,

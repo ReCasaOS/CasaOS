@@ -214,16 +214,25 @@ func TestARunningStateHasTheBlockThatBeganAndIsAbortableUntilTheMinimalUpgrade(t
 	if s := reduced(t, running(l.input())); s.Abortable {
 		t.Errorf("after the minimal upgrade: %+v", s)
 	}
-	// A refresh and a rehearsal can be called off while they run, a repair cannot.
-	for _, c := range []struct {
+	// A refresh and a rehearsal can be called off while they run, up to the block of a refresh that upgrades the packages: dpkg is
+	// not stopped half way. A repair cannot be.
+	refresh := func(idx int, id string) *runLog {
+		return newLog(t, RunRefresh).attempt(1, PhaseRefresh, "", WhoAuto).start(1, PhaseRefresh, bootA).blockStart(1, idx, id)
+	}
+	for name, c := range map[string]struct {
 		l    *runLog
 		want bool
 	}{
-		{newLog(t, RunRefresh).attempt(1, PhaseRefresh, "", WhoAuto).start(1, PhaseRefresh, bootA).blockStart(1, 3, BlockRUpgrade), true},
-		{newLog(t, RunRehearsal).attempt(1, PhaseRehearse, "", WhoAuto).start(1, PhaseRehearse, bootA).blockStart(1, 5, BlockDownload), true},
+		"the check of a refresh":      {refresh(1, BlockRCheck), true},
+		"the sources of a refresh":    {refresh(2, BlockRSources), true},
+		"the upgrade of a refresh":    {refresh(3, BlockRUpgrade), false},
+		"the end of a refresh":        {refresh(4, BlockRDone), false},
+		"the repair in a refresh":     {refresh(1, BlockForward), false},
+		"the download of a rehearsal": {newLog(t, RunRehearsal).attempt(1, PhaseRehearse, "", WhoAuto).start(1, PhaseRehearse, bootA).blockStart(1, 5, BlockDownload), true},
 	} {
-		if s := reduced(t, running(c.l.input())); s.Abortable != c.want {
-			t.Errorf("%s: abortable %v", s.Name, s.Abortable)
+		s := reduced(t, running(c.l.input()))
+		if s.Abortable != c.want || isOneOf(ActionsFor(s), ActionAbort) != c.want {
+			t.Errorf("%s: abortable %v, buttons %v", name, s.Abortable, ActionsFor(s))
 		}
 	}
 }

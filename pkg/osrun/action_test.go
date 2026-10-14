@@ -554,8 +554,13 @@ func TestTheTypedWordIsNeededOnlyToCloseAHalfUpgradedMachine(t *testing.T) {
 		}
 		s := half(name)
 		s.HalfUpgraded = false
-		if s.NeedsAckWord() {
-			t.Errorf("%s: a machine that is not half upgraded does not need it", name)
+		// a machine that needs attention may have the sources of the next release in place, with or without the point of no return
+		if want := name == StateNeedsAttention; s.NeedsAckWord() != want {
+			t.Errorf("%s: a machine that is not half upgraded needs the word: %v, want %v", name, s.NeedsAckWord(), want)
+		}
+		s.PNR = false
+		if want := name == StateNeedsAttention; s.NeedsAckWord() != want {
+			t.Errorf("%s: before the point of no return the word is needed: %v, want %v", name, s.NeedsAckWord(), want)
 		}
 	}
 	// No button to close, no word: a failed start after the point of no return is resumed or taken over.
