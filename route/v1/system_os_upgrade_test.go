@@ -254,6 +254,21 @@ func TestABodyThatIsNotStrictJSONIsRefusedWith400BeforeTheEngineIsAsked(t *testi
 	}
 }
 
+// The body has 64 KiB and not one byte more: a body of exactly that size (spaces before the object) is read, one more byte is a 400 before the engine is asked.
+func TestTheBodyHasSixtyFourKiBAndNotOneByteMore(t *testing.T) {
+	for _, c := range []struct {
+		size int
+		code int
+	}{{osUpgradeBodyMax - 1, http.StatusAccepted}, {osUpgradeBodyMax, http.StatusAccepted}, {osUpgradeBodyMax + 1, http.StatusBadRequest}} {
+		fake := &fakeOSUpgradeService{status: aStatus("refreshing")}
+		withOSUpgradeService(t, fake)
+		recorder := upgradeRequest(t, StartSystemOSUpgradeRefresh, http.MethodPost, "/v1/sys/os/upgrade/refresh", strings.Repeat(" ", c.size-2)+`{}`)
+		if recorder.Code != c.code || (c.code == http.StatusBadRequest) != (len(fake.calls) == 0) {
+			t.Errorf("%d bytes: status = %d, engine asked %v", c.size, recorder.Code, fake.calls)
+		}
+	}
+}
+
 // The three buttons that have nothing to say take the empty object and nothing else, and answer 202 with the status; each asks the engine for its own button only.
 func TestTheButtonsAnswerAcceptedAndTakeTheEmptyObjectOnly(t *testing.T) {
 	for _, c := range []struct {
@@ -431,7 +446,7 @@ func TestTheRunbookOfTheRunIsAskedForByName(t *testing.T) {
 
 	// any other thing asked for is a 400, and nothing is read
 	fake.calls, fake.planBook = nil, 0
-	for _, target := range []string{"?run=", "?run=latest", "?run=Current", "?run=current&run=current", "?run=current%00", "?run=%zz", "?run=curr%zzent", "?token=x&run=%"} {
+	for _, target := range []string{"?run=", "?run=latest", "?run=Current", "?run=current&run=current", "?run=current%00", "?run=%zz", "?run=curr%zzent", "?token=x&run=%", "?note=a;b&run=latest", "?run=current;x"} {
 		recorder := upgradeRequest(t, GetSystemOSRunbook, http.MethodGet, "/v1/sys/os/upgrade/runbook"+target, "")
 		if recorder.Code != http.StatusBadRequest || !strings.Contains(body(recorder), `"field":"run"`) {
 			t.Errorf("%s: status = %d, body = %s", target, recorder.Code, body(recorder))
@@ -441,9 +456,12 @@ func TestTheRunbookOfTheRunIsAskedForByName(t *testing.T) {
 		t.Errorf("something was read: %v, %d", fake.calls, fake.planBook)
 	}
 
-	// a query that cannot be read, and does not ask for the run, is read as it always was
-	if recorder := upgradeRequest(t, GetSystemOSRunbook, http.MethodGet, "/v1/sys/os/upgrade/runbook?token=%zz", ""); recorder.Code != http.StatusOK || fake.planBook != 1 {
-		t.Errorf("a query that does not ask for the run: status = %d, plan's runbook %d times", recorder.Code, fake.planBook)
+	// a query that cannot be read, or that has other keys, and does not ask for the run, is read as it always was (the word run inside another key or value is not the key)
+	for _, target := range []string{"?token=%zz", "?note=prune;x", "?prune=1", "?note=run", "?Run=current", "?run%20=current", "?runs=current"} {
+		fake.planBook = 0
+		if recorder := upgradeRequest(t, GetSystemOSRunbook, http.MethodGet, "/v1/sys/os/upgrade/runbook"+target, ""); recorder.Code != http.StatusOK || fake.planBook != 1 {
+			t.Errorf("%s does not ask for the run: status = %d, plan's runbook %d times", target, recorder.Code, fake.planBook)
+		}
 	}
 	fake.planBook = 0
 

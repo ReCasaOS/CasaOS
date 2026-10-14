@@ -250,6 +250,14 @@ func TestTheCallOfSystemdRunHasATimeOfItsOwn(t *testing.T) {
 	}
 }
 
+// The time that systemd-run has is a time a person can wait for, and it is not set by a test: 30 seconds is what a call has in the core as it is built (the dashboard's package
+// and Docker updates start their units through the same call).
+func TestTheCallOfSystemdRunHasThirtySecondsAsItIsBuilt(t *testing.T) {
+	if systemdRunTimeout != 30*time.Second {
+		t.Errorf("a call of systemd-run has %v", systemdRunTimeout)
+	}
+}
+
 // factsOfAMachine are the facts of a machine that is well, as the box says it.
 func factsOfAMachine(b *upgradeBox) osverify.Facts {
 	return osverify.Facts{Taken: true, At: b.now(), Kernel: "6.1.0-18-amd64", System: "running", DpkgQuiet: true, DNS: true}
