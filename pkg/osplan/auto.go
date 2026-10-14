@@ -157,7 +157,11 @@ func (c *rbCtx) checkHooks() error {
 	for _, pa := range c.plan.Paused {
 		docker = docker || pa.Docker
 	}
-	want := autoHookSites(len(c.manual) > 0, docker)
+	return c.checkSites(autoHookSites(len(c.manual) > 0, docker))
+}
+
+// checkSites says whether the hooks that went off are the ones that the sites of a text say, each as often.
+func (c *rbCtx) checkSites(want map[string]int) error {
 	for k, n := range want {
 		if c.fired[k] != n {
 			return fmt.Errorf("%w: the hook %s went off %d times, not %d", ErrAutoDrift, k, c.fired[k], n)

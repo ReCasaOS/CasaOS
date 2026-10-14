@@ -69,6 +69,9 @@ var stopClasses = []stopClass{
 	{"apt would now remove a different set", osrun.ClassPlan},
 	{"apt would downgrade packages", osrun.ClassPlan},
 	{"type the names of the packages that are removed", osrun.ClassPlan},
+	// the refresh: its sources are what the machine had when it was started, and the release that is left removes nothing
+	{"the sources of apt are not the ones the refresh", osrun.ClassPlan},
+	{"the current release wants to remove", osrun.ClassPlan},
 
 	// a package that this text protects, or that dpkg says is essential, would go
 	{"$what would remove $name", osrun.ClassGuard},
@@ -105,6 +108,9 @@ var stopClasses = []stopClass{
 	{"another plan of this machine", osrun.ClassIdentity},
 	{"block 3 of another plan", osrun.ClassIdentity},
 	{"the upgrade has begun (block 5 was started)", osrun.ClassIdentity},
+	// apt refuses a repository whose release information changed ("stable" becoming "oldstable"): the owner says whether the change is wanted, and the page takes the hint from
+	// the line (osrun.HintOf), so the line names what apt said
+	{"apt refuses a repository whose release", osrun.ClassIdentity},
 
 	// a tool that the block uses is not there
 	{"ss is not installed", osrun.ClassTools},
@@ -125,6 +131,9 @@ var stopClasses = []stopClass{
 	{"block 3 has begun (apt-orig", osrun.ClassIntegrity},
 	{"block 3 ended: the next is block 4", osrun.ClassIntegrity},
 	{"this is the point of no return", osrun.ClassIntegrity},
+	// the end of a refresh: the sources that were put back are not what they were
+	{"the restore script could not put", osrun.ClassIntegrity},
+	{"the sources of apt are not what they were", osrun.ClassIntegrity},
 
 	// the block does not run in the unit of its run
 	{"this block belongs to the upgrade unit", osrun.ClassUnit},

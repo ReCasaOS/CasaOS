@@ -97,8 +97,10 @@ type rbCtx struct {
 	auto  *AutoParams
 	cur   string
 	fired map[string]int
-	// bk is the backup folder when it is not the plan's (a refresh has no plan); "" is /var/backups/casaos-os-upgrade-<plan id>.
-	bk string
+	// bk is the backup folder when it is not the plan's (a refresh has no plan); "" is /var/backups/casaos-os-upgrade-<plan id>. refresh is set for the text of a refresh
+	// (BuildRefresh, auto_refresh.go): it is written from the same pieces, and holds what that text has of its own.
+	bk      string
+	refresh *refreshCtx
 }
 
 // backupFolder is the folder that the blocks keep what they write in.
@@ -585,7 +587,13 @@ func head(c *rbCtx, prev string) string {
 		`  [ ! -e "$fin/done-after" ] || { echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }`,
 		`done`,
 	)
-	if prev != "" {
+	switch {
+	case prev != "" && c.refresh != nil:
+		// a refresh has no point of no return to tell another plan's text by, and no person to run the block before: the machine is the release it was started on, or it is not
+		s += `grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || { echo "STOP: this machine is not Debian 11 (` + c.hop.From + `) any more: the refresh brings the release that the machine runs up to its last state, and this machine runs another."; exit 1; }` + "\n"
+		s += `[ -e "$BK/done-` + prev + `" ] || { echo "STOP: the block before this one (` + prev + `) did not end: the refresh does not go on without it (ls $BK shows how far it got)."; exit 1; }` + "\n"
+		s += bkdir
+	case prev != "":
 		s += `[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || { echo "STOP: the hop is over for this machine: it is not Debian 11 (` + c.hop.From + `) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }` + "\n"
 		s += `[ -e "$BK/done-` + prev + `" ] || { echo "STOP: the block before this one (` + prev + `) did not end: run it first (ls $BK shows how far you got)."; exit 1; }` + "\n"
 		s += bkdir

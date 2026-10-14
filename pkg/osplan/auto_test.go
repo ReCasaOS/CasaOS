@@ -363,8 +363,12 @@ func classUsage(t *testing.T, ar *AutoRunbook) map[string]int {
 
 func TestEveryStopLineOfTheAutoTextHasOneClassAndEveryKeyOfTheTableIsUsed(t *testing.T) {
 	used := map[string]int{}
+	// the texts of the unit: the hop's, for each plan of the tests, and the refresh's (which has STOP lines of its own, and uses some of the hop's)
+	texts := map[string]*AutoRunbook{"the refresh": refreshOf(t, false)}
 	for name, p := range planVariants(t) {
-		ar := autoOf(t, p, AutoParams{RunID: testRunID, Hostname: testHostname})
+		texts[name] = autoOf(t, p, AutoParams{RunID: testRunID, Hostname: testHostname})
+	}
+	for name, ar := range texts {
 		for _, blk := range everyAutoBlock(ar) {
 			// outside a heredoc, every STOP line has a class, once; inside, none has one (the restore script is copied as it is)
 			list, rest := heredocs(blk.Text)

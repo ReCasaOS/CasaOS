@@ -8,6 +8,9 @@ import "strings"
 // at the start of every attempt that repairs a hop, the blocks after it being the ones that are not done.
 //
 // It is stricter than block 6's own ladder, which guards the protected and the essential packages: the repair may remove only what the plan said the upgrade removes.
+//
+// The unwind of a refresh runs it too, for the folder of the refresh (which holds a list of removals that is empty: the repair of a refresh removes nothing), after it has put the
+// timers back: the same block, which then starts again the timers that it stopped.
 
 // forwardTitle is the title of block F.
 const forwardTitle = "mend what an interrupted upgrade left half done"
@@ -22,6 +25,11 @@ func autoForward(c *rbCtx) string {
 	b.WriteString(head(c, ""))
 	b.WriteString(c.aptq() + shSim + shGuard() + shHelp + shDpkgState)
 	b.WriteString("echo \"Block F: mending what an interrupted upgrade left half done.\"\n")
+	if c.refresh != nil {
+		// the unwind of a refresh puts the timers back before it runs this block, and this block stops them: the ones that run when it begins run again when it has mended
+		// what it came for (the blocks of a hop that follow F stop them themselves, and F does not start them)
+		b.WriteString("back=\"\"\nfor unit in " + timerUnits + "; do\n  [ \"$(systemctl is-active \"$unit\" 2>/dev/null || true)\" != active ] || back=\"$back $unit\"\ndone\n")
+	}
 	b.WriteString(shTimersOf(forwardUnits))
 	b.WriteString(busyCheck("The upgrade has begun: do not undo anything."))
 	// a folder that holds no list of the removals that the plan expected (a refresh has none, and writes it empty) has no removal that the repair may make
@@ -37,6 +45,9 @@ func autoForward(c *rbCtx) string {
 		`done`,
 	))
 	b.WriteString("aptq -f install || " + stop("apt could not repair the packages. Do not undo anything: ask for help. "+logWords) + "\n")
+	if c.refresh != nil {
+		b.WriteString("for unit in $back; do\n  systemctl start \"$unit\" || echo \"$unit could not be started again: systemctl start $unit\"\ndone\n")
+	}
 	b.WriteString("echo \"Block F done.\"\n")
 	return b.String()
 }
