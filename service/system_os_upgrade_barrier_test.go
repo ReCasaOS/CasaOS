@@ -117,7 +117,7 @@ func (b *upgradeBox) barrierOf(run *osUpgradeRun) *osUpgradeBarrierDoc {
 	return readOSUpgradeBarrier(b.read(run.ID))
 }
 
-// While the machine waits for its restart the core asks the three checks that stand before it, and says so in a file of the run: every one of them, in order, and whether the
+// While the machine waits for its restart the core asks the two checks that stand before it, and says so in a file of the run: every one of them, in order, and whether the
 // machine may be restarted.
 func TestTheBarrierIsComputedWhileTheMachineWaitsForItsRestart(t *testing.T) {
 	box := newUpgradeBox(t)
@@ -131,7 +131,7 @@ func TestTheBarrierIsComputedWhileTheMachineWaitsForItsRestart(t *testing.T) {
 	tick := box.tick()
 	got := box.barrierOf(run)
 	want := &osUpgradeBarrierDoc{OK: true, Checks: []OSUpgradeBarrierItem{
-		{Code: "fstab_unresolved", OK: true, Severity: "ok"}, {Code: "fstab_network", OK: true, Severity: "ok"}, {Code: "network_names", OK: true, Severity: "info"},
+		{Code: "fstab_unresolved", OK: true, Severity: "ok"}, {Code: "fstab_network", OK: true, Severity: "ok"},
 	}}
 	if !reflect.DeepEqual(got, want) || tick.State != osrun.StateAwaitingReboot {
 		t.Errorf("the barrier is %+v in state %q, want %+v", got, tick.State, want)
@@ -212,7 +212,7 @@ func TestACheckThatTheReportDoesNotHaveMakesTheBarrierRed(t *testing.T) {
 
 	box.tick()
 	got := box.barrierOf(run)
-	if got == nil || got.OK || len(got.Checks) != 4 || got.Checks[3].Code != "no_such_check" || got.Checks[3].OK {
+	if got == nil || got.OK || len(got.Checks) != 3 || got.Checks[2].Code != "no_such_check" || got.Checks[2].OK {
 		t.Errorf("the barrier is %+v", got)
 	}
 }
@@ -290,10 +290,10 @@ func TestWhatBlock7WarnedOfIsShownBesideTheRestartAndDoesNotBlockIt(t *testing.T
 	}
 	box.tick()
 	got := box.barrierOf(run)
-	if got == nil || !got.OK || len(got.Checks) != 5 {
+	if got == nil || !got.OK || len(got.Checks) != 4 {
 		t.Fatalf("the barrier is %+v", got)
 	}
-	warned := got.Checks[3:]
+	warned := got.Checks[2:]
 	want := []OSUpgradeBarrierItem{
 		{Code: "prereboot_warning", OK: true, Severity: "warn", Arg: "grub_cfg_missing"}, {Code: "prereboot_warning", OK: true, Severity: "warn", Arg: "initrd_small"},
 	}

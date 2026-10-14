@@ -248,12 +248,12 @@ func TestAMachineThatWaitsForItsRestartCanBeRestartedWhenTheBarrierIsGreen(t *te
 	if slices.Contains(got.Actions, osrun.ActionReboot) || got.Barrier != nil {
 		t.Errorf("the buttons are %v and the barrier %+v before the checks have been made", got.Actions, got.Barrier)
 	}
-	rewrite(t, filepath.Join(run.Dir, "barrier.json"), `{"ok":false,"checks":[{"code":"fstab_unresolved","ok":false,"severity":"refuse"},{"code":"network_names","ok":true,"severity":"ok"}]}`)
+	rewrite(t, filepath.Join(run.Dir, "barrier.json"), `{"ok":false,"checks":[{"code":"fstab_unresolved","ok":false,"severity":"refuse"},{"code":"fstab_network","ok":true,"severity":"ok"}]}`)
 	got = box.GetSystemOSUpgradeStatus()
 	if slices.Contains(got.Actions, osrun.ActionReboot) || got.Barrier == nil || got.Barrier.OK || len(got.Barrier.Checks) != 2 || got.Barrier.Checks[0].Code != "fstab_unresolved" {
 		t.Errorf("with a red barrier the buttons are %v and the barrier %+v", got.Actions, got.Barrier)
 	}
-	rewrite(t, filepath.Join(run.Dir, "barrier.json"), `{"ok":true,"checks":[{"code":"network_names","ok":true,"severity":"ok"}]}`)
+	rewrite(t, filepath.Join(run.Dir, "barrier.json"), `{"ok":true,"checks":[{"code":"fstab_network","ok":true,"severity":"ok"}]}`)
 	got = box.GetSystemOSUpgradeStatus()
 	if !reflect.DeepEqual(got.Actions, []string{osrun.ActionReboot, osrun.ActionTakeover}) || got.Barrier == nil || !got.Barrier.OK {
 		t.Errorf("with a green barrier the buttons are %v and the barrier %+v", got.Actions, got.Barrier)

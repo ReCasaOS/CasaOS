@@ -115,7 +115,7 @@ func TestTheRestartIsRefusedWithARedBarrier(t *testing.T) {
 	_, err := box.RebootSystemOSUpgrade()
 	refusal := refusalOf(t, err)
 	checks, _ := refusal.Data["checks"].([]OSUpgradeBarrierItem)
-	if refusal.Code != OSUpgradeBarrierFailed || len(checks) != 3 || checks[0].OK {
+	if refusal.Code != OSUpgradeBarrierFailed || len(checks) != 2 || checks[0].OK {
 		t.Errorf("refused with %q %+v", refusal.Code, refusal.Data)
 	}
 	if got := told.all(); len(got) != 0 {

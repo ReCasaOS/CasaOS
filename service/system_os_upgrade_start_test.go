@@ -705,7 +705,7 @@ func TestARunThatCannotBeReadKeepsANewOneFromStarting(t *testing.T) {
 func TestTheFoldersOfBackupsThatAreNotAHopsAreLookedAtOneByOne(t *testing.T) {
 	box := newUpgradeBox(t)
 	_, plan := box.aMachineThatCanStart()
-	mk := func(name string, files ...string) string {
+	mkIn := func(box *upgradeBox, name string, files ...string) string {
 		dir := filepath.Join(box.backups, name)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -715,6 +715,7 @@ func TestTheFoldersOfBackupsThatAreNotAHopsAreLookedAtOneByOne(t *testing.T) {
 		}
 		return dir
 	}
+	mk := func(name string, files ...string) string { return mkIn(box, name, files...) }
 	// what is not a half done hop: a folder with nothing of a hop in it, one that ended, the file of the timers, a folder of anything else, a link
 	mk("casaos-os-upgrade-p1-aaaa", "snapshot-note")
 	mk("casaos-os-upgrade-p1-bbbb", "apt-orig", "begun-upgrade", "done-after")
@@ -726,16 +727,16 @@ func TestTheFoldersOfBackupsThatAreNotAHopsAreLookedAtOneByOne(t *testing.T) {
 	if _, err := box.StartSystemOSUpgrade(box.aGoodRequest(plan)); err != nil {
 		t.Fatalf("a start with only what is not a half done hop in the folder of backups: %v", err)
 	}
-	// a block that the owner ran by hand and that went no further leaves nothing but its mark, and a run that began in that folder would skip the block: it is found
-	mk("casaos-os-upgrade-p1-cccc", "done-verify", "done-timers")
+	// a block that the owner ran by hand and that went no further leaves nothing but its mark, and a run that began in that folder would skip the block: it is found (on a box of
+	// its own: the start above opened a run on the first one)
+	boxByHand := newUpgradeBox(t)
+	_, planByHand := boxByHand.aMachineThatCanStart()
+	mkIn(boxByHand, "casaos-os-upgrade-p1-cccc", "done-verify", "done-timers")
 	if folder, err := osUpgradeManualFolder(nil); folder != "casaos-os-upgrade-p1-cccc" || err != nil {
 		t.Fatalf("the folder of blocks that were run by hand is %q, %v", folder, err)
 	}
-	if _, err := box.StartSystemOSUpgrade(box.aGoodRequest(plan)); refusalOf(t, err).Code != OSUpgradeManualRunFound {
+	if _, err := boxByHand.StartSystemOSUpgrade(boxByHand.aGoodRequest(planByHand)); refusalOf(t, err).Code != OSUpgradeManualRunFound {
 		t.Fatalf("a start with the folder of blocks that were run by hand: %v", err)
-	}
-	if err := os.RemoveAll(filepath.Join(box.backups, "casaos-os-upgrade-p1-cccc")); err != nil {
-		t.Fatal(err)
 	}
 	// ... and the folder of the run that is the latest is not one either, whatever it holds
 	box2 := newUpgradeBox(t)
@@ -754,6 +755,25 @@ func TestTheFoldersOfBackupsThatAreNotAHopsAreLookedAtOneByOne(t *testing.T) {
 	osUpgradeBackups = filepath.Join(box2.etc, "afile")
 	if _, err := osUpgradeManualFolder(nil); err == nil {
 		t.Error("a folder of backups that is a file is empty")
+	}
+}
+
+// A folder that cannot be read is not a folder without a mark: what is not known to be absent counts as there.
+func TestAFolderThatCannotBeReadCountsAsOneThatHoldsAMark(t *testing.T) {
+	dir := t.TempDir()
+	if hasDoneFile(dir) {
+		t.Error("an empty folder holds a mark")
+	}
+	rewrite(t, filepath.Join(dir, "apt-orig"), "x")
+	if hasDoneFile(dir) {
+		t.Error("a folder without a done file holds a mark")
+	}
+	rewrite(t, filepath.Join(dir, "done-after"), "")
+	if !hasDoneFile(dir) {
+		t.Error("a folder with a done file holds none")
+	}
+	if !hasDoneFile(filepath.Join(dir, "gone")) {
+		t.Error("a folder that cannot be read holds none")
 	}
 }
 

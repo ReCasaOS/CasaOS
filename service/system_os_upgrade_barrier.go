@@ -21,7 +21,7 @@ import (
 // mends the line has nothing to ask for. They only read, and nothing is ever fixed by the core: the page shows what is wrong.
 
 // osUpgradeBarrierChecks are the checks of the report that are asked, by their codes, in the order they are listed in.
-var osUpgradeBarrierChecks = []string{"fstab_unresolved", "fstab_network", "network_names"}
+var osUpgradeBarrierChecks = []string{"fstab_unresolved", "fstab_network"}
 
 // osUpgradeBarrierProbe is the probe that the barrier looks at the machine through: the core's own, and not a second way of reading the machine. A var, for the tests.
 var osUpgradeBarrierProbe = func(u *systemPackageUpdater) osreadiness.Probe { return newOSUpgradeProbe(u) }
