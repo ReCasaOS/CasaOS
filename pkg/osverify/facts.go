@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"path"
 	"regexp"
 	"slices"
 	"sort"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
+	"github.com/ReCasaOS/CasaOS/pkg/osrun"
 )
 
 // The facts that can be unknown (Facts.Unknown names them).
@@ -42,9 +44,11 @@ const (
 	FactDocker     = "docker"
 	FactContainers = "containers"
 	FactSources    = "sources"
+	FactListening  = "listening"
+	FactFailed     = "failed_units"
 )
 
-var allFacts = []string{FactKernel, FactSystem, FactDpkg, FactSamba, FactMounts, FactRoute, FactDNS, FactUnits, FactDocker, FactContainers, FactSources}
+var allFacts = []string{FactKernel, FactSystem, FactDpkg, FactSamba, FactMounts, FactRoute, FactDNS, FactUnits, FactDocker, FactContainers, FactSources, FactListening, FactFailed}
 
 // The state of Docker's daemon (Docker.State): up when it answered; down when its service runs and it did not; stopped when
 // Docker is on the box and its service does not run (the daemon is not asked then, since asking it would start it, and with
@@ -74,8 +78,12 @@ type Facts struct {
 	DpkgQuiet bool   `json:"dpkg_quiet"`
 	// SambaUsers is how many users Samba's database holds (pdbedit -L).
 	SambaUsers int `json:"samba_users"`
-	// Mergerfs are the mount points of the mergerfs pools that are mounted, sorted.
-	Mergerfs []string `json:"mergerfs,omitempty"`
+	// Mergerfs are the mount points of the mergerfs pools that are mounted, sorted. Pools are the same pools by mount point, with the
+	// branches that each is made of, as the mount table gives them; Mounts are the mount points of the file systems that hold
+	// data (disks, pools, network shares), where a mount that is not there after the restart is a directory that is empty.
+	Mergerfs []string            `json:"mergerfs,omitempty"`
+	Pools    map[string][]string `json:"pools,omitempty"`
+	Mounts   []string            `json:"mounts,omitempty"`
 	// Route is the interface the default route of IPv4 goes out by, "" when there is none.
 	Route string `json:"route,omitempty"`
 	// DNS says whether the resolver answered for a name that a Debian box reaches every day.
@@ -86,6 +94,11 @@ type Facts struct {
 	// (docker.list.casaos-paused) and the lines of a file that have been commented out (sources.list:12).
 	Paused []string `json:"paused,omitempty"`
 	Docker Docker   `json:"docker"`
+	// Listening are the local addresses that something listens on (the fourth column of ss -Hltn, as block 2 writes it down),
+	// and Failed the units that systemd says have failed: the two lists that the blocks of the hop write before and after, here
+	// taken as the judge needs them, now.
+	Listening []string `json:"listening,omitempty"`
+	Failed    []string `json:"failed_units,omitempty"`
 }
 
 // Docker is what is known of Docker's daemon.
@@ -114,6 +127,10 @@ func (f Facts) Knows(fact string) bool { return f.Taken && !slices.Contains(f.Un
 
 // Resolver says whether a name resolves.
 type Resolver func(ctx context.Context, name string) bool
+
+// commandBound is how long each question to the machine has. One that hangs ends with its own time, and the questions after it
+// are asked all the same: the time of all of them is not a time that one can take. A variable so that a test need not wait for it.
+var commandBound = osrun.DefaultTiming.FactCommand
 
 // dnsName is the name that the resolver is asked for: the one that apt itself asks for, on the boxes the upgrade is for.
 const dnsName = "deb.debian.org"
@@ -148,6 +165,8 @@ func TakeWith(ctx context.Context, p osreadiness.Probe, resolve Resolver) Facts 
 	t.units()
 	t.docker()
 	t.sources()
+	t.listening()
+	t.failedUnits()
 	return t.f
 }
 
@@ -155,6 +174,14 @@ type taker struct {
 	ctx context.Context
 	p   osreadiness.Probe
 	f   Facts
+	// hung are the commands that ran out of their time: a tool that did not answer once is not asked again, and what it would have
+	// said is unknown.
+	hung map[string]bool
+}
+
+// bounded is a context with the time of one question.
+func (t *taker) bounded() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(t.ctx, commandBound)
 }
 
 func (t *taker) miss(facts ...string) {
@@ -177,14 +204,31 @@ func (t *taker) ask(argv ...string) (osreadiness.Output, error) {
 	if err := t.ctx.Err(); err != nil {
 		return osreadiness.Output{}, err
 	}
-	return t.p.Run(t.ctx, argv...)
+	if t.hung[argv[0]] {
+		return osreadiness.Output{}, fmt.Errorf("%s did not answer in its time before", argv[0])
+	}
+	ctx, cancel := t.bounded()
+	defer cancel()
+	out, err := t.p.Run(ctx, argv...)
+	if ctx.Err() != nil && t.ctx.Err() == nil {
+		if t.hung == nil {
+			t.hung = map[string]bool{}
+		}
+		t.hung[argv[0]] = true
+		if err == nil {
+			err = ctx.Err()
+		}
+	}
+	return out, err
 }
 
 func (t *taker) read(path string) (string, error) {
 	if err := t.ctx.Err(); err != nil {
 		return "", err
 	}
-	data, err := t.p.ReadFile(t.ctx, path)
+	ctx, cancel := t.bounded()
+	defer cancel()
+	data, err := t.p.ReadFile(ctx, path)
 	return string(data), err
 }
 
@@ -192,7 +236,9 @@ func (t *taker) dir(path string) ([]string, error) {
 	if err := t.ctx.Err(); err != nil {
 		return nil, err
 	}
-	return t.p.ReadDir(t.ctx, path)
+	ctx, cancel := t.bounded()
+	defer cancel()
+	return t.p.ReadDir(ctx, path)
 }
 
 func isNotExist(err error) bool { return errors.Is(err, fs.ErrNotExist) }
@@ -304,6 +350,62 @@ func mergerfsMounts(data string) []string {
 	return mounts
 }
 
+// The bounds of what is kept of the mount table.
+const (
+	maxMounts       = 2000
+	maxPools        = 64
+	maxPoolBranches = 256
+)
+
+// dataFileSystems are the types of file system that hold data that an app writes: a disk, a pool of disks, a share. The others
+// (the kernel's, the temporary ones, the layers of containers, the images of snaps) come and go as they please, and a mount of
+// them that is not there after a restart says nothing.
+var dataFileSystems = []string{
+	"ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "jfs", "reiserfs", "vfat", "exfat", "ntfs", "ntfs3", "fuseblk",
+	"fuse.mergerfs", "nfs", "nfs4", "cifs", "smb3",
+}
+
+// poolBranches are the branches that a mergerfs mount is made of: the first field of its line in the mount table, separated by
+// colons, each with the mode that mergerfs may have it written with (/mnt/disk1=RW) taken off.
+func poolBranches(source string) []string {
+	var branches []string
+	for _, branch := range strings.Split(unescapeMount(source), ":") {
+		if i := strings.LastIndex(branch, "="); i > 0 && i+3 == len(branch) {
+			branch = branch[:i]
+		}
+		if printable(branch, maxMountPath) && !slices.Contains(branches, branch) && len(branches) < maxPoolBranches {
+			branches = append(branches, branch)
+		}
+	}
+	return branches
+}
+
+// dataMounts are the mount points of the file systems that hold data, sorted and with no repeat, and the pools of mergerfs with
+// their branches.
+func dataMounts(data string) (mounts []string, pools map[string][]string) {
+	for _, line := range strings.Split(data, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || !slices.Contains(dataFileSystems, fields[2]) {
+			continue
+		}
+		point := unescapeMount(fields[1])
+		if !printable(point, maxMountPath) {
+			continue
+		}
+		if !slices.Contains(mounts, point) && len(mounts) < maxMounts {
+			mounts = append(mounts, point)
+		}
+		if fields[2] == "fuse.mergerfs" && len(pools) < maxPools {
+			if pools == nil {
+				pools = map[string][]string{}
+			}
+			pools[point] = poolBranches(fields[0])
+		}
+	}
+	slices.Sort(mounts)
+	return mounts, pools
+}
+
 func (t *taker) mounts() {
 	data, err := t.read("/proc/mounts")
 	if err != nil {
@@ -311,6 +413,25 @@ func (t *taker) mounts() {
 		return
 	}
 	t.f.Mergerfs = mergerfsMounts(data)
+	t.f.Mounts, t.f.Pools = dataMounts(data)
+}
+
+// branchMounts are the mount points among mounts that a branch of a pool is: the branch itself when it is one, and the ones that
+// a pattern in it matches (mergerfs takes /mnt/disk* for every disk that is mounted there).
+func branchMounts(branches, mounts []string) []string {
+	var out []string
+	for _, branch := range branches {
+		if strings.ContainsAny(branch, "*?[") {
+			for _, mount := range mounts {
+				if ok, err := path.Match(branch, mount); err == nil && ok {
+					out = append(out, mount)
+				}
+			}
+		} else if slices.Contains(mounts, branch) {
+			out = append(out, branch)
+		}
+	}
+	return out
 }
 
 var interfacePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,15}$`)
@@ -318,8 +439,13 @@ var interfacePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,15}$`)
 // routeOther is the interface of a default route that goes out by something that is not an interface's name.
 const routeOther = "other"
 
+// rtfReject is the flag of a route that answers with an error (unreachable, prohibit) and not with a way out.
+const rtfReject = 0x200
+
 // defaultRoute is the interface that the IPv4 default route of /proc/net/route goes out by, and "" when there is none. A
-// route is the default when its destination and its mask are zero, and it counts when it is up (the flag 1).
+// route is the default when its destination and its mask are zero, and it counts when it is up (the flag 1) and goes somewhere:
+// the routes of type unreachable, prohibit and blackhole that a machine can have as a placeholder have no interface (the kernel
+// writes a star for it), and are not a way out.
 func defaultRoute(data string) string {
 	for _, line := range strings.Split(data, "\n") {
 		// Iface Destination Gateway Flags RefCnt Use Metric Mask ...
@@ -328,7 +454,7 @@ func defaultRoute(data string) string {
 			continue
 		}
 		flags, err := strconv.ParseUint(fields[3], 16, 32)
-		if err != nil || flags&1 == 0 {
+		if err != nil || flags&1 == 0 || flags&rtfReject != 0 || fields[0] == "*" {
 			continue
 		}
 		if interfacePattern.MatchString(fields[0]) {
@@ -419,6 +545,44 @@ func (t *taker) units() {
 	}
 }
 
+// The bounds of the lists that are kept.
+const (
+	maxListening = 5000
+	maxFailed    = 2000
+)
+
+// listening is what ss -Hltn says is listened on: the local addresses, sorted and with no repeat.
+func (t *taker) listening() {
+	out, err := t.ask("ss", "-Hltn")
+	if !answered(out, err) {
+		t.miss(FactListening)
+		return
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(out.Text, "\n") {
+		if fields := strings.Fields(line); len(fields) >= 4 && printable(fields[3], 64) && len(seen) < maxListening {
+			seen[fields[3]] = true
+		}
+	}
+	t.f.Listening = sortedKeys(seen)
+}
+
+// failedUnits are the units that systemd says have failed, sorted and with no repeat.
+func (t *taker) failedUnits() {
+	out, err := t.ask("systemctl", "--failed", "--no-legend", "--plain")
+	if !answered(out, err) {
+		t.miss(FactFailed)
+		return
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(out.Text, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && strings.Contains(fields[0], ".") && unitNamePattern.MatchString(fields[0]) && len(seen) < maxFailed {
+			seen[fields[0]] = true
+		}
+	}
+	t.f.Failed = sortedKeys(seen)
+}
+
 // The bounds of what is kept of Docker: a box has fewer containers than this, and a container fewer binds.
 const (
 	maxContainers = 1000
@@ -447,7 +611,9 @@ func (t *taker) dockerThere() (bool, error) {
 	if err := t.ctx.Err(); err != nil {
 		return false, err
 	}
-	_, err = t.p.Stat(t.ctx, "/run/docker.sock")
+	ctx, cancel := t.bounded()
+	defer cancel()
+	_, err = t.p.Stat(ctx, "/run/docker.sock")
 	switch {
 	case err == nil:
 		return true, nil

@@ -34,12 +34,16 @@ func TestTheFactsOfAHealthyBox(t *testing.T) {
 		Kernel: "6.1.0-25-amd64", System: "running", DpkgQuiet: true,
 		SambaUsers: 4,
 		Mergerfs:   []string{"/DATA/pool", "/media/Media Library"},
+		Pools:      map[string][]string{"/DATA/pool": {"/mnt/disk1", "/mnt/disk2"}, "/media/Media Library": {"/mnt/disk3"}},
+		Mounts:     []string{"/", "/DATA/pool", "/media/Media Library", "/mnt/disk1", "/mnt/disk2", "/mnt/disk3"},
 		Route:      "eth0", DNS: true,
 		Units: map[string]string{
 			"casaos.service": "active", "casaos-gateway.service": "active", "casaos-message-bus.service": "active",
 			"casaos-user-service.service": "active", "casaos-local-storage.service": "active", "casaos-app-management.service": "active",
 		},
-		Paused: []string{"docker.list.casaos-paused"},
+		Paused:    []string{"docker.list.casaos-paused"},
+		Listening: []string{"0.0.0.0:139", "0.0.0.0:22", "0.0.0.0:445", "0.0.0.0:80", "0.0.0.0:8096", "127.0.0.1:35827", "127.0.0.1:631", "127.0.0.53:53", "[::]:139", "[::]:22", "[::]:445"},
+		Failed:    []string{"smartd.service"},
 		Docker: Docker{
 			State: DockerUp, Version: "24.0.7", EngineID: "0b7d1a54-6c0e-4f6c-9a46-5d3d1f0f1c11",
 			Containers: []Container{
@@ -138,11 +142,11 @@ func TestSambaUsersAreTheLinesThatNameAUser(t *testing.T) {
 		"the fixture, with a warning of Samba's in front": {fixture(t, "pdbedit-L"), 0, 4},
 		"none":              {"", 0, 0},
 		"only a warning":    {"WARNING: The \"syslog\" option is deprecated\n", 0, 0},
-		"a record of -v":    {"Unix username:        gary\nNT username:          gary\nAccount Flags:        [U          ]\n", 0, 0},
-		"windows line ends": {"gary:1000:Gary\r\nmedia:1001:Media\r\n", 0, 2},
+		"a record of -v":    {"Unix username:        alice\nNT username:          alice\nAccount Flags:        [U          ]\n", 0, 0},
+		"windows line ends": {"alice:1000:Alice\r\nmedia:1001:Media\r\n", 0, 2},
 		"a name with a space and a colon in the full name": {"mary jane:1003:Mary: Jane\n", 0, 1},
-		"a uid that is not a number":                       {"gary:x:Gary\n", 0, 0},
-		"no uid":                                           {"gary\n", 0, 0},
+		"a uid that is not a number":                       {"alice:x:Alice\n", 0, 0},
+		"no uid":                                           {"alice\n", 0, 0},
 		"an empty name":                                    {":1000:x\n", 0, 0},
 	} {
 		f := healthyBox(t)
@@ -159,7 +163,7 @@ func TestSambaUsersAreUnknownWhenPdbeditCannotSay(t *testing.T) {
 		"the tool is not installed": func(f *fakeProbe) { f.forget("pdbedit", "-L") },
 		"it fails":                  func(f *fakeProbe) { f.on("Can't open smb.conf\n", 1, "pdbedit", "-L") },
 		"it cannot be run":          func(f *fakeProbe) { f.onError(errors.New("fork failed"), "pdbedit", "-L") },
-		"its output was cut":        func(f *fakeProbe) { f.onTruncated("gary:1000:Gary\n", "pdbedit", "-L") },
+		"its output was cut":        func(f *fakeProbe) { f.onTruncated("alice:1000:Alice\n", "pdbedit", "-L") },
 	} {
 		f := healthyBox(t)
 		set(f)
@@ -226,6 +230,10 @@ func TestTheDefaultRouteIsTheOneThatGoesNowhereInParticular(t *testing.T) {
 		"a default route that is down":      {header + "eth0\t00000000\t0101A8C0\t0002\t0\t0\t100\t00000000\t0\t0\t0\n", ""},
 		"a destination that is not default": {header + "eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00FFFFFF\t0\t0\t0\n", ""},
 		"a mask that is not default":        {header + "eth0\t0001A8C0\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n", ""},
+		"a route that rejects":              {header + "*\t00000000\t00000000\t0201\t0\t0\t0\t00000000\t0\t0\t0\n", ""},
+		"a route that is a black hole":      {header + "*\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n", ""},
+		"a rejecting route and then a way":  {header + "*\t00000000\t00000000\t0201\t0\t0\t0\t00000000\t0\t0\t0\neth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n", "eth0"},
+		"a way that rejects, by its flags":  {header + "eth0\t00000000\t0101A8C0\t0203\t0\t0\t100\t00000000\t0\t0\t0\n", ""},
 		"the first of two":                  {header + "ens18\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\nwlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n", "ens18"},
 		"spaces for tabs":                   {header + "eth0 00000000 0101A8C0 0003 0 0 100 00000000 0 0 0\n", "eth0"},
 		"a name that is not an interface's": {header + "e;th0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n", "other"},

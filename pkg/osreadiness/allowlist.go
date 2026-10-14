@@ -104,9 +104,14 @@ var allowed = map[string]func([]string) bool{
 			return true
 		case len(args) == 2 && (args[0] == "is-active" || args[0] == "is-enabled"):
 			return unitArg.MatchString(args[1])
+		case slices.Equal(args, []string{"--failed", "--no-legend", "--plain"}):
+			// the units that have failed, as block 2 of an upgrade writes them down
+			return true
 		}
 		return false
 	},
+	// the sockets that listen, as block 2 of an upgrade writes them down: the form that only reads
+	"ss": exact([]string{"-Hltn"}),
 	// the type of the filesystem of a path
 	"stat": func(args []string) bool {
 		return len(args) == 3 && args[0] == "-fc" && args[1] == "%T" && strings.HasPrefix(args[2], "/") && !strings.ContainsAny(args[2], "\x00\n")

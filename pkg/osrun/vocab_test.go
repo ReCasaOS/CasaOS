@@ -78,9 +78,9 @@ func TestTheConstantsAreTheShippedOnes(t *testing.T) {
 		GraceQuiet: 30 * time.Second, StartLost: 30 * time.Second, StartLostSilent: 30 * time.Minute, SystemdSilence: 30 * time.Minute,
 		RebootStall: 15 * time.Minute, RehearsalTTL: 30 * time.Minute, ResumeWait: 10 * time.Minute, SettleEvery: 30 * time.Second,
 		MaxVerifyAttempts: 3, MaxUnwindAttempts: 3, AutoRecoverTries: 0, AutoRecoverWave: 1,
-		Backoff:    [2]time.Duration{2 * time.Minute, 10 * time.Minute},
-		Reminders:  [3]time.Duration{time.Hour, 24 * time.Hour, 24 * time.Hour},
-		HungQuiet:  30 * time.Minute,
+		Backoff:   [2]time.Duration{2 * time.Minute, 10 * time.Minute},
+		Reminders: [3]time.Duration{time.Hour, 24 * time.Hour, 24 * time.Hour},
+		HungQuiet: 30 * time.Minute, FactCommand: 20 * time.Second, ContainersWait: 5 * time.Minute,
 		MarkersMax: 1024 * 1024, MarkerLineMax: 256, LogTail: 128 * 1024,
 	}
 	if DefaultTiming != want {

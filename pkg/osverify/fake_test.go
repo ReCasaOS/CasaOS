@@ -21,6 +21,7 @@ type fakeProbe struct {
 	dirs   map[string][]string
 	exists map[string]bool // paths that Stat finds (a socket, say) and that are not read
 	cmds   map[string]fakeCmd
+	hangs  map[string]bool // commands that do not end until their time does
 	fsErr  map[string]error
 	now    time.Time
 
@@ -41,7 +42,7 @@ func argvKey(argv ...string) string { return strings.Join(argv, "\x1f") }
 
 func newFake() *fakeProbe {
 	return &fakeProbe{
-		files: map[string]string{}, dirs: map[string][]string{}, exists: map[string]bool{}, cmds: map[string]fakeCmd{}, fsErr: map[string]error{},
+		files: map[string]string{}, dirs: map[string][]string{}, exists: map[string]bool{}, cmds: map[string]fakeCmd{}, hangs: map[string]bool{}, fsErr: map[string]error{},
 		now: time.Date(2026, 10, 13, 9, 30, 0, 0, time.UTC),
 	}
 }
@@ -59,6 +60,12 @@ func (f *fakeProbe) onTruncated(text string, argv ...string) {
 
 func (f *fakeProbe) forget(argv ...string) { delete(f.cmds, argvKey(argv...)) }
 
+// hangRead makes a file one that does not answer when it is read, as a file of a file system that has gone away does not.
+func (f *fakeProbe) hangRead(path string) { f.hangs["read:"+path] = true }
+
+// hang makes a command one that does not answer: it ends with the time that it is given, and not before.
+func (f *fakeProbe) hang(argv ...string) { f.hangs[argvKey(argv...)] = true }
+
 func (f *fakeProbe) set(path, content string) { f.files[path] = content }
 
 func (f *fakeProbe) dir(path string, names ...string) { f.dirs[path] = names }
@@ -69,6 +76,10 @@ func notExist(op, path string) error { return &fs.PathError{Op: op, Path: path, 
 
 func (f *fakeProbe) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	f.read = append(f.read, path)
+	if f.hangs["read:"+path] {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if err := f.fsErr[path]; err != nil {
 		return nil, err
 	}
@@ -123,6 +134,10 @@ func (f *fakeProbe) Readlink(ctx context.Context, path string) (string, error) {
 
 func (f *fakeProbe) Run(ctx context.Context, argv ...string) (osreadiness.Output, error) {
 	f.asked = append(f.asked, slices.Clone(argv))
+	if f.hangs[argvKey(argv...)] {
+		<-ctx.Done()
+		return osreadiness.Output{}, ctx.Err()
+	}
 	cmd, ok := f.cmds[argvKey(argv...)]
 	if !ok {
 		return osreadiness.Output{}, osreadiness.ErrToolMissing
@@ -187,6 +202,8 @@ func healthyBox(t testing.TB) *fakeProbe {
 	f.on(fixture(t, "pdbedit-L"), 0, "pdbedit", "-L")
 	f.set("/proc/mounts", fixture(t, "proc-mounts"))
 	f.set("/proc/net/route", fixture(t, "proc-net-route"))
+	f.on(ssOutput(fixture(t, "bk/listening-after.txt")), 0, "ss", "-Hltn")
+	f.on(failedOutput(fixture(t, "bk/failed-units-after.txt")), 0, "systemctl", "--failed", "--no-legend", "--plain")
 	f.dir("/usr/lib/systemd/system", "casaos.service", "casaos-gateway.service", "casaos-message-bus.service", "casaos-user-service.service", "casaos-local-storage.service", "casaos-app-management.service", "ssh.service", "docker.service")
 	f.dir("/etc/systemd/system", "multi-user.target.wants", "casaos.service.d")
 	for _, unit := range []string{"casaos.service", "casaos-gateway.service", "casaos-message-bus.service", "casaos-user-service.service", "casaos-local-storage.service", "casaos-app-management.service"} {
@@ -201,6 +218,24 @@ func healthyBox(t testing.TB) *fakeProbe {
 	f.dir("/etc/apt/sources.list.d", "docker.list.casaos-paused")
 	f.set("/etc/apt/sources.list.d/docker.list.casaos-paused", "deb [arch=amd64] https://download.docker.com/linux/debian bullseye stable\n")
 	return f
+}
+
+// ssOutput is what ss -Hltn prints for these local addresses.
+func ssOutput(addresses string) string {
+	var out strings.Builder
+	for _, address := range strings.Fields(addresses) {
+		out.WriteString("LISTEN 0      4096       " + address + "      0.0.0.0:*\n")
+	}
+	return out.String()
+}
+
+// failedOutput is what systemctl --failed prints for these units.
+func failedOutput(units string) string {
+	var out strings.Builder
+	for _, unit := range strings.Fields(units) {
+		out.WriteString(unit + " loaded failed failed Some description\n")
+	}
+	return out.String()
 }
 
 // healthyResolver is a resolver that answers.
