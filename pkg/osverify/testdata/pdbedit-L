@@ -1,0 +1,5 @@
+WARNING: The "syslog" option is deprecated
+alice:1000:Alice Example
+media:1001:Media User
+guest:1002:
+nobody:65534:Nobody

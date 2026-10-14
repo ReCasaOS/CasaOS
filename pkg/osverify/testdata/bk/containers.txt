@@ -1,0 +1,5 @@
+/jellyfin policy=unless-stopped state=running
+/pihole policy=always state=running
+/scratch policy=no state=running
+/db policy=on-failure state=running
+/oldapp policy=always state=exited
