@@ -79,11 +79,7 @@ func GetSystemOSPlan(ctx echo.Context) error {
 // @Failure 409 {object} model.Result "no plan, or no runbook, or no run: data.error_code says which"
 // @Router /sys/os/upgrade/runbook [get]
 func GetSystemOSRunbook(ctx echo.Context) error {
-	query, err := url.ParseQuery(ctx.Request().URL.RawQuery)
-	values, asked := query["run"]
-	// a query that cannot be read loses the pairs that it cannot read, and the one that asks for the run may be among them: that is
-	// not a request for the plan's text
-	asked = asked || err != nil && strings.Contains(ctx.Request().URL.RawQuery, "run")
+	values, asked := runAskedFor(ctx.Request().URL.RawQuery)
 	if asked {
 		if len(values) != 1 || values[0] != "current" {
 			return osUpgradeFailed(ctx, badOSUpgradeRequest("run"))
@@ -99,4 +95,23 @@ func GetSystemOSRunbook(ctx echo.Context) error {
 		return osPlanFailed(ctx, err)
 	}
 	return osPlanAnswer(ctx, http.StatusOK, common_err.GetMsg(common_err.SUCCESS), runbook)
+}
+
+// runAskedFor reads the pairs of a query one by one for the key run, and gives what was said of it. A query that cannot be read as a whole (a semicolon, a bad escape in another
+// key) loses the pairs it cannot read in url.ParseQuery, and the one that asks for the run may be among them, so the pairs are not given to it: a pair whose value cannot be
+// unescaped is a value that is not "current". A query that has no pair with the key run is not a request for the run, whatever else it holds.
+func runAskedFor(rawQuery string) (values []string, asked bool) {
+	for _, pair := range strings.Split(rawQuery, "&") {
+		key, value, _ := strings.Cut(pair, "=")
+		if name, err := url.QueryUnescape(key); err != nil || name != "run" {
+			continue
+		}
+		asked = true
+		unescaped, err := url.QueryUnescape(value)
+		if err != nil {
+			unescaped = value
+		}
+		values = append(values, unescaped)
+	}
+	return values, asked
 }
