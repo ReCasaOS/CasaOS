@@ -2,6 +2,7 @@ package osreadiness
 
 import (
 	"io/fs"
+	"strings"
 	"testing"
 )
 
@@ -67,14 +68,14 @@ func TestNetworkUplink(t *testing.T) {
 }
 
 func TestNetworkNames(t *testing.T) {
-	// said on every hop: the step before the restart is the one that does it, and nothing is claimed here
+	// said on every hop, and it claims no check: it says that nobody looks
 	for name, setup := range map[string]func(*fakeProbe){"debian 11": nil, "debian 12": debian12, "ubuntu 22.04": ubuntu2204, "ubuntu 24.04": ubuntu2404} {
 		f := newBox(t)
 		if setup != nil {
 			setup(f)
 		}
 		got := checkOn(t, f, "network_names")
-		if got.Severity != Info || got.Action != ActionNone || got.Detail == "" {
+		if got.Severity != Info || got.Action != ActionNone || got.Detail == "" || strings.Contains(got.Title, "are checked") || !strings.Contains(got.Title, "not checked") {
 			t.Errorf("%s: finding = %+v", name, got)
 		}
 	}

@@ -58,10 +58,11 @@ func anything([]string) bool { return true }
 // allowed is the allow-list: a command, by name (a name, never a path), and a test of its
 // arguments. A command that is not here is never run, and a command that can write only runs in
 // the forms below, which read. Every row reads, and what a row may still leave on the machine is
-// said at the row: the temporary file of "dkms status" is the only one (the lock of dpkg is looked
-// at by the box's own probe, in service/, which opens the lock files to read and takes none), and
-// the daemons whose sockets start them (docker, snap) are asked only after their service is seen to
-// run, in the checks. Adding a row is adding to what the report may do to the machine:
+// said at the row: the temporary file of "dkms status" is the only one that a check of the report
+// leaves (the lock of dpkg is looked at by the box's own probe, in service/, which opens the lock
+// files to read and takes none), the database of "pdbedit -L" is the one that the judge of an upgrade
+// may touch, and the daemons whose sockets start them (docker, snap) are asked only after their
+// service is seen to run, in the checks. Adding a row is adding to what the report may do to the machine:
 // TestTheAllowListIsPinned says which rows there are, and fails when one is added or removed.
 var allowed = map[string]func([]string) bool{
 	"dpkg": exact([]string{"--audit"}, []string{"--print-architecture"}, []string{"--print-foreign-architectures"}),
@@ -103,9 +104,14 @@ var allowed = map[string]func([]string) bool{
 			return true
 		case len(args) == 2 && (args[0] == "is-active" || args[0] == "is-enabled"):
 			return unitArg.MatchString(args[1])
+		case slices.Equal(args, []string{"--failed", "--no-legend", "--plain"}):
+			// the units that have failed, as block 2 of an upgrade writes them down
+			return true
 		}
 		return false
 	},
+	// the sockets that listen, as block 2 of an upgrade writes them down: the form that only reads
+	"ss": exact([]string{"-Hltn"}),
 	// the type of the filesystem of a path
 	"stat": func(args []string) bool {
 		return len(args) == 3 && args[0] == "-fc" && args[1] == "%T" && strings.HasPrefix(args[2], "/") && !strings.ContainsAny(args[2], "\x00\n")
@@ -139,8 +145,16 @@ var allowed = map[string]func([]string) bool{
 	// makes and removes a temporary file in $TMPDIR for each module while it looks (it sources the
 	// module's dkms.conf through one). It is allowed for that, and it is the one exception to a report
 	// that writes nothing: the proof of the invariance in CI does not hash /tmp, and does not say it does.
-	"dkms":       exact([]string{"status"}),
-	"mokutil":    exact([]string{"--sb-state"}),
+	"dkms":    exact([]string{"status"}),
+	"mokutil": exact([]string{"--sb-state"}),
+	// pdbedit -L lists the users of Samba's own database, one line each, and nothing else: -v and -w print the
+	// whole record and the hashes of the passwords, the other options add, change and remove. No check of the
+	// report runs it: the judge of an upgrade asks it, before and after, to count the users that the new Samba
+	// must still know. Samba's library opens the database file for writing too, so on a box where that file is
+	// missing the read may make an empty one, and the first read after Samba was upgraded may bring the file's
+	// format up to date, as smbd does when it starts: that is what the row may leave on the machine, in
+	// /var/lib/samba.
+	"pdbedit":    exact([]string{"-L"}),
 	"pveversion": anything,
 	// the client's own version (it asks no daemon, and says there is a docker command), and the daemon's own
 	// answers, in the forms that only read: its info, the ids of the running containers, and what inspect says
