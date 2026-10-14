@@ -1,8 +1,11 @@
 package alerts
 
 import (
+	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // The core tells the owner of an upgrade through the category of updates, to every channel, with the dashboard's address as for any alert.
@@ -57,4 +60,57 @@ func sortedTexts(in []string) []string {
 		}
 	}
 	return out
+}
+
+// A notice that no channel took is not lost: the network may be down when a run stops, or not up yet when the machine is back from its restart, and the core has already written
+// down that it told the owner. It is sent again, and once a channel takes it, it is not sent again.
+func TestAnUpgradeNoticeThatNoChannelTookIsSentAgainWhenOneDoes(t *testing.T) {
+	h, o, _ := newHub(t)
+	h.OSUpgradeRetries = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond}
+	// the network is down for the first two tries of the two channels, and back for the third
+	var calls atomic.Int32
+	h.Send = func(rawURL, title, text string) error {
+		if calls.Add(1) <= 4 {
+			return errors.New("network is unreachable")
+		}
+		return o.send(rawURL, title, text)
+	}
+
+	if !h.OSUpgradeNotice("run:stopped_at_waypoint:1", "It stopped half way.") {
+		t.Fatal("a channel was there, and the notice was not taken")
+	}
+	h.sending.Wait()
+
+	want := "It stopped half way.\nhttp://192.168.1.20"
+	if got := o.texts(phone); len(got) != 1 || got[0] != want {
+		t.Fatalf("the phone got %q", got)
+	}
+	if got := o.texts(mail); len(got) != 1 || got[0] != want {
+		t.Fatalf("the mail box got %q", got)
+	}
+	if n := calls.Load(); n != 6 {
+		t.Errorf("%d sends: it was sent again after a channel took it", n)
+	}
+}
+
+// A notice that reaches no channel in all its tries is given up, and the core is not held for it.
+func TestAnUpgradeNoticeIsGivenUpAfterItsLastTry(t *testing.T) {
+	h, o, _ := newHub(t)
+	h.OSUpgradeRetries = []time.Duration{time.Millisecond, time.Millisecond}
+	down := errors.New("network is unreachable")
+	o.mu.Lock()
+	o.fail[phone], o.fail[mail] = down, down
+	o.mu.Unlock()
+
+	h.OSUpgradeNotice("run:failed:1", "It failed.")
+	done := make(chan struct{})
+	go func() { h.sending.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the sending is still trying")
+	}
+	if len(o.sent) != 0 {
+		t.Fatalf("sent %+v", o.sent)
+	}
 }
