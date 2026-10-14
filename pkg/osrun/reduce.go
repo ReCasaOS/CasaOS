@@ -121,11 +121,13 @@ func busyOf(name string, pnr bool) bool {
 	return true
 }
 
-// NeedsAckWord is whether closing the run takes the typed word: a machine that is half upgraded, and one that needs attention,
-// where the sources of the next release may be in place and packages may be changing, whether or not the point of no return was
-// passed: closing the run drops the flag that keeps backups and automatic updates away from it.
+// NeedsAckWord is whether closing the run takes the typed word: a machine that is half upgraded, one that needs attention, and one
+// that the owner took over and did not finish (a run taken over from needs_attention is the same machine, with the same sources of
+// the next release perhaps in place and the same packages perhaps half configured, and the click that takes it over must not
+// be a way round the word), whether or not the point of no return was passed: closing the run drops the flag that keeps backups
+// and automatic updates away from it.
 func (s State) NeedsAckWord() bool {
-	return (s.HalfUpgraded || s.Name == StateNeedsAttention) && slices.Contains(ActionsFor(s), ActionAcknowledge)
+	return (s.HalfUpgraded || s.Name == StateNeedsAttention || s.Name == StateManual) && slices.Contains(ActionsFor(s), ActionAcknowledge)
 }
 
 // An attemptView is what the log says of one attempt.
