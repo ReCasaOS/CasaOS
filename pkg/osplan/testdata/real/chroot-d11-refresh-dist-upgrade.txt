@@ -1,0 +1,71 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be upgraded:
+  ca-certificates dpkg e2fsprogs gpgv libc-bin libc6 libcom-err2 libext2fs2
+  libgnutls30 libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 liblzma5
+  libpam-modules libpam-modules-bin libpam-runtime libpam0g libsepol1 libss2
+  libssl1.1 libsystemd0 libtasn1-6 libudev1 login logsave openssl passwd
+  perl-base tzdata
+30 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Inst dpkg [1.20.13] (1.20.14 Debian-Security:11/oldoldstable-security [amd64])
+Conf dpkg (1.20.14 Debian-Security:11/oldoldstable-security [amd64])
+Inst login [1:4.8.1-1] (1:4.8.1-1+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Conf login (1:4.8.1-1+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Inst perl-base [5.32.1-4+deb11u3] (5.32.1-4+deb11u5 Debian-Security:11/oldoldstable-security [amd64])
+Conf perl-base (5.32.1-4+deb11u5 Debian-Security:11/oldoldstable-security [amd64])
+Inst libc6 [2.31-13+deb11u11] (2.31-13+deb11u14 Debian-Security:11/oldoldstable-security [amd64])
+Conf libc6 (2.31-13+deb11u14 Debian-Security:11/oldoldstable-security [amd64])
+Inst libc-bin [2.31-13+deb11u11] (2.31-13+deb11u14 Debian-Security:11/oldoldstable-security [amd64])
+Conf libc-bin (2.31-13+deb11u14 Debian-Security:11/oldoldstable-security [amd64])
+Inst libpam0g [1.4.0-9+deb11u1] (1.4.0-9+deb11u2 Debian-Security:11/oldoldstable-security [amd64])
+Conf libpam0g (1.4.0-9+deb11u2 Debian-Security:11/oldoldstable-security [amd64])
+Inst libpam-modules-bin [1.4.0-9+deb11u1] (1.4.0-9+deb11u2 Debian-Security:11/oldoldstable-security [amd64]) [libpam-modules:amd64 on libpam-modules-bin:amd64] [libpam-modules:amd64 ]
+Conf libpam-modules-bin (1.4.0-9+deb11u2 Debian-Security:11/oldoldstable-security [amd64]) [libpam-modules:amd64 ]
+Inst libpam-modules [1.4.0-9+deb11u1] (1.4.0-9+deb11u2 Debian-Security:11/oldoldstable-security [amd64])
+Conf libpam-modules (1.4.0-9+deb11u2 Debian-Security:11/oldoldstable-security [amd64])
+Inst libsystemd0 [247.3-7+deb11u5] (247.3-7+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Conf libsystemd0 (247.3-7+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Inst logsave [1.46.2-2] (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Inst libext2fs2 [1.46.2-2] (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64]) [e2fsprogs:amd64 on libext2fs2:amd64] [e2fsprogs:amd64 ]
+Conf libext2fs2 (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64]) [e2fsprogs:amd64 ]
+Inst e2fsprogs [1.46.2-2] (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Inst libpam-runtime [1.4.0-9+deb11u1] (1.4.0-9+deb11u2 Debian-Security:11/oldoldstable-security [all])
+Conf libpam-runtime (1.4.0-9+deb11u2 Debian-Security:11/oldoldstable-security [all])
+Inst passwd [1:4.8.1-1] (1:4.8.1-1+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Conf passwd (1:4.8.1-1+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Inst gpgv [2.2.27-2+deb11u2] (2.2.27-2+deb11u3 Debian-Security:11/oldoldstable-security [amd64])
+Conf gpgv (2.2.27-2+deb11u3 Debian-Security:11/oldoldstable-security [amd64])
+Inst libcom-err2 [1.46.2-2] (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Conf libcom-err2 (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Inst libtasn1-6 [4.16.0-2+deb11u1] (4.16.0-2+deb11u2 Debian-Security:11/oldoldstable-security [amd64])
+Conf libtasn1-6 (4.16.0-2+deb11u2 Debian-Security:11/oldoldstable-security [amd64])
+Inst libgnutls30 [3.7.1-5+deb11u5] (3.7.1-5+deb11u10 Debian-Security:11/oldoldstable-security [amd64])
+Conf libgnutls30 (3.7.1-5+deb11u10 Debian-Security:11/oldoldstable-security [amd64])
+Inst libk5crypto3 [1.18.3-6+deb11u5] (1.18.3-6+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Conf libk5crypto3 (1.18.3-6+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Inst libkrb5support0 [1.18.3-6+deb11u5] (1.18.3-6+deb11u8 Debian-Security:11/oldoldstable-security [amd64]) [libkrb5-3:amd64 ]
+Conf libkrb5support0 (1.18.3-6+deb11u8 Debian-Security:11/oldoldstable-security [amd64]) [libkrb5-3:amd64 ]
+Inst libkrb5-3 [1.18.3-6+deb11u5] (1.18.3-6+deb11u8 Debian-Security:11/oldoldstable-security [amd64]) [libgssapi-krb5-2:amd64 ]
+Conf libkrb5-3 (1.18.3-6+deb11u8 Debian-Security:11/oldoldstable-security [amd64]) [libgssapi-krb5-2:amd64 ]
+Inst libgssapi-krb5-2 [1.18.3-6+deb11u5] (1.18.3-6+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Conf libgssapi-krb5-2 (1.18.3-6+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Inst libssl1.1 [1.1.1w-0+deb11u1] (1.1.1w-0+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Conf libssl1.1 (1.1.1w-0+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Inst liblzma5 [5.2.5-2.1~deb11u1] (5.2.5-2.1~deb11u2 Debian-Security:11/oldoldstable-security [amd64])
+Conf liblzma5 (5.2.5-2.1~deb11u2 Debian-Security:11/oldoldstable-security [amd64])
+Inst libsepol1 [3.1-1] (3.1-1+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Conf libsepol1 (3.1-1+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Inst libudev1 [247.3-7+deb11u5] (247.3-7+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Conf libudev1 (247.3-7+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Inst tzdata [2024a-0+deb11u1] (2026b-0+deb11u1 Debian-Security:11/oldoldstable-security [all])
+Inst openssl [1.1.1w-0+deb11u1] (1.1.1w-0+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Inst ca-certificates [20210119] (20250419~deb12u1~deb11u1 Debian-Security:11/oldoldstable-security [all])
+Inst libss2 [1.46.2-2] (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Conf logsave (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Conf e2fsprogs (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
+Conf tzdata (2026b-0+deb11u1 Debian-Security:11/oldoldstable-security [all])
+Conf openssl (1.1.1w-0+deb11u8 Debian-Security:11/oldoldstable-security [amd64])
+Conf ca-certificates (20250419~deb12u1~deb11u1 Debian-Security:11/oldoldstable-security [all])
+Conf libss2 (1.46.2-2+deb11u1 Debian-Security:11/oldoldstable-security [amd64])
