@@ -239,6 +239,18 @@ start_body() { # start_body rehearsal(true|false)
 
 apt_sum() { g 'sudo sh -c "cd /etc/apt && find . -type f | sort | xargs sha256sum | sha256sum"'; }
 
+# restart_guest asks for the restart that the core offers. A restart that is made takes the connection down before the answer is read: no answer is the sign that the guest
+# is going down, and an answer that is not a success is a refusal.
+restart_guest() {
+  local out rc=0
+  out=$(apij POST /v1/sys/os/upgrade/reboot '{}' 2>&1) || rc=$?
+  if [ "$rc" = 1 ]; then
+    log "restart: refused: $out"
+    die "the restart was refused"
+  fi
+  log "restart: ${out:-asked, and the connection closed before the answer (the guest is going down)}"
+}
+
 wait_new_boot() { # wait_new_boot BOOT_ID_BEFORE
   local end=$((SECONDS + 1200)) now
   while [ "$SECONDS" -lt "$end" ]; do
@@ -264,7 +276,7 @@ leg_rehearsal() {
   if [ "$(state)" = reboot_first ]; then
     local boot
     boot=$(g cat /proc/sys/kernel/random/boot_id)
-    must "refresh restart" POST /v1/sys/os/upgrade/reboot '{}'
+    restart_guest
     wait_new_boot "$boot"
     sleep 30
     wait_state 600 'reboot_first|refreshed|resuming|verifying|succeeded'
@@ -299,7 +311,7 @@ leg_hop() {
   snapshot awaiting-reboot
   local boot
   boot=$(g cat /proc/sys/kernel/random/boot_id)
-  must "restart" POST /v1/sys/os/upgrade/reboot '{}'
+  restart_guest
   wait_new_boot "$boot"
   sleep 30
   wait_state 2400 'succeeded|succeeded_with_findings'
