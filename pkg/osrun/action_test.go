@@ -602,3 +602,46 @@ func TestNothingIsUndoneOnceThePackagesAreBeingChanged(t *testing.T) {
 	lost.Files.Begun = true
 	wantAction(t, NextAction(State{Name: StateInterrupted, Cause: CauseKilled}, lost), Action{Kind: DoNone})
 }
+
+func TestAMachineThatNeededNoRestartIsCheckedWhenItHasHadTimeEnoughToGetReady(t *testing.T) {
+	// It is still in the boot the run began in, so the core has no new boot to note and nothing to count the time from but the unit's word
+	// that no restart was needed.
+	l := hopLaunched(t)
+	for i, b := range BlockList(PhaseRun, Files{}) {
+		l.blockStart(1, i+1, b)
+		l.blockFiles(b, true)
+		l.blockDone(1, i+1, b)
+	}
+	l.files.BootIDFile = ""
+	l.add(Marker{Kind: MkRebootNotNeeded, N: 1, Kernel: "6.1.0-37-amd64"}).end(1, "ok")
+	var said time.Time
+	for _, m := range l.input().Markers {
+		if m.Kind == MkRebootNotNeeded {
+			said = m.At
+		}
+	}
+	verify := Action{Kind: DoLaunchVerify, Phase: PhaseVerify, Who: WhoAuto}
+	in := l.input()
+	for d, want := range map[time.Duration]Action{
+		time.Minute: {Kind: DoNone},
+		DefaultTiming.ResumeWait - time.Nanosecond: {Kind: DoNone},
+		DefaultTiming.ResumeWait:                   verify,
+		DefaultTiming.ResumeWait + 24*time.Hour:    verify,
+	} {
+		in.Now = said.Add(d)
+		s, a := next(t, in)
+		is(t, s, StateResuming, "")
+		if a != want {
+			t.Errorf("%v after the word: %+v, want %+v", d, a, want)
+		}
+	}
+	// A machine that is ready is not made to wait, and one that systemd does not answer for is not launched on.
+	in.Now = said.Add(time.Minute)
+	in.Ready = true
+	_, a := next(t, in)
+	wantAction(t, a, verify)
+	in.Now, in.Ready, in.Unit = said.Add(time.Hour), false, Unit{}
+	if got := NextAction(Reduce(in), in); got.Kind == DoLaunchVerify {
+		t.Errorf("a launch while systemd does not answer: %+v", got)
+	}
+}

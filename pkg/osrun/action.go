@@ -183,7 +183,7 @@ func nextAction(s State, in Input) Action {
 			return Action{Kind: DoUnwind, Phase: PhaseUnwind, Who: WhoAuto}
 		}
 	case StateResuming:
-		if c.canLaunch() && (c.in.Ready || !c.in.BootSeenAt.IsZero() && c.age(c.in.BootSeenAt) >= c.tm.ResumeWait) {
+		if c.canLaunch() && (c.in.Ready || c.resumeWaited()) {
 			return c.relaunchVerify()
 		}
 	case StateFailed:
@@ -219,6 +219,19 @@ func nextAction(s State, in Input) Action {
 // canLaunch is whether a unit can be started: systemd answers, none is running, and none that was written is on its way.
 func (c *ctx) canLaunch() bool {
 	return c.in.Unit.Answered && !c.in.Unit.Active && !c.inFlight()
+}
+
+// resumeWaited is whether a machine on its way to its check has had the time it is given to get ready. The time is counted from when
+// the core noted the new boot; a restart that was not needed has no new boot to note (the machine is in the boot the run began in),
+// and the time is counted from the unit's word that none was.
+func (c *ctx) resumeWaited() bool {
+	from := c.in.BootSeenAt
+	if from.IsZero() {
+		if r, ok := c.result(); ok && r.kind == MkRebootNotNeeded {
+			from = r.at
+		}
+	}
+	return !from.IsZero() && c.age(from) >= c.tm.ResumeWait
 }
 
 // rehearsalMachineRestarted is whether the machine has restarted since the rehearsal's unit began: the sources of the next
