@@ -490,7 +490,9 @@ func (c *ctx) settled() State {
 		return c.notStarted()
 	}
 	if !a.Ended {
-		if c.canFinishFromFiles() {
+		// A refresh or a rehearsal that said it was done and was lost before its end line ended: the result is its last word, and no file
+		// of the run says anything else. A hop and its check are asked of the files.
+		if c.canFinishFromFiles() || a.Result != nil && (a.Phase == PhaseRefresh || a.Phase == PhaseRehearse) {
 			return c.byResult()
 		}
 		return c.lost()

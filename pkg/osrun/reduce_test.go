@@ -1029,3 +1029,38 @@ func TestTheFileOfTheLastBlockIsNotACheckThatNeverBegan(t *testing.T) {
 		}
 	}
 }
+
+func TestAUnitThatSaidItWasDoneAndWasLostBeforeItsEndIsDone(t *testing.T) {
+	// The result is the unit's last word before its end: a refresh that said it was done, and whose restart was wanted, is not undone and
+	// called failed because the line that ends it never landed.
+	for name, c := range map[string]struct {
+		l    func() *runLog
+		want string
+	}{
+		"a refresh that needs no restart": {func() *runLog { return lostRefresh(t, "no") }, StateRefreshed},
+		"a refresh that asks for one":     {func() *runLog { return lostRefresh(t, "yes") }, StateRebootFirst},
+		"a rehearsal that was ready": {func() *runLog {
+			l := newLog(t, RunRehearsal).attempt(1, PhaseRehearse, "", WhoAuto).start(1, PhaseRehearse, bootA)
+			for i, b := range BlockList(PhaseRehearse, Files{}) {
+				l.block(1, i+1, b)
+			}
+			return l.add(Marker{Kind: MkRehearsalReady, N: 1})
+		}, StateRehearsed},
+	} {
+		in := quiet(c.l().input(), time.Minute)
+		s := reduced(t, in)
+		is(t, s, c.want, "")
+		if s.Phase == PhaseUnwind || NextAction(s, in).Kind == DoUnwind && c.want != StateRehearsed {
+			t.Errorf("%s: %+v, %+v", name, s, NextAction(s, in))
+		}
+	}
+}
+
+// lostRefresh is a refresh that wrote its result and whose unit was lost before it wrote its end.
+func lostRefresh(t *testing.T, restart string) *runLog {
+	l := newLog(t, RunRefresh).attempt(1, PhaseRefresh, "", WhoAuto).start(1, PhaseRefresh, bootA)
+	for i, b := range BlockList(PhaseRefresh, Files{}) {
+		l.block(1, i+1, b)
+	}
+	return l.add(Marker{Kind: MkRefreshDone, N: 1, Result: restart, Why: "kernel"})
+}
