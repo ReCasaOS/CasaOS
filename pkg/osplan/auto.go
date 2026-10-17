@@ -10,7 +10,7 @@ import (
 )
 
 // The auto text: the nine blocks of the hop as the unit of the dashboard runs them. They are the blocks of the owner's runbook, written by the same code (blockSpec.body),
-// with nine places where the unit differs from a person at a terminal (the hooks below), and one pass that gives every STOP line a class that the dashboard can tell
+// with eleven places where the unit differs from a person at a terminal (the hooks below), and one pass that gives every STOP line a class that the dashboard can tell
 // apart. Nothing of the block text is replaced after it is written but that pass, which leaves what is inside a heredoc as it is: block 3 checks the hash of its restore
 // script, and the tree of the sources is the plan's, byte for byte.
 //
