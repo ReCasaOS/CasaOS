@@ -349,6 +349,10 @@ func (s *systemService) StartSystemOSUpgrade(req OSUpgradeStartRequest) (OSUpgra
 	factsCtx, factsCancel := context.WithTimeout(ctx, 2*time.Minute)
 	facts := osUpgradeTakeFacts(factsCtx, probe)
 	factsCancel()
+	// the facts took a while: a plan that ran out meanwhile is not started
+	if _, refusal := s.osUpgradePlan(req.PlanID); refusal != nil {
+		return OSUpgradeStatus{}, refusal
+	}
 
 	phase, kind, busyState := osrun.PhaseRun, osrun.RunHop, osrun.StateRunning
 	if req.Rehearsal {

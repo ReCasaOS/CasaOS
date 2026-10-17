@@ -19,7 +19,8 @@ import (
 // upgrade is changed, never across a question to systemd, a call of systemd-run, or the question to AppManagement.
 //
 //  1. under the lock: the switch and the latest run are looked at again, the finished backup of the run before is put away (it stays where the run before reads it), the run
-//     folder is written, the flag of the open upgrade is put up, the pointer to the run is written, and the first two lines of the log;
+//     folder is written, the flag of the open upgrade is put up, the first two lines of the log are written, and last the pointer to the run. A start that breaks before the
+//     pointer leaves a folder and a flag that no pointer names, and the loop takes the flag away; the pointer never names a run whose log is not whole;
 //  2. AppManagement is asked again which operations it has: one that began between the first question and the flag is not seen by anything that comes after, and is refused
 //     here (apps_busy), with the flag taken away again;
 //  3. under the lock: the attempt is written to the log, and the run before is closed in its own log;
@@ -50,6 +51,9 @@ func (s *systemService) osUpgradeStartRun(ctx context.Context, probe osReadiness
 	unit = s.osUpgradeUnitNow()
 	var launch *osUpgradeLaunch
 	err = withOSUpgradeLock(func() (err error) {
+		if current, state := currentOSUpgrade(); state != osUpgradeHasRun || current != runID {
+			return launchFailure(launchNotAllowed, "another run has taken the place of this one", nil)
+		}
 		launch, err = s.launchPrepareLocked(runID, phase, osrun.WhoOwner, unit)
 		if err == nil && previous != nil {
 			if closeErr := s.osUpgradeCloseLog(previous, "acknowledge"); closeErr != nil {
@@ -87,6 +91,10 @@ func (s *systemService) osUpgradeOpenRun(spec osUpgradeRunSpec, nonce, busyState
 	if !osUpgradeBetaOn() {
 		return nil, refuseUpgrade(OSUpgradeBetaOff, "the upgrade of the operating system is not switched on", nil)
 	}
+	if osUpgradeLaunching.Load() > 0 {
+		// systemd-run was called for an attempt and has not answered: the log does not say yet that the attempt is lost, and a second start would close its run
+		return nil, refuseUpgrade(OSUpgradeBusy, "a unit of the upgrade is being started", map[string]any{"reason": launchUnitBusy})
+	}
 	previous, _, refusal := s.osUpgradeLatestWith(unit)
 	if refusal != nil {
 		return nil, refusal
@@ -109,9 +117,6 @@ func (s *systemService) osUpgradeOpenRun(spec osUpgradeRunSpec, nonce, busyState
 	if err := setOSUpgradeBusy(runID, busyState, u.now()); err != nil {
 		return nil, fail("the flag of the open upgrade could not be written", err)
 	}
-	if err := setOSUpgradeCurrent(runID); err != nil {
-		return nil, fail("the pointer to the run could not be written", err)
-	}
 	dir := osUpgradeRunFolder(runID)
 	boot, _ := osUpgradeBootID()
 	if err := createOSUpgradeMarkers(dir, nonce, u.now().UTC()); err != nil {
@@ -119,6 +124,9 @@ func (s *systemService) osUpgradeOpenRun(spec osUpgradeRunSpec, nonce, busyState
 	}
 	if err := appendOSUpgradeMarker(dir, nonce, osrun.Marker{Kind: osrun.MkRun, RunID: runID, Hop: spec.Meta.Hop, PlanID: spec.Meta.PlanID, RunKind: spec.Meta.Kind, Boot: boot}); err != nil {
 		return nil, fail("the log of the run could not be written", err)
+	}
+	if err := setOSUpgradeCurrent(runID); err != nil {
+		return nil, fail("the pointer to the run could not be written", err)
 	}
 	return previous, nil
 }
@@ -134,6 +142,11 @@ func (s *systemService) osUpgradeAbandon(runID string, previous *osUpgradeRun) {
 func (s *systemService) osUpgradeAbandonLocked(runID string, previous *osUpgradeRun) {
 	if err := os.RemoveAll(osUpgradeRunFolder(runID)); err != nil {
 		logger.Error("the folder of a run that was abandoned could not be removed", zap.String("run", runID), zap.Error(err))
+	}
+	// A start that waited long between its two locks can find that a start of another run went in and closed it: the pointer and the flag are that run's now, and a unit
+	// of it may be running. Only a pointer that names this run, the run before or nothing is this start's to put back.
+	if current, state := currentOSUpgrade(); state == osUpgradeHasRun && current != runID && (previous == nil || current != previous.ID) {
+		return
 	}
 	if err := clearOSUpgradeBusy(); err != nil {
 		logger.Error("the flag of a run that was abandoned could not be taken away", zap.String("run", runID), zap.Error(err))

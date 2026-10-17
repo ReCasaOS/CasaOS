@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -148,6 +149,10 @@ func (s *systemService) launchAttempt(runID, phase, who string) error {
 	return s.launchRun(launch)
 }
 
+// osUpgradeLaunching counts the attempts that are in the log and whose call of systemd-run has not returned: launchPrepareLocked puts one up, launchRun takes it down. The caller of
+// the first calls the second, whatever comes of it. A start is not admitted while it is above nothing: the log would not yet say that an attempt that systemd-run is slow to start is lost.
+var osUpgradeLaunching atomic.Int32
+
 // launchPrepareLocked is steps 1 to 4 of launchAttempt, for a caller that holds osUpgradeMu and has asked systemd (unit).
 func (s *systemService) launchPrepareLocked(runID, phase, who string, unit osrun.Unit) (*osUpgradeLaunch, error) {
 	if !osrun.ValidPhase(phase) || (who != osrun.WhoAuto && who != osrun.WhoOwner) {
@@ -223,6 +228,7 @@ func (s *systemService) launchPrepareLocked(runID, phase, who string, unit osrun
 	if err := appendOSUpgradeMarker(run.Dir, run.Nonce, attempt); err != nil {
 		return nil, launchFailure(launchIO, "the log cannot be written", err)
 	}
+	osUpgradeLaunching.Add(1)
 	return &osUpgradeLaunch{run: run, attempt: attempt, args: args, systemdPath: support.systemdPath}, nil
 }
 
@@ -230,6 +236,7 @@ func (s *systemService) launchPrepareLocked(runID, phase, who string, unit osrun
 // same: a bus that was too slow can say it failed after the job was queued, and the unit then begins and says so itself, and the log is left as it is. START_FAILED is written only when
 // systemd answered and has no such unit; when it did not answer nothing is written, and the attempt is waited for as long as the reducer waits for a launch that no unit has answered.
 func (s *systemService) launchRun(launch *osUpgradeLaunch) error {
+	defer osUpgradeLaunching.Add(-1)
 	u := s.systemPackageUpdater()
 	output, err := u.start(launch.systemdPath, systemOSUpgradeUnit, launch.args...)
 	if err == nil {

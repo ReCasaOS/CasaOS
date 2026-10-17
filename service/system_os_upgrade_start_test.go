@@ -1106,7 +1106,7 @@ func TestTwoStartsAtOnceMakeOneRun(t *testing.T) {
 			switch {
 			case err == nil:
 				made.Add(1)
-			case err.(*OSUpgradeRefusal).Code == OSUpgradeRunOpen:
+			case err.(*OSUpgradeRefusal).Code == OSUpgradeRunOpen || err.(*OSUpgradeRefusal).Code == OSUpgradeBusy:
 				refused.Add(1)
 			default:
 				t.Errorf("err = %v", err)
