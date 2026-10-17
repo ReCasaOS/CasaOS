@@ -11,6 +11,7 @@ Each module ships `module.json` in its release archive, and the installer copies
   "schema": 1,
   "name": "virt",
   "title": "Virtual machines",
+  "description": "Create and run virtual machines with libvirt and QEMU.",
   "component": "CasaOS-VirtManagement",
   "unit": "casaos-virt-management.service",
   "gateway_route": "/v2/virt_management",
@@ -33,11 +34,12 @@ Each module ships `module.json` in its release archive, and the installer copies
 |---|---|
 | `schema` | `1`. A change of the format is a new number. |
 | `name` | `[a-z][a-z0-9-]{0,31}`, and the name of the file (`virt.json`). |
-| `title` | 1 to 64 characters, no control character. |
+| `title` | 1 to 60 printable characters (no control character, no mark that turns the text round, not only spaces). |
+| `description` | optional, at most 300 printable characters; the dashboard shows it as text. |
 | `component` | `[A-Za-z][A-Za-z0-9._-]{0,63}`. |
-| `unit` | a systemd service: `[A-Za-z0-9][A-Za-z0-9:_.@-]{0,100}.service`. |
-| `gateway_route` | `/v<digits>/<name>`, lower case, digits and underscores. |
-| `packages` | `common`, `amd64`, `arm64`; at most 32 each; Debian package names, none twice. |
+| `unit` | a systemd service: `[A-Za-z0-9][A-Za-z0-9:_.@-]{0,63}.service`. |
+| `gateway_route` | `/v<digits>/<name>`, lower case, digits and underscores, the name at most 40 characters. |
+| `packages` | `common`, `amd64`, `arm64`; at most 32 each and 40 in all; Debian package names (lower case, two to 64 characters, not ending in `-` or `+`, which apt reads as orders), none twice in a list. |
 | `min_recasaos` | three numbers: `0.5.23`. |
 | `os` | at least one, at most 16: `debian:12`, `ubuntu:24.04`. |
 | `os_upgrade` | optional; see below. |

@@ -12,9 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Schema is the one version of the manifest that is read: a change of the format is a new number, so that it is never guessed at.
@@ -27,8 +30,10 @@ const MaxBytes = 64 << 10
 type Manifest struct {
 	Schema int `json:"schema"`
 	// Name is the short name of the module ("virt"): the name of its file, and what the core calls it.
-	Name  string `json:"name"`
-	Title string `json:"title"`
+	Name string `json:"name"`
+	// Title and Description are what the dashboard shows of the module, as text: printable characters and nothing else.
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
 	// Component is the name of the component that is released (the repository), Unit its systemd unit, GatewayRoute where the gateway reaches it.
 	Component    string   `json:"component"`
 	Unit         string   `json:"unit"`
@@ -88,8 +93,8 @@ func invalid(field, reason string) error { return &Invalid{Field: field, Reason:
 var (
 	nameRe      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	componentRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,63}$`)
-	unitRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,100}\.service$`)
-	routeRe     = regexp.MustCompile(`^/v[0-9]{1,2}/[a-z][a-z0-9_]{0,63}$`)
+	unitRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,63}\.service$`)
+	routeRe     = regexp.MustCompile(`^/v[0-9]{1,2}/[a-z][a-z0-9_]{0,39}$`)
 	callRe      = regexp.MustCompile(`^/[a-z0-9_.-]+(/[a-z0-9_.-]+){0,7}$`)
 	packageRe   = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{1,63}$`)
 	versionRe   = regexp.MustCompile(`^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$`)
@@ -99,10 +104,12 @@ var (
 // the bounds of the lists and of the wait
 const (
 	maxPackages     = 32
+	maxPackagesAll  = 40
 	maxOS           = 16
 	maxStopUnits    = 8
 	maxStopSeconds  = 3600
-	maxTitleRunes   = 64
+	maxTitleRunes   = 60
+	maxDescRunes    = 300
 	manifestSuffix  = ".json"
 	maxCallSegments = 8
 )
@@ -120,15 +127,7 @@ func Parse(file string, raw []byte) (Manifest, error) {
 	if len(raw) > MaxBytes {
 		return m, invalid("file", ReasonTooLarge)
 	}
-	if err := noRepeatedKey(raw); err != nil {
-		return m, invalid("file", ReasonUnreadable)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&m); err != nil {
-		return Manifest{}, invalid("file", ReasonUnreadable)
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+	if err := decodeStrict(raw, &m); err != nil {
 		return Manifest{}, invalid("file", ReasonUnreadable)
 	}
 	if err := validate(m, name); err != nil {
@@ -144,8 +143,11 @@ func validate(m Manifest, name string) error {
 	if m.Name != name {
 		return invalid("name", ReasonValue)
 	}
-	if n := len([]rune(m.Title)); n == 0 || n > maxTitleRunes || strings.ContainsFunc(m.Title, func(r rune) bool { return r < ' ' || r == 0x7f }) {
+	if n := utf8.RuneCountInString(m.Title); n == 0 || n > maxTitleRunes || !printable(m.Title) || strings.TrimSpace(m.Title) == "" {
 		return invalid("title", ReasonValue)
+	}
+	if utf8.RuneCountInString(m.Description) > maxDescRunes || !printable(m.Description) {
+		return invalid("description", ReasonValue)
 	}
 	for _, c := range []struct {
 		field, value string
@@ -164,14 +166,17 @@ func validate(m Manifest, name string) error {
 		field string
 		list  []string
 	}{{"packages.common", m.Packages.Common}, {"packages.amd64", m.Packages.AMD64}, {"packages.arm64", m.Packages.ARM64}} {
-		if err := list(c.field, c.list, packageRe, maxPackages); err != nil {
+		if err := listOf(c.field, c.list, ValidPackageName, maxPackages); err != nil {
 			return err
 		}
+	}
+	if len(m.Packages.Common)+len(m.Packages.AMD64)+len(m.Packages.ARM64) > maxPackagesAll {
+		return invalid("packages", ReasonTooMany)
 	}
 	if len(m.OS) == 0 {
 		return invalid("os", ReasonMissing)
 	}
-	if err := list("os", m.OS, osRe, maxOS); err != nil {
+	if err := listOf("os", m.OS, osRe.MatchString, maxOS); err != nil {
 		return err
 	}
 	if m.OSUpgrade != nil {
@@ -184,7 +189,7 @@ func validateOSUpgrade(u OSUpgrade, route string) error {
 	if len(u.StopUnits) == 0 {
 		return invalid("os_upgrade.stop_units", ReasonMissing)
 	}
-	if err := list("os_upgrade.stop_units", u.StopUnits, unitRe, maxStopUnits); err != nil {
+	if err := listOf("os_upgrade.stop_units", u.StopUnits, unitRe.MatchString, maxStopUnits); err != nil {
 		return err
 	}
 	if u.StopTimeoutSeconds < 1 || u.StopTimeoutSeconds > maxStopSeconds {
@@ -205,17 +210,93 @@ func validateOSUpgrade(u OSUpgrade, route string) error {
 	return nil
 }
 
-// list checks that every element matches and that there are no more than max, and none twice.
-func list(field string, values []string, re *regexp.Regexp, max int) error {
+// listOf checks that every element is valid and that there are no more than max, and none twice.
+func listOf(field string, values []string, valid func(string) bool, max int) error {
 	if len(values) > max {
 		return invalid(field, ReasonTooMany)
 	}
 	for i, v := range values {
-		if !re.MatchString(v) || slices.Index(values, v) != i {
+		if !valid(v) || slices.Index(values, v) != i {
 			return invalid(field, ReasonValue)
 		}
 	}
 	return nil
+}
+
+// ValidPackageName says whether a name is one that may be handed to apt as a package: lower case letters, digits, "+", "." and "-", two to 64 characters, the first a letter or a digit.
+// A name that ends in "-" or "+" is refused although the pattern of Debian takes it, because the command line of apt reads that last character as an order ("pkg-" removes pkg).
+func ValidPackageName(s string) bool {
+	return packageRe.MatchString(s) && !strings.HasSuffix(s, "-") && !strings.HasSuffix(s, "+")
+}
+
+// printable says whether a text is made of printable characters only: letters, marks, numbers, punctuation, symbols and the space, and not the replacement character that stands for
+// bytes that were not text. A text goes to the dashboard as it is, and a control, a mark that turns the line round or a space that cannot be seen is no part of a title.
+func printable(s string) bool {
+	return !strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsPrint(r) || r == utf8.RuneError })
+}
+
+// decodeStrict decodes the JSON text raw into dst, a pointer to a struct, and refuses what another reader of the same text (jq in the installer, the dashboard) could read otherwise: bytes
+// that are not UTF-8 (the decoder of Go turns them into U+FFFD), a key that comes twice, a key that is a known one only because the decoder of Go folds the case (it takes "NAME" for
+// "name", and the long s for an s), a field that is not known, words after the value.
+func decodeStrict(raw []byte, dst any) error {
+	if !utf8.Valid(raw) {
+		return errors.New("not UTF-8")
+	}
+	if err := noRepeatedKey(raw); err != nil {
+		return err
+	}
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return err
+	}
+	if !exactKeys(tree, reflect.TypeOf(dst)) {
+		return errors.New("a key is not a field")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("words after the value")
+	}
+	return nil
+}
+
+// exactKeys says whether every key of every object of the tree (the generic reading of a document) is, letter for letter, the name that a field of the type t has in its json tag.
+func exactKeys(tree any, t reflect.Type) bool {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch v := tree.(type) {
+	case map[string]any:
+		if t.Kind() != reflect.Struct {
+			return true // (what the type does not take, the decoder says)
+		}
+		for key, child := range v {
+			field, ok := fieldTagged(t, key)
+			if !ok || !exactKeys(child, field.Type) {
+				return false
+			}
+		}
+	case []any:
+		if t.Kind() == reflect.Slice {
+			for _, child := range v {
+				if !exactKeys(child, t.Elem()) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func fieldTagged(t reflect.Type, key string) (reflect.StructField, bool) {
+	for i := range t.NumField() {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name == key {
+			return t.Field(i), true
+		}
+	}
+	return reflect.StructField{}, false
 }
 
 // noRepeatedKey walks the tokens of a JSON document and refuses a key that comes twice in one object: the decoder would take the last, and another reader of the same file (the installer's
