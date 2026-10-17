@@ -45,9 +45,9 @@ func Main(ctx context.Context, args []string, env Env) int {
 		res, err := StatusOf(ctx, env, c.name)
 		return emit(env, res, err)
 	case "install":
-		return Install(ctx, env, c)
+		return runInstall(ctx, env, c)
 	default: // remove
-		return Remove(ctx, env, c)
+		return runRemove(ctx, env, c)
 	}
 }
 

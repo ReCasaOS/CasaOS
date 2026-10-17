@@ -203,8 +203,8 @@ func (j *job) sayLeftovers(name string, packages []string) {
 	j.say("nothing above was run")
 }
 
-// Remove takes the module c.name off the box. A module is there to remove when it has a manifest, a list of files or a version: a half-installed one is removed too.
-func Remove(ctx context.Context, env Env, c command) int {
+// runRemove takes the module c.name off the box. A module is there to remove when it has a manifest, a list of files or a version: a half-installed one is removed too.
+func runRemove(ctx context.Context, env Env, c command) int {
 	env = env.withDefaults()
 	say := func(code string) int { fmt.Fprintf(env.Stdout, "refused: %s\n", code); return ExitRefused }
 	if env.EUID() != 0 {

@@ -19,7 +19,7 @@ import (
 // The sandbox of the simulation of apt (osplan.Sandbox): one private directory in /var/tmp, files written inside it and nowhere else, only the two commands of
 // osplan.AllowedModuleArgv run in it, and the directory removed on every exit.
 //
-// ponytail: the directory is where the plan of the upgrade's is, /var/tmp, whatever the Roots say: the allow-list of osplan has no other.
+// The directory is where the sandbox of the plan of the upgrade is, /var/tmp, whatever the Roots say: the allow-list of osplan has no other.
 
 // sandboxDirMode is the mode of the directories of the sandbox: apt drops to its own user to fetch, and that user has to walk down to the directories apt gives it.
 const sandboxDirMode fs.FileMode = 0o711

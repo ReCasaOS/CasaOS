@@ -128,8 +128,8 @@ func (in *install) fail(code string, err error) *stepFailure {
 	return &stepFailure{code, err}
 }
 
-// Install installs the module c.name: the plan again, then the steps. It returns the exit code.
-func Install(ctx context.Context, env Env, c command) int {
+// runInstall installs the module c.name: the plan again, then the steps. It returns the exit code.
+func runInstall(ctx context.Context, env Env, c command) int {
 	env = env.withDefaults()
 	say := func(code string) int { fmt.Fprintf(env.Stdout, "refused: %s\n", code); return ExitRefused }
 	if env.EUID() != 0 {
