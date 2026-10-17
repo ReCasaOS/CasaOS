@@ -583,3 +583,22 @@ func TestTheTypedWordIsNeededOnlyToCloseAHalfUpgradedMachine(t *testing.T) {
 		t.Errorf("a hop that is done up to the restart is not half upgraded: %+v", s)
 	}
 }
+
+func TestNothingIsUndoneOnceThePackagesAreBeingChanged(t *testing.T) {
+	// The files of a rehearsal say that packages are being changed, which a rehearsal does not do: the unit that undoes refuses to touch
+	// such a machine, so the core does not start it, whether the rehearsal's time is up or the machine restarted.
+	l := rehearsalReady(t)
+	l.files.Begun = true
+	in := afterLast(l.input(), DefaultTiming.RehearsalTTL)
+	s, a := next(t, in)
+	is(t, s, StateRehearsed, "")
+	wantAction(t, a, Action{Kind: DoNone})
+	restarted := l.input()
+	restarted.Boot.Now = bootB
+	_, a = next(t, restarted)
+	wantAction(t, a, Action{Kind: DoNone})
+	// Nor for a state that was read from files that said otherwise.
+	lost := quiet(hopInBlock(t, BlockDownload).input(), time.Minute)
+	lost.Files.Begun = true
+	wantAction(t, NextAction(State{Name: StateInterrupted, Cause: CauseKilled}, lost), Action{Kind: DoNone})
+}

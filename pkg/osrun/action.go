@@ -158,6 +158,15 @@ func remindersDue(waited time.Duration, r [3]time.Duration) int {
 // unit while systemd does not answer, while one is running or on its way, after the owner took over or closed the run, nor
 // for an attempt number that has been launched.
 func NextAction(s State, in Input) Action {
+	act := nextAction(s, in)
+	// Packages that are being changed cannot be put back: the unit that undoes refuses such a machine, so it is not started for one.
+	if act.Kind == DoUnwind && in.Files.PNR() {
+		return Action{Kind: DoNone}
+	}
+	return act
+}
+
+func nextAction(s State, in Input) Action {
 	c := newCtx(in)
 	if c.v.run == nil || !c.v.valid {
 		return Action{Kind: DoNone}
