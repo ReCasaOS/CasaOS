@@ -37,7 +37,12 @@ func (s *systemService) osUpgradePowerRefusal() *OSUpgradeRefusal {
 	if err != nil {
 		return nil
 	}
-	state := osrun.Reduce(s.osUpgradeInput(run))
+	in := s.osUpgradeInput(run)
+	state := osrun.Reduce(in)
+	if unit := in.Unit; unit.Answered && unit.Active {
+		// a state that says nothing of the work (a run found damaged) does not say that the unit is gone: dpkg may be at work
+		return refuseUpgrade(OSUpgradeOpen, "an upgrade of the operating system is changing the machine: it cannot be restarted or switched off until the upgrade stops or asks for it", map[string]any{"state": state.Name})
+	}
 	if !osUpgradeKeepsPower(state) {
 		// The machine that waits for its restart is restarted by the owner's click, and the checks that stand before that restart bind this click too: a page that restarts a machine
 		// that would stop in emergency mode at its next start is the same mistake as the button that is not offered.
