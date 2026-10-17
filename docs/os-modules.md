@@ -39,7 +39,7 @@ Each module ships `module.json` in its release archive, and the installer copies
 | `component` | `[A-Za-z][A-Za-z0-9._-]{0,63}`. |
 | `unit` | a systemd service: `[A-Za-z0-9][A-Za-z0-9:_.@-]{0,63}.service`. |
 | `gateway_route` | `/v<digits>/<name>`, lower case, digits and underscores, the name at most 40 characters. |
-| `packages` | `common`, `amd64`, `arm64`; at most 32 each and 40 in all; Debian package names (lower case, two to 64 characters, not ending in `-` or `+`, which apt reads as orders), none twice in a list. |
+| `packages` | `common`, `amd64`, `arm64`; at most 32 each and 40 in all; Debian package names (lower case, two to 64 characters, not ending in `-`, `+` or `.deb`, which apt reads as orders and as a file), none twice in a list. |
 | `min_recasaos` | three numbers: `0.5.23`. |
 | `os` | at least one, at most 16: `debian:12`, `ubuntu:24.04`. |
 | `os_upgrade` | optional; see below. |
