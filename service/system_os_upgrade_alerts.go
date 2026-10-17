@@ -62,6 +62,9 @@ func osUpgradeAlertFor(state osrun.State) (key, sentence string, ok bool) {
 			return key, "The upgrade of the operating system could not be finished by itself and the machine is half upgraded. Open the dashboard.", true
 		case state.PNR:
 			return key, "The upgrade of the operating system could not start its next step and the machine is half upgraded. Open the dashboard.", true
+		case state.Kind == osrun.RunRefresh:
+			// a refresh has no point of no return: it runs dist-upgrade of the release the machine has, and it may have upgraded packages before it stopped
+			return key, "The refresh of the operating system stopped (" + osUpgradeWord(state.Reason) + "). Some packages of the release may have been upgraded; the sources and the timers of apt are back. Open the dashboard to see why.", true
 		}
 		return key, "The upgrade of the operating system stopped before it changed any package (" + osUpgradeWord(state.Reason) + "): the machine is as it was. Open the dashboard to see why.", true
 	case osrun.StateNeedsAttention:

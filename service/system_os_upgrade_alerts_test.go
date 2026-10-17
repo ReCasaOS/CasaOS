@@ -352,3 +352,11 @@ func (b *upgradeBox) aHopThatSucceededOn(run *osUpgradeRun) *osUpgradeRun {
 	b.point(run)
 	return b.read(run.ID)
 }
+
+// A refresh that stopped may have upgraded packages: it is not told as an upgrade that stopped before it changed any.
+func TestAFailedRefreshDoesNotSayThatNoPackageWasChanged(t *testing.T) {
+	_, sentence, ok := osUpgradeAlertFor(osrun.State{Name: osrun.StateFailed, Reason: osrun.ClassNetwork, Kind: osrun.RunRefresh, RunID: "0b8f3a52-6c1e-4d0a-9a53-7f1c2d4e8b19"})
+	if !ok || !strings.Contains(sentence, "refresh") || strings.Contains(sentence, "before it changed any package") || strings.Contains(sentence, "as it was") {
+		t.Errorf("a failed refresh is told as %q, %v", sentence, ok)
+	}
+}
