@@ -117,7 +117,10 @@ func osUpgradeBackupRead(run *osUpgradeRun) string {
 		}
 	}
 	bk := osUpgradeBackupFolder(run.Meta.BK)
-	if info, err := os.Lstat(bk); err == nil && info.IsDir() {
+	info, err := os.Lstat(bk)
+	// A folder that cannot be asked about (an I/O error, say) is taken to be there: its files are then asked about one by one, and the two that say packages are
+	// changing are taken to be there when they cannot be. Only a folder that is not there is none.
+	if err == nil && info.IsDir() || err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return bk
 	}
 	return ""

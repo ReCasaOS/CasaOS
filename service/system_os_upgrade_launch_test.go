@@ -535,3 +535,25 @@ func TestTheBlocksOfTheDriverAreTheBlocksOfTheRun(t *testing.T) {
 		t.Errorf("the driver accepts %v, the core writes %v", ids, run)
 	}
 }
+
+// A backup folder that cannot be asked about is taken to be there, as the two files in it that say the upgrade began are: a machine is never taken
+// for one that can still be undone because its folder could not be looked at.
+func TestABackupFolderThatCannotBeAskedAboutIsTakenToBeThere(t *testing.T) {
+	box := newUpgradeBox(t)
+	run := box.aRun(box.anUpgradePlan(osplan.VerdictOK, nil), osrun.RunHop)
+	// a name too long for the file system: the answer is an error that is not "no such file"
+	run.Meta.BK = osUpgradeUnitBackups + "/" + strings.Repeat("x", 300)
+	if _, err := os.Lstat(osUpgradeBackupFolder(run.Meta.BK)); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Skipf("the file system answers %v for a name that is too long", err)
+	}
+	run.BK = osUpgradeBackupRead(run)
+	run.Files = osUpgradeFiles(run)
+	if run.BK == "" || !run.Files.PNR() {
+		t.Errorf("the folder that cannot be asked about is read as %q, %+v", run.BK, run.Files)
+	}
+	// A folder that is not there is not one that cannot be asked about.
+	run.Meta.BK = osUpgradeUnitBackups + "/casaos-os-upgrade-nothing-here"
+	if got := osUpgradeBackupRead(run); got != "" {
+		t.Errorf("a folder that is not there is read as %q", got)
+	}
+}
