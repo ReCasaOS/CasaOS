@@ -1,0 +1,12 @@
+#!/bin/sh
+# Calls the core of ReCasaOS inside the guest as one of the box's own services: from loopback, with the secret of this boot. usage: osu-api METHOD PATH [-]
+# With "-" the body is read from the standard input. The answer is printed as it came, and the status code on the last line, after "HTTP ".
+set -eu
+secret=$(cat /var/run/casaos/internal.secret)
+url=$(cat /var/run/casaos/casaos.url)
+method=$1
+path=$2
+if [ "${3:-}" = "-" ]; then
+  exec curl -sS -m 180 -w '\nHTTP %{http_code}\n' -X "$method" -H "Authorization: Internal $secret" -H 'Content-Type: application/json' -d @- "$url$path"
+fi
+exec curl -sS -m 180 -w '\nHTTP %{http_code}\n' -X "$method" -H "Authorization: Internal $secret" "$url$path"

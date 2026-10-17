@@ -1,0 +1,75 @@
+name: os-upgrade-proof
+
+# The upgrade of the operating system, proved on a machine that boots: a Debian 11 cloud image under QEMU/KVM with ReCasaOS installed in it by its own installer, the core of
+# this checkout in the place of the installed one, and the upgrade driven through the core's API. See .github/os-upgrade-proof/run.sh for what each leg does. Which leg runs is the
+# word in .github/os-upgrade-proof/LEG (smoke, rehearsal or hop), or the input of a manual run; a push to the branch below runs the one the file says.
+
+on:
+  push:
+    branches:
+      - ci/os-upgrade-proof
+  workflow_dispatch:
+    inputs:
+      leg:
+        description: smoke, rehearsal or hop
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - rehearsal
+          - hop
+
+concurrency:
+  group: os-upgrade-proof
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    name: Debian 11 to 12 on a guest that boots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      - name: Generate OPENAPI
+        run: go generate
+
+      - name: Build the core, static, so that it runs on Debian 11
+        run: CGO_ENABLED=1 CGO_LDFLAGS=-static go build -trimpath -o "$RUNNER_TEMP/casaos" .
+
+      - name: Install QEMU and let the job use KVM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils jq
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          df -h /
+
+      - name: The proof
+        env:
+          CORE: ${{ runner.temp }}/casaos
+          OUT: ${{ github.workspace }}/proof-out
+          LEG: ${{ inputs.leg }}
+        run: |
+          [ -n "$LEG" ] || unset LEG
+          bash .github/os-upgrade-proof/run.sh
+
+      - name: Keep what the guest knows
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: os-upgrade-proof
+          path: proof-out
+          if-no-files-found: ignore
