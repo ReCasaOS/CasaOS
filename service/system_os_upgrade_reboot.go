@@ -48,7 +48,7 @@ func (s *systemService) RebootSystemOSUpgrade() (OSUpgradeStatus, error) {
 	if refusal != nil {
 		return OSUpgradeStatus{}, refusal
 	}
-	if !osUpgradeCanRestart(state) {
+	if !osUpgradeCanRestart(run, state) {
 		return OSUpgradeStatus{}, refuseUpgrade(OSUpgradeNotAwaitingReboot, "the machine does not wait for its restart", map[string]any{"state": state.Name})
 	}
 	if doc := s.osUpgradeKeepBarrier(ctx, run, state); doc != nil && !doc.OK {
@@ -73,7 +73,7 @@ func (s *systemService) RebootSystemOSUpgrade() (OSUpgradeStatus, error) {
 		switch {
 		case refusal != nil:
 			return refusal
-		case !osUpgradeCanRestart(state):
+		case !osUpgradeCanRestart(run, state):
 			return refuseUpgrade(OSUpgradeNotAwaitingReboot, "the machine does not wait for its restart", map[string]any{"state": state.Name})
 		}
 		if err := appendOSUpgradeMarker(run.Dir, run.Nonce, osrun.Marker{Kind: osrun.MkRebootRequested, At: u.now().UTC()}); err != nil {
@@ -102,6 +102,11 @@ func (s *systemService) RebootSystemOSUpgrade() (OSUpgradeStatus, error) {
 }
 
 // osUpgradeCanRestart says whether the restart is the next thing in this state: the machine waits for it, asked a while ago and nothing came of it, or a refresh wants it.
-func osUpgradeCanRestart(state osrun.State) bool {
-	return slices.Contains([]string{osrun.StateAwaitingReboot, osrun.StateRebootStalled, osrun.StateRebootFirst}, state.Name)
+func osUpgradeCanRestart(run *osUpgradeRun, state osrun.State) bool {
+	if !slices.Contains([]string{osrun.StateAwaitingReboot, osrun.StateRebootStalled, osrun.StateRebootFirst}, state.Name) {
+		return false
+	}
+	// A hop that the log puts at its restart, with the file of the check before it gone (the backup folder moved or lost), is not one to restart on the log's word: the status does not
+	// offer the restart then, and the call does not make it. The checks that are asked again by the call itself are its own.
+	return run.Meta.Kind != osrun.RunHop || run.Files.DonePrereboot
 }
