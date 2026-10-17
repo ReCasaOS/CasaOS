@@ -263,10 +263,32 @@ func TestAUnitThatSystemdSaysIsGoneIsQuietBeforeItIsLost(t *testing.T) {
 	is(t, reduced(t, alive), StateRunning, "")
 }
 
-func TestALastActivityThatIsInTheFutureCountsAsNow(t *testing.T) {
-	in := quiet(hopInBlock(t, BlockDownload).input(), time.Hour)
-	in.LastActivity = in.Now.Add(24 * time.Hour)
-	is(t, reduced(t, in), StateRunning, "")
+func TestASignOfLifeFromTheFutureIsNoProofThatAGoneUnitSpokeAMomentAgo(t *testing.T) {
+	// The unit is gone and systemd answers. A sign of life a few seconds ahead of the reading is a clock that moved back a little, and counts as
+	// now. One further ahead than the grace is a clock that was set back (a box with no clock of its own starts from the last one it saved): when
+	// it was written cannot be told, and a gone unit is not waited for until the clock catches up.
+	base := hopInBlock(t, BlockDownload).input()
+	for name, c := range map[string]struct {
+		ahead time.Duration
+		want  string
+	}{
+		"a few seconds ahead":       {5 * time.Second, StateRunning},
+		"just inside the grace":     {DefaultTiming.GraceQuiet - time.Nanosecond, StateRunning},
+		"as far ahead as the grace": {DefaultTiming.GraceQuiet, StateInterrupted},
+		"an hour ahead":             {time.Hour, StateInterrupted},
+		"a day ahead":               {24 * time.Hour, StateInterrupted},
+	} {
+		// the last word of the log is ahead of the reading
+		if s := reduced(t, afterLast(base, -c.ahead)); s.Name != c.want {
+			t.Errorf("%s, in the log: %q, want %q", name, s.Name, c.want)
+		}
+		// the unit's output file is ahead of the reading, and the log is old
+		file := quiet(base, time.Hour)
+		file.LastActivity = file.Now.Add(c.ahead)
+		if s := reduced(t, file); s.Name != c.want {
+			t.Errorf("%s, in the output: %q, want %q", name, s.Name, c.want)
+		}
+	}
 }
 
 // Rule 5, for a launch that is on its way: the unit has not said it began.

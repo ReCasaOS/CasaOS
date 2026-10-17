@@ -49,7 +49,8 @@ type Input struct {
 	Unit    Unit
 	Boot    Boot
 	// Now is the time of the reading; LastActivity is the later of the last marker's time and the unit's output file's: a
-	// time that is after Now counts as Now, and a missing one is made up from the markers.
+	// time that is after Now counts as Now, except as the proof that a unit that is gone has just spoken (see spokeLately), and a missing one
+	// is made up from the markers.
 	Now, LastActivity time.Time
 	// Barrier is nil until it has been computed; Verify is nil until the judge has run.
 	Barrier *Barrier
@@ -554,7 +555,20 @@ func (c *ctx) active() bool {
 	if a.StartFailed {
 		return false
 	}
-	return !c.in.Unit.Answered || a.Started && c.age(c.la) < c.tm.GraceQuiet
+	return !c.in.Unit.Answered || a.Started && c.spokeLately()
+}
+
+// spokeLately is whether the run gave a sign of life less than GraceQuiet ago. A sign dated less than GraceQuiet ahead of the reading
+// is one too: the clock of the box moved back a little between the writing and the reading. A sign dated further ahead is none: the
+// clock was set back since (a box with no clock of its own starts from the last time it saved), how long ago it was written cannot be
+// told, and a unit that is gone is not waited for until the clock catches up.
+func (c *ctx) spokeLately() bool {
+	for _, sign := range []time.Time{c.in.LastActivity, c.v.lastAt} {
+		if d := c.in.Now.Sub(sign); !sign.IsZero() && d < c.tm.GraceQuiet && d > -c.tm.GraceQuiet {
+			return true
+		}
+	}
+	return false
 }
 
 // startLost is whether the attempt that never said it began has been waited for long enough, or was told to have failed.
