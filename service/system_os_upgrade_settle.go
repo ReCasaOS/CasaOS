@@ -189,6 +189,9 @@ func (s *systemService) osUpgradeSettleOnce(ctx context.Context) (tick osUpgrade
 	}
 	tick.RunID = id
 	in := s.osUpgradeInput(run)
+	if s.osUpgradeForgetDeadStart(id, run, in) {
+		return tick
+	}
 	state := osUpgradeStateOf(run, in)
 	s.osUpgradeKeepFlag(run, state, in.Unit)
 
@@ -216,6 +219,39 @@ func (s *systemService) osUpgradeSettleOnce(ctx context.Context) (tick osUpgrade
 	s.osUpgradeTellOf(state, action, barrier != nil && !barrier.OK)
 	s.osUpgradeKeepQuiet(state)
 	return tick
+}
+
+// osUpgradeForgetDeadStart takes away the pointer and the flag of a run whose log has its first line and never got its second, the run line, and has not got it for as long as a
+// start that did not come is waited for: the core stopped between the two writes of a start that is made under one lock. Such a run has started nothing and says nothing of itself,
+// so no button is valid for it, and without this its flag would hold the machine until a new start closed it. It says whether it did.
+func (s *systemService) osUpgradeForgetDeadStart(id string, run *osUpgradeRun, in osrun.Input) bool {
+	dead := func(r *osUpgradeRun) bool {
+		return len(r.Markers) == 1 && r.Markers[0].Kind == osrun.MkQueued && in.Now.Sub(r.Markers[0].At) >= osUpgradeTiming.StartLost
+	}
+	if !dead(run) || !in.Unit.Answered || in.Unit.Active {
+		return false
+	}
+	forgotten := false
+	_ = withOSUpgradeLock(func() error {
+		current, state := currentOSUpgrade()
+		again, err := readOSUpgradeRun(id)
+		if state != osUpgradeHasRun || current != id || err != nil || !dead(again) {
+			return nil
+		}
+		if err := clearOSUpgradeCurrent(); err != nil {
+			logger.Error("the pointer to a start that never began could not be taken away", zap.String("run", id), zap.Error(err))
+			return err
+		}
+		if err := clearOSUpgradeBusy(); err != nil {
+			logger.Error("the flag of a start that never began could not be taken away", zap.String("run", id), zap.Error(err))
+		}
+		forgotten = true
+		return nil
+	})
+	if forgotten {
+		logger.Warn("a start of an upgrade of the operating system that never got its run line was forgotten", zap.String("run", id))
+	}
+	return forgotten
 }
 
 // osUpgradeStateOf is the state of a run, with the run's id in it when the log could not say whose it is: the folder's own is the run's, and what is told of the run (the
@@ -306,8 +342,9 @@ func readOSUpgradeBusyFlag() (osUpgradeBusyFlag, bool) {
 // osUpgradeSeeBoot is the first thing the core does of a boot that the run has not seen, and which holds the machine: the units that change packages by themselves come back with
 // a boot, and are stopped again, and the boot is written down once. The units are stopped first: a look that is cut short between the two does both again.
 func (s *systemService) osUpgradeSeeBoot(ctx context.Context, run *osUpgradeRun, boot string, state osrun.State) {
-	if osUpgradeHoldsTimers(run, state) {
-		s.osUpgradeStopAptUnits(ctx)
+	if osUpgradeHoldsTimers(run, state) && !s.osUpgradeStopAptUnits(ctx) {
+		// a unit that could not be asked about or stopped is tried again at the next look: the boot is not written down while the timers of apt may run
+		return
 	}
 	if !osrun.ValidNonce(run.Nonce) {
 		return
@@ -330,22 +367,32 @@ func osUpgradeHoldsTimers(run *osUpgradeRun, state osrun.State) bool {
 	return !run.Files.DoneAfter && state.Name != osrun.StateRebootFirst
 }
 
-// osUpgradeStopAptUnits stops the units of apt that run by themselves, each only if it is active: a unit that is not there is not a failure.
-func (s *systemService) osUpgradeStopAptUnits(ctx context.Context) {
+// osUpgradeStopAptUnits stops the units of apt that run by themselves, each only if it is active: a unit that is not there is not a failure. It says whether every unit was
+// answered about and every active one stopped.
+func (s *systemService) osUpgradeStopAptUnits(ctx context.Context) bool {
 	u := s.systemPackageUpdater()
+	done := true
 	for _, unit := range osUpgradeAptUnits {
 		askCtx, cancel := context.WithTimeout(ctx, systemDockerUnitTimeout)
 		out, _ := u.command(askCtx, "systemctl", "is-active", unit)
 		cancel()
-		if state := strings.TrimSpace(string(out)); state != "active" && state != "activating" {
+		state := strings.TrimSpace(string(out))
+		if state == "" {
+			// systemd said nothing: the unit may be active
+			done = false
+			continue
+		}
+		if state != "active" && state != "activating" {
 			continue
 		}
 		stopCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		if _, err := u.command(stopCtx, "systemctl", "stop", unit); err != nil {
 			logger.Error("a unit of apt could not be stopped for an upgrade of the operating system", zap.String("unit", unit), zap.Error(err))
+			done = false
 		}
 		cancel()
 	}
+	return done
 }
 
 // osUpgradeReady is the core's reading, without waiting, of a machine that has restarted: systemd says the system is running or degraded, and what ran before the hop and is
