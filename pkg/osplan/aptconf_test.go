@@ -401,7 +401,7 @@ func TestTheAllowListOfTheSandboxIsThisWholeListAndNoOther(t *testing.T) {
 	if want := []string{"Retries", "Languages", "PDiffs", "By-Hash", "Check-Valid-Until", "ForceIPv4", "ForceIPv6", "Queue-Mode"}; !slices.Equal(sandboxAptSettings.Top, want) {
 		t.Errorf("the settings of Acquire:: itself are %v, want %v", sandboxAptSettings.Top, want)
 	}
-	if want := []string{"APT::Install-Recommends", "APT::Install-Suggests"}; !slices.Equal(sandboxAptSettings.Other, want) {
+	if want := []string{"APT::Install-Recommends", "APT::Install-Suggests", "APT::Default-Release"}; !slices.Equal(sandboxAptSettings.Other, want) {
 		t.Errorf("the other settings are %v, want %v", sandboxAptSettings.Other, want)
 	}
 	var kept []string
@@ -414,7 +414,7 @@ func TestTheAllowListOfTheSandboxIsThisWholeListAndNoOther(t *testing.T) {
 	for _, s := range []string{"Retries", "Languages", "PDiffs", "By-Hash", "Check-Valid-Until", "ForceIPv4", "ForceIPv6", "Queue-Mode"} {
 		kept = append(kept, "Acquire::"+s)
 	}
-	kept = append(kept, "APT::Install-Recommends", "APT::Install-Suggests")
+	kept = append(kept, "APT::Install-Recommends", "APT::Install-Suggests", "APT::Default-Release")
 	for _, name := range kept {
 		for _, spelling := range []string{name, strings.ToLower(name), strings.ToUpper(name)} {
 			if !keptAptName(spelling) {
@@ -448,6 +448,7 @@ func TestTheAllowListOfTheSandboxIsThisWholeListAndNoOther(t *testing.T) {
 		"Acquire::Retries::0", "Acquire::Languages::en", "Acquire::Languages::", "Acquire::PDiffs::Foo",
 		// a method that is not one of the three
 		"Acquire::HTTPS2::Proxy", "Acquire::httpx::Timeout", "Acquire::ssh::Options",
+		"APT::Default-Release::Foo", "APT::Default-Release::", "XAPT::Default-Release", "APT::Default-Releases", "APT::Default-Release.x", "APT::Default-Release::0",
 		"APT::Update::Pre-Invoke", "APT::Install-Recommends::Foo", "APT::Install-Recommends::", "Dir::Etc::main", "Dir::Log::Planner", "DPkg::Pre-Invoke", "APT::Sandbox::User",
 	} {
 		if keptAptName(name) {
