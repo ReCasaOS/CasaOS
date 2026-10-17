@@ -141,6 +141,7 @@ func TestThePowerButtonsAreRefusedWhileTheUpgradeWorksAndMadeWhenItDoesNot(t *te
 		} {
 			t.Run(state+" "+button.name, func(t *testing.T) {
 				box := newUpgradeBox(t)
+				box.greenBarrier()
 				box.anUpgradeAt(state)
 				power := aPowerButton(t, nil)
 				err := button.press(box)
@@ -185,5 +186,43 @@ func TestWithNoUpgradeThePowerButtonsAreAsTheyWere(t *testing.T) {
 	}
 	if _, err := os.Lstat(box.root); !os.IsNotExist(err) {
 		t.Errorf("the folder of the runs was made: %v", err)
+	}
+}
+
+// A machine that waits for its restart is not restarted or switched off by the page while what stands before the restart is red: it would stop in emergency mode at its next
+// start. Once the line is mended the buttons are what they were.
+func TestThePowerButtonsAreRefusedWhileTheBarrierBeforeTheRestartIsRed(t *testing.T) {
+	for _, state := range []string{osrun.StateAwaitingReboot, osrun.StateRebootStalled} {
+		for _, button := range []struct {
+			name, action string
+			press        func(*upgradeBox) error
+		}{
+			{"restart", "reboot", func(b *upgradeBox) error { return b.SystemReboot() }},
+			{"shutdown", "poweroff", func(b *upgradeBox) error { return b.SystemShutdown() }},
+		} {
+			t.Run(state+" "+button.name, func(t *testing.T) {
+				box := newUpgradeBox(t)
+				machine := theBarrierSees(t)
+				machine.set("/etc/fstab", "UUID=DEAD-BEEF /backup ext4 defaults 0 2\n")
+				box.anUpgradeAt(state)
+				power := aPowerButton(t, nil)
+
+				refusal := refusalOf(t, button.press(box))
+				if refusal.Code != OSUpgradeBarrierFailed || refusal.Data["checks"] == nil {
+					t.Errorf("refused with %+v", refusal)
+				}
+				if got := power.asked(); len(got) != 0 {
+					t.Errorf("the machine was asked to %q", got)
+				}
+
+				machine.set("/etc/fstab", "UUID=1234-ABCD /data ext4 defaults 0 2\n")
+				if err := button.press(box); err != nil {
+					t.Errorf("refused with the barrier green: %v", err)
+				}
+				if got := power.asked(); !reflect.DeepEqual(got, []string{button.action}) {
+					t.Errorf("the machine was asked to %q, want %q", got, button.action)
+				}
+			})
+		}
 	}
 }

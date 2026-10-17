@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"slices"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
@@ -38,6 +39,11 @@ func (s *systemService) osUpgradePowerRefusal() *OSUpgradeRefusal {
 	}
 	state := osrun.Reduce(s.osUpgradeInput(run))
 	if !osUpgradeKeepsPower(state) {
+		// The machine that waits for its restart is restarted by the owner's click, and the checks that stand before that restart bind this click too: a page that restarts a machine
+		// that would stop in emergency mode at its next start is the same mistake as the button that is not offered.
+		if doc := s.osUpgradeKeepBarrier(context.Background(), run, state); doc != nil && !doc.OK {
+			return refuseUpgrade(OSUpgradeBarrierFailed, "something that stands before the restart of the upgrade is not well", map[string]any{"checks": doc.Checks})
+		}
 		return nil
 	}
 	return refuseUpgrade(OSUpgradeOpen, "an upgrade of the operating system is changing the machine: it cannot be restarted or switched off until the upgrade stops or asks for it", map[string]any{"state": state.Name})
