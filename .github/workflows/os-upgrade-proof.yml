@@ -45,7 +45,9 @@ jobs:
         run: go generate
 
       - name: Build the core, static, so that it runs on Debian 11
-        run: CGO_ENABLED=1 CGO_LDFLAGS=-static go build -trimpath -o "$RUNNER_TEMP/casaos" .
+        run: |
+          CGO_ENABLED=1 go build -trimpath -ldflags '-linkmode=external -extldflags=-static' -o "$RUNNER_TEMP/casaos" .
+          file "$RUNNER_TEMP/casaos"
 
       - name: Install QEMU and let the job use KVM
         run: |
