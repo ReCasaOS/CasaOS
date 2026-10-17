@@ -101,6 +101,14 @@ var (
 	osRe        = regexp.MustCompile(`^(debian|ubuntu):[0-9]{1,2}(\.[0-9]{2})?$`)
 )
 
+// reservedRoutes are the names, under any version, that the core and the services of the distribution answer on, which a module's route cannot be: the gateway sends a request to the
+// route it knows the longest, and a module on one of these would be sent the requests that are meant for them. Every group of routes that route/v1.go registers is here (a test reads the
+// router and says which is not), and the routes of the services that are not the core's own (the users, the storage and the apps).
+var reservedRoutes = []string{
+	"sys", "users", "usb", "disks", "storage", "cloud", "recover", "other", "zt", "samba", "file", "folder", "image", "notify", "gateway", "casaos", "app_management", "message_bus",
+	"local_storage", "port", "driver", "batch", "test", "health", "apps", "container",
+}
+
 // the bounds of the lists and of the wait
 const (
 	maxPackages     = 32
@@ -143,7 +151,7 @@ func validate(m Manifest, name string) error {
 	if m.Name != name {
 		return invalid("name", ReasonValue)
 	}
-	if n := utf8.RuneCountInString(m.Title); n > maxTitleRunes || !printable(m.Title) || strings.TrimSpace(m.Title) == "" {
+	if n := utf8.RuneCountInString(m.Title); n > maxTitleRunes || !printable(m.Title) || !shows(m.Title) {
 		return invalid("title", ReasonValue)
 	}
 	if utf8.RuneCountInString(m.Description) > maxDescRunes || !printable(m.Description) {
@@ -161,6 +169,9 @@ func validate(m Manifest, name string) error {
 		if !c.re.MatchString(c.value) {
 			return invalid(c.field, ReasonValue)
 		}
+	}
+	if _, name, _ := strings.Cut(strings.TrimPrefix(m.GatewayRoute, "/"), "/"); slices.Contains(reservedRoutes, name) {
+		return invalid("gateway_route", ReasonValue)
 	}
 	for _, c := range []struct {
 		field string
@@ -180,16 +191,18 @@ func validate(m Manifest, name string) error {
 		return err
 	}
 	if m.OSUpgrade != nil {
-		return validateOSUpgrade(*m.OSUpgrade, m.GatewayRoute)
+		return validateOSUpgrade(*m.OSUpgrade, m.GatewayRoute, m.Unit)
 	}
 	return nil
 }
 
-func validateOSUpgrade(u OSUpgrade, route string) error {
+// validateOSUpgrade checks the section of a manifest that says what the upgrade of the operating system does around the module: the units it stops are the module's own unit and no
+// other, so that a module cannot have the services of the system stopped for it.
+func validateOSUpgrade(u OSUpgrade, route, unit string) error {
 	if len(u.StopUnits) == 0 {
 		return invalid("os_upgrade.stop_units", ReasonMissing)
 	}
-	if err := listOf("os_upgrade.stop_units", u.StopUnits, unitRe.MatchString, maxStopUnits); err != nil {
+	if err := listOf("os_upgrade.stop_units", u.StopUnits, func(s string) bool { return s == unit }, maxStopUnits); err != nil {
 		return err
 	}
 	if u.StopTimeoutSeconds < 1 || u.StopTimeoutSeconds > maxStopSeconds {
@@ -228,6 +241,17 @@ func listOf(field string, values []string, valid func(string) bool, max int) err
 // one that ends in ".deb", which apt reads as the path of a file.
 func ValidPackageName(s string) bool {
 	return packageRe.MatchString(s) && !strings.HasSuffix(s, "-") && !strings.HasSuffix(s, "+") && !strings.HasSuffix(s, ".deb")
+}
+
+// blanks are the characters that are printable and print as nothing: the blank of Braille, and the fillers of Hangul, which the letters of their script do not need and which a name
+// can be made of to look empty.
+const blanks = "\u2800\u115f\u1160\u3164\uffa0"
+
+// shows says whether a text has in it something that a person sees: a letter, a number, a punctuation mark or a symbol, and not one of blanks.
+func shows(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool {
+		return (unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsPunct(r) || unicode.IsSymbol(r)) && !strings.ContainsRune(blanks, r)
+	})
 }
 
 // printable says whether a text is made of printable characters only: letters, marks, numbers, punctuation, symbols and the space, and not the replacement character that stands for

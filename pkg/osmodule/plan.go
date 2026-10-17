@@ -29,20 +29,27 @@ const (
 )
 
 // The codes of a refusal. A plan is refused with the code of the first check that failed, which is the code of that check, but for the checks of the disk and of apt, which say more:
-// there is not room or it cannot be told, apt is not there, gave no answer, would remove or downgrade a package, or finds one held.
+// there is not room or it cannot be told, apt is not there, gave no answer, would remove or downgrade a package, finds one held, or would install something other than the packages
+// that were asked for (apt reads a name with a "." or a "+" in it as a regular expression when no package has that name, and a name that a package provides as that package).
 const (
-	RefusedDiskShort     = "disk_short"
-	RefusedDiskUnknown   = "disk_unknown"
-	RefusedAptMissing    = "apt_missing"
-	RefusedAptFailed     = "apt_failed"
-	RefusedAptRemoves    = "apt_removes"
-	RefusedAptDowngrades = "apt_downgrades"
-	RefusedHeld          = "held_package"
+	RefusedDiskShort       = "disk_short"
+	RefusedDiskUnknown     = "disk_unknown"
+	RefusedAptMissing      = "apt_missing"
+	RefusedAptFailed       = "apt_failed"
+	RefusedAptRemoves      = "apt_removes"
+	RefusedAptDowngrades   = "apt_downgrades"
+	RefusedHeld            = "held_package"
+	RefusedPackageNotExact = "package_not_exact"
 )
 
 // DetailNotChecked is what a check says when it was not made, because a check before it had already failed and made the answer of the plan certain (apt is not asked, nor the disk, for a
-// system that the module does not support). Such a check is not ok, and is never the reason of the refusal.
+// system that the module does not support). Such a check is not ok, and is never the reason of the refusal. It is the plan that says it, with a mark of its own: the same words in the
+// answer of apt or of a Box are the words of a check that failed.
 const DetailNotChecked = "not_checked"
+
+// maxAptDetail is the most characters of what apt says when it could not make an answer, as the apt check shows it: more than the other checks, because it is where the lines that name
+// what could not be met are (the others say a name or a number).
+const maxAptDetail = 400
 
 // The paths whose file systems must have room for an install, and the factors of what the install writes on each of them: the archive is downloaded, and read back as a tar, and its
 // files are written (three times its size, whatever it unpacks to), then what apt downloads and what apt leaves on the disk. These constants are the one place the numbers are.
@@ -58,7 +65,8 @@ const (
 
 // An AptResult is what apt says of installing the packages of a module, as the simulation of it reads: the packages it would install and upgrade, the sizes, and the three things that
 // refuse a plan (a package removed, a package downgraded, a package held). Failure is why there is no answer at all (RefusedAptFailed, or RefusedHeld when apt itself says a held package
-// is in the way); Detail is a few words of apt's own for whoever reads the plan.
+// is in the way, or RefusedPackageNotExact when it would install something other than the packages that were asked for); Detail is a few words of apt's own for whoever reads the plan,
+// of which at most maxAptDetail characters are shown.
 type AptResult struct {
 	ToInstall, ToUpgrade      []string
 	Removes, Downgrades, Held []string
@@ -74,13 +82,18 @@ type Box interface {
 	OS() (id, version string)
 	// Arch is the architecture of the machine as the archives name it ("amd64", "arm64").
 	Arch() string
-	// ReCasaOSVersion is the version of the ReCasaOS that is running ("0.5.23", with or without a v).
+	// ReCasaOSVersion is the version of the DISTRIBUTION that is installed ("0.5.29", with or without a v): what the installer writes to /var/lib/casaos/fork-release and
+	// version.CurrentVersion() reads. It is not the version of the core (common.VERSION, which a release of the distribution need not move): min_recasaos in a manifest is a number of
+	// the distribution.
 	ReCasaOSVersion() string
-	// InstalledManifests are the manifests of /etc/casaos/modules that read, by name, and the names of the files that do not.
+	// InstalledManifests are the manifests of /etc/casaos/modules that read, by the NAME of the module ("virt"), and the modules whose manifest does not read, in the same spelling: the
+	// name, not the name of the file ("virt.json") or its path.
 	InstalledManifests() (installed map[string]Manifest, broken []string, err error)
 	// FilesLists are the lists of files of every module, by name (the lists of /var/lib/casaos/modules/*.files).
 	FilesLists() (map[string][]string, error)
-	// UnitFiles are the paths of the files of a unit that exist, in every directory systemd reads units from, spelled as the unpack records them.
+	// UnitFiles are the paths of the files of a unit that exist, in every directory systemd reads units from, ONE spelling for each file: the one the unpack records in a list (a system
+	// whose /lib is a link to usr/lib has the file under both names, and the answer has it once). Ownership is compared after "/lib/" is read as "/usr/lib/" on both sides, so that a list
+	// that was written with one spelling owns the file that is listed with the other.
 	UnitFiles(unit string) ([]string, error)
 	// PackageManagerBusy says whether a package manager (dpkg, apt, the units that update) holds the machine; OSUpgradeBusy whether the upgrade of the operating system does (its busy flag,
 	// read so that a flag that cannot be read is an error).
@@ -102,7 +115,12 @@ type Check struct {
 	OK      bool   `json:"ok"`
 	Detail  string `json:"detail"`
 	refusal string
+	// skipped says that the plan did not make the check, which is its own decision and not a thing a Box or apt can say with words.
+	skipped bool
 }
+
+// notChecked is a check that the plan did not make.
+func notChecked(code string) Check { return Check{Code: code, Detail: DetailNotChecked, skipped: true} }
 
 // A Refusal is the code that a plan was refused with, and null in JSON when it was not.
 type Refusal string
@@ -152,8 +170,8 @@ func SystemChecks(e Entry, s System) []Check {
 	osOK := slices.Contains(e.Manifest.OS, s.OSID+":"+s.OSVersion)
 	_, assetOK := e.Asset(s.Arch)
 	have, haveOK := parseVersion(s.ReCasaOS)
-	need, _ := parseVersion(e.Manifest.MinReCasaOS)
-	versionOK := haveOK && have.atLeast(need)
+	need, needOK := parseVersion(e.Manifest.MinReCasaOS)
+	versionOK := haveOK && needOK && have.atLeast(need)
 	detail := func(ok bool, text string) string {
 		if ok {
 			return ""
@@ -191,7 +209,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 	if !found {
 		r.Checks = []Check{{Code: CheckCatalogue, Detail: "not_in_catalogue"}}
 		for _, code := range []string{CheckOS, CheckArch, CheckReCasaOS, CheckInstalled, CheckForeignUnit, CheckBusy, CheckDisk, CheckApt} {
-			r.Checks = append(r.Checks, Check{Code: code, Detail: DetailNotChecked})
+			r.Checks = append(r.Checks, notChecked(code))
 		}
 		r.Refused = CheckCatalogue
 		return r
@@ -218,7 +236,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 		sim, simulated = box.SimulateApt(packages), true
 	}
 
-	disk := Check{Code: CheckDisk, Detail: DetailNotChecked}
+	disk := notChecked(CheckDisk)
 	if standing && simulated && sim.Failure == "" {
 		disk = diskCheck(box, asset, sim, &r.Archive)
 	}
@@ -226,7 +244,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 
 	r.Checks = checks
 	for _, c := range checks {
-		if !c.OK && c.Detail != DetailNotChecked {
+		if !c.OK && !c.skipped {
 			r.Refused = Refusal(cmpOr(c.refusal, c.Code))
 			break
 		}
@@ -295,12 +313,12 @@ func foreignUnitCheck(box Box, e Entry) Check {
 		return Check{Code: CheckForeignUnit, Detail: "unreadable"}
 	}
 	for _, f := range files {
-		if slices.Contains(lists[e.Name], f) {
+		if listed(lists[e.Name], f) {
 			continue
 		}
 		detail := "not_owned " + clip(f)
 		for _, other := range sortedKeys(lists) {
-			if other != e.Name && slices.Contains(lists[other], f) {
+			if other != e.Name && listed(lists[other], f) {
 				detail = "owned_by " + clip(other)
 				break
 			}
@@ -308,6 +326,19 @@ func foreignUnitCheck(box Box, e Entry) Check {
 		return Check{Code: CheckForeignUnit, Detail: detail}
 	}
 	return Check{Code: CheckForeignUnit, OK: true}
+}
+
+// listed says whether a list of files has the file, whichever of the two names of a directory the list and the box use for it.
+func listed(list []string, file string) bool {
+	return slices.ContainsFunc(list, func(f string) bool { return usrLib(f) == usrLib(file) })
+}
+
+// usrLib is a path with the two names of a directory that a system whose /lib is a link to usr/lib gives to a file made one: "/lib/x" is "/usr/lib/x".
+func usrLib(p string) string {
+	if rest, ok := strings.CutPrefix(p, "/lib/"); ok {
+		return "/usr/lib/" + rest
+	}
+	return p
 }
 
 func sortedKeys(m map[string][]string) []string {
@@ -382,11 +413,13 @@ func aptCheck(there, simulated bool, sim AptResult) Check {
 	case !there:
 		return Check{Code: CheckApt, Detail: "apt-get is not there", refusal: RefusedAptMissing}
 	case !simulated:
-		return Check{Code: CheckApt, Detail: DetailNotChecked}
+		return notChecked(CheckApt)
 	case sim.Failure == RefusedHeld:
-		return Check{Code: CheckApt, Detail: clip(sim.Detail), refusal: RefusedHeld}
+		return Check{Code: CheckApt, Detail: clipTo(sim.Detail, maxAptDetail), refusal: RefusedHeld}
+	case sim.Failure == RefusedPackageNotExact:
+		return Check{Code: CheckApt, Detail: clipTo(sim.Detail, maxAptDetail), refusal: RefusedPackageNotExact}
 	case sim.Failure != "":
-		return Check{Code: CheckApt, Detail: clip(sim.Detail), refusal: RefusedAptFailed}
+		return Check{Code: CheckApt, Detail: clipTo(sim.Detail, maxAptDetail), refusal: RefusedAptFailed}
 	case len(sim.Held) > 0:
 		return Check{Code: CheckApt, Detail: "held " + clip(strings.Join(sim.Held, " ")), refusal: RefusedHeld}
 	case len(sim.Removes) > 0:
@@ -397,9 +430,11 @@ func aptCheck(there, simulated bool, sim AptResult) Check {
 	return Check{Code: CheckApt, OK: true}
 }
 
-// clip is what the box or apt said, as it may be shown: printable ASCII, and cut.
-func clip(s string) string {
-	const most = 100
+// clip is what the box or apt said, as it may be shown: printable ASCII, and cut at a hundred characters.
+func clip(s string) string { return clipTo(s, 100) }
+
+// clipTo is clip for another length.
+func clipTo(s string, most int) string {
 	b := make([]byte, 0, min(len(s), most))
 	for i := 0; i < len(s) && len(b) < most; i++ {
 		c := s[i]

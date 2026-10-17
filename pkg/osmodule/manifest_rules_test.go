@@ -114,8 +114,8 @@ func TestTheBoundsOfTheTextsAndOfTheNames(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			text := withRaw(t, c.path, c.literal)
-			if c.path == "gateway_route" {
-				// (the calls of the section for an upgrade are under the route, so a case that changes the route leaves the section out)
+			if c.path == "gateway_route" || c.path == "unit" {
+				// (the calls of the section for an upgrade are under the route and it stops the unit, so a case that changes either leaves the section out)
 				var doc map[string]json.RawMessage
 				if err := json.Unmarshal([]byte(text), &doc); err != nil {
 					t.Fatal(err)
