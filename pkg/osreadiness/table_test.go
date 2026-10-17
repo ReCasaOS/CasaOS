@@ -24,7 +24,7 @@ var theCodes = []string{
 	// the sources
 	"sources_cdrom", "sources_alias", "sources_pin", "sources_proposed", "sources_format", "sources_third_party", "sources_backports", "sources_firmware", "sources_network_checked_later",
 	// the packages
-	"foreign_arch", "keyring_old", "openssh_old", "host_services", "dkms",
+	"foreign_arch", "keyring_old", "openssh_old", "host_services", "dkms", "modules",
 	// the disks and the start
 	"merged_usr", "cgroup1", "bootloader", "root_zfs", "root_luks", "md_degraded", "smart_failed", "fstab_unresolved", "fstab_network", "log_on_tmpfs", "disk_root", "disk_archives", "disk_boot", "ram", "power",
 	// the network
@@ -238,6 +238,7 @@ var dirtyBoxes = map[string]func(*fakeProbe){
 		noEngine(f)
 		f.onError(ErrToolMissing, argvDockerInfo...)
 	},
+	"a box with a module of ReCasaOS installed": func(f *fakeProbe) { f.set(modulesDir+"/virt.json", virtModule) },
 }
 
 func TestNoCheckOfTheTableAsksForWhatIsNotAllowedOrCouldChangeTheMachine(t *testing.T) {
