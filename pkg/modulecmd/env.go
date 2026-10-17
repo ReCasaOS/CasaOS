@@ -129,6 +129,10 @@ type Env struct {
 	StepHook func(ctx context.Context, step, phase string)
 }
 
+type noRunner struct{}
+
+func (noRunner) Run(context.Context, Cmd) (Output, error) { return Output{}, ErrUnsupported }
+
 type noHost struct{}
 
 func (noHost) Lock(string) (func(), error)         { return nil, ErrUnsupported }
@@ -161,6 +165,9 @@ func (e Env) withDefaults() Env {
 	}
 	if e.Host == nil {
 		e.Host = noHost{}
+	}
+	if e.Runner == nil {
+		e.Runner = noRunner{}
 	}
 	return e
 }

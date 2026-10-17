@@ -4,9 +4,9 @@ package modulecmd
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 )
@@ -28,36 +28,17 @@ func (d linuxDest) Lstat(p string) (fs.FileMode, error) {
 
 // MkdirAll makes the directories that are missing, the ones above the last with 0755 and the last with perm, whatever the umask is. A directory that is there is left as it is.
 func (d linuxDest) MkdirAll(p string, perm fs.FileMode) error {
-	var missing []string
-	for at := d.real(p); ; at = parentOf(at) {
-		info, err := os.Stat(at)
-		if err == nil {
-			if !info.IsDir() {
-				return fmt.Errorf("%s is not a directory", at)
-			}
-			break
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-		missing = append(missing, at)
-		if parentOf(at) == at {
-			return err
-		}
+	real := d.real(p)
+	if info, err := os.Stat(real); err == nil && info.IsDir() {
+		return nil
 	}
-	for i := len(missing) - 1; i >= 0; i-- {
-		mode := fs.FileMode(0o755)
-		if i == 0 {
-			mode = perm
-		}
-		if err := os.Mkdir(missing[i], mode); err != nil && !errors.Is(err, fs.ErrExist) {
-			return err
-		}
-		if err := os.Chmod(missing[i], mode); err != nil {
-			return err
-		}
+	if err := makeDirs(filepath.Dir(real), 0o755); err != nil {
+		return err
 	}
-	return nil
+	if err := os.Mkdir(real, perm); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return os.Chmod(real, perm)
 }
 
 func (d linuxDest) NewFile(p string, perm fs.FileMode) (osmodule.File, error) {
@@ -113,13 +94,4 @@ func (w *linuxFile) Commit() error {
 func (w *linuxFile) Abort() {
 	_ = w.f.Close()
 	_ = os.Remove(w.tmp)
-}
-
-func parentOf(p string) string {
-	for i := len(p) - 1; i > 0; i-- {
-		if p[i] == '/' {
-			return p[:i]
-		}
-	}
-	return "/"
 }

@@ -124,8 +124,6 @@ func (d httpDownloader) Get(ctx context.Context, rawURL string, dst io.Writer) (
 		return n, err
 	case n > d.max:
 		return n, &PermanentError{Err: ErrTooLarge}
-	case resp.ContentLength >= 0 && n != resp.ContentLength:
-		return n, io.ErrUnexpectedEOF
 	}
 	return n, nil
 }

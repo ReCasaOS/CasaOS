@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
@@ -47,7 +48,7 @@ func (linuxHost) FreeBytes(path string) (int64, error) {
 		if !errors.Is(err, fs.ErrNotExist) || path == "/" || path == "." {
 			return 0, err
 		}
-		path = parentOf(path)
+		path = filepath.Dir(path)
 	}
 }
 

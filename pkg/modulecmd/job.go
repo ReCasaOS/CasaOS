@@ -18,8 +18,9 @@ import (
 //	CASAOS_MODULE_STEP <nonce|-> <name> <step> <begin|done|failed> <time>
 //	CASAOS_MODULE_RESULT <nonce|-> <name> <ok|refused|failed> <step|-> <code|-> <time>
 //
-// The nonce is the one the core passes in CASAOS_MODULE_NONCE, "-" when there is none. A run ends with exactly one RESULT line, whatever the outcome; a refused run (exit 2) has
-// no STEP line, and a failed one (exit 3) has the failed STEP line before it.
+// The nonce is the one the core passes in CASAOS_MODULE_NONCE, "-" when there is none. A run says its outcome in exactly one RESULT line, and sentences of the program follow it at most
+// (what was rolled back, and for an install that failed the last line, kept_packages); a refused run (exit 2) has no STEP line, and a failed one (exit 3) has the failed STEP line before
+// it.
 
 const (
 	stepMarker   = "CASAOS_MODULE_STEP"

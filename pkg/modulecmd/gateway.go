@@ -10,9 +10,8 @@ import (
 	"github.com/go-ini/ini"
 )
 
-// The gateway is asked on its own port, which it keeps in /etc/casaos/gateway.ini, at [gateway] port: empty until the gateway has found a free one at its first start. A route that
-// answers is a route the gateway has: any status but the ones the gateway gives for a service behind it that is not there (502, 503, 504) is an answer; so is any status of a service
-// that has not been written yet to the gateway... the gateway's own 404 is the gateway's. A connection that is refused is no answer.
+// The gateway is asked on its own port, which it keeps in /etc/casaos/gateway.ini, at [gateway] port: empty until the gateway has found a free one at its first start. Any status but
+// the ones the gateway gives for a service behind it that is not there (502, 503, 504) is an answer; a connection that is refused is none.
 type httpGateway struct {
 	roots  Roots
 	client *http.Client

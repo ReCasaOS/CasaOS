@@ -51,6 +51,7 @@ func permanent(err error) bool {
 
 func TestTheDownloadFollowsAnArchiveToTheHostsOfGitHubAndNowhereElse(t *testing.T) {
 	var seen []string
+	loops := 0
 	srv := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.Host+r.URL.Path)
 		switch r.URL.Path {
@@ -79,6 +80,11 @@ func TestTheDownloadFollowsAnArchiveToTheHostsOfGitHubAndNowhereElse(t *testing.
 		case "/other-scheme":
 			http.Redirect(w, r, "file:///etc/passwd", http.StatusFound)
 		case "/loop":
+			// (a server that stops redirecting after twenty, so that a client that does not stop is seen to go on)
+			if loops++; loops > 20 {
+				_, _ = io.WriteString(w, "the end of the loop")
+				return
+			}
 			http.Redirect(w, r, "https://github.com/loop", http.StatusFound)
 		}
 	})
@@ -168,7 +174,8 @@ func TestTheDownloadIsCappedAndSaysWhenItIsShortOrRefused(t *testing.T) {
 	}
 	for _, path := range []string{"over-by-one", "declared", "chunked"} {
 		body, err := get(t, srv, 1000, "https://github.com/"+path)
-		if !errors.Is(err, ErrTooLarge) || !permanent(err) || int64(len(body)) > 1001 {
+		// one that says its size says it before a byte is read
+		if !errors.Is(err, ErrTooLarge) || !permanent(err) || int64(len(body)) > 1001 || path == "declared" && len(body) != 0 {
 			t.Errorf("/%s: %d bytes, %v", path, len(body), err)
 		}
 	}
