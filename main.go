@@ -29,6 +29,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/autoupdate"
 	"github.com/ReCasaOS/CasaOS/pkg/cache"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
 	"github.com/ReCasaOS/CasaOS/pkg/telemetry"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
@@ -64,6 +65,10 @@ var (
 )
 
 func init() {
+	// "casaos module ..." is the module assistant: it runs and ends the process before the core reads a flag, opens a log or a database
+	if rest, ok := modulecmd.Dispatch(os.Args); ok {
+		os.Exit(modulecmd.Run(rest, modulecmd.Production()))
+	}
 	flag.Parse()
 	if *versionFlag {
 		fmt.Println("v" + common.VERSION)
