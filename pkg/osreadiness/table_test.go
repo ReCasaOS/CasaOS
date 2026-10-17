@@ -264,6 +264,35 @@ func TestNoCheckOfTheTableAsksForWhatIsNotAllowedOrCouldChangeTheMachine(t *test
 	}
 }
 
+// The judge of an upgrade asks for what the report does not: the database of Samba (listing it may touch the file that holds it),
+// the sockets that listen and the units that failed. No check of the report asks for them, on any box, so that a report that is
+// run on a machine that is not being upgraded never does what only the judge is for.
+func TestNoCheckOfTheTableAsksForWhatOnlyTheJudgeOfAnUpgradeAsks(t *testing.T) {
+	only := func(argv []string) bool {
+		return argv[0] == "pdbedit" || argv[0] == "ss" || len(argv) >= 2 && argv[0] == "systemctl" && argv[1] == "--failed"
+	}
+	for name, setup := range dirtyBoxes {
+		f := newBox(t)
+		if setup != nil {
+			setup(f)
+		}
+		Run(context.Background(), f, Options{})
+		for _, argv := range f.attemptedCommands() {
+			if only(argv) {
+				t.Errorf("%s: the report asked %q", name, argv)
+			}
+		}
+	}
+	f := newBox(t)
+	Run(context.Background(), f, Options{})
+	if len(f.attemptedCommands()) == 0 {
+		t.Fatal("the report asked nothing of the box: the test sees nothing")
+	}
+	if !only([]string{"pdbedit", "-L"}) || !only([]string{"ss", "-Hltn"}) || !only([]string{"systemctl", "--failed", "--no-legend", "--plain"}) || only([]string{"systemctl", "is-active", "x"}) {
+		t.Error("the test does not know the commands of the judge")
+	}
+}
+
 // Every check of the table can say something on some machine: none is left that always passes
 // because of how it was wired (a hop it never runs on, a command it never gets to).
 func TestEveryCheckOfTheTableFindsSomethingOnSomeBox(t *testing.T) {

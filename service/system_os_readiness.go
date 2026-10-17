@@ -44,6 +44,9 @@ var (
 // what the updater already knows. It has nothing that writes.
 type osReadinessProbe struct {
 	updater *systemPackageUpdater
+	// except is the unit of the caller, as maintenanceState takes it: the start of an upgrade of the operating system names its own, and is not kept away by it
+	// or by its flag. Empty is every unit.
+	except string
 	// command runs a command, in English, and gives what it printed (at most osreadiness.MaxOutputBytes
 	// of it, and whether it printed more); nil is boundedCommand. It is what Run and the questions of
 	// MaintenanceBusy to systemd go through, and the one thing a test puts its own in the place of.
@@ -284,7 +287,7 @@ func (p osReadinessProbe) FreeBytes(_ context.Context, path string) (uint64, err
 // none is the caller's. Where the updater's own answer is "not busy" for a lock it cannot see, this
 // one is an error: the report refuses for a lock it could not look at.
 func (p osReadinessProbe) MaintenanceBusy(ctx context.Context) (string, bool, error) {
-	return p.updater.maintenanceState(ctx, "", func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return p.updater.maintenanceState(ctx, p.except, func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		out, _, err := p.run(ctx, name, args...)
 		return out, err
 	})

@@ -120,6 +120,19 @@ func InitV1Router() http.Handler {
 			v1SysGroup.POST("/os/upgrade/plan", v1.StartSystemOSPlan, headerTokenOnly)
 			v1SysGroup.GET("/os/upgrade/plan", v1.GetSystemOSPlan)
 			v1SysGroup.GET("/os/upgrade/runbook", v1.GetSystemOSRunbook, headerTokenOnly)
+			// The upgrade itself, which the plan prepares. Its status is read-only and takes what the group takes; every call that
+			// acts, or that switches the feature, takes the access token in the header and no other, as the plan's start does, and
+			// the runbook of the run that is open (?run=current) is the same route as the plan's: it holds the owner's sources. All
+			// of them but the refresh, the start and the switch work with the feature off, so that a machine that is half upgraded is never
+			// trapped behind it.
+			v1SysGroup.GET("/os/upgrade/status", v1.GetSystemOSUpgradeStatus)
+			v1SysGroup.POST("/os/upgrade/refresh", v1.StartSystemOSUpgradeRefresh, headerTokenOnly)
+			v1SysGroup.POST("/os/upgrade/start", v1.StartSystemOSUpgrade, headerTokenOnly)
+			v1SysGroup.POST("/os/upgrade/reboot", v1.RebootSystemOSUpgrade, headerTokenOnly)
+			v1SysGroup.POST("/os/upgrade/resume", v1.ResumeSystemOSUpgrade, headerTokenOnly)
+			v1SysGroup.POST("/os/upgrade/abort", v1.AbortSystemOSUpgrade, headerTokenOnly)
+			v1SysGroup.POST("/os/upgrade/ack", v1.AckSystemOSUpgrade, headerTokenOnly)
+			v1SysGroup.POST("/os/upgrade/beta", v1.SetSystemOSUpgradeBeta, headerTokenOnly)
 
 			v1SysGroup.POST("/update", v1.SystemUpdate)
 			v1SysGroup.GET("/packages", v1.GetSystemPackageUpdates)

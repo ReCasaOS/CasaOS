@@ -1,0 +1,1 @@
+dpkg-query: no packages found matching linux-image-*

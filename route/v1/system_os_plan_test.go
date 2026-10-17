@@ -26,9 +26,15 @@ type fakeOSPlanService struct {
 	runbookErr error
 
 	starts, reads, runbooks int
-	// events are what happened, in order, among the calls that end the core; stopWait is how long it was told to wait
-	events   []string
-	stopWait time.Duration
+	// events are what happened, in order, among the calls that end the core; stopWait is how long the plan was told to wait, and settleWait the loop that looks at the upgrade
+	events     []string
+	stopWait   time.Duration
+	settleWait time.Duration
+}
+
+func (f *fakeOSPlanService) StopSystemOSUpgradeSettle(wait time.Duration) {
+	f.events = append(f.events, "stop the settling")
+	f.settleWait = wait
 }
 
 func (f *fakeOSPlanService) StopSystemOSPlan(wait time.Duration) {
@@ -274,7 +280,8 @@ func TestGetSystemOSRunbookRefusesWith409AndTheCode(t *testing.T) {
 
 // POST /v1/sys/stop (the one route of PostKillCasaOS, pinned by TestTheStopRouteIsPostKillCasaOS in the package route; there is
 // no restart route) ends the core with os.Exit, which does not go through the handler of main.go that ends a plan that is
-// being made: the handler does it first, with the wait that main.go gives it, and only then ends the core.
+// being made, and the loop that looks at an upgrade that is open: the handler does both first, with the wait that main.go gives
+// them, the loop first so that no unit is started by a core that is going, and only then ends the core.
 func TestRestartEndsThePlanBeforeItEndsTheCore(t *testing.T) {
 	fake := &fakeOSPlanService{}
 	withOSPlanService(t, fake)
@@ -285,10 +292,10 @@ func TestRestartEndsThePlanBeforeItEndsTheCore(t *testing.T) {
 	if err := PostKillCasaOS(echo.New().NewContext(request, httptest.NewRecorder())); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(fake.events, []string{"stop the plan", "exit 0"}) {
+	if !slices.Equal(fake.events, []string{"stop the settling", "stop the plan", "exit 0"}) {
 		t.Errorf("events = %v", fake.events)
 	}
-	if fake.stopWait != service.OSPlanStopWait || service.OSPlanStopWait < 5*time.Second {
-		t.Errorf("the plan was given %v to end", fake.stopWait)
+	if fake.stopWait != service.OSPlanStopWait || fake.settleWait != service.OSPlanStopWait || service.OSPlanStopWait < 5*time.Second {
+		t.Errorf("the plan was given %v to end, the settling %v", fake.stopWait, fake.settleWait)
 	}
 }

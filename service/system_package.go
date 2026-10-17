@@ -123,6 +123,9 @@ type systemPackageUpdater struct {
 	readDir func(string) ([]os.DirEntry, error)
 	// mute is the last answer of dockerMuted.
 	mute dockerMute
+	// unitSilentSince is when systemd was first seen not answering about the unit of an upgrade of the operating system, in the run of unanswered questions that is going on
+	// (unix nanoseconds); 0 when it answered the last time.
+	unitSilentSince atomic.Int64
 }
 
 // untranslatedCommand runs a package tool with its output in English. apt translates its
@@ -135,11 +138,18 @@ func untranslatedCommand(ctx context.Context, name string, args ...string) ([]by
 	return cmd.CombinedOutput()
 }
 
+// systemdRunTimeout is how long a call of systemd-run has. A var, for the test.
+var systemdRunTimeout = 30 * time.Second
+
 func newSystemPackageUpdater() *systemPackageUpdater {
 	return &systemPackageUpdater{
 		command: untranslatedCommand,
 		start: func(path string, _ string, args ...string) ([]byte, error) {
-			return exec.Command(path, args...).CombinedOutput()
+			// systemd-run only queues a job (--no-block) and its own wait for the bus ends in 25 seconds: a call that is still there after
+			// this is a systemd that does not answer, and what holds on to it holds on to what waits for it
+			ctx, cancel := context.WithTimeout(context.Background(), systemdRunTimeout)
+			defer cancel()
+			return exec.CommandContext(ctx, path, args...).CombinedOutput()
 		},
 		lookPath:      exec.LookPath,
 		readOSRelease: commonfile.ReadOSRelease,

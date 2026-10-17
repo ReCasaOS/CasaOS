@@ -145,9 +145,17 @@ func main() {
 	// the run's own log and systemd, so with the dashboard closed and across a restart of the core:
 	// the alerts look when the core starts (a run that ended or goes on) and when the button
 	// starts a run. Set before Run, which starts the first look.
-	alerts.Default.Muted = service.MyService.System().DockerUpdateMuted
+	alerts.Default.Muted = func() bool {
+		system := service.MyService.System()
+		// an upgrade of the operating system stops and starts the containers as well, for as long as it holds the machine and ten
+		// minutes after it lets go of it
+		return system.DockerUpdateMuted() || system.OSUpgradeMuted()
+	}
 	alerts.Default.LastDockerRun = lastDockerRun
 	service.MyService.System().OnDockerUpdateQueued(alerts.Default.WatchDockerUpdate)
+	// What became of an upgrade of the operating system, and that it waits for the owner, is told through the same alerts, once for
+	// each thing (the core keeps its own record, which survives a restart). Set before the loop that looks at the upgrade starts.
+	service.MyService.System().SetOSUpgradeNotifier(func(key, sentence string) { alerts.Default.OSUpgradeNotice(key, sentence) })
 	// An operating system whose security updates are about to end, or have ended, is told once for
 	// each state: the alerts look at what the dashboard's badge reads, five minutes after the start
 	// and every day.
@@ -281,6 +289,10 @@ func main() {
 	} else {
 		logger.Info("This process is not running as a systemd service.")
 	}
+	// The loop that looks at an upgrade of the operating system that is open, and does the one thing that is next, starts when the
+	// core is ready to serve and not before: a look may start the unit of the upgrade. It looks at once, and then every half
+	// minute; with no upgrade on the machine it does nothing that can be seen.
+	service.MyService.System().StartSystemOSUpgradeSettle(context.Background())
 
 	// start.d holds post-start hooks (the dashboard's registers its event types
 	// with the bus) and nothing here waits for them. They run after READY: each
@@ -317,12 +329,15 @@ func main() {
 var sigintIgnoredAtStart = signal.Ignored(syscall.SIGINT)
 
 // stopThePlanWhenTheCoreIsToldToStop cancels the plan that is being made when the core is told to stop (SIGTERM, and SIGINT
-// unless the core was started ignoring it), and waits a few seconds for it to remove the directory it made in /var/tmp; then it
-// lets the signal end the core as it would have: nothing else of how the core stops is changed.
+// unless the core was started ignoring it), and waits a few seconds for it to remove the directory it made in /var/tmp; it ends
+// the loop that looks at an upgrade of the operating system first, and waits for the look that is being made, so that no unit is
+// started by a core that is going; then it lets the signal end the core as it would have: nothing else of how the core stops is
+// changed.
 func stopThePlanWhenTheCoreIsToldToStop() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, service.OSPlanStopSignals(sigintIgnoredAtStart)...)
 	received := <-signals
+	service.MyService.System().StopSystemOSUpgradeSettle(service.OSPlanStopWait)
 	service.MyService.System().StopSystemOSPlan(service.OSPlanStopWait)
 	// the default again, and the signal again
 	signal.Stop(signals)

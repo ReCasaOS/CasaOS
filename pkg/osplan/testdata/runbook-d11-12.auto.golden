@@ -1,0 +1,774 @@
+# ===== blocks/verify.sh
+# casaos-os-upgrade verify 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+TYPED_HOSTNAME='testbox'
+echo "Block 0: is this the machine of the plan? Nothing is changed."
+[ "$(id -u)" = 0 ] || { AUTOCLASS=identity; echo "STOP: run this as root."; exit 1; }
+if [ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ]; then
+  AUTOCLASS=identity; echo "STOP: the upgrade has begun (block 5 was started): this block is for before it. Do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."
+  exit 1
+fi
+if [ -e "$BK/apt-orig" ]; then
+  if [ -e "$BK/done-sources" ]; then
+    AUTOCLASS=integrity; echo "STOP: block 3 has begun and ended ($BK/done-sources is there): the sources of apt are Debian 12's now, and this block is for before it. The next is block 4. To start again from block 3, put the sources back first: sh $BK/restore-sources.sh   (it forgets blocks 3 and 4)."
+  else
+    AUTOCLASS=integrity; echo "STOP: block 3 has begun and did not end ($BK/apt-orig is there): the sources of apt may no longer be the ones that the plan was made from, and this block is for before it. Look at the table at the end of this text: sh $BK/restore-sources.sh puts the sources back (when that file is there), and block 3 can then be run again."
+  fi
+  exit 1
+fi
+for d in /var/backups/casaos-os-upgrade-*; do
+  if [ -e "$d/begun-upgrade" ] || [ -e "$d/done-minimal" ]; then
+    AUTOCLASS=identity; echo "STOP: another plan of this machine has begun the upgrade of the packages ($d has begun-upgrade): Debian 11 and 12 are mixed there, and nothing in this text applies to it. Do not restore anything, and do not make another plan: finish that upgrade. Only forward: DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold   then:   DEBIAN_FRONTEND=noninteractive apt-get -s -f install   (read it first: a line that starts with Remv is a package that it would remove; if it is one that the plan does not name, or one that this text protects, do not go on and ask for help)   then:   DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -f install   then:   apt-get dist-upgrade until nothing is left, and restart. Or ask for help."
+    exit 1
+  fi
+  if [ -e "$d/apt-orig" ]; then
+    if [ -f "$d/restore-sources.sh" ]; then
+      AUTOCLASS=identity; echo "STOP: block 3 of another plan of this machine began ($d/apt-orig is there), so the sources of apt may no longer be the ones that this plan was made from. Put them back first: sh $d/restore-sources.sh   (it puts the sources back as they were and takes apt-orig aside), then run this block again."
+    else
+      AUTOCLASS=identity; echo "STOP: block 3 of another plan of this machine began ($d/apt-orig is there), and $d/restore-sources.sh is not. apt-orig is the whole copy of /etc/apt that it made before it changed anything: compare it with /etc/apt, put back by hand what differs, rename apt-orig, then run this block again."
+    fi
+    exit 1
+  fi
+done
+[ -n "$TYPED_HOSTNAME" ] && [ "$TYPED_HOSTNAME" = "$(hostname)" ] || { AUTOCLASS=identity; echo "STOP: this machine is called $(hostname). Type that name between the quotes of TYPED_HOSTNAME at the top of this block, to show that you are on the machine you mean to upgrade."; exit 1; }
+[ "$(date +%s)" -lt 1791883800 ] || { AUTOCLASS=plan; echo "STOP: this plan is older than its 24 hours (it was good until 2026-10-13 09:30 UTC): the machine may have changed. Ask for a new plan."; exit 1; }
+grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: this machine is not Debian 11 (bullseye) any more: the plan does not apply. Ask for a new one."; exit 1; }
+audit="$(dpkg --audit 2>&1)" && [ -z "$audit" ] || { AUTOCLASS=dpkg_broken; echo "STOP: dpkg is not quiet: it has a package that is half installed or half configured, or it cannot open its own database. dpkg --audit says: ${audit:-nothing, but it ended with an error}. Run: dpkg --configure -a   then ask for a new plan. If dpkg cannot open its own database, ask for help."; exit 1; }
+command -v ss > /dev/null 2>&1 || { AUTOCLASS=tools; echo "STOP: ss is not installed: blocks 2 and 8 use it to write down the ports that listen. Install it: apt-get install iproute2   then run this block again."; exit 1; }
+command -v curl > /dev/null 2>&1 || { AUTOCLASS=tools; echo "STOP: curl is not installed: block 8 uses it to ask whether Docker publishes its repository for bookworm. Install it: apt-get install curl   then run this block again."; exit 1; }
+psout="$(ps -eo comm=,args= 2> /dev/null)" || { AUTOCLASS=tools; echo "STOP: ps did not answer, so the processes cannot be looked at for a package manager. If ps is not installed: apt-get install procps   then run this block again."; exit 1; }
+busy="$(printf '%s\n' "$psout" | awk '
+$1 == "apt" || $1 == "apt-get" || $1 == "aptitude" || $1 == "apt.systemd.dai" { $1 = $1; print substr($0, 1, 120); exit }
+$1 == "dpkg" { for (i = 2; i <= NF; i++) if ($i ~ /^(-i|-r|-P|--install|--configure|--unpack|--remove|--purge|--triggers-only)$/) { $1 = $1; print substr($0, 1, 120); exit } }
+$2 ~ /\/unattended-upgrade$/ || ($2 ~ /(^|\/)python[0-9.]*$/ && $3 ~ /\/unattended-upgrade$/) { $1 = $1; print substr($0, 1, 120); exit }
+' | tr -cd '\040-\176')"
+[ -z "$busy" ] || { AUTOCLASS=busy; echo "STOP: a package manager is running (the process list says: $busy): wait until it ends. This check looks at the processes, not at the file locks of apt and dpkg: the apt-get commands of this text that check, download or install wait up to 5 minutes for the dpkg lock and stop if it stays held, and apt-get update does not wait for the lock of the lists."; exit 1; }
+aptq check > /dev/null || { AUTOCLASS=dpkg_broken; echo "STOP: apt-get check finds a broken dependency, or could not get the lock of dpkg in 5 minutes (what it printed above says which): repair it, or wait for the other package manager, then run this block again. If it is a broken dependency, ask for a new plan once it is repaired."; exit 1; }
+avail() { df -Pk "$1" | awk 'NR == 2 { print $4 }'; }
+[ "$(avail '/var/cache/apt/archives')" -ge 674679 ] || { AUTOCLASS=disk; echo "STOP: /var/cache/apt/archives needs 659 MB free for this plan, and has less. Free some room there (apt-get clean empties the cache of downloaded packages; remove what you do not need), then run this block again."; exit 1; }
+[ "$(avail '/usr')" -ge 1488030 ] || { AUTOCLASS=disk; echo "STOP: /usr needs 1454 MB free for this plan, and has less. Free some room there (apt-get clean empties the cache of downloaded packages; remove what you do not need), then run this block again."; exit 1; }
+[ "$(avail '/')" -ge 524288 ] || { AUTOCLASS=disk; echo "STOP: / needs 513 MB free for this plan, and has less. Free some room there (apt-get clean empties the cache of downloaded packages; remove what you do not need), then run this block again."; exit 1; }
+isinst() { case "$(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2> /dev/null || true)" in ii*) return 0 ;; esac; return 1; }
+[ "$(avail /boot)" -ge 307200 ] || { AUTOCLASS=disk; echo "STOP: /boot has less than 300 MiB free: the new kernel and its initrd are written there, and dpkg fails in the middle of block 6, after the point of no return, when there is no room. Free some room there (a kernel that you do not use any more, for example), then run this block again."; exit 1; }
+if [ -d /sys/firmware/efi ]; then
+  grep -q ' /boot/efi ' /proc/mounts || { AUTOCLASS=barrier_grub; echo "STOP: this machine starts with UEFI and the EFI system partition is not mounted on /boot/efi: GRUB would be written in the wrong place, or not at all. Mount it (see /etc/fstab), then run this block again."; exit 1; }
+  [ "$(avail /boot/efi)" -ge 16384 ] || { AUTOCLASS=disk; echo "STOP: /boot/efi has less than 16 MiB free: GRUB's files are written there again. Free some room, then run this block again."; exit 1; }
+elif isinst grub-pc; then
+  devices="$(echo get grub-pc/install_devices | debconf-communicate 2> /dev/null | awk 'NR == 1 { $1 = ""; gsub(/[ ,]/, ""); print }' || true)"
+  if [ -z "$devices" ]; then
+    [ "$(echo get grub-pc/install_devices_empty | debconf-communicate 2> /dev/null | awk 'NR == 1 { print $2 }' || true)" = true ] || { AUTOCLASS=barrier_grub; echo "STOP: grub-pc has no disk to be installed on (grub-pc/install_devices is empty), and its update ends in error in block 6, where there is no terminal to ask it. Set it first: dpkg-reconfigure grub-pc   then run this block again."; exit 1; }
+  fi
+fi
+# the sources of apt are the ones the plan was made from
+srchash() {
+  nl="$(printf '\nx')"; nl="${nl%x}"
+  ( cd /etc/apt
+  for f in sources.list sources.list.d/*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+      sources.list) ;;
+      sources.list.d/*)
+        name="${f#sources.list.d/}"
+        case "$name" in *"$nl"*) continue ;; esac
+        printf '%s\n' "$name" | grep -Eq '^[A-Za-z0-9_:-][A-Za-z0-9_:.-]*\.(list|sources)$' || continue ;;
+    esac
+    n="$(wc -c < "$f")"
+    printf '%s\0%s\0' "$f" "$((n))"
+    cat "$f"
+    printf '\0'
+  done ) | sha256sum | awk '{ print $1 }'
+}
+now="$(srchash)"
+[ "$now" = '35d17f59fd0705980471e5e52dcf6f54e2292d8b14e245051b88f45539ebcb8a' ] || { AUTOCLASS=plan; echo "STOP: the sources of apt are not the ones the plan was made from: something changed them. Ask for a new plan."; exit 1; }
+if command -v dkms > /dev/null 2>&1 && [ -n "$(dkms status 2> /dev/null || true)" ]; then echo "WARNING: dkms has modules built from source on this machine (dkms status lists them). Block 6 builds them again for the new kernel, and a driver that does not build for it is a driver that is missing after the restart (a network card, a disk controller). This is NOT a stop: check by hand that each one supports the kernel of bookworm before you go on."; fi
+mkdir -p -m 700 "$BK"; chmod 700 "$BK"
+: > "$BK/done-verify"
+echo "Block 0 done."
+# ===== blocks/timers.sh
+# casaos-os-upgrade timers 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: it is not Debian 11 (bullseye) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }
+[ -e "$BK/done-verify" ] || { AUTOCLASS=integrity; echo "STOP: the block before this one (verify) did not end: run it first (ls $BK shows how far you got)."; exit 1; }
+mkdir -p -m 700 "$BK"; chmod 700 "$BK"
+TS=/var/backups/casaos-os-upgrade-timers.state
+echo "Block 1: stopping the timers of apt."
+if [ -e "$TS" ]; then
+  echo "$TS is there from an earlier run of this block (by this plan or by another): the state of the timers that it holds is the one of before the hop, and it is kept."
+else
+  ( umask 077; : > "$TS.$$" )
+  for unit in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do
+    printf '%s %s\n' "$unit" "$(systemctl is-active "$unit" 2>/dev/null || true)" >> "$TS.$$"
+  done
+  if ! ln "$TS.$$" "$TS" 2> /dev/null; then
+    if [ -e "$TS" ]; then
+      echo "$TS was put in place by another run of this block while this one was reading the timers: the state of that run is the one that is kept."
+    else
+      echo "ln could not put $TS in place (a file system with no hard links, or no room for one more entry): the state that this run wrote down is kept by a rename instead."
+      mv -f "$TS.$$" "$TS" || { rm -f "$TS.$$"; AUTOCLASS=disk; echo "STOP: the state of the timers could not be put in $TS (is the disk full: df -h /var/backups): without it block 8 would start no timer. Free some room, then run this block again."; exit 1; }
+    fi
+  fi
+  rm -f "$TS.$$"
+fi
+: > "$BK/timers-stopping"
+sync
+for unit in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do
+  if [ "$(systemctl is-active "$unit" 2>/dev/null || true)" = active ]; then systemctl stop "$unit"; fi
+  [ "$(systemctl is-active "$unit" 2>/dev/null || true)" != active ] || { AUTOCLASS=busy; echo "STOP: $unit is still running: stop it (systemctl stop $unit), then run this block again."; exit 1; }
+done
+: > "$BK/done-timers"
+echo "Block 1 done."
+# ===== blocks/snapshot.sh
+# casaos-os-upgrade snapshot 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: it is not Debian 11 (bullseye) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }
+[ -e "$BK/done-timers" ] || { AUTOCLASS=integrity; echo "STOP: the block before this one (timers) did not end: run it first (ls $BK shows how far you got)."; exit 1; }
+mkdir -p -m 700 "$BK"; chmod 700 "$BK"
+if [ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ]; then AUTOCLASS=identity; echo "STOP: the upgrade has begun (block 5 was started): this block would replace the state of before the upgrade, which blocks 7 and 8 compare with, by the state of now. Do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; exit 1; fi
+for m in sources download minimal full prereboot after; do
+  [ ! -e "$BK/done-$m" ] || { AUTOCLASS=integrity; echo "STOP: a later block has ended (done-$m is in $BK): running this one again would replace the state of the machine as it was with the state of now, and blocks 7 and 8 compare with the first. Do not run it again."; exit 1; }
+done
+[ ! -e "$BK/apt-orig" ] || { AUTOCLASS=integrity; echo "STOP: block 3 has begun (apt-orig is in $BK): the sources may not be the ones of before. If they are not, run sh $BK/restore-sources.sh first, then this block."; exit 1; }
+echo "Block 2: writing down the state of the machine in $BK."
+dpkg --get-selections > "$BK/selections.txt"
+dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\t${Version}\n' > "$BK/packages.tsv"
+awk -F'\t' '$1 ~ /^h/ { print $2 }' "$BK/packages.tsv" > "$BK/holds.txt"
+[ ! -e /var/lib/apt/extended_states ] || cp -p /var/lib/apt/extended_states "$BK/extended_states"
+rc=0
+( umask 077; tar -C / -czf "$BK/etc.tar.gz" etc ) || rc=$?
+case "$rc" in
+  0) ;;
+  1) echo "tar says that a file changed while it archived it (a lease, resolv.conf: it happens): the copy of /etc is made, and good but for that file." ;;
+  *) { AUTOCLASS=disk; echo "STOP: tar could not make the copy of /etc (exit $rc): is the disk full? See what it printed above, then run this block again."; exit 1; } ;;
+esac
+ss -Hltn | awk '{ print $4 }' | sort > "$BK/listening.txt"
+: > "$BK/sshd-keys.txt"
+if command -v sshd > /dev/null 2>&1; then
+  [ -d /run/sshd ] || mkdir -p -m 755 /run/sshd
+  sshd -T 2> /dev/null | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication|pubkeyacceptedkeytypes|pubkeyacceptedalgorithms) ' | sort > "$BK/sshd-keys.txt" || true
+fi
+update-alternatives --query iptables 2> /dev/null | awk '/^Value:/ { print $2 }' > "$BK/iptables-alternative.txt"
+systemctl --failed --no-legend --plain 2> /dev/null | awk '{ print $1 }' | sort > "$BK/failed-units.txt" || true
+systemctl list-units 'casaos*' --all --no-legend --plain 2> /dev/null | awk '{ print $1, $3 }' | sort > "$BK/casaos-units.txt" || true
+: > "$BK/containers.txt"
+if command -v docker > /dev/null 2>&1 && [ -S /run/docker.sock ]; then
+  ids="$(docker ps -aq 2> /dev/null || true)"
+  if [ -n "$ids" ]; then docker inspect --format '{{.Name}} policy={{.HostConfig.RestartPolicy.Name}} state={{.State.Status}}' $ids > "$BK/containers.txt" 2>&1 || true; fi
+fi
+find / -xdev \( -name '*.dpkg-old' -o -name '*.dpkg-new' -o -name '*.dpkg-dist' -o -name '*.ucf-*' \) 2> /dev/null | sort > "$BK/dpkg-files.txt" || true
+for f in selections.txt packages.tsv etc.tar.gz listening.txt; do [ -s "$BK/$f" ] || { AUTOCLASS=disk; echo "STOP: $BK/$f was not written: is the disk full (df -h /var/backups)? See what the commands above printed, free some room, then run this block again."; exit 1; }; done
+: > "$BK/done-snapshot"
+echo "Block 2 done."
+# ===== blocks/sources.sh
+# casaos-os-upgrade sources 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: it is not Debian 11 (bullseye) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }
+[ -e "$BK/done-snapshot" ] || { AUTOCLASS=integrity; echo "STOP: the block before this one (snapshot) did not end: run it first (ls $BK shows how far you got)."; exit 1; }
+mkdir -p -m 700 "$BK"; chmod 700 "$BK"
+export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
+removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
+notup_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 2); exit }' "$1"; }
+srchash() {
+  nl="$(printf '\nx')"; nl="${nl%x}"
+  ( cd /etc/apt
+  for f in sources.list sources.list.d/*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+      sources.list) ;;
+      sources.list.d/*)
+        name="${f#sources.list.d/}"
+        case "$name" in *"$nl"*) continue ;; esac
+        printf '%s\n' "$name" | grep -Eq '^[A-Za-z0-9_:-][A-Za-z0-9_:.-]*\.(list|sources)$' || continue ;;
+    esac
+    n="$(wc -c < "$f")"
+    printf '%s\0%s\0' "$f" "$((n))"
+    cat "$f"
+    printf '\0'
+  done ) | sha256sum | awk '{ print $1 }'
+}
+APT_ETC=/etc/apt
+undo="No package has been installed or removed yet. To put the sources back: sh $BK/restore-sources.sh   (it also lets this block be run again, and this block says when the plan is no longer good)."
+changed="The machine is not as it was when the plan was made: once the sources are back, ask for a new plan."
+if [ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ]; then AUTOCLASS=identity; echo "STOP: the upgrade has begun (block 5 was started): the sources are Debian 12's now: this block would write them again or put Debian 11's back. Do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; exit 1; fi
+if [ -e "$BK/apt-orig" ]; then
+  if [ -e "$BK/done-sources" ]; then { AUTOCLASS=integrity; echo "STOP: block 3 ended: the next is block 4 ($BK/done-sources is there). To do block 3 again, put the sources back first: sh $BK/restore-sources.sh (it forgets blocks 3 and 4), then run this block again."; exit 1; }; fi
+  if [ -f "$BK/restore-sources.sh" ]; then { AUTOCLASS=integrity; echo "STOP: $BK/apt-orig is there already: this block was run before, and the sources of apt may be the ones it wrote. Run sh $BK/restore-sources.sh (it puts the sources back and takes apt-orig aside), then run this block again."; exit 1; }; fi
+  { AUTOCLASS=integrity; echo "STOP: $BK/apt-orig is there already, and $BK/restore-sources.sh is not. apt-orig is the whole copy of /etc/apt that this block made before it changed anything: compare it with /etc/apt, put back by hand what differs, remove apt-orig, then run this block again."; exit 1; }
+fi
+[ ! -e "$BK/done-sources" ] || { AUTOCLASS=integrity; echo "STOP: block 3 ended: the next is block 4 ($BK/done-sources is there)."; exit 1; }
+for d in /var/backups/casaos-os-upgrade-*; do
+  if [ -e "$d/begun-upgrade" ] || [ -e "$d/done-minimal" ]; then
+    AUTOCLASS=identity; echo "STOP: another plan of this machine has begun the upgrade of the packages ($d has begun-upgrade): Debian 11 and 12 are mixed there, and nothing in this text applies to it. Do not restore anything, and do not make another plan: finish that upgrade. Only forward: DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold   then:   DEBIAN_FRONTEND=noninteractive apt-get -s -f install   (read it first: a line that starts with Remv is a package that it would remove; if it is one that the plan does not name, or one that this text protects, do not go on and ask for help)   then:   DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -f install   then:   apt-get dist-upgrade until nothing is left, and restart. Or ask for help."
+    exit 1
+  fi
+  if [ -e "$d/apt-orig" ]; then
+    if [ -f "$d/restore-sources.sh" ]; then
+      AUTOCLASS=identity; echo "STOP: block 3 of another plan of this machine began ($d/apt-orig is there), so the sources of apt may no longer be the ones that this plan was made from. Put them back first: sh $d/restore-sources.sh   (it puts the sources back as they were and takes apt-orig aside), then run this block again."
+    else
+      AUTOCLASS=identity; echo "STOP: block 3 of another plan of this machine began ($d/apt-orig is there), and $d/restore-sources.sh is not. apt-orig is the whole copy of /etc/apt that it made before it changed anything: compare it with /etc/apt, put back by hand what differs, rename apt-orig, then run this block again."
+    fi
+    exit 1
+  fi
+done
+ACCEPT_REMOVALS='fuse'
+[ "$ACCEPT_REMOVALS" = 'fuse' ] || { AUTOCLASS=plan; echo "STOP: type the names of the packages that are removed, fuse, between the quotes of ACCEPT_REMOVALS at the top of this block, to accept that they go."; exit 1; }
+echo "Block 3: writing the sources of bookworm."
+[ "$(date +%s)" -lt 1791883800 ] || { AUTOCLASS=plan; echo "STOP: this plan is older than its 24 hours (it was good until 2026-10-13 09:30 UTC): the machine may have changed. Nothing has been changed by this block. Ask for a new plan."; exit 1; }
+now="$(srchash)"
+[ "$now" = '35d17f59fd0705980471e5e52dcf6f54e2292d8b14e245051b88f45539ebcb8a' ] || { AUTOCLASS=plan; echo "STOP: the sources of apt are not the ones the plan was made from: something changed them since block 0. Nothing has been changed by this block. Ask for a new plan."; exit 1; }
+for unit in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do
+  if [ "$(systemctl is-active "$unit" 2>/dev/null || true)" = active ]; then systemctl stop "$unit"; fi
+  [ "$(systemctl is-active "$unit" 2>/dev/null || true)" != active ] || { AUTOCLASS=busy; echo "STOP: $unit is still running: stop it (systemctl stop $unit), then run this block again."; exit 1; }
+done
+psout="$(ps -eo comm=,args= 2> /dev/null)" || { AUTOCLASS=tools; echo "STOP: ps did not answer, so the processes cannot be looked at for a package manager. If ps is not installed: apt-get install procps   then run this block again."; exit 1; }
+busy="$(printf '%s\n' "$psout" | awk '
+$1 == "apt" || $1 == "apt-get" || $1 == "aptitude" || $1 == "apt.systemd.dai" { $1 = $1; print substr($0, 1, 120); exit }
+$1 == "dpkg" { for (i = 2; i <= NF; i++) if ($i ~ /^(-i|-r|-P|--install|--configure|--unpack|--remove|--purge|--triggers-only)$/) { $1 = $1; print substr($0, 1, 120); exit } }
+$2 ~ /\/unattended-upgrade$/ || ($2 ~ /(^|\/)python[0-9.]*$/ && $3 ~ /\/unattended-upgrade$/) { $1 = $1; print substr($0, 1, 120); exit }
+' | tr -cd '\040-\176')"
+[ -z "$busy" ] || { AUTOCLASS=busy; echo "STOP: a package manager is running (the process list says: $busy): wait until it ends (if it is the daily job of apt: systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service), then run this block again. Nothing has been changed by this block."; exit 1; }
+cat > "$BK/restore-sources.sh" <<'CASAOS_EOF'
+#!/bin/sh
+# Puts /etc/apt/sources.list and sources.list.d back as they were before block 3 of the runbook, and forgets blocks 3 and 4 (block 3 can be run again).
+# The copy of /etc/apt that block 3 made is in apt-orig, next to this file; it is put aside (apt-orig.restored.<number>) when the sources are back.
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+case "$0" in */*) HERE="${0%/*}" ;; *) HERE=. ;; esac
+APT_ETC="${APT_ETC:-/etc/apt}"
+if [ -e "$HERE/begun-upgrade" ] || [ -e "$HERE/done-minimal" ]; then echo "STOP: the upgrade has begun (block 5 was started): putting Debian 11's sources back now would leave Debian 12 packages on Debian 11 sources. Do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; exit 1; fi
+[ -d "$HERE/apt-orig" ] || { echo "STOP: $HERE/apt-orig is not there: nothing to restore from."; exit 1; }
+rm -f "$APT_ETC"/sources.list.d/*.list "$APT_ETC"/sources.list.d/*.sources "$APT_ETC"/sources.list.d/*.casaos-paused "$APT_ETC"/sources.list.d/*.casaos-new "$APT_ETC/sources.list.casaos-new"
+if [ -e "$HERE/apt-orig/sources.list" ]; then cp -a "$HERE/apt-orig/sources.list" "$APT_ETC/sources.list"; else rm -f "$APT_ETC/sources.list"; fi
+if [ -d "$HERE/apt-orig/sources.list.d" ]; then cp -a "$HERE/apt-orig/sources.list.d/." "$APT_ETC/sources.list.d/"; fi
+rm -f "$HERE/done-sources" "$HERE/done-download"
+mv "$HERE/apt-orig" "$HERE/apt-orig.restored.$$"
+echo "The sources are back as they were."
+if [ -z "${CASAOS_NO_UPDATE:-}" ]; then apt-get update || echo "apt-get update did not go through (apt-get update does not wait for a lock: another package manager may hold it): run it again when it is free or the network is back."; fi
+CASAOS_EOF
+sh -n "$BK/restore-sources.sh" || { AUTOCLASS=integrity; echo "STOP: the restore script was damaged on its way here: it is not shell. Nothing is changed in /etc/apt. Run this block again."; exit 1; }
+[ "$(sha256sum < "$BK/restore-sources.sh" | awk '{ print $1 }')" = '88ccad303456880ee2ade03e0bd840f201ff6327d6947d1d6f56d4ce47a1ab03' ] || { AUTOCLASS=integrity; echo "STOP: the restore script is not the one of this text: it was changed on its way here. Nothing is changed in /etc/apt. Run this block again."; exit 1; }
+rm -rf "$BK/apt-orig.new"
+cp -a "$APT_ETC" "$BK/apt-orig.new"
+mv -f "$BK/apt-orig.new" "$BK/apt-orig"
+cat > "$BK/expected-removed.txt" <<'CASAOS_EOF'
+fuse
+libsemanage1
+CASAOS_EOF
+# the sources that the plan generated, each under a new name first, read back and compared with the plan's hash, and put in place when all are right
+(
+umask 022
+cat > "$APT_ETC/sources.list.casaos-new" <<'CASAOS_EOF'
+deb http://deb.debian.org/debian bookworm main
+deb-src http://deb.debian.org/debian bookworm main
+deb http://deb.debian.org/debian-security bookworm-security main
+deb-src http://deb.debian.org/debian-security bookworm-security main
+deb http://deb.debian.org/debian bookworm-updates main
+deb-src http://deb.debian.org/debian bookworm-updates main
+CASAOS_EOF
+)
+gh() { n="$(wc -c < "$2")"; printf '%s\0%s\0' "$1" "$((n))"; cat "$2"; printf '\0'; }
+written="$({ gh 'sources.list' "$APT_ETC/sources.list.casaos-new"; } | sha256sum | awk '{ print $1 }')"
+echo "The plan's hash of the sources it wrote for apt: b5112f83e29b14e258b0c60275b06ec2c6212a7c0fab519289ac9ba3f2624d0a"
+[ "$written" = 'b5112f83e29b14e258b0c60275b06ec2c6212a7c0fab519289ac9ba3f2624d0a' ] || { AUTOCLASS=plan; echo "STOP: the files written for apt are not the plan's: their hash is $written. The text was changed on its way here (a console that retypes what it is given can do that, and so can a bash without bracketed paste, which takes a TAB in a comment line of the sources for completion: type sh first, then paste this block again). Nothing is in place yet: sh $BK/restore-sources.sh   then run this block again, or ask for a new plan."; exit 1; }
+mv -f "$APT_ETC/sources.list.d/docker.list" "$APT_ETC/sources.list.d/docker.list.casaos-paused"
+mv -f "$APT_ETC/sources.list.casaos-new" "$APT_ETC/sources.list"
+placed="$({ gh 'sources.list' "$APT_ETC/sources.list"; } | sha256sum | awk '{ print $1 }')"
+[ "$placed" = 'b5112f83e29b14e258b0c60275b06ec2c6212a7c0fab519289ac9ba3f2624d0a' ] || { AUTOCLASS=plan; echo "STOP: the files now in /etc/apt are not the ones that were written: their hash is $placed. A mv that asks a question instead of replacing (an alias such as mv -i) leaves the old file. The sources may be half in place: sh $BK/restore-sources.sh   puts them back; then run this block again, in a plain sh."; exit 1; }
+aptq update --error-on=any || { AUTOCLASS=network; echo "STOP: apt-get update does not go through with the new sources: the network, a mirror, or the lock of the lists held by another package manager (apt-get update does not wait for a lock): see what it printed above. $undo"; exit 1; }
+aptq -s dist-upgrade > "$BK/resim.txt" 2>&1 || { AUTOCLASS=apt_failed; echo "STOP: apt cannot work out the upgrade now: see $BK/resim.txt. $undo"; exit 1; }
+echo "The plan expected: 384 upgraded, 75 newly installed, 2 to remove and 0 not upgraded."
+echo "apt says now:   $(grep -E '^[0-9]+ upgraded, ' "$BK/resim.txt" || echo 'no summary')"
+[ -n "$(removes_of "$BK/resim.txt")" ] || { AUTOCLASS=apt_failed; echo "STOP: apt printed no summary line: see $BK/resim.txt. $undo"; exit 1; }
+[ "$(removed_of "$BK/resim.txt" | awk 'END { print NR }')" = "$(removes_of "$BK/resim.txt")" ] || { AUTOCLASS=apt_failed; echo "STOP: the packages that apt lists as removed are not as many as its summary says: see $BK/resim.txt. $undo"; exit 1; }
+if grep -q '^The following packages will be DOWNGRADED:' "$BK/resim.txt" || grep -Eq ' [0-9]+ downgraded, ' "$BK/resim.txt"; then AUTOCLASS=plan; echo "STOP: apt would downgrade packages (a pin over 1000, a package on hold, a package from outside Debian): see $BK/resim.txt. $undo"; exit 1; fi
+if grep -q '^The following packages have been kept back:' "$BK/resim.txt" || [ "$(notup_of "$BK/resim.txt")" != 0 ]; then
+  AUTOCLASS=plan; echo "STOP: apt would now keep packages back, or not upgrade them, where the plan has none: something changed since the plan (a hold, a package from outside Debian, a mirror that moved). See $BK/resim.txt. $undo $changed"
+  exit 1
+fi
+removed_of "$BK/resim.txt" > "$BK/resim-removed.txt"
+if [ "$(cat "$BK/resim-removed.txt")" != "$(cat "$BK/expected-removed.txt")" ]; then
+  AUTOCLASS=plan; echo "STOP: apt would now remove a different set of packages than the plan says."
+  echo "  the plan:  $(cat "$BK/expected-removed.txt")"
+  echo "  apt now:   $(cat "$BK/resim-removed.txt")"
+  echo "$undo $changed"
+  exit 1
+fi
+: > "$BK/done-sources"
+echo "Block 3 done."
+# ===== blocks/download.sh
+# casaos-os-upgrade download 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: it is not Debian 11 (bullseye) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }
+[ -e "$BK/done-sources" ] || { AUTOCLASS=integrity; echo "STOP: the block before this one (sources) did not end: run it first (ls $BK shows how far you got)."; exit 1; }
+mkdir -p -m 700 "$BK"; chmod 700 "$BK"
+if [ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ]; then AUTOCLASS=identity; echo "STOP: the upgrade has begun (block 5 was started): this block only downloads for the minimal upgrade, which is block 5's, and block 5 downloads what it still needs. Do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; exit 1; fi
+export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+whereto() { if [ -e "$BK/begun-upgrade" ]; then echo "The upgrade has begun (block 5 was started): do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; else echo "No package has been installed or removed yet: run this block again, or put the sources back with sh $BK/restore-sources.sh"; fi; }
+echo "Block 4: downloading."
+aptq --download-only upgrade || { AUTOCLASS=network; echo "STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above). $(whereto)"; exit 1; }
+ls /var/cache/apt/archives/*.deb > /dev/null 2>&1 || { AUTOCLASS=network; echo "STOP: no package was downloaded: apt had nothing to fetch, or the cache of downloaded packages was emptied (apt-get clean), or the download did not go through (see what apt printed above). $(whereto)"; exit 1; }
+: > "$BK/done-download"
+echo "Block 4 done."
+# ===== blocks/minimal.sh
+# casaos-os-upgrade minimal 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: it is not Debian 11 (bullseye) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }
+[ -e "$BK/done-download" ] || { AUTOCLASS=integrity; echo "STOP: the block before this one (download) did not end: run it first (ls $BK shows how far you got)."; exit 1; }
+mkdir -p -m 700 "$BK"; chmod 700 "$BK"
+export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
+removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
+guard_removals() {
+  what="${2:-the full upgrade}"
+  for name in $(removed_of "$1"); do
+    base="${name%%:*}"
+    why=""
+    case "$base" in
+      docker-ce|docker-ce-cli|containerd.io|docker-*-plugin|docker.io|samba*|cifs-utils|mergerfs|ntfs-3g|udevil|smartmontools|parted|net-tools|wget|curl|unzip|git|openssh-*|sudo|systemd*|dbus|ifupdown|network-manager|netplan.io|dhcpcd|ca-certificates|linux-image*|grub*|shim*|initramfs-tools|apt|dpkg|libc6)
+        why="protected" ;;
+      *) case "$(dpkg-query -W -f='${Essential} ${Priority}\n' "$base" 2> /dev/null || true)" in "yes "*|*" required") why="essential or required, as dpkg says" ;; esac ;;
+    esac
+    [ -z "$why" ] || { AUTOCLASS=guard; echo "STOP: $what would remove $name, which is $why. The upgrade has begun. DO NOT UNDO ANYTHING. Ask for help, with $1. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+  done
+}
+help="The upgrade has begun: do not undo anything, ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."
+dpkgstate() { cksum < /var/lib/dpkg/status; ls -A /var/lib/dpkg/updates 2> /dev/null | sort; }
+CONFIRM=I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON
+[ "$CONFIRM" = I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON ] || { AUTOCLASS=integrity; echo "STOP: this is the point of no return. Type the words between the quotes of CONFIRM at the top of this block, if you have a snapshot or a console, and want to go on."; exit 1; }
+for unit in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do
+  if [ "$(systemctl is-active "$unit" 2>/dev/null || true)" = active ]; then systemctl stop "$unit"; fi
+  [ "$(systemctl is-active "$unit" 2>/dev/null || true)" != active ] || { AUTOCLASS=busy; echo "STOP: $unit is still running: stop it (systemctl stop $unit), then run this block again."; exit 1; }
+done
+if [ -e "$BK/begun-upgrade" ]; then where="The upgrade has begun (an earlier run of this block wrote its marker): do not undo anything."; else where="Nothing has begun: this block has not written its marker."; fi
+psout="$(ps -eo comm=,args= 2> /dev/null)" || { AUTOCLASS=tools; echo "STOP: ps did not answer, so the processes cannot be looked at for a package manager. If ps is not installed: apt-get install procps   then run this block again."; exit 1; }
+busy="$(printf '%s\n' "$psout" | awk '
+$1 == "apt" || $1 == "apt-get" || $1 == "aptitude" || $1 == "apt.systemd.dai" { $1 = $1; print substr($0, 1, 120); exit }
+$1 == "dpkg" { for (i = 2; i <= NF; i++) if ($i ~ /^(-i|-r|-P|--install|--configure|--unpack|--remove|--purge|--triggers-only)$/) { $1 = $1; print substr($0, 1, 120); exit } }
+$2 ~ /\/unattended-upgrade$/ || ($2 ~ /(^|\/)python[0-9.]*$/ && $3 ~ /\/unattended-upgrade$/) { $1 = $1; print substr($0, 1, 120); exit }
+' | tr -cd '\040-\176')"
+[ -z "$busy" ] || { AUTOCLASS=busy; echo "STOP: a package manager is running (the process list says: $busy): wait until it ends (if it is the daily job of apt: systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service), then run this block again. $where"; exit 1; }
+fresh=yes
+[ ! -e "$BK/begun-upgrade" ] || fresh=no
+before="$(dpkgstate)"
+: > "$BK/begun-upgrade"
+sync
+echo "BLOCK 5: THE POINT OF NO RETURN. THE UPGRADE BEGINS NOW."
+if ! aptq upgrade; then
+  if [ "$fresh" = yes ] && [ "$before" = "$(dpkgstate)" ]; then
+    rm -f "$BK/begun-upgrade"
+    { AUTOCLASS=apt_failed; echo "STOP: apt-get upgrade failed before it changed any package (dpkg's records are as they were): nothing was installed or removed, and the marker of the point of no return is taken back. A lock held by another package manager, no room on the disk, or a download that failed are the usual causes: see what apt printed above. Fix it, then run this block again (type the confirmation again), or put the sources back: sh $BK/restore-sources.sh"; exit 1; }
+  fi
+  AUTOCLASS=apt_failed; echo "STOP: the minimal upgrade failed, and it has begun: do not restore anything. Run: DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold   then:   DEBIAN_FRONTEND=noninteractive apt-get -s -f install   (read it first: a line that starts with Remv is a package that it would remove; if it is one that the plan does not name, or one that this text protects, do not go on and ask for help)   then:   DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -f install   then type the confirmation again and run this block again. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1
+fi
+aptq -s dist-upgrade > "$BK/after-minimal.txt" 2>&1 || { AUTOCLASS=apt_failed; echo "STOP: apt cannot work out the full upgrade: see $BK/after-minimal.txt. $help"; exit 1; }
+[ -n "$(removes_of "$BK/after-minimal.txt")" ] || { AUTOCLASS=apt_failed; echo "STOP: apt printed no summary line: see $BK/after-minimal.txt. $help"; exit 1; }
+[ "$(removed_of "$BK/after-minimal.txt" | awk 'END { print NR }')" = "$(removes_of "$BK/after-minimal.txt")" ] || { AUTOCLASS=apt_failed; echo "STOP: the packages that apt lists as removed are not as many as its summary says: see $BK/after-minimal.txt. $help"; exit 1; }
+if grep -q '^The following packages will be DOWNGRADED:' "$BK/after-minimal.txt" || grep -Eq ' [0-9]+ downgraded, ' "$BK/after-minimal.txt"; then AUTOCLASS=plan; echo "STOP: apt would downgrade packages (a pin over 1000, a package on hold, a package from outside Debian): see $BK/after-minimal.txt. $help"; exit 1; fi
+guard_removals "$BK/after-minimal.txt"
+: > "$BK/done-minimal"
+echo "Block 5 done."
+# ===== blocks/full.sh
+# casaos-os-upgrade full 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: it is not Debian 11 (bullseye) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }
+[ -e "$BK/done-minimal" ] || { AUTOCLASS=integrity; echo "STOP: the block before this one (minimal) did not end: run it first (ls $BK shows how far you got)."; exit 1; }
+mkdir -p -m 700 "$BK"; chmod 700 "$BK"
+export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
+removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
+guard_removals() {
+  what="${2:-the full upgrade}"
+  for name in $(removed_of "$1"); do
+    base="${name%%:*}"
+    why=""
+    case "$base" in
+      docker-ce|docker-ce-cli|containerd.io|docker-*-plugin|docker.io|samba*|cifs-utils|mergerfs|ntfs-3g|udevil|smartmontools|parted|net-tools|wget|curl|unzip|git|openssh-*|sudo|systemd*|dbus|ifupdown|network-manager|netplan.io|dhcpcd|ca-certificates|linux-image*|grub*|shim*|initramfs-tools|apt|dpkg|libc6)
+        why="protected" ;;
+      *) case "$(dpkg-query -W -f='${Essential} ${Priority}\n' "$base" 2> /dev/null || true)" in "yes "*|*" required") why="essential or required, as dpkg says" ;; esac ;;
+    esac
+    [ -z "$why" ] || { AUTOCLASS=guard; echo "STOP: $what would remove $name, which is $why. The upgrade has begun. DO NOT UNDO ANYTHING. Ask for help, with $1. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+  done
+}
+help="The upgrade has begun: do not undo anything, ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."
+for unit in apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service; do
+  if [ "$(systemctl is-active "$unit" 2>/dev/null || true)" = active ]; then systemctl stop "$unit"; fi
+  [ "$(systemctl is-active "$unit" 2>/dev/null || true)" != active ] || { AUTOCLASS=busy; echo "STOP: $unit is still running: stop it (systemctl stop $unit), then run this block again."; exit 1; }
+done
+psout="$(ps -eo comm=,args= 2> /dev/null)" || { AUTOCLASS=tools; echo "STOP: ps did not answer, so the processes cannot be looked at for a package manager. If ps is not installed: apt-get install procps   then run this block again."; exit 1; }
+busy="$(printf '%s\n' "$psout" | awk '
+$1 == "apt" || $1 == "apt-get" || $1 == "aptitude" || $1 == "apt.systemd.dai" { $1 = $1; print substr($0, 1, 120); exit }
+$1 == "dpkg" { for (i = 2; i <= NF; i++) if ($i ~ /^(-i|-r|-P|--install|--configure|--unpack|--remove|--purge|--triggers-only)$/) { $1 = $1; print substr($0, 1, 120); exit } }
+$2 ~ /\/unattended-upgrade$/ || ($2 ~ /(^|\/)python[0-9.]*$/ && $3 ~ /\/unattended-upgrade$/) { $1 = $1; print substr($0, 1, 120); exit }
+' | tr -cd '\040-\176')"
+[ -z "$busy" ] || { AUTOCLASS=busy; echo "STOP: a package manager is running (the process list says: $busy): wait until it ends (if it is the daily job of apt: systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service), then run this block again. The upgrade has begun: do not undo anything."; exit 1; }
+echo "Block 6: the full upgrade. It takes a while, and a package may be silent for minutes."
+aptq --download-only dist-upgrade || { AUTOCLASS=network; echo "STOP: the download of the full upgrade did not go through: a lock held by another package manager, or the network (see what apt printed above). The upgrade has begun: run this block again when the lock is free or the network is back. A third cause: if apt printed dpkg was interrupted, or Unmet dependencies (dpkg was killed in the middle of its work, or a dependency is missing), running this block again changes nothing: do not run what apt suggests (apt --fix-broken install removes packages without a stop). Only forward: DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold   then:   DEBIAN_FRONTEND=noninteractive apt-get -s -f install   (read it first: a line that starts with Remv is a package that it would remove; if it is one that the plan does not name, or one that this text protects, do not go on and ask for help)   then:   DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -f install   then run this block again."; exit 1; }
+if ! aptq dist-upgrade; then
+  echo "The dist-upgrade failed once: configuring what is half done, repairing, then again."
+  dpkg --configure -a --force-confdef --force-confold || { AUTOCLASS=dpkg_broken; echo "STOP: dpkg could not configure what is half done: what it printed is above, in the log of the unit. Do not undo anything: ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+  aptq -s -f install > "$BK/repair.txt" 2>&1 || { AUTOCLASS=apt_failed; echo "STOP: apt cannot work out the repair: see $BK/repair.txt. $help"; exit 1; }
+  [ -n "$(removes_of "$BK/repair.txt")" ] || { AUTOCLASS=apt_failed; echo "STOP: apt printed no summary line: see $BK/repair.txt. $help"; exit 1; }
+  [ "$(removed_of "$BK/repair.txt" | awk 'END { print NR }')" = "$(removes_of "$BK/repair.txt")" ] || { AUTOCLASS=apt_failed; echo "STOP: the packages that apt lists as removed are not as many as its summary says: see $BK/repair.txt. $help"; exit 1; }
+  if grep -q '^The following packages will be DOWNGRADED:' "$BK/repair.txt" || grep -Eq ' [0-9]+ downgraded, ' "$BK/repair.txt"; then AUTOCLASS=plan; echo "STOP: apt would downgrade packages (a pin over 1000, a package on hold, a package from outside Debian): see $BK/repair.txt. $help"; exit 1; fi
+  guard_removals "$BK/repair.txt" "the repair"
+  aptq -f install || { AUTOCLASS=apt_failed; echo "STOP: apt could not repair the packages. Do not undo anything: ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+  aptq -s dist-upgrade > "$BK/after-repair.txt" 2>&1 || { AUTOCLASS=apt_failed; echo "STOP: apt cannot work out the full upgrade after the repair: see $BK/after-repair.txt. $help"; exit 1; }
+  [ -n "$(removes_of "$BK/after-repair.txt")" ] || { AUTOCLASS=apt_failed; echo "STOP: apt printed no summary line: see $BK/after-repair.txt. $help"; exit 1; }
+  [ "$(removed_of "$BK/after-repair.txt" | awk 'END { print NR }')" = "$(removes_of "$BK/after-repair.txt")" ] || { AUTOCLASS=apt_failed; echo "STOP: the packages that apt lists as removed are not as many as its summary says: see $BK/after-repair.txt. $help"; exit 1; }
+  if grep -q '^The following packages will be DOWNGRADED:' "$BK/after-repair.txt" || grep -Eq ' [0-9]+ downgraded, ' "$BK/after-repair.txt"; then AUTOCLASS=plan; echo "STOP: apt would downgrade packages (a pin over 1000, a package on hold, a package from outside Debian): see $BK/after-repair.txt. $help"; exit 1; fi
+  guard_removals "$BK/after-repair.txt" "the full upgrade after the repair"
+  aptq dist-upgrade || { AUTOCLASS=apt_failed; echo "STOP: the full upgrade failed again after the repair. Do not undo anything: ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+fi
+pass=1
+converged=no
+while [ "$pass" -le 3 ]; do
+  last="$BK/converge$pass.txt"
+  aptq -s dist-upgrade > "$last" 2>&1 || true
+  if grep -q '^0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded\.' "$last"; then converged=yes; break; fi
+  if [ "$pass" -lt 3 ]; then
+    [ -n "$(removes_of "$last")" ] || { AUTOCLASS=apt_failed; echo "STOP: apt printed no summary line: see $last. $help"; exit 1; }
+    [ "$(removed_of "$last" | awk 'END { print NR }')" = "$(removes_of "$last")" ] || { AUTOCLASS=apt_failed; echo "STOP: the packages that apt lists as removed are not as many as its summary says: see $last. $help"; exit 1; }
+    if grep -q '^The following packages will be DOWNGRADED:' "$last" || grep -Eq ' [0-9]+ downgraded, ' "$last"; then AUTOCLASS=plan; echo "STOP: apt would downgrade packages (a pin over 1000, a package on hold, a package from outside Debian): see $last. $help"; exit 1; fi
+    guard_removals "$last"
+    aptq dist-upgrade || { AUTOCLASS=apt_failed; echo "STOP: a catch-up pass failed. Do not undo anything: ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+  fi
+  pass=$((pass + 1))
+done
+[ "$converged" = yes ] || { AUTOCLASS=converge; echo "STOP: apt still has something to do after the passes: see $last, and ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+audit="$(dpkg --audit 2>&1)" && [ -z "$audit" ] || { AUTOCLASS=dpkg_broken; echo "STOP: dpkg is not quiet: it has a package that is half installed or half configured, or it cannot open its own database. dpkg --audit says: ${audit:-nothing, but it ended with an error}. Run dpkg --configure -a, then this block again. If dpkg cannot open its own database, do not undo anything: ask for help."; exit 1; }
+aptq check > /dev/null || { AUTOCLASS=dpkg_broken; echo "STOP: apt-get check finds a broken dependency, or could not get the lock of dpkg in 5 minutes, or dpkg was interrupted (what it printed above says which). If it printed dpkg was interrupted, or Unmet dependencies: do not run what apt suggests (apt --fix-broken install removes packages without a stop). Only forward: DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold   then:   DEBIAN_FRONTEND=noninteractive apt-get -s -f install   (read it first: a line that starts with Remv is a package that it would remove; if it is one that the plan does not name, or one that this text protects, do not go on and ask for help)   then:   DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -f install   then run this block again. Do not undo anything: ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+: > "$BK/done-full"
+echo "Block 6 done."
+echo "The next is block 7: do not restart the machine before it has ended (it looks at the new kernel and at what the machine needs to start). Apt may say that some packages are no longer needed: do not run apt autoremove by hand, see the end of block 8."
+# ===== blocks/prereboot.sh
+# casaos-os-upgrade prereboot 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: it is not Debian 11 (bullseye) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }
+[ -e "$BK/done-full" ] || { AUTOCLASS=integrity; echo "STOP: the block before this one (full) did not end: run it first (ls $BK shows how far you got)."; exit 1; }
+mkdir -p -m 700 "$BK"; chmod 700 "$BK"
+echo "Block 7: will the machine start?"
+isinst() { case "$(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2> /dev/null || true)" in ii*) return 0 ;; esac; return 1; }
+running="$(uname -r)"
+newest=""
+for v in $(dpkg-query -W -f='${db:Status-Abbrev} ${Package}\n' 'linux-image-[0-9]*' 2> /dev/null | awk '$1 == "ii" { if ($2 ~ /-(dbg|unsigned)$/) next; sub(/^linux-image-/, "", $2); print $2 }' | sort -V); do newest="$v"; done
+[ -n "$newest" ] || { AUTOCLASS=barrier_kernel; echo "STOP: dpkg has no linux-image package installed: the machine would not start. Ask for help."; exit 1; }
+[ -s "$BK/packages.tsv" ] || { AUTOCLASS=integrity; echo "STOP: $BK/packages.tsv is not there: block 2 wrote it, and this block asks it whether the kernel that runs was there before the hop. Ask for help."; exit 1; }
+had=no
+if awk -F'\t' -v k="linux-image-$running" '$1 ~ /^.i/ && $2 == k { f = 1 } END { exit 1 - f }' "$BK/packages.tsv"; then had=yes; fi
+early=no
+warned=no
+if [ "$newest" = "$running" ] && [ "$had" = no ]; then
+  early=yes
+  echo "The kernel that runs ($running) is the newest that dpkg has, and it was not installed before the hop (it is not in $BK/packages.tsv): the machine was restarted after the new kernel was installed, and it already runs it. The checks of the kernel files, of the initrd and of grub are for before a restart, and the machine has started: this block skips them, and makes the ones that stay true after a boot (DNS, the clock, the iptables alternative, sshd)."
+fi
+if [ "$early" = no ]; then
+[ "$newest" != "$running" ] || { AUTOCLASS=barrier_kernel; echo "STOP: the plan installs a new kernel (or its list of new packages was cut and cannot say that it does not), and the newest kernel that dpkg has is the one that runs now ($running), which was already installed before the hop: the new kernel is not installed, or its installation did not end. Run block 6 again, then this block. If it stays so, ask for help, with: dpkg -l 'linux-image*'   Do not restart before: the machine would start on the kernel of Debian 11 with the system of Debian 12."; exit 1; }
+echo "The kernel that runs: $running. The newest installed: $newest."
+[ -s "/boot/vmlinuz-$newest" ] || { AUTOCLASS=barrier_kernel; echo "STOP: /boot/vmlinuz-$newest is not there: the machine would not start. Fix: apt-get install --reinstall linux-image-$newest   then run this block again."; exit 1; }
+[ -s "/boot/initrd.img-$newest" ] || { AUTOCLASS=barrier_initrd; echo "STOP: /boot/initrd.img-$newest is not there: the machine would not start. Fix: update-initramfs -c -k $newest   then run this block again."; exit 1; }
+size="$(wc -c < "/boot/initrd.img-$newest")"
+[ "$((size))" -ge 1048576 ] || { AUTOCLASS=barrier_initrd; echo "STOP: /boot/initrd.img-$newest is only $((size)) bytes: an initrd is never under 1 MiB, this one is cut short. Fix: update-initramfs -u -k $newest   then run this block again."; exit 1; }
+command -v lsinitramfs > /dev/null 2>&1 || { AUTOCLASS=tools; echo "STOP: lsinitramfs is not there (initramfs-tools): the initrd cannot be opened to look inside. Ask for help."; exit 1; }
+lsinitramfs "/boot/initrd.img-$newest" > /dev/null 2>&1 || { AUTOCLASS=barrier_initrd; echo "STOP: lsinitramfs cannot open /boot/initrd.img-$newest: the machine would not start. Fix: update-initramfs -u -k $newest   then run this block again."; exit 1; }
+if [ "$((size))" -le 5242880 ]; then warned=yes; printf '%s\n' initrd_small >> "$BK/warnings"; echo "WARNING: /boot/initrd.img-$newest is $((size)) bytes, under the 5 MiB of a usual initrd (this is NOT a stop). That is right on a machine set up with few modules (MODULES=dep in /etc/initramfs-tools/initramfs.conf) and wrong on one whose initrd is cut short: check by hand that it holds the driver of your disk and of your network card, for example: lsinitramfs /boot/initrd.img-$newest | grep -i <the name of the driver>   Restart only if it does."; fi
+if [ -e /boot/grub/grub.cfg ]; then grep -q "vmlinuz-$newest" /boot/grub/grub.cfg || { AUTOCLASS=barrier_grub; echo "STOP: grub.cfg does not name the kernel $newest. Fix: update-grub   then run this block again."; exit 1; }; else warned=yes; printf '%s\n' grub_cfg_missing >> "$BK/warnings"; echo "WARNING: /boot/grub/grub.cfg is not there, so this block cannot look at whether the boot loader names the kernel $newest (a machine that starts with another loader, systemd-boot for example, is not one that this text was tried on: that loader may not know the new kernel). This is NOT a stop: look at it by hand before you restart."; fi
+[ -e "/boot/vmlinuz-$running" ] || { AUTOCLASS=barrier_kernel; echo "STOP: the kernel that runs now is not kept in /boot."; exit 1; }
+fi
+resolved=no
+case "$(readlink /etc/resolv.conf 2> /dev/null || true)" in *run/systemd/resolve/*) resolved=yes ;; esac
+[ "$(systemctl is-active systemd-resolved 2> /dev/null || true)" != active ] || resolved=yes
+if [ "$resolved" = yes ] && ! isinst systemd-resolved; then
+  if [ "$early" = yes ]; then
+    { AUTOCLASS=barrier_resolver; echo "STOP: systemd-resolved served as the resolver of this machine and is not installed on Debian 12, and the machine has started without it: it has no DNS, and apt cannot fetch the package. Fix, in this order: replace /etc/resolv.conf, a link to a file of systemd-resolved that is not there, by a file that holds a nameserver of your network (rm /etc/resolv.conf   then:   echo 'nameserver <the address of a DNS server of your network>' > /etc/resolv.conf)   then apt-get install systemd-resolved   then run this block again."; exit 1; }
+  fi
+  { AUTOCLASS=barrier_resolver; echo "STOP: systemd-resolved served as the resolver of this machine and is not installed on Debian 12: after a boot the machine has no DNS. Fix: apt-get install systemd-resolved   then run this block again."; exit 1; }
+fi
+timed=no
+for p in systemd-timesyncd chrony ntp ntpsec openntpd; do if isinst "$p"; then timed=yes; fi; done
+[ "$timed" = yes ] || { AUTOCLASS=barrier_other; echo "STOP: no time daemon is installed (systemd-timesyncd, chrony, ntp, ntpsec or openntpd): the clock drifts when nothing sets it. Fix: apt-get install systemd-timesyncd   then run this block again."; exit 1; }
+before="$(cat "$BK/iptables-alternative.txt" 2> /dev/null || true)"
+now="$(update-alternatives --query iptables 2> /dev/null | awk '/^Value:/ { print $2 }')"
+[ "$before" = "$now" ] || { AUTOCLASS=barrier_other; echo "STOP: the iptables alternative is not the one of block 2 (before: ${before:-none}, now: ${now:-none}): the rules of the firewall and of Docker use it. Fix: update-alternatives --set iptables ${before:-the-one-of-before}   then run this block again."; exit 1; }
+if command -v sshd > /dev/null 2>&1; then
+  [ -d /run/sshd ] || mkdir -p -m 755 /run/sshd
+  sshd -t || { AUTOCLASS=barrier_sshd; echo "STOP: sshd does not accept its configuration: the machine would not be reachable after a boot. What sshd -t printed above says which file and which line; put it right, then run this block again."; exit 1; }
+  sshd -T 2> /dev/null | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication) ' | sort > "$BK/sshd-keys-now.txt" || true
+  grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication) ' "$BK/sshd-keys.txt" | sort > "$BK/sshd-keys-before.txt" || true
+  [ "$(cat "$BK/sshd-keys-before.txt")" = "$(cat "$BK/sshd-keys-now.txt")" ] || { AUTOCLASS=barrier_sshd; echo "STOP: the settings of sshd (port, address, root login, passwords) are not the ones of before: compare $BK/sshd-keys.txt with sshd -T."; exit 1; }
+  echo "The algorithms that sshd accepts for keys are named differently by Debian 12, and its defaults changed: look at them yourself."
+  echo "  before:  $(grep -E '^pubkeyaccepted' "$BK/sshd-keys.txt" || echo none)"
+  echo "  now:     $(sshd -T 2> /dev/null | grep -E '^pubkeyaccepted' || echo none)"
+fi
+if [ "$early" = yes ]; then
+  echo "NOT checked: /etc/fstab and the mounts (findmnt --verify), the names of the network cards, that Docker answers, that your applications work. Look at them yourself: the machine has started, so you can."
+  printf '%s\n' "$newest" > "$BK/kernel"
+  : > "$BK/done-prereboot"
+  echo "Block 7 done."
+  echo "The machine has started on the new kernel already, so it needs no restart for this. Go on with block 8."
+  exit 0
+fi
+echo "NOT checked: /etc/fstab and the mounts (findmnt --verify), the names of the network cards, that Docker answers, that your applications work. Look at them yourself before you restart."
+printf '%s\n' "$newest" > "$BK/kernel"
+cat /proc/sys/kernel/random/boot_id > "$BK/boot_id"
+: > "$BK/done-prereboot"
+echo "Block 7 done."
+if [ "$warned" = yes ]; then echo "The checks above passed, except what the WARNING above says (the size of the initrd, or the boot loader): look at it by hand first. What this block does not check is yours too. When you have looked, restart the machine yourself, with the console at hand. This text does not do it."
+else echo "The checks above passed. What this block does not check (the NOT checked line above) is yours: look at it first. When you have, restart the machine yourself, with the console at hand. This text does not do it."; fi
+# ===== blocks/after.sh
+# casaos-os-upgrade after 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=bullseye$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: it is not Debian 11 (bullseye) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }
+[ -e "$BK/done-prereboot" ] || { AUTOCLASS=integrity; echo "STOP: the block before this one (prereboot) did not end: run it first (ls $BK shows how far you got)."; exit 1; }
+mkdir -p -m 700 "$BK"; chmod 700 "$BK"
+export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+APT_ETC=/etc/apt
+echo "Block 8: after the restart."
+rm -f "$BK/docker-source-note"
+if [ -s "$BK/boot_id" ]; then
+  [ "$(cat /proc/sys/kernel/random/boot_id)" != "$(cat "$BK/boot_id")" ] || { AUTOCLASS=identity; echo "STOP: the machine has not been restarted since block 7: restart it first."; exit 1; }
+fi
+grep -q '^VERSION_CODENAME=bookworm$' /etc/os-release || { AUTOCLASS=identity; echo "STOP: this machine is not Debian 12 (bookworm): see the console, and the table at the end of this text."; exit 1; }
+want="$(cat "$BK/kernel" 2> /dev/null || true)"
+[ -n "$want" ] || { AUTOCLASS=integrity; echo "STOP: $BK/kernel is not there: block 7 writes it, and it did not end. Run block 7 first."; exit 1; }
+[ "$(uname -r)" = "$want" ] || { AUTOCLASS=barrier_kernel; echo "STOP: the machine runs the kernel $(uname -r), not $want, the one block 7 looked at: it started on the old one (grub's default, or a choice in its menu). Fix: choose $want in the boot menu on the console, make it the default (GRUB_DEFAULT=0 in /etc/default/grub, or grub-set-default 0 when it is saved), run update-grub, restart, and run this block again."; exit 1; }
+cat "$APT_ETC/sources.list" "$APT_ETC"/sources.list.d/*.list 2> /dev/null | grep -Eq '^[[:space:]]*deb(-src)?[[:space:]].*bookworm' || { AUTOCLASS=identity; echo "STOP: the sources of apt do not name bookworm: they are not the ones block 3 wrote (the restore script run after the upgrade, or a change by hand). Write Debian 12's sources again as block 3 does (its text has them), run apt-get update, then run this block again."; exit 1; }
+echo "The machine runs: $(grep '^PRETTY_NAME=' /etc/os-release), kernel $(uname -r)."
+systemctl --failed --no-legend --plain 2> /dev/null | awk '{ print $1 }' | sort > "$BK/failed-units-after.txt" || true
+echo "--- units that fail now and did not before the hop (block 2 wrote down the ones that failed before, in $BK/failed-units.txt):"
+comm -13 "$BK/failed-units.txt" "$BK/failed-units-after.txt" || true
+echo "--- all the units that fail now:"
+systemctl --failed --no-legend --plain || true
+echo "--- the ReCasaOS units now, and as they were before the hop (unit and state):"
+systemctl list-units 'casaos*' --all --no-legend --plain || true
+echo "  before:"
+cat "$BK/casaos-units.txt" || true
+echo "--- containers now, and what they were before:"
+if command -v docker > /dev/null 2>&1; then docker ps -a --format '{{.Names}} {{.Status}}' || true; fi
+if [ -s "$BK/containers.txt" ]; then cat "$BK/containers.txt"; else echo "(there were none)"; fi
+ss -Hltn | awk '{ print $4 }' | sort > "$BK/listening-after.txt"
+echo "--- ports that listened before the hop and do not now (a service may start a little after the machine does):"
+comm -23 "$BK/listening.txt" "$BK/listening-after.txt" || true
+echo "--- ports that listen now and did not before:"
+comm -13 "$BK/listening.txt" "$BK/listening-after.txt" || true
+audit="$(dpkg --audit 2>&1)" && [ -z "$audit" ] || { AUTOCLASS=dpkg_broken; echo "STOP: dpkg is not quiet: it has a package that is half installed or half configured, or it cannot open its own database. dpkg --audit says: ${audit:-nothing, but it ended with an error}. Run dpkg --configure -a, then run this block again."; exit 1; }
+# the timers, as they were (block 1 wrote them down, in a file outside the folder of the plan)
+TS=/var/backups/casaos-os-upgrade-timers.state
+if [ -f "$TS" ]; then
+  while read -r unit state; do
+    if [ "$state" = active ]; then systemctl start "$unit"; fi
+  done < "$TS"
+else
+  echo "$TS is not there, so no timer of apt is started: if they were running before the hop, start them: systemctl start apt-daily.timer apt-daily-upgrade.timer"
+fi
+# Docker's source goes back, for Debian 12, when Docker publishes Debian 12. curl says which it is: 0 it does; 22 it answers with an error status, which is
+# 'not published' for 403, 404 and 410 and the server's own trouble for the others (429, 5xx); anything else is the network (6 no name, 7 no connection, 28 too
+# slow) or no curl, and is no answer.
+rc=0
+code=000
+if command -v curl > /dev/null 2>&1; then code="$(curl -fsI --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' https://download.docker.com/linux/debian/dists/bookworm/InRelease)" || rc=$?; else rc=127; fi
+if [ "$rc" = 0 ]; then
+  f="$APT_ETC/sources.list.d/docker.list"
+  if [ -e "$f.casaos-paused" ]; then
+    ( umask 022; awk '/^[ \t]*#/ { print; next } { for (i = 1; i <= NF; i++) if ($i == "bullseye") $i = "bookworm"; print }' "$f.casaos-paused" > "$f.casaos-new" )
+    mv -f "$f.casaos-new" "$f"
+    rm -f "$f.casaos-paused"
+  fi
+elif [ "$rc" = 22 ] && { [ "$code" = 404 ] || [ "$code" = 403 ] || [ "$code" = 410 ]; }; then
+  echo "Docker publishes nothing for bookworm yet (download.docker.com answered the status $code for its Release file): its source stays paused."
+  printf '%s\n' not_published > "$BK/docker-source-note"
+  echo 'To put Docker'\''s source back by hand, when it is published: mv /etc/apt/sources.list.d/docker.list.casaos-paused /etc/apt/sources.list.d/docker.list   then:   sed -i "s/ bullseye / bookworm /" /etc/apt/sources.list.d/docker.list   then:   apt-get update'
+elif [ "$rc" = 22 ]; then
+  echo "download.docker.com answered the error status $code, which does not say that it publishes nothing (429 and 5xx are the server's own trouble, and pass): Docker's source stays paused, and the upgrade goes on without it. It is said in the report."
+  printf '%s\n' unreachable > "$BK/docker-source-note"
+  echo 'To put Docker'\''s source back by hand, when it is published: mv /etc/apt/sources.list.d/docker.list.casaos-paused /etc/apt/sources.list.d/docker.list   then:   sed -i "s/ bullseye / bookworm /" /etc/apt/sources.list.d/docker.list   then:   apt-get update'
+elif [ "$rc" = 127 ]; then
+  echo "curl is not installed, so Docker's repository cannot be asked about bookworm: its source stays paused, and the upgrade goes on without it. It is said in the report."
+  printf '%s\n' no_curl > "$BK/docker-source-note"
+  echo 'To put Docker'\''s source back by hand, when it is published: mv /etc/apt/sources.list.d/docker.list.casaos-paused /etc/apt/sources.list.d/docker.list   then:   sed -i "s/ bullseye / bookworm /" /etc/apt/sources.list.d/docker.list   then:   apt-get update'
+else
+  echo "curl could not reach download.docker.com (exit $rc: 6 no name, 7 no connection, 28 too slow): the network is probably not up yet. Docker's source stays paused, and the upgrade goes on without it. It is said in the report."
+  printf '%s\n' unreachable > "$BK/docker-source-note"
+  echo 'To put Docker'\''s source back by hand, when it is published: mv /etc/apt/sources.list.d/docker.list.casaos-paused /etc/apt/sources.list.d/docker.list   then:   sed -i "s/ bullseye / bookworm /" /etc/apt/sources.list.d/docker.list   then:   apt-get update'
+fi
+aptq update || echo "apt-get update did not go through (another package manager may hold the lock of the lists: apt-get update does not wait for it): run it again."
+find / -xdev \( -name '*.dpkg-old' -o -name '*.dpkg-new' -o -name '*.dpkg-dist' -o -name '*.ucf-*' \) 2> /dev/null | sort > "$BK/dpkg-files-after.txt" || true
+echo "Files that dpkg left beside the ones you edited, and that were not there when block 2 looked (a .dpkg-dist is the new version of a file of yours that was NOT installed over it: compare it with yours; sshd, samba and the defaults of grub are the ones to look at):"
+comm -13 "$BK/dpkg-files.txt" "$BK/dpkg-files-after.txt" || true
+echo "  (all of them, the old ones too: $BK/dpkg-files-after.txt)"
+echo "Then update Docker from the dashboard (System packages), and look at your applications."
+echo "Do not run apt autoremove without looking: apt says that some packages are no longer needed, and the list can hold a package that this text protects (net-tools was in it in the measured hop). Run apt-get -s autoremove first, and keep what you need: apt-mark manual <the name>."
+rm -f "$TS"
+: > "$BK/done-after"
+echo "Block 8 done."
+echo "That is not to say that the machine is healthy: the steps ran. Read the lists above (the units that fail, the ports, the containers, the files of dpkg) and look at your applications."
+# ===== blocks/forward.sh
+# casaos-os-upgrade forward 6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13
+set -eu
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+AUTOCLASS=unknown
+osu_exit() { rc=$?; [ "$rc" -eq 0 ] || printf '%s\n' "$AUTOCLASS" > "${CASAOS_OSU_DIR:-/nonexistent}/stop-class"; }
+trap osu_exit EXIT
+[ "${CASAOS_OSU_RUN:-}" = '6f9c3a52-1f7e-4c1b-9a47-2d8e5b0c7a13' ] && grep -q 'casaos-os-upgrade\.service' /proc/self/cgroup || { AUTOCLASS=unit; echo "STOP: this block belongs to the upgrade unit of the dashboard and runs only there, with the confirmation of the owner baked in: to continue by hand use manual-runbook.sh of the run."; exit 1; }
+BK=/var/backups/casaos-os-upgrade-p1-5787acb2f81006785a3076312615ae6c
+[ ! -e "$BK/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }
+for fin in /var/backups/casaos-os-upgrade-*; do
+  [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
+done
+export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
+removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
+guard_removals() {
+  what="${2:-the full upgrade}"
+  for name in $(removed_of "$1"); do
+    base="${name%%:*}"
+    why=""
+    case "$base" in
+      docker-ce|docker-ce-cli|containerd.io|docker-*-plugin|docker.io|samba*|cifs-utils|mergerfs|ntfs-3g|udevil|smartmontools|parted|net-tools|wget|curl|unzip|git|openssh-*|sudo|systemd*|dbus|ifupdown|network-manager|netplan.io|dhcpcd|ca-certificates|linux-image*|grub*|shim*|initramfs-tools|apt|dpkg|libc6)
+        why="protected" ;;
+      *) case "$(dpkg-query -W -f='${Essential} ${Priority}\n' "$base" 2> /dev/null || true)" in "yes "*|*" required") why="essential or required, as dpkg says" ;; esac ;;
+    esac
+    [ -z "$why" ] || { AUTOCLASS=guard; echo "STOP: $what would remove $name, which is $why. The upgrade has begun. DO NOT UNDO ANYTHING. Ask for help, with $1. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+  done
+}
+help="The upgrade has begun: do not undo anything, ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."
+dpkgstate() { cksum < /var/lib/dpkg/status; ls -A /var/lib/dpkg/updates 2> /dev/null | sort; }
+echo "Block F: mending what an interrupted upgrade left half done."
+for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service; do
+  if [ "$(systemctl is-active "$unit" 2>/dev/null || true)" = active ]; then systemctl stop "$unit"; fi
+  [ "$(systemctl is-active "$unit" 2>/dev/null || true)" != active ] || { AUTOCLASS=busy; echo "STOP: $unit is still running: stop it (systemctl stop $unit), then run this block again."; exit 1; }
+done
+psout="$(ps -eo comm=,args= 2> /dev/null)" || { AUTOCLASS=tools; echo "STOP: ps did not answer, so the processes cannot be looked at for a package manager. If ps is not installed: apt-get install procps   then run this block again."; exit 1; }
+busy="$(printf '%s\n' "$psout" | awk '
+$1 == "apt" || $1 == "apt-get" || $1 == "aptitude" || $1 == "apt.systemd.dai" { $1 = $1; print substr($0, 1, 120); exit }
+$1 == "dpkg" { for (i = 2; i <= NF; i++) if ($i ~ /^(-i|-r|-P|--install|--configure|--unpack|--remove|--purge|--triggers-only)$/) { $1 = $1; print substr($0, 1, 120); exit } }
+$2 ~ /\/unattended-upgrade$/ || ($2 ~ /(^|\/)python[0-9.]*$/ && $3 ~ /\/unattended-upgrade$/) { $1 = $1; print substr($0, 1, 120); exit }
+' | tr -cd '\040-\176')"
+[ -z "$busy" ] || { AUTOCLASS=busy; echo "STOP: a package manager is running (the process list says: $busy): wait until it ends (if it is the daily job of apt: systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service), then run this block again. The upgrade has begun: do not undo anything."; exit 1; }
+[ -e "$BK/expected-removed.txt" ] || : > "$BK/expected-removed.txt"
+cfg=0
+dpkg --configure -a --force-confdef --force-confold || cfg=$?
+[ "$cfg" = 0 ] || echo "dpkg could not configure everything that is half done (it ended with $cfg; what it printed is above, in the log of the unit): the repair that follows is what can mend it."
+recover="$BK/recover-$CASAOS_OSU_ATTEMPT.txt"
+aptq -s -f install > "$recover" 2>&1 || { AUTOCLASS=apt_failed; echo "STOP: apt cannot work out the repair: see $recover. $help"; exit 1; }
+[ -n "$(removes_of "$recover")" ] || { AUTOCLASS=apt_failed; echo "STOP: apt printed no summary line: see $recover. $help"; exit 1; }
+[ "$(removed_of "$recover" | awk 'END { print NR }')" = "$(removes_of "$recover")" ] || { AUTOCLASS=apt_failed; echo "STOP: the packages that apt lists as removed are not as many as its summary says: see $recover. $help"; exit 1; }
+if grep -q '^The following packages will be DOWNGRADED:' "$recover" || grep -Eq ' [0-9]+ downgraded, ' "$recover"; then AUTOCLASS=plan; echo "STOP: apt would downgrade packages (a pin over 1000, a package on hold, a package from outside Debian): see $recover. $help"; exit 1; fi
+guard_removals "$recover" "the repair"
+for name in $(removed_of "$recover"); do
+  grep -qxF -- "$name" "$BK/expected-removed.txt" || { AUTOCLASS=guard; echo "STOP: the repair would remove $name, which the plan does not name: do not undo anything, ask for help, with $recover. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+done
+if ! aptq -f install; then
+  [ "$cfg" = 0 ] || { AUTOCLASS=dpkg_broken; echo "STOP: dpkg could not configure what is half done, and apt could not repair it either. Do not undo anything: ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+  { AUTOCLASS=apt_failed; echo "STOP: apt could not repair the packages. Do not undo anything: ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+fi
+audit="$(dpkg --audit 2>&1)" && [ -z "$audit" ] || { AUTOCLASS=dpkg_broken; echo "STOP: dpkg is not quiet after the repair: dpkg --audit says what is left (it is in the log of the unit). Do not undo anything: ask for help. What apt, dpkg and the scripts of the packages printed is in the log of the unit, $CASAOS_OSU_DIR/output.log (the page shows the end of it); what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each."; exit 1; }
+echo "Block F done."
