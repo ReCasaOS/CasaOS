@@ -98,6 +98,7 @@ func TestTheBoundsOfTheTextsAndOfTheNames(t *testing.T) {
 		{"an os twice", "os", `["debian:12","debian:12"]`, "os"},
 		{"a package that ends with a dash, which apt reads as a removal", "packages.common", `["libvirt-clients-"]`, "packages.common"},
 		{"a package that ends with a plus, which apt reads as an install", "packages.common", `["libvirt-clients+"]`, "packages.common"},
+		{"a package that ends with .deb, which apt reads as the path of a file", "packages.common", `["libvirt.deb"]`, "packages.common"},
 		{"a package of one character", "packages.common", `["a"]`, "packages.common"},
 		{"a package with an equal sign", "packages.common", `["pkg=1.0"]`, "packages.common"},
 		{"a package with a slash", "packages.common", `["pkg/stable"]`, "packages.common"},
