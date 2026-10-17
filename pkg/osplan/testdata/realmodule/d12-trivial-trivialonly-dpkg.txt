@@ -1,0 +1,1 @@
+ii  rvm-solo       1.0          all          rvm-solo test package

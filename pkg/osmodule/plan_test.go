@@ -557,7 +557,8 @@ func TestWhatTheBoxSaysIsSaidBackOnlyAsTextThatIsSafeToShow(t *testing.T) {
 	box.sim = AptResult{Failure: RefusedAptFailed, Detail: "E: bad\n\x1b[2Jline" + strings.Repeat("x", 1000)}
 	r = Plan(virtCatalogue(t), "virt", box)
 	for _, c := range r.Checks {
-		if len(c.Detail) > 128 || strings.ContainsFunc(c.Detail, func(r rune) bool { return r < ' ' || r > '~' }) {
+		// (what apt could not make an answer of is let through longer than a hundred characters, for the lines that name what could not be met)
+		if most := map[bool]int{false: 128, true: maxAptDetail}[c.Code == CheckApt]; len(c.Detail) > most || strings.ContainsFunc(c.Detail, func(r rune) bool { return r < ' ' || r > '~' }) {
 			t.Errorf("check %s says %q", c.Code, c.Detail)
 		}
 	}

@@ -7,9 +7,9 @@ import (
 )
 
 // moduleOpts is the options of the simulation of a module, written out as they are meant (and not built by the code that is tested): the cache of apt in the sandbox directory, no
-// locking. The sources and the lists are the box's own, because the install that follows uses the lists the box has.
+// locking, no log of the planner. The sources and the lists are the box's own, because the install that follows uses the lists the box has.
 func moduleOpts(d string) []string {
-	return []string{"-o", "Dir::Cache=" + d + "/cache", "-o", "Debug::NoLocking=true"}
+	return []string{"-o", "Dir::Cache=" + d + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner="}
 }
 
 func moduleArgvOf(d string, tail ...string) []string {
@@ -23,8 +23,25 @@ func TestTheArgvsOfTheSimulationOfAModuleAreWhatTheyAreMeantToBe(t *testing.T) {
 		t.Errorf("simulation:\n got %q (%v)\nwant %q", sim, err, want)
 	}
 	est, err := ModuleEstimateArgv(testDir, pkgs)
-	if want := moduleArgvOf(testDir, "-o", "APT::Get::Trivial-Only=true", "install", "--no-install-recommends", "libvirt-clients", "qemu-utils"); err != nil || !slices.Equal(est, want) {
+	if want := moduleArgvOf(testDir, "--print-uris", "install", "--no-install-recommends", "libvirt-clients", "qemu-utils"); err != nil || !slices.Equal(est, want) {
 		t.Errorf("estimate:\n got %q (%v)\nwant %q", est, err, want)
+	}
+	// ...and the estimate is not a command that can install: it has none of the options that make apt go on, and not the one that apt does not honour for a transaction of one package per
+	// name
+	for _, word := range est {
+		if word == "-y" || word == "--yes" || word == "-s" || strings.Contains(word, "Trivial-Only") || strings.Contains(word, "Assume") {
+			t.Errorf("the estimate has the word %q", word)
+		}
+	}
+	if !slices.Contains(est, "--print-uris") || slices.Contains(sim, "--print-uris") || !slices.Contains(sim, "-s") {
+		t.Errorf("the words that tell the two apart: %q and %q", sim, est)
+	}
+	// both ask apt for no log of the planner, which it writes as root for a simulation
+	for name, a := range map[string][]string{"simulation": sim, "estimate": est} {
+		i := slices.Index(a, "Dir::Log::Planner=")
+		if i < 1 || a[i-1] != "-o" {
+			t.Errorf("the %s does not turn the log of the planner off: %q", name, a)
+		}
 	}
 	// the commands run in English: the parser reads apt's own words and a translation would not be understood
 	if env := SandboxEnv(testDir); !slices.Contains(env, "LC_ALL=C") || !slices.Contains(env, "LANG=C") || !slices.Contains(env, "DEBIAN_FRONTEND=noninteractive") {
@@ -136,12 +153,27 @@ func TestTheAllowListTakesTheTwoCommandsOfAModuleAndNothingNear(t *testing.T) {
 		}
 	}
 	// the head of the simulation and the packages of the estimate do not make a command
-	mixed := slices.Concat(sim[:8], est[9:])
+	mixed := slices.Concat(sim[:10], est[10:])
 	if !AllowedModuleArgv(mixed, testDir) {
 		t.Errorf("the same packages after the head of the simulation: %q", mixed)
 	}
-	if AllowedModuleArgv(slices.Concat(sim[:7], est[9:]), testDir) {
+	if AllowedModuleArgv(slices.Concat(sim[:9], est[10:]), testDir) {
 		t.Error("a head that is neither")
+	}
+	// the two commands are not the ones of an earlier version: no trivial-only estimate (which installs a transaction of one package), no log of the planner left on, and no verb with
+	// the other's option
+	for name, a := range map[string][]string{
+		"the estimate that apt installs with": moduleArgvOf(testDir, "-o", "APT::Get::Trivial-Only=true", "install", "--no-install-recommends", "pkg-a"),
+		"the simulation without the log off":  {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "-s", "install", "--no-install-recommends", "pkg-a"},
+		"the estimate without the log off":    {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "--print-uris", "install", "--no-install-recommends", "pkg-a"},
+		"the log turned on":                   {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner=/var/log/x", "--print-uris", "install", "--no-install-recommends", "pkg-a"},
+		"both options":                        moduleArgvOf(testDir, "-s", "--print-uris", "install", "--no-install-recommends", "pkg-a"),
+		"the estimate with the yes":           moduleArgvOf(testDir, "--print-uris", "-y", "install", "--no-install-recommends", "pkg-a"),
+		"the estimate with the install after": moduleArgvOf(testDir, "install", "--print-uris", "--no-install-recommends", "pkg-a"),
+	} {
+		if AllowedModuleArgv(a, testDir) {
+			t.Errorf("%s is allowed: %q", name, a)
+		}
 	}
 }
 
@@ -174,7 +206,7 @@ Conf libc6 (2.36-9+deb12u14 Debian:12.15/oldstable [amd64])
 Conf libfdt1 (1.6.1-4+b1 Debian:12.15/oldstable [amd64])
 `
 
-// the same transaction, not simulated, with the trivial-only option: it stops at the question and says the sizes
+// the same transaction with --print-uris: it says the sizes, prints the addresses and ends with status 0
 const estInstall = progressLines + `The following additional packages will be installed:
   libfdt1 libiscsi7 libvirt-daemon libvirt0 qemu-utils
 Suggested packages:
@@ -186,13 +218,17 @@ The following packages will be upgraded:
 2 upgraded, 6 newly installed, 0 to remove and 3 not upgraded.
 Need to get 5,120 kB/44.3 MB of archives.
 After this operation, 130 MB of additional disk space will be used.
-E: Trivial Only specified but this is not a trivial operation.
+'http://deb.debian.org/debian/pool/main/libv/libvirt/libvirt0_9.0.0-4_amd64.deb' libvirt0_9.0.0-4_amd64.deb 1459712 SHA256:0123456789abcdef
+'http://deb.debian.org/debian/pool/main/q/qemu/qemu-utils_7.2+dfsg-7+deb12u16_amd64.deb' qemu-utils_1%3a7.2+dfsg-7+deb12u16_amd64.deb 1168352 SHA256:fedcba9876543210
 `
 
 func out(text string, code int) Output { return Output{Text: text, ExitCode: code} }
 
+// asked are the packages that simInstall is the simulation of
+var asked = []string{"libvirt-clients", "qemu-utils"}
+
 func TestWhatAptSaysOfInstallingPackagesIsReadAsPackagesAndSizes(t *testing.T) {
-	res := ParseModuleSimulation(out(simInstall, 0), out(estInstall, 100), testDir)
+	res := ParseModuleSimulation(out(simInstall, 0), out(estInstall, 0), asked)
 	if res.Failure != "" {
 		t.Fatalf("failure %q: %s", res.Failure, res.Detail)
 	}
@@ -210,7 +246,7 @@ func TestWhatAptSaysOfInstallingPackagesIsReadAsPackagesAndSizes(t *testing.T) {
 func TestInstallingWhatIsThereAlreadyIsAnInstallOfNothing(t *testing.T) {
 	sim := progressLines + "libvirt-clients is already the newest version (9.0.0-4).\nqemu-utils is already the newest version (1:7.2+dfsg-7+deb12u16).\n" +
 		"0 upgraded, 0 newly installed, 0 to remove and 4 not upgraded.\n"
-	res := ParseModuleSimulation(out(sim, 0), out(sim, 0), testDir)
+	res := ParseModuleSimulation(out(sim, 0), out(sim, 0), asked)
 	if res.Failure != "" || len(res.ToInstall) != 0 || len(res.ToUpgrade) != 0 || !res.Known || res.DownloadBytes != 0 || res.ExtraBytes != 0 {
 		t.Errorf("%+v", res)
 	}
@@ -225,7 +261,7 @@ The following NEW packages will be installed:
 Remv libvirt0 [9.0.0-3]
 Inst libvirt-clients (9.0.0-4 Debian:12.15/oldstable [amd64])
 `
-	res := ParseModuleSimulation(out(removing, 0), out("", 0), testDir)
+	res := ParseModuleSimulation(out(removing, 0), out("", 0), []string{"libvirt-clients"})
 	if res.Failure != "" || !slices.Equal(res.Removes, []string{"libvirt0"}) || !slices.Equal(res.ToInstall, []string{"libvirt-clients"}) {
 		t.Errorf("%+v", res)
 	}
@@ -240,18 +276,18 @@ Remv cron [3.0pl1-137]
 Inst cron [3.0pl1-137] (3.0pl1-162 Debian:12.15/oldstable [amd64])
 Conf cron (3.0pl1-162 Debian:12.15/oldstable [amd64])
 `
-	res = ParseModuleSimulation(out(replacement, 0), out("", 0), testDir)
+	res = ParseModuleSimulation(out(replacement, 0), out("", 0), []string{"cron"})
 	if res.Failure != "" || len(res.Removes) != 0 || !slices.Equal(res.ToUpgrade, []string{"cron"}) {
 		t.Errorf("%+v", res)
 	}
 	// a Remv line that the list of the removed does not have is a transaction that is not understood, and the list that has it is a removal
 	mismatch := strings.Replace(removing, "The following packages will be REMOVED:\n  libvirt0\n", "", 1)
-	if res := ParseModuleSimulation(out(mismatch, 0), out("", 0), testDir); res.Failure != "apt_failed" {
+	if res := ParseModuleSimulation(out(mismatch, 0), out("", 0), []string{"libvirt-clients"}); res.Failure != "apt_failed" {
 		t.Errorf("a Remv with no list: %+v", res)
 	}
 	// a purge, with its star, is a removal
 	purging := strings.NewReplacer("  libvirt0\n", "  libvirt0*\n", "Remv libvirt0 [9.0.0-3]", "Purg libvirt0 [9.0.0-3]").Replace(removing)
-	if res := ParseModuleSimulation(out(purging, 0), out("", 0), testDir); res.Failure != "" || !slices.Equal(res.Removes, []string{"libvirt0"}) {
+	if res := ParseModuleSimulation(out(purging, 0), out("", 0), []string{"libvirt-clients"}); res.Failure != "" || !slices.Equal(res.Removes, []string{"libvirt0"}) {
 		t.Errorf("a purge: %+v", res)
 	}
 	// a downgrade is its own list
@@ -260,7 +296,7 @@ Conf cron (3.0pl1-162 Debian:12.15/oldstable [amd64])
 0 upgraded, 0 newly installed, 1 downgraded, 0 to remove and 0 not upgraded.
 Inst libvirt0 [9.0.0-5] (9.0.0-4 Debian:12.15/oldstable [amd64])
 `
-	if res := ParseModuleSimulation(out(downgrading, 0), out("", 0), testDir); res.Failure != "" || !slices.Equal(res.Downgrades, []string{"libvirt0"}) {
+	if res := ParseModuleSimulation(out(downgrading, 0), out("", 0), []string{"libvirt0"}); res.Failure != "" || !slices.Equal(res.Downgrades, []string{"libvirt0"}) {
 		t.Errorf("a downgrade: %+v", res)
 	}
 }
@@ -274,28 +310,28 @@ The following packages will be upgraded:
 Inst libc6 [2.31-13] (2.36-9 Debian:12.15/oldstable [amd64])
 Inst libvirt0 [9.0.0-3] (9.0.0-4 Debian:12.15/oldstable [amd64])
 `
-	res := ParseModuleSimulation(out(held, 0), out("", 0), testDir)
+	res := ParseModuleSimulation(out(held, 0), out("", 0), []string{"libc6", "libvirt0"})
 	if res.Failure != "" || !slices.Equal(res.Held, []string{"libc6", "libvirt0"}) || !slices.Equal(res.ToUpgrade, []string{"libc6", "libvirt0"}) {
 		t.Errorf("%+v", res)
 	}
 	// with -y apt stops, and says so
 	stopped := progressLines + "The following held packages will be changed:\n  libvirt0\nE: Held packages were changed and -y was used without --allow-change-held-packages.\n"
-	res = ParseModuleSimulation(out(stopped, 100), out("", 0), testDir)
+	res = ParseModuleSimulation(out(stopped, 100), out("", 0), []string{"libvirt0"})
 	if res.Failure != "held_package" || res.Detail == "" {
 		t.Errorf("%+v", res)
 	}
 	// the words that apt uses for any dependency that cannot be met are not about a hold
 	broken := progressLines + "E: Unable to correct problems, you have held broken packages.\n"
-	if res := ParseModuleSimulation(out(broken, 100), out("", 0), testDir); res.Failure != "apt_failed" {
+	if res := ParseModuleSimulation(out(broken, 100), out("", 0), []string{"libvirt0"}); res.Failure != "apt_failed" {
 		t.Errorf("%+v", res)
 	}
 	// a name that is not a package's in the list of the held is not understood
 	bad := strings.Replace(held, "  libvirt0 libc6\n", "  libvirt0 /etc/passwd\n", 1)
-	if res := ParseModuleSimulation(out(bad, 0), out("", 0), testDir); res.Failure != "apt_failed" || !strings.Contains(res.Detail, "bad_name") {
+	if res := ParseModuleSimulation(out(bad, 0), out("", 0), []string{"libc6", "libvirt0"}); res.Failure != "apt_failed" || !strings.Contains(res.Detail, "bad_name") {
 		t.Errorf("%+v", res)
 	}
 	// the words of a hold in a text that apt did not end with an error are not a hold
-	if res := ParseModuleSimulation(out(stopped, 0), out("", 0), testDir); res.Failure != "apt_failed" {
+	if res := ParseModuleSimulation(out(stopped, 0), out("", 0), []string{"libvirt0"}); res.Failure != "apt_failed" {
 		t.Errorf("a hold with status 0: %+v", res)
 	}
 }
@@ -328,7 +364,7 @@ func TestWhatAptDoesNotSayInTheWordsItUsesIsNotGuessedAt(t *testing.T) {
 		}),
 		"a block of suggestions that is not indented": wrap(func(s string) string { return strings.Replace(s, "  numad radvd\n", "numad radvd\n", 1) }),
 	} {
-		res := ParseModuleSimulation(out(text, 0), out(estInstall, 100), testDir)
+		res := ParseModuleSimulation(out(text, 0), out(estInstall, 0), asked)
 		if res.Failure != "apt_failed" || res.Detail == "" || len(res.ToInstall) != 0 {
 			t.Errorf("%s: %+v", name, res)
 		}
@@ -340,13 +376,13 @@ func TestWhatAptDoesNotSayInTheWordsItUsesIsNotGuessedAt(t *testing.T) {
 		}
 	}
 	// an exit status that is not 0 with no word of apt's about a hold is a failure, and so is a cut output
-	if res := ParseModuleSimulation(out(simInstall, 100), out(estInstall, 100), testDir); res.Failure != "apt_failed" {
+	if res := ParseModuleSimulation(out(simInstall, 100), out(estInstall, 0), asked); res.Failure != "apt_failed" {
 		t.Errorf("status 100: %+v", res)
 	}
-	if res := ParseModuleSimulation(Output{Text: simInstall, Truncated: true}, out(estInstall, 100), testDir); res.Failure != "apt_failed" {
+	if res := ParseModuleSimulation(Output{Text: simInstall, Truncated: true}, out(estInstall, 0), asked); res.Failure != "apt_failed" {
 		t.Errorf("a cut output: %+v", res)
 	}
-	if res := ParseModuleSimulation(out("", 0), out(estInstall, 100), testDir); res.Failure != "apt_failed" {
+	if res := ParseModuleSimulation(out("", 0), out(estInstall, 0), asked); res.Failure != "apt_failed" {
 		t.Errorf("an empty output: %+v", res)
 	}
 }
@@ -355,17 +391,25 @@ func TestSizesAreKnownOnlyIfAptSaidThemForTheSameTransaction(t *testing.T) {
 	for name, est := range map[string]Output{
 		"nothing":                         out("", 0),
 		"a status that is neither":        out(estInstall, 1),
-		"a cut output":                    {Text: estInstall, ExitCode: 100, Truncated: true},
-		"another transaction":             out(strings.Replace(estInstall, "6 newly installed", "7 newly installed", 1), 100),
-		"the sizes of another locale":     out(strings.Replace(estInstall, "44.3 MB", "44,3 Mo", 1), 100),
-		"no sizes":                        out(strings.Replace(estInstall, "Need to get 5,120 kB/44.3 MB of archives.\n", "", 1), 100),
-		"another error":                   out(strings.Replace(estInstall, "E: Trivial Only specified but this is not a trivial operation.", "E: Something else.", 1), 100),
-		"the sizes twice":                 out(estInstall+"Need to get 1 kB of archives.\n", 100),
-		"a size that is nonsense":         out(strings.Replace(estInstall, "44.3 MB", "44.3 XB", 1), 100),
-		"a status 0 for a transaction":    out(estInstall, 0),
-		"a size that is a thousand teras": out(strings.Replace(estInstall, "44.3 MB", "9999 TB", 1), 100),
+		"the status of a refusal":         out(estInstall, 100),
+		"a cut output":                    {Text: estInstall, ExitCode: 0, Truncated: true},
+		"another transaction":             out(strings.Replace(estInstall, "6 newly installed", "7 newly installed", 1), 0),
+		"the sizes of another locale":     out(strings.Replace(estInstall, "44.3 MB", "44,3 Mo", 1), 0),
+		"no sizes":                        out(strings.Replace(estInstall, "Need to get 5,120 kB/44.3 MB of archives.\n", "", 1), 0),
+		"no line for the room":            out(strings.Replace(estInstall, "After this operation, 130 MB of additional disk space will be used.\n", "", 1), 0),
+		"the old end of the trivial run":  out(estInstall+"E: Trivial Only specified but this is not a trivial operation.\n", 100),
+		"the words of the old end":        out(estInstall+"E: Trivial Only specified but this is not a trivial operation.\n", 0),
+		"the words of a short cache":      out(estInstall+"E: You don't have enough free space in /cache/archives/.\n", 0),
+		"an error with the sizes":         out(estInstall+"E: Something else.\n", 0),
+		"the room of the cache is short":  out(estInstall+"E: You don't have enough free space in "+testDir+"/cache/archives/.\n", 0),
+		"the sizes twice":                 out(strings.Replace(estInstall, "After this operation", "Need to get 1 kB of archives.\nAfter this operation", 1), 0),
+		"the room twice":                  out(estInstall+"After this operation, 1 kB of additional disk space will be used.\n", 0),
+		"a size that is nonsense":         out(strings.Replace(estInstall, "44.3 MB", "44.3 XB", 1), 0),
+		"a size that is a thousand teras": out(strings.Replace(estInstall, "44.3 MB", "9999 TB", 1), 0),
+		"a package not fully installed":   out(strings.Replace(estInstall, "After this operation", "1 not fully installed or removed.\nAfter this operation", 1), 0),
+		"a control character":             out(strings.Replace(estInstall, "'http://deb.debian.org", "'http://\x1b[2Jdeb.debian.org", 1), 0),
 	} {
-		res := ParseModuleSimulation(out(simInstall, 0), est, testDir)
+		res := ParseModuleSimulation(out(simInstall, 0), est, asked)
 		if res.Failure != "" || res.Known || res.DownloadBytes != 0 || res.ExtraBytes != 0 {
 			t.Errorf("%s: %+v", name, res)
 		}
@@ -374,19 +418,24 @@ func TestSizesAreKnownOnlyIfAptSaidThemForTheSameTransaction(t *testing.T) {
 			t.Errorf("%s: %v", name, res.ToInstall)
 		}
 	}
-	// the room of the sandbox is short: apt says it after the sizes, and the sizes stand
-	low := strings.Replace(estInstall, "E: Trivial Only specified but this is not a trivial operation.", "E: You don't have enough free space in "+testDir+"/cache/archives/.", 1)
-	if res := ParseModuleSimulation(out(simInstall, 0), out(low, 100), testDir); !res.Known || res.DownloadBytes != 44_300_000 {
-		t.Errorf("a short cache: %+v", res)
+	// the sizes of the same transaction are known, and the lines that are the addresses of the archives are not read
+	res := ParseModuleSimulation(out(simInstall, 0), out(estInstall, 0), asked)
+	if !res.Known || res.DownloadBytes != 44_300_000 || res.ExtraBytes != 130_000_000 {
+		t.Errorf("%+v", res)
 	}
-	// ...but only for the sandbox's own directory
-	other := strings.Replace(low, testDir, "/var/tmp/other", 1)
-	if res := ParseModuleSimulation(out(simInstall, 0), out(other, 100), testDir); res.Known {
-		t.Errorf("the room of another directory: %+v", res)
+	// ...the address of an archive is anything but the words of apt, and is not a word of apt even when it looks like one
+	tricky := strings.Replace(estInstall, "'http://deb.debian.org/debian/pool/main/libv", "'http://deb.debian.org/E: x/Need to get 1 B of archives/libv", 1)
+	if res := ParseModuleSimulation(out(simInstall, 0), out(tricky, 0), asked); !res.Known || res.DownloadBytes != 44_300_000 {
+		t.Errorf("an address with words of apt in it: %+v", res)
 	}
-	// and the size of what is freed is not a size
+	// the size of what is freed is not a size
 	freed := strings.Replace(estInstall, "After this operation, 130 MB of additional disk space will be used.", "After this operation, 2,048 kB disk space will be freed.", 1)
-	if res := ParseModuleSimulation(out(simInstall, 0), out(freed, 100), testDir); !res.Known || res.ExtraBytes != -2_048_000 {
+	if res := ParseModuleSimulation(out(simInstall, 0), out(freed, 0), asked); !res.Known || res.ExtraBytes != -2_048_000 {
 		t.Errorf("space freed: %+v", res)
+	}
+	// the sizes of a cache that has part of the archives are the whole
+	part := strings.Replace(estInstall, "Need to get 5,120 kB/44.3 MB", "Need to get 5,120 kB/44.3 MB", 1)
+	if res := ParseModuleSimulation(out(simInstall, 0), out(part, 0), asked); !res.Known || res.DownloadBytes != 44_300_000 {
+		t.Errorf("part of the archives in the cache: %+v", res)
 	}
 }
