@@ -1,0 +1,886 @@
+package osmodule
+
+import (
+	"archive/tar"
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"math/rand"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// ---- a file system that records what is done to it ---------------------------------------------------------------------------------------------------------------------------
+
+type node struct {
+	mode   fs.FileMode // the type bits and the permissions
+	data   []byte
+	target string
+}
+
+// fakeFS is a Destination: a table of paths, the operations done on it in order, and the faults a test asks for. It behaves as a careful file system does: it makes no directory through a
+// link or a file, and a file is in place only once it is committed.
+type fakeFS struct {
+	nodes   map[string]*node
+	log     []string
+	failOn  string // a path whose file cannot be written
+	lstatEr error
+	// onLstat is called with the number of the call: a test uses it to change the world between two readings of it.
+	onLstat func(n int)
+	lstats  int
+}
+
+func newFS() *fakeFS {
+	f := &fakeFS{nodes: map[string]*node{}}
+	for _, d := range []string{"/usr", "/usr/bin", "/usr/lib", "/usr/lib/systemd", "/usr/lib/systemd/system", "/etc", "/etc/casaos", "/usr/share", "/usr/share/casaos", "/var", "/var/lib", "/var/lib/casaos", "/lib", "/lib/systemd", "/lib/systemd/system"} {
+		f.nodes[d] = &node{mode: fs.ModeDir | 0o755}
+	}
+	return f
+}
+
+func (f *fakeFS) Lstat(p string) (fs.FileMode, error) {
+	f.lstats++
+	if f.onLstat != nil {
+		f.onLstat(f.lstats)
+	}
+	if f.lstatEr != nil {
+		return 0, f.lstatEr
+	}
+	n, ok := f.nodes[p]
+	if !ok {
+		return 0, fs.ErrNotExist
+	}
+	return n.mode, nil
+}
+
+func (f *fakeFS) MkdirAll(p string, perm fs.FileMode) error {
+	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	for i := range parts {
+		sub := "/" + strings.Join(parts[:i+1], "/")
+		switch n := f.nodes[sub]; {
+		case n == nil:
+			f.nodes[sub] = &node{mode: fs.ModeDir | perm}
+			f.log = append(f.log, "mkdir "+sub)
+		case n.mode&fs.ModeSymlink != 0 || !n.mode.IsDir():
+			return fmt.Errorf("%s is not a directory", sub)
+		}
+	}
+	return nil
+}
+
+type fakeFile struct {
+	fs   *fakeFS
+	path string
+	perm fs.FileMode
+	buf  bytes.Buffer
+}
+
+func (f *fakeFS) NewFile(p string, perm fs.FileMode) (File, error) {
+	if p == f.failOn {
+		return nil, errors.New("disk full")
+	}
+	if n := f.nodes[p]; n != nil && n.mode&fs.ModeSymlink != 0 {
+		return nil, errors.New("would write through a link")
+	}
+	return &fakeFile{fs: f, path: p, perm: perm}, nil
+}
+
+func (w *fakeFile) Write(b []byte) (int, error) { return w.buf.Write(b) }
+func (w *fakeFile) Commit() error {
+	w.fs.nodes[w.path] = &node{mode: w.perm, data: slices.Clone(w.buf.Bytes())}
+	w.fs.log = append(w.fs.log, "file "+w.path)
+	return nil
+}
+func (w *fakeFile) Abort() { w.fs.log = append(w.fs.log, "abort "+w.path) }
+
+func (f *fakeFS) Symlink(target, p string) error {
+	f.nodes[p] = &node{mode: fs.ModeSymlink | 0o777, target: target}
+	f.log = append(f.log, "link "+p)
+	return nil
+}
+
+func (f *fakeFS) put(p string, mode fs.FileMode, data string) {
+	f.nodes[p] = &node{mode: mode, data: []byte(data)}
+}
+
+// ---- archives ----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+type tent struct {
+	name string
+	typ  byte // 0 is a file
+	mode int64
+	body string
+	link string
+}
+
+func tarOf(t *testing.T, ents ...tent) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	w := tar.NewWriter(&buf)
+	for _, e := range ents {
+		typ := e.typ
+		if typ == 0 {
+			typ = tar.TypeReg
+		}
+		mode := e.mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		h := &tar.Header{Name: e.name, Typeflag: typ, Mode: mode, Linkname: e.link}
+		if typ == tar.TypeReg {
+			h.Size = int64(len(e.body))
+		}
+		if err := w.WriteHeader(h); err != nil {
+			t.Fatalf("%q: %v", e.name, err)
+		}
+		if typ == tar.TypeReg {
+			if _, err := w.Write([]byte(e.body)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// rawEntry is one entry of a tar written by hand, for what the writer of Go would not write: a name with a NUL, a size that is not the size of the data.
+func rawEntry(name string, typ byte, size int64, link, body string) []byte {
+	h := make([]byte, 512)
+	copy(h[0:100], name)
+	copy(h[100:108], "0000644\x00")
+	copy(h[108:116], "0000000\x00")
+	copy(h[116:124], "0000000\x00")
+	copy(h[124:136], fmt.Sprintf("%011o\x00", size))
+	copy(h[136:148], "00000000000\x00")
+	h[156] = typ
+	copy(h[157:257], link)
+	copy(h[257:263], "ustar\x00")
+	copy(h[263:265], "00")
+	copy(h[148:156], "        ")
+	sum := 0
+	for _, b := range h {
+		sum += int(b)
+	}
+	copy(h[148:156], fmt.Sprintf("%06o\x00 ", sum))
+	out := append(h, body...)
+	if pad := len(body) % 512; pad != 0 {
+		out = append(out, make([]byte, 512-pad)...)
+	}
+	return out
+}
+
+func rawTar(entries ...[]byte) []byte {
+	return append(bytes.Join(entries, nil), make([]byte, 1024)...)
+}
+
+// paxEntry is an extended header of one record, which applies to the entry that follows it.
+func paxEntry(key, value string) []byte {
+	record := " " + key + "=" + value + "\n"
+	n := len(record) + 1 // (the length counts its own digits)
+	for len(fmt.Sprint(n))+len(record) != n {
+		n = len(fmt.Sprint(n)) + len(record)
+	}
+	text := fmt.Sprintf("%d%s", n, record)
+	return rawEntry("PaxHeader/x", tar.TypeXHeader, int64(len(text)), "", text)
+}
+
+// virtual is an archive of which one entry is as large as a test says, made of a header and zeros, so that its size costs nothing to read or to skip.
+type virtual struct {
+	head   []byte
+	length int64
+	pos    int64
+}
+
+func (v *virtual) Read(p []byte) (int, error) {
+	if v.pos >= v.length {
+		return 0, io.EOF
+	}
+	n := int64(len(p))
+	if rest := v.length - v.pos; n > rest {
+		n = rest
+	}
+	for i := int64(0); i < n; i++ {
+		if at := v.pos + i; at < int64(len(v.head)) {
+			p[i] = v.head[at]
+		} else {
+			p[i] = 0
+		}
+	}
+	v.pos += n
+	return int(n), nil
+}
+
+func (v *virtual) Seek(off int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		v.pos = off
+	case io.SeekCurrent:
+		v.pos += off
+	case io.SeekEnd:
+		v.pos = v.length + off
+	}
+	if v.pos < 0 {
+		return 0, errors.New("negative position")
+	}
+	return v.pos, nil
+}
+
+// bigArchive is module.json, then a file of size bytes at the path, then the end; the size of the whole is as many bytes as that takes, plus extra at the end.
+func bigArchive(path string, size int64, extra int64) *virtual {
+	manifest := rawEntry("module.json", tar.TypeReg, 2, "", "{}")
+	head := slices.Concat(manifest, rawEntry(path, tar.TypeReg, size, "", ""))
+	body := size
+	if size%512 != 0 {
+		body += 512 - size%512
+	}
+	return &virtual{head: head, length: int64(len(head)) + body + 1024 + extra}
+}
+
+// ---- helpers of the tests ----------------------------------------------------------------------------------------------------------------------------------------------
+
+const sysroot = "build/sysroot/"
+
+func goodEntries() []tent {
+	return []tent{
+		{name: "module.json", body: `{"schema":1}`},
+		{name: "LICENSE", body: "licence text"},
+		{name: "NOTICE", body: "notice text"},
+		{name: "build/", typ: tar.TypeDir, mode: 0o755},
+		{name: "build/sysroot/", typ: tar.TypeDir, mode: 0o755},
+		{name: "build/sysroot/usr/", typ: tar.TypeDir, mode: 0o755},
+		{name: "build/sysroot/usr/bin/", typ: tar.TypeDir, mode: 0o755},
+		{name: "build/sysroot/usr/lib/", typ: tar.TypeDir, mode: 0o755},
+		{name: "build/sysroot/usr/lib/systemd/", typ: tar.TypeDir, mode: 0o755},
+		{name: "build/sysroot/usr/lib/systemd/system/", typ: tar.TypeDir, mode: 0o755},
+		{name: "build/sysroot/usr/lib/systemd/system/casaos-virt-management.service", body: "[Service]\nExecStart=/usr/bin/casaos-virt-management\n"},
+		{name: "build/sysroot/usr/bin/casaos-virt-management", mode: 0o755, body: strings.Repeat("\x7fELF", 300)},
+		{name: "build/sysroot/usr/bin/virt", typ: tar.TypeSymlink, link: "casaos-virt-management"},
+		{name: "build/sysroot/etc/", typ: tar.TypeDir, mode: 0o755},
+		{name: "build/sysroot/etc/casaos/", typ: tar.TypeDir, mode: 0o755},
+		{name: "build/sysroot/etc/casaos/virt-management.conf.sample", body: "[libvirt]\nURI = qemu:///system\n"},
+		{name: "build/sysroot/usr/share/casaos/virt/index.html", body: "<html></html>"},
+		{name: "build/sysroot/var/lib/casaos/virt/", typ: tar.TypeDir, mode: 0o750},
+	}
+}
+
+func unpack(t *testing.T, dst *fakeFS, own []string, ents ...tent) (Result, error) {
+	t.Helper()
+	return Unpack(bytes.NewReader(tarOf(t, ents...)), dst, own)
+}
+
+func wantRefusedFor(t *testing.T, what string, err error, code string) {
+	t.Helper()
+	var r *Refused
+	if !errors.As(err, &r) || r.Code != code {
+		t.Errorf("%s: error = %v, want %s", what, err, code)
+	}
+}
+
+func wantRefused(t *testing.T, err error, code string) {
+	t.Helper()
+	var r *Refused
+	if !errors.As(err, &r) || r.Code != code {
+		t.Fatalf("error = %v, want %s", err, code)
+	}
+}
+
+// ---- the tests ---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+func TestAnArchiveIsUnpackedAndTheListOfWhatWasWrittenIsGivenWithTheUnitLast(t *testing.T) {
+	dst := newFS()
+	res, err := unpack(t, dst, nil, goodEntries()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFiles := []string{
+		"/usr/bin/casaos-virt-management", "/usr/bin/virt", "/etc/casaos/virt-management.conf.sample", "/usr/share/casaos/virt/index.html",
+		"/usr/lib/systemd/system/casaos-virt-management.service",
+	}
+	if !slices.Equal(res.Files, wantFiles) {
+		t.Errorf("files = %v", res.Files)
+	}
+	if string(res.Manifest) != `{"schema":1}` || len(res.Kept) != 0 {
+		t.Errorf("manifest %q, kept %v", res.Manifest, res.Kept)
+	}
+	// the list is one that can be written, and read back
+	if raw, err := FormatFiles(res.Files); err != nil {
+		t.Errorf("the list of the files is not a list: %v", err)
+	} else if back, err := ParseFiles(raw); err != nil || !slices.Equal(back, res.Files) {
+		t.Errorf("read back %v, %v", back, err)
+	}
+	// what is on the disk is what was in the archive
+	if n := dst.nodes["/usr/bin/casaos-virt-management"]; n == nil || string(n.data) != strings.Repeat("\x7fELF", 300) || n.mode != 0o755 {
+		t.Errorf("the program: %+v", n)
+	}
+	if n := dst.nodes["/usr/bin/virt"]; n == nil || n.mode&fs.ModeSymlink == 0 || n.target != "casaos-virt-management" {
+		t.Errorf("the link: %+v", n)
+	}
+	if n := dst.nodes["/var/lib/casaos/virt"]; n == nil || !n.mode.IsDir() || n.mode.Perm() != 0o750 {
+		t.Errorf("the directory: %+v", n)
+	}
+	for _, p := range []string{"/module.json", "/LICENSE", "/NOTICE", "/build", "/usr/bin/module.json"} {
+		if dst.nodes[p] != nil {
+			t.Errorf("%s was written", p)
+		}
+	}
+	// the unit is the last thing put in place: nothing refers to a file that is not there yet
+	last := dst.log[len(dst.log)-1]
+	if last != "file /usr/lib/systemd/system/casaos-virt-management.service" {
+		t.Errorf("the last operation is %q; log %v", last, dst.log)
+	}
+	for _, op := range dst.log {
+		if strings.HasPrefix(op, "abort") {
+			t.Errorf("an abort in %v", dst.log)
+		}
+	}
+}
+
+func TestTheUnitIsLastWhereverItIsInTheArchive(t *testing.T) {
+	ents := goodEntries()
+	// the unit first, a unit of the other directory in the middle, and the link of a unit
+	unit := ents[10]
+	var rest []tent
+	for i, e := range ents {
+		if i != 10 {
+			rest = append(rest, e)
+		}
+	}
+	ents = append([]tent{rest[0], unit}, rest[1:]...)
+	ents = append(ents, tent{name: "build/sysroot/lib/systemd/system/other.service", body: "x"},
+		tent{name: "build/sysroot/lib/systemd/system/alias.service", typ: tar.TypeSymlink, link: "other.service"}, tent{name: "build/sysroot/usr/bin/zzz", mode: 0o755, body: "z"})
+	dst := newFS()
+	res, err := unpack(t, dst, nil, ents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isUnit := func(p string) bool { return strings.Contains(p, "/systemd/system/") }
+	firstUnit := slices.IndexFunc(res.Files, isUnit)
+	if firstUnit < 0 || slices.ContainsFunc(res.Files[:firstUnit], isUnit) || slices.IndexFunc(res.Files[firstUnit:], func(p string) bool { return !isUnit(p) }) >= 0 {
+		t.Errorf("the units are not all last: %v", res.Files)
+	}
+	if len(res.Files) != 8 {
+		t.Errorf("files = %v", res.Files)
+	}
+}
+
+func TestTheModesAreTheArchivesWithoutTheBitsThatGiveMorePowerThanTheFileNeeds(t *testing.T) {
+	for _, c := range []struct {
+		in   int64
+		want fs.FileMode
+	}{
+		{0o755, 0o755}, {0o644, 0o644}, {0o4755, 0o755}, {0o2755, 0o755}, {0o6755, 0o755}, {0o1755, 0o755}, {0o7777, 0o755}, {0o777, 0o755}, {0o666, 0o644}, {0o775, 0o755},
+		{0o664, 0o644}, {0o757, 0o755}, {0o622, 0o600}, {0o600, 0o600}, {0o400, 0o400}, {0o4000, 0}, {0o100755, 0o755}, {0o100644, 0o644}, {0o4444, 0o444}, {0o750, 0o750}, {0o700, 0o700},
+	} {
+		dst := newFS()
+		_, err := unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/bin/p", mode: c.in, body: "x"}, tent{name: sysroot + "usr/bin/d/", typ: tar.TypeDir, mode: c.in})
+		if err != nil {
+			t.Fatalf("%o: %v", c.in, err)
+		}
+		if n := dst.nodes["/usr/bin/p"]; n == nil || n.mode != c.want {
+			t.Errorf("file mode %o -> %v, want %v", c.in, n, c.want)
+		}
+		if n := dst.nodes["/usr/bin/d"]; n == nil || n.mode != fs.ModeDir|c.want {
+			t.Errorf("directory mode %o -> %v, want %v", c.in, n, fs.ModeDir|c.want)
+		}
+	}
+}
+
+func TestAFileOfTheModulesOwnEarlierInstallIsReplacedAndOthersAreNeverTouched(t *testing.T) {
+	ents := []tent{{name: "module.json", body: "{}"}, {name: sysroot + "usr/bin/prog", mode: 0o755, body: "new"}}
+	// the module's own file, from an install that did not finish
+	dst := newFS()
+	dst.put("/usr/bin/prog", 0o755, "old")
+	res, err := unpack(t, dst, []string{"/usr/bin/prog"}, ents...)
+	if err != nil || string(dst.nodes["/usr/bin/prog"].data) != "new" || !slices.Equal(res.Files, []string{"/usr/bin/prog"}) {
+		t.Errorf("own file: %v %v %+v", err, res, dst.nodes["/usr/bin/prog"])
+	}
+	// the same file, which is somebody else's, or nobody's: nothing is written, not even what comes before it
+	dst = newFS()
+	dst.put("/usr/bin/prog", 0o755, "old")
+	_, err = unpack(t, dst, []string{"/usr/bin/another"}, append([]tent{{name: sysroot + "usr/bin/aaa", body: "a"}}, ents...)...)
+	wantRefused(t, err, "file_exists")
+	if len(dst.log) != 0 || string(dst.nodes["/usr/bin/prog"].data) != "old" || dst.nodes["/usr/bin/aaa"] != nil {
+		t.Errorf("something was written: %v", dst.log)
+	}
+	// a directory where a file goes, a file where a directory goes, a device where a file goes
+	for name, setup := range map[string]func(*fakeFS){
+		"a directory": func(f *fakeFS) { f.nodes["/usr/bin/prog"] = &node{mode: fs.ModeDir | 0o755} },
+		"a device":    func(f *fakeFS) { f.nodes["/usr/bin/prog"] = &node{mode: fs.ModeDevice | fs.ModeCharDevice | 0o600} },
+		"a fifo":      func(f *fakeFS) { f.nodes["/usr/bin/prog"] = &node{mode: fs.ModeNamedPipe | 0o600} },
+		"a socket":    func(f *fakeFS) { f.nodes["/usr/bin/prog"] = &node{mode: fs.ModeSocket | 0o600} },
+	} {
+		dst = newFS()
+		setup(dst)
+		_, err = unpack(t, dst, []string{"/usr/bin/prog"}, ents...)
+		wantRefused(t, err, "file_exists")
+		if len(dst.log) != 0 {
+			t.Errorf("%s: written %v", name, dst.log)
+		}
+	}
+	dst = newFS()
+	dst.put("/usr/share/casaos/x", 0o644, "a file where the module wants a directory")
+	_, err = unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/share/casaos/x/y", body: "1"})
+	wantRefused(t, err, "file_exists")
+	if len(dst.log) != 0 {
+		t.Errorf("written %v", dst.log)
+	}
+}
+
+func TestAnExistingConfigurationIsKeptAndTheSampleBesideItIsWritten(t *testing.T) {
+	ents := []tent{
+		{name: "module.json", body: "{}"},
+		{name: sysroot + "etc/casaos/virt.conf", body: "default = 1\n"},
+		{name: sysroot + "etc/casaos/virt.conf.sample", body: "default = 1\n"},
+		{name: sysroot + "usr/bin/prog", mode: 0o755, body: "p"},
+	}
+	// nobody's configuration: kept, and the sample is written beside it
+	dst := newFS()
+	dst.put("/etc/casaos/virt.conf", 0o600, "mine = 1\n")
+	res, err := unpack(t, dst, nil, ents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(dst.nodes["/etc/casaos/virt.conf"].data) != "mine = 1\n" || string(dst.nodes["/etc/casaos/virt.conf.sample"].data) != "default = 1\n" {
+		t.Errorf("config %q sample %q", dst.nodes["/etc/casaos/virt.conf"].data, dst.nodes["/etc/casaos/virt.conf.sample"].data)
+	}
+	if !slices.Equal(res.Kept, []string{"/etc/casaos/virt.conf"}) || slices.Contains(res.Files, "/etc/casaos/virt.conf") || !slices.Contains(res.Files, "/etc/casaos/virt.conf.sample") {
+		t.Errorf("kept %v, files %v", res.Kept, res.Files)
+	}
+	// the module's own configuration, edited since: kept too, and still the module's, so that the remove takes it
+	dst = newFS()
+	dst.put("/etc/casaos/virt.conf", 0o600, "mine = 1\n")
+	dst.put("/etc/casaos/virt.conf.sample", 0o644, "old sample\n")
+	res, err = unpack(t, dst, []string{"/etc/casaos/virt.conf", "/etc/casaos/virt.conf.sample"}, ents...)
+	if err != nil || string(dst.nodes["/etc/casaos/virt.conf"].data) != "mine = 1\n" || string(dst.nodes["/etc/casaos/virt.conf.sample"].data) != "default = 1\n" {
+		t.Fatalf("%v", err)
+	}
+	if !slices.Contains(res.Files, "/etc/casaos/virt.conf") || !slices.Contains(res.Files, "/etc/casaos/virt.conf.sample") || len(res.Kept) != 1 {
+		t.Errorf("kept %v, files %v", res.Kept, res.Files)
+	}
+	// a sample that is somebody else's is not overwritten
+	dst = newFS()
+	dst.put("/etc/casaos/virt.conf.sample", 0o644, "theirs")
+	_, err = unpack(t, dst, nil, ents...)
+	wantRefused(t, err, "file_exists")
+	if len(dst.log) != 0 {
+		t.Errorf("written %v", dst.log)
+	}
+	// the rule is for /etc/casaos only
+	dst = newFS()
+	dst.put("/usr/share/casaos/virt.conf", 0o644, "theirs")
+	_, err = unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/share/casaos/virt.conf", body: "x"})
+	wantRefused(t, err, "file_exists")
+	// ...and for a file that is there, not for a link
+	dst = newFS()
+	dst.nodes["/etc/casaos/virt.conf"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"}
+	_, err = unpack(t, dst, nil, ents...)
+	wantRefused(t, err, "unpack_path")
+}
+
+func TestAnArchiveThatBreaksARuleWritesNothing(t *testing.T) {
+	long := strings.Repeat("a", 256)
+	for _, c := range []struct {
+		name string
+		ents []tent
+		code string
+	}{
+		// where an entry is
+		{"a name that goes up", []tent{{name: "../etc/passwd"}}, "unpack_path"},
+		{"a name that goes up inside the sysroot", []tent{{name: sysroot + "usr/bin/../../etc/shadow"}}, "unpack_path"},
+		{"a name that goes up once and comes back", []tent{{name: sysroot + "usr/bin/../bin/x"}}, "unpack_path"},
+		{"an absolute name", []tent{{name: "/etc/passwd"}}, "unpack_path"},
+		{"an absolute name that holds the sysroot", []tent{{name: "/" + sysroot + "usr/bin/x"}}, "unpack_path"},
+		{"a name that starts with a dot", []tent{{name: "./" + sysroot + "usr/bin/x"}}, "unpack_path"},
+		{"a name with a dot in it", []tent{{name: sysroot + "usr/bin/./x"}}, "unpack_path"},
+		{"a name with an empty part", []tent{{name: sysroot + "usr//bin/x"}}, "unpack_path"},
+		{"a name with a backslash", []tent{{name: sysroot + "usr/bin/a\\b"}}, "unpack_path"},
+		{"a name with a backslash for the separator", []tent{{name: "build\\sysroot\\usr\\bin\\x"}}, "unpack_path"},
+		{"a name with a new line, which would be two lines of the list", []tent{{name: sysroot + "usr/bin/a\n/etc/passwd"}}, "unpack_path"},
+		{"a name with a space", []tent{{name: sysroot + "usr/bin/a b"}}, "unpack_path"},
+		{"a name with a dollar", []tent{{name: sysroot + "usr/bin/$HOME"}}, "unpack_path"},
+		{"a name with a semicolon", []tent{{name: sysroot + "usr/bin/a;b"}}, "unpack_path"},
+		{"a name with an accent", []tent{{name: sysroot + "usr/bin/café"}}, "unpack_path"},
+		{"a name with a letter and a combining accent", []tent{{name: sysroot + "usr/bin/café"}}, "unpack_path"},
+		{"a name with a character that turns the text round", []tent{{name: sysroot + "usr/bin/a‮b"}}, "unpack_path"},
+		{"a part of a name of 256 letters", []tent{{name: sysroot + "usr/bin/" + long}}, "unpack_path"},
+		{"a name of more than 1024 bytes", []tent{{name: sysroot + "usr/bin/" + strings.Repeat(strings.Repeat("b", 100)+"/", 11) + "x"}}, "unpack_path"},
+		{"a name that is only dots", []tent{{name: sysroot + "usr/bin/..."}}, "unpack_path"},
+		{"a name outside the sysroot", []tent{{name: "evil"}}, "unpack_path"},
+		{"a manifest that is a copy", []tent{{name: "module.json.bak"}}, "unpack_path"},
+		{"a manifest in capitals", []tent{{name: "MODULE.JSON"}}, "unpack_path"},
+		{"a licence with a suffix", []tent{{name: "LICENSE.txt"}}, "unpack_path"},
+		{"another directory of build", []tent{{name: "build/other/x"}}, "unpack_path"},
+		{"the sysroot that is a file", []tent{{name: "build/sysroot"}}, "unpack_path"},
+		{"a manifest that is a directory", []tent{{name: "module.json", typ: tar.TypeDir}}, "unpack_path"},
+		{"a manifest that is a link", []tent{{name: "module.json", typ: tar.TypeSymlink, link: "x"}}, "unpack_path"},
+		{"no manifest", []tent{{name: sysroot + "usr/bin/x"}}, "unpack_path"},
+		// the allow-list, and just outside it
+		{"a program in sbin", []tent{{name: sysroot + "usr/sbin/x"}}, "unpack_path"},
+		{"the password file", []tent{{name: sysroot + "etc/passwd"}}, "unpack_path"},
+		{"a directory that starts like etc/casaos", []tent{{name: sysroot + "etc/casaosx/y"}}, "unpack_path"},
+		{"a directory that is the start of etc/casaos", []tent{{name: sysroot + "etc/casao/y"}}, "unpack_path"},
+		{"etc/casaos as a file", []tent{{name: sysroot + "etc/casaos"}}, "unpack_path"},
+		{"usr/bin as a file", []tent{{name: sysroot + "usr/bin"}}, "unpack_path"},
+		{"a file of usr/lib", []tent{{name: sysroot + "usr/lib/x.so"}}, "unpack_path"},
+		{"a file of usr/lib/systemd", []tent{{name: sysroot + "usr/lib/systemd/x"}}, "unpack_path"},
+		{"a file of a directory of units that starts alike", []tent{{name: sysroot + "usr/lib/systemd/systemx/x"}}, "unpack_path"},
+		{"a file of lib", []tent{{name: sysroot + "lib/x"}}, "unpack_path"},
+		{"a file of var", []tent{{name: sysroot + "var/x"}}, "unpack_path"},
+		{"a file of var/lib", []tent{{name: sysroot + "var/lib/x"}}, "unpack_path"},
+		{"a key for root", []tent{{name: sysroot + "root/.ssh/authorized_keys"}}, "unpack_path"},
+		{"a file of a home", []tent{{name: sysroot + "home/x"}}, "unpack_path"},
+		{"a directory in capitals", []tent{{name: sysroot + "ETC/casaos/x"}}, "unpack_path"},
+		{"a directory outside, as a directory", []tent{{name: sysroot + "usr/sbin/", typ: tar.TypeDir}}, "unpack_path"},
+		{"a directory that holds the sysroot twice", []tent{{name: sysroot + "build/sysroot/usr/bin/x"}}, "unpack_path"},
+		{"a directory of the allowed ones, in the wrong place", []tent{{name: sysroot + "opt/usr/bin/x"}}, "unpack_path"},
+		// what an entry is
+		{"a hard link", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeLink, link: "usr/bin/y"}}, "unpack_path"},
+		{"a hard link to the password file", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeLink, link: "/etc/passwd"}}, "unpack_path"},
+		{"a character device", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeChar}}, "unpack_path"},
+		{"a block device", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeBlock}}, "unpack_path"},
+		{"a fifo", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeFifo}}, "unpack_path"},
+		{"a contiguous file", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeCont}}, "unpack_path"},
+		// links
+		{"a link to an absolute path", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "/etc/passwd"}}, "unpack_path"},
+		{"a link that goes up", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "../lib/y"}}, "unpack_path"},
+		{"a link that goes up out of the sysroot", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "../../../../etc/passwd"}}, "unpack_path"},
+		{"a link that goes down and up", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "sub/../../y"}}, "unpack_path"},
+		{"a link that goes down and comes back", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "sub/../y"}}, "unpack_path"},
+		{"a link to the directory above", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: ".."}}, "unpack_path"},
+		{"a link to nothing", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: ""}}, "unpack_path"},
+		{"a link with a space", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "a b"}}, "unpack_path"},
+		{"a link with a new line", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "a\nb"}}, "unpack_path"},
+		{"a link with an empty part", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "a//b"}}, "unpack_path"},
+		{"a link of 256 characters", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: long}}, "unpack_path"},
+		{"a link with a trailing slash", []tent{{name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "y/"}}, "unpack_path"},
+		{"a link outside the allowed directories", []tent{{name: sysroot + "usr/sbin/x", typ: tar.TypeSymlink, link: "y"}}, "unpack_path"},
+		{"a file written through a link of the archive", []tent{{name: sysroot + "usr/bin/ln", typ: tar.TypeSymlink, link: "sub"}, {name: sysroot + "usr/bin/ln/evil", body: "x"}}, "unpack_path"},
+		{"a file written through a link of the archive, in the other order", []tent{{name: sysroot + "usr/bin/ln/evil", body: "x"}, {name: sysroot + "usr/bin/ln", typ: tar.TypeSymlink, link: "sub"}}, "unpack_path"},
+		{"a link to a link that goes up", []tent{{name: sysroot + "usr/bin/a", typ: tar.TypeSymlink, link: "b"}, {name: sysroot + "usr/bin/b", typ: tar.TypeSymlink, link: "../../etc"}}, "unpack_path"},
+		// the same name twice
+		{"a file twice", []tent{{name: sysroot + "usr/bin/x"}, {name: sysroot + "usr/bin/x"}}, "unpack_path"},
+		{"a file and then a directory of that name", []tent{{name: sysroot + "usr/bin/x"}, {name: sysroot + "usr/bin/x/", typ: tar.TypeDir}}, "unpack_path"},
+		{"a directory and then a file of that name", []tent{{name: sysroot + "usr/bin/x/", typ: tar.TypeDir}, {name: sysroot + "usr/bin/x"}}, "unpack_path"},
+		{"a file and a link of that name", []tent{{name: sysroot + "usr/bin/x"}, {name: sysroot + "usr/bin/x", typ: tar.TypeSymlink, link: "y"}}, "unpack_path"},
+		{"a file under a file", []tent{{name: sysroot + "usr/bin/x"}, {name: sysroot + "usr/bin/x/y"}}, "unpack_path"},
+		{"a file under a file, in the other order", []tent{{name: sysroot + "usr/bin/x/y"}, {name: sysroot + "usr/bin/x"}}, "unpack_path"},
+		{"names that differ by the case", []tent{{name: sysroot + "usr/bin/Foo"}, {name: sysroot + "usr/bin/foo"}}, "unpack_path"},
+		{"directories that differ by the case", []tent{{name: sysroot + "usr/share/casaos/A/x"}, {name: sysroot + "usr/share/casaos/a/y"}}, "unpack_path"},
+		{"a file and a directory that differ by the case", []tent{{name: sysroot + "usr/share/casaos/A"}, {name: sysroot + "usr/share/casaos/a/y"}}, "unpack_path"},
+		{"a manifest twice", []tent{{name: "module.json", body: "{}"}, {name: "module.json", body: "{}"}}, "unpack_path"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ents := c.ents
+			if !slices.ContainsFunc(ents, func(e tent) bool { return e.name == "module.json" }) {
+				ents = append([]tent{{name: "module.json", body: "{}"}}, ents...)
+				if c.name == "no manifest" {
+					ents = c.ents
+				}
+			}
+			// something fine comes first, to be sure it is not written either
+			ents = append([]tent{{name: sysroot + "usr/bin/fine", mode: 0o755, body: "fine"}}, ents...)
+			dst := newFS()
+			_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil)
+			wantRefused(t, err, c.code)
+			if len(dst.log) != 0 {
+				t.Errorf("something was written: %v", dst.log)
+			}
+			if _, err := ValidateArchive(bytes.NewReader(tarOf(t, ents...)), newFS(), nil); err == nil {
+				t.Error("the archive is valid")
+			}
+		})
+	}
+}
+
+func TestEntriesThatTheWriterOfTarWillNotWriteAreRefusedToo(t *testing.T) {
+	manifest := rawEntry("module.json", tar.TypeReg, 2, "", "{}")
+	good := rawEntry(sysroot+"usr/bin/fine", tar.TypeReg, 4, "", "fine")
+	type raw struct {
+		name string
+		code string
+		ents [][]byte
+	}
+	for _, c := range []raw{
+		{"a name of a file that ends with a slash", "unpack_path", [][]byte{manifest, rawEntry(sysroot+"usr/bin/x/", tar.TypeReg, 1, "", "x")}},
+		{"a NUL in a name given by a pax header", "unpack_corrupt", [][]byte{manifest, paxEntry("path", sysroot+"usr/bin/a\x00b"), rawEntry("x", tar.TypeReg, 1, "", "x")}},
+		{"a NUL in a target given by a pax header", "unpack_corrupt", [][]byte{manifest, paxEntry("linkpath", "a\x00b"), rawEntry(sysroot+"usr/bin/l", tar.TypeSymlink, 0, "a", "")}},
+		{"a name that goes up, given by a pax header", "unpack_path", [][]byte{manifest, paxEntry("path", "../../etc/passwd"), rawEntry("x", tar.TypeReg, 1, "", "x")}},
+		{"a name that goes up, given by a gnu long name", "unpack_path", [][]byte{manifest, rawEntry("././@LongLink", 'L', 17, "", "../../etc/passwd\x00"), rawEntry("x", tar.TypeReg, 1, "", "x")}},
+		{"a target that is absolute, given by a gnu long link", "unpack_path", [][]byte{manifest, rawEntry("././@LongLink", 'K', 12, "", "/etc/passwd\x00"), rawEntry(sysroot+"usr/bin/l", tar.TypeSymlink, 0, "a", "")}},
+		{"a sparse file given by a pax header", "unpack_path", [][]byte{manifest, paxEntry("GNU.sparse.major", "1"), rawEntry(sysroot+"usr/bin/x", tar.TypeReg, 1, "", "x")}},
+		{"a name that is not UTF-8", "unpack_path", [][]byte{manifest, rawEntry(sysroot+"usr/bin/\xff", tar.TypeReg, 1, "", "x")}},
+		{"a type that is not known", "unpack_path", [][]byte{manifest, rawEntry(sysroot+"usr/bin/x", 'Z', 0, "", "")}},
+		{"a sparse file", "unpack_corrupt", [][]byte{manifest, rawEntry(sysroot+"usr/bin/x", 'S', 0, "", "")}},
+		{"a directory that has a size", "unpack_corrupt", [][]byte{manifest, rawEntry(sysroot+"usr/share/casaos/d/", tar.TypeDir, 5, "", "12345")}},
+		{"an end that is not the end of a tar", "unpack_corrupt", [][]byte{manifest, good, []byte("this is not a header block")}},
+		{"a header that is cut", "unpack_corrupt", [][]byte{manifest, good[:200]}},
+		{"a file that is cut", "unpack_corrupt", [][]byte{manifest, rawEntry(sysroot+"usr/bin/x", tar.TypeReg, 2000, "", strings.Repeat("a", 100))}},
+		{"a header that is the wrong sum", "unpack_corrupt", [][]byte{manifest, append(slices.Clone(good[:148]), append([]byte("0000001\x00"), good[156:]...)...)}},
+	} {
+		dst := newFS()
+		_, err := Unpack(bytes.NewReader(rawTar(c.ents...)), dst, nil)
+		wantRefusedFor(t, c.name, err, c.code)
+		if len(dst.log) != 0 {
+			t.Errorf("%s: written %v", c.name, dst.log)
+		}
+	}
+	// nothing at all, and a tar with nothing in it: no manifest
+	for name, raw := range map[string][]byte{"nothing": nil, "an end and nothing before": make([]byte, 1024), "bytes that are no tar": bytes.Repeat([]byte("garbage "), 500)} {
+		dst := newFS()
+		_, err := Unpack(bytes.NewReader(raw), dst, nil)
+		var r *Refused
+		if !errors.As(err, &r) || len(dst.log) != 0 {
+			t.Errorf("%s: %v %v", name, err, dst.log)
+		}
+	}
+}
+
+func TestADestinationThatIsALinkOrBehindOneIsNotWrittenTo(t *testing.T) {
+	ents := []tent{{name: "module.json", body: "{}"}, {name: sysroot + "usr/bin/fine", mode: 0o755, body: "fine"}, {name: sysroot + "var/lib/casaos/a/b/f", body: "x"}}
+	for name, setup := range map[string]func(*fakeFS){
+		"the file is a link to the password file": func(f *fakeFS) {
+			f.nodes["/var/lib/casaos/a"] = &node{mode: fs.ModeDir | 0o755}
+			f.nodes["/var/lib/casaos/a/b"] = &node{mode: fs.ModeDir | 0o755}
+			f.nodes["/var/lib/casaos/a/b/f"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"}
+		},
+		"the parent is a link": func(f *fakeFS) {
+			f.nodes["/var/lib/casaos/a"] = &node{mode: fs.ModeDir | 0o755}
+			f.nodes["/var/lib/casaos/a/b"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc"}
+		},
+		"the grandparent is a link":                     func(f *fakeFS) { f.nodes["/var/lib/casaos/a"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc"} },
+		"the allowed directory itself is a link":        func(f *fakeFS) { f.nodes["/var/lib/casaos"] = &node{mode: fs.ModeSymlink | 0o777, target: "/srv"} },
+		"the file is a link to nothing":                 func(f *fakeFS) { f.nodes["/usr/bin/fine"] = &node{mode: fs.ModeSymlink | 0o777, target: "/nowhere"} },
+		"the file is a link, and is in the modules own": func(f *fakeFS) { f.nodes["/usr/bin/fine"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"} },
+	} {
+		dst := newFS()
+		setup(dst)
+		_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, []string{"/usr/bin/fine"})
+		var r *Refused
+		if !errors.As(err, &r) || r.Code != "unpack_path" {
+			t.Errorf("%s: error = %v", name, err)
+		}
+		if len(dst.log) != 0 {
+			t.Errorf("%s: written %v", name, dst.log)
+		}
+	}
+	// a part of the way that is a file where there should be a directory
+	dst := newFS()
+	dst.put("/var/lib/casaos/a", 0o644, "x")
+	_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil)
+	wantRefused(t, err, "file_exists")
+	// a file system that cannot be looked at is not a refusal of the archive
+	dst = newFS()
+	dst.lstatEr = errors.New("input/output error")
+	_, err = Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil)
+	var r *Refused
+	if err == nil || errors.As(err, &r) || len(dst.log) != 0 {
+		t.Errorf("an error of the disk: %v %v", err, dst.log)
+	}
+	// directories that exist already are no obstacle
+	dst = newFS()
+	dst.nodes["/var/lib/casaos/a"] = &node{mode: fs.ModeDir | 0o700}
+	if _, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil); err != nil {
+		t.Errorf("a directory that is there: %v", err)
+	}
+}
+
+func TestTheBoundsOfAnArchive(t *testing.T) {
+	entries := func(n int) []tent {
+		ents := []tent{{name: "module.json", body: "{}"}}
+		for i := 1; i < n; i++ {
+			ents = append(ents, tent{name: fmt.Sprintf("%svar/lib/casaos/f%d", sysroot, i)})
+		}
+		return ents
+	}
+	dst := newFS()
+	res, err := unpack(t, dst, nil, entries(MaxEntries)...)
+	if err != nil || len(res.Files) != MaxEntries-1 {
+		t.Errorf("%d entries: %d files, %v", MaxEntries, len(res.Files), err)
+	}
+	dst = newFS()
+	_, err = unpack(t, dst, nil, entries(MaxEntries+1)...)
+	wantRefused(t, err, "unpack_limits")
+	if len(dst.log) != 0 {
+		t.Errorf("written %v", dst.log)
+	}
+	// the size: a file of exactly the most, and one byte more
+	if _, err := ValidateArchive(bigArchive(sysroot+"var/lib/casaos/big", MaxTotalBytes-2, 0), newFS(), nil); err != nil {
+		t.Errorf("a file that makes the most with the manifest of 2 bytes: %v", err)
+	}
+	_, err = ValidateArchive(bigArchive(sysroot+"var/lib/casaos/big", MaxTotalBytes-1, 0), newFS(), nil)
+	wantRefused(t, err, "unpack_limits")
+	// the size of the data that is not in the archive: said by the header alone
+	lie := &virtual{head: slices.Concat(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), rawEntry(sysroot+"var/lib/casaos/big", tar.TypeReg, 1<<40, "", "")), length: 3000}
+	_, err = ValidateArchive(lie, newFS(), nil)
+	wantRefused(t, err, "unpack_limits")
+	lie = &virtual{head: rawEntry(sysroot+"var/lib/casaos/big", tar.TypeReg, 1<<62, "", ""), length: 3000}
+	_, err = ValidateArchive(lie, newFS(), nil)
+	wantRefused(t, err, "unpack_limits")
+	// a negative size is a size that is wrong
+	neg := rawEntry(sysroot+"var/lib/casaos/big", tar.TypeReg, 0, "", "")
+	copy(neg[124:136], []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	if _, err := ValidateArchive(bytes.NewReader(rawTar(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), neg)), newFS(), nil); err == nil {
+		t.Error("a negative size")
+	}
+	// the sum of the sizes, in several files
+	pair := slices.Concat(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), rawEntry(sysroot+"var/lib/casaos/a", tar.TypeReg, MaxTotalBytes/2, "", ""))
+	second := rawEntry(sysroot+"var/lib/casaos/b", tar.TypeReg, MaxTotalBytes/2+1, "", "")
+	two := &virtual{head: slices.Concat(pair, make([]byte, MaxTotalBytes/2), second), length: 0}
+	two.length = int64(len(two.head)) + MaxTotalBytes/2 + 1024 + 512
+	_, err = ValidateArchive(two, newFS(), nil)
+	wantRefused(t, err, "unpack_limits")
+	// the stream itself is bounded, whatever it holds
+	_, err = ValidateArchive(bigArchive(sysroot+"var/lib/casaos/big", 10, MaxStreamBytes), newFS(), nil)
+	wantRefused(t, err, "unpack_limits")
+	// the manifest has the room of a manifest
+	if _, err := unpack(t, newFS(), nil, tent{name: "module.json", body: strings.Repeat(" ", MaxBytes)}); err != nil {
+		t.Errorf("a manifest of %d bytes: %v", MaxBytes, err)
+	}
+	_, err = unpack(t, newFS(), nil, tent{name: "module.json", body: strings.Repeat(" ", MaxBytes+1)})
+	wantRefused(t, err, "unpack_limits")
+	// the licence and the notice count in the size, and are not limited otherwise
+	if _, err := unpack(t, newFS(), nil, tent{name: "module.json", body: "{}"}, tent{name: "LICENSE", body: strings.Repeat("l", 1<<20)}, tent{name: "NOTICE", body: "n"}); err != nil {
+		t.Errorf("a long licence: %v", err)
+	}
+}
+
+func TestWhatIsWrittenIsExactlyTheContentOfTheArchive(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	var ents []tent
+	want := map[string]string{}
+	ents = append(ents, tent{name: "module.json", body: `{"schema":1}`})
+	for i, size := range []int{0, 1, 511, 512, 513, 1023, 1024, 100000, 4096} {
+		body := make([]byte, size)
+		rng.Read(body)
+		name := fmt.Sprintf("usr/share/casaos/f%d", i)
+		ents = append(ents, tent{name: sysroot + name, body: string(body)})
+		want["/"+name] = string(body)
+	}
+	dst := newFS()
+	res, err := unpack(t, dst, nil, ents...)
+	if err != nil || len(res.Files) != len(want) {
+		t.Fatalf("%v, %d files", err, len(res.Files))
+	}
+	for p, body := range want {
+		if n := dst.nodes[p]; n == nil || string(n.data) != body {
+			t.Errorf("%s: wrong content", p)
+		}
+	}
+}
+
+func TestAWriteThatFailsStopsTheUnpackAndSaysWhatWasWritten(t *testing.T) {
+	dst := newFS()
+	dst.failOn = "/usr/share/casaos/virt/index.html"
+	res, err := unpack(t, dst, nil, goodEntries()...)
+	if err == nil {
+		t.Fatal("no error")
+	}
+	var r *Refused
+	if errors.As(err, &r) {
+		t.Errorf("a disk that is full is not a refusal of the archive: %v", err)
+	}
+	// what was written before the failure is in the list, which the rollback will use, and the unit was not written
+	if slices.Contains(res.Files, "/usr/lib/systemd/system/casaos-virt-management.service") || dst.nodes["/usr/lib/systemd/system/casaos-virt-management.service"] != nil {
+		t.Errorf("the unit was written: %v", res.Files)
+	}
+	for _, p := range res.Files {
+		if dst.nodes[p] == nil {
+			t.Errorf("%s is in the list and not on the disk", p)
+		}
+	}
+	if len(res.Files) == 0 || res.Files[0] != "/usr/bin/casaos-virt-management" {
+		t.Errorf("files = %v", res.Files)
+	}
+	// every file on the disk that the archive put there is in the list
+	for _, p := range []string{"/usr/bin/casaos-virt-management", "/usr/bin/virt", "/etc/casaos/virt-management.conf.sample"} {
+		if dst.nodes[p] != nil && !slices.Contains(res.Files, p) {
+			t.Errorf("%s is on the disk and not in the list", p)
+		}
+	}
+}
+
+// hooked is a ReadSeeker that says when the archive is read from its start again, and lets a test change the world then: an archive that is not the same the second time it is read, a file that
+// appears on the disk between the readings.
+type hooked struct {
+	r       *bytes.Reader
+	starts  int
+	onStart func(starts int, h *hooked)
+}
+
+func (h *hooked) Read(p []byte) (int, error) { return h.r.Read(p) }
+func (h *hooked) Seek(off int64, whence int) (int64, error) {
+	if whence == io.SeekStart && off == 0 {
+		h.starts++
+		h.onStart(h.starts, h)
+	}
+	return h.r.Seek(off, whence)
+}
+
+func TestAnArchiveOrADestinationThatChangesBetweenTheReadingsIsNotUnpacked(t *testing.T) {
+	good := tarOf(t, goodEntries()...)
+	evil := tarOf(t, append(goodEntries(), tent{name: sysroot + "usr/bin/extra", body: "x"})...)
+	dst := newFS()
+	_, err := Unpack(&hooked{r: bytes.NewReader(good), onStart: func(n int, h *hooked) {
+		if n == 2 {
+			h.r = bytes.NewReader(evil)
+		}
+	}}, dst, nil)
+	wantRefused(t, err, "unpack_corrupt")
+	if len(dst.log) != 0 {
+		t.Errorf("written %v", dst.log)
+	}
+	// the same archive every time is fine
+	dst = newFS()
+	if _, err := Unpack(&hooked{r: bytes.NewReader(good), onStart: func(int, *hooked) {}}, dst, nil); err != nil {
+		t.Errorf("%v", err)
+	}
+	// a file that appears on the disk between the readings
+	dst = newFS()
+	_, err = Unpack(&hooked{r: bytes.NewReader(good), onStart: func(n int, _ *hooked) {
+		if n == 2 {
+			dst.put("/usr/bin/casaos-virt-management", 0o755, "someone else's")
+		}
+	}}, dst, nil)
+	wantRefused(t, err, "file_exists")
+	if len(dst.log) != 0 {
+		t.Errorf("written %v", dst.log)
+	}
+	// a file that was the module's own, and is gone from the list by the second reading, cannot happen: the list is an argument. A destination that turns into a link does
+	dst = newFS()
+	dst.put("/usr/bin/casaos-virt-management", 0o755, "old")
+	_, err = Unpack(&hooked{r: bytes.NewReader(good), onStart: func(n int, _ *hooked) {
+		if n == 2 {
+			dst.nodes["/usr/bin/casaos-virt-management"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"}
+		}
+	}}, dst, []string{"/usr/bin/casaos-virt-management"})
+	wantRefused(t, err, "unpack_path")
+	if len(dst.log) != 0 {
+		t.Errorf("written %v", dst.log)
+	}
+}
+
+func TestTheErrorOfARefusalSaysWhereWithoutRepeatingWhatTheArchiveSaid(t *testing.T) {
+	name := sysroot + "usr/sbin/x\x1b[2J" + strings.Repeat("a", 300)
+	_, err := Unpack(bytes.NewReader(rawTar(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), rawEntry(name, tar.TypeReg, 0, "", ""))), newFS(), nil)
+	var r *Refused
+	if !errors.As(err, &r) {
+		t.Fatal(err)
+	}
+	if text := err.Error(); len(text) > 200 || strings.ContainsFunc(text, func(c rune) bool { return c < ' ' || c > '~' }) || !strings.Contains(text, "unpack_path") {
+		t.Errorf("%q", text)
+	}
+}
+
+// A name in a tar is a string that ends at its first NUL, for every reader of tar: the part after it is not read, by this reader any more than by another.
+func TestANameInATarEndsAtItsFirstNUL(t *testing.T) {
+	dst := newFS()
+	res, err := Unpack(bytes.NewReader(rawTar(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), rawEntry(sysroot+"usr/bin/ok\x00/../../../etc/passwd", tar.TypeReg, 1, "", "x"))), dst, nil)
+	if err != nil || !slices.Equal(res.Files, []string{"/usr/bin/ok"}) || dst.nodes["/etc/passwd"] != nil {
+		t.Errorf("%v %v", err, res.Files)
+	}
+}
