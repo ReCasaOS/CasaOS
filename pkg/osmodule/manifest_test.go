@@ -66,7 +66,7 @@ func TestTheManifestOfTheVirtualMachinesModuleIsTaken(t *testing.T) {
 	if m.Description != "Create and run virtual machines with libvirt and QEMU." {
 		t.Errorf("description = %q", m.Description)
 	}
-	if m.Name != "virt" || m.Unit !="casaos-virt-management.service" || m.OSUpgrade == nil || m.OSUpgrade.StopTimeoutSeconds != 300 ||
+	if m.Name != "virt" || m.Unit != "casaos-virt-management.service" || m.OSUpgrade == nil || m.OSUpgrade.StopTimeoutSeconds != 300 ||
 		m.OSUpgrade.Maintenance.Resume != "/v2/virt_management/maintenance/resume" || len(m.Packages.Common) != 3 || m.Packages.ARM64[1] != "qemu-efi-aarch64" {
 		t.Errorf("%+v", m)
 	}
