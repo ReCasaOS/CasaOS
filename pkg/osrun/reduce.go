@@ -804,6 +804,11 @@ type result struct {
 
 func (c *ctx) result() (result, bool) {
 	f := c.in.Files
+	if f.DoneAfter && !c.checkBegan() {
+		// The file of the block that only the check writes, and no check ever began: a hand wrote it, or the log lost the check. Neither
+		// the file nor the word of the hop before it is the run's, and a success needs the check.
+		return result{}, false
+	}
 	if m := c.v.m; m != nil && !(f.DoneAfter && m.Kind != MkVerifyDone) {
 		return result{kind: m.Kind, boot: m.Boot, yes: m.Result == "yes", at: m.At, attempt: c.v.mAttempt}, true
 	}
@@ -823,6 +828,16 @@ func (c *ctx) result() (result, bool) {
 		return result{kind: MkRebootNotNeeded, at: c.la}, true
 	}
 	return result{}, false
+}
+
+// checkBegan is whether an attempt of the check after the restart has begun.
+func (c *ctx) checkBegan() bool {
+	for _, a := range c.v.attempt {
+		if a.Phase == PhaseVerify && a.Started {
+			return true
+		}
+	}
+	return false
 }
 
 // byResult is the state of a run from the latest thing the unit said it had finished.

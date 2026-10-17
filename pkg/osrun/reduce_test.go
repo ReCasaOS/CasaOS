@@ -1002,3 +1002,30 @@ func TestASuccessIsWrittenDownAtTheEndOfTheCheckAndNotOfAnEarlierUnit(t *testing
 		}
 	}
 }
+
+func TestTheFileOfTheLastBlockIsNotACheckThatNeverBegan(t *testing.T) {
+	// The file of the block that only the check writes is there, and no check ever began: a hand wrote it, or the log lost the check. Either
+	// way the run is not judged and not made a success of: the log and the files do not agree.
+	for name, c := range map[string]struct {
+		l    *runLog
+		boot string
+	}{
+		"on the boot of the hop":      {hopAtReboot(t), bootA},
+		"after the machine restarted": {hopAtReboot(t), bootB},
+		"a hop whose unit was lost":   {hopInBlock(t, BlockPrereboot).wait(time.Minute), bootA},
+	} {
+		c.l.files.DoneAfter = true
+		if name == "a hop whose unit was lost" {
+			c.l.files.DonePrereboot = true
+		}
+		for verdict, v := range map[string]*VerifyResult{"not judged": nil, "judged clean": {}, "judged with warnings": {Warnings: 1}} {
+			in := c.l.input()
+			in.Boot.Now, in.Verify = c.boot, v
+			s := reduced(t, in)
+			is(t, s, StateNeedsAttention, ReasonRunDamaged)
+			if act := NextAction(s, in); act.Kind != DoNone {
+				t.Errorf("%s, %s: %+v", name, verdict, act)
+			}
+		}
+	}
+}
