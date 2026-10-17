@@ -471,7 +471,7 @@ func TestTheBoxSaysBusyWhenAnythingAtAllIsUnclear(t *testing.T) {
 	if busy, err := bx.PackageManagerBusy(); busy || err != nil {
 		t.Errorf("free: %v %v", busy, err)
 	}
-	for _, unit := range maintenanceUnits {
+	for _, unit := range []string{"casaos-update.service", "casaos-package-update.service", "casaos-docker-update.service", "casaos-os-upgrade.service"} {
 		f.runner.busyUnit = unit
 		if busy, err := bx.PackageManagerBusy(); !busy || err != nil {
 			t.Errorf("%s: %v %v", unit, busy, err)

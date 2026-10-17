@@ -70,7 +70,7 @@ func TestTheRealOutputsOfAptAreUnderstood(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					return osplan.Output{Text: string(text), ExitCode: code}
+					return osplan.Output{Text: strings.ReplaceAll(string(text), "\r\n", "\n"), ExitCode: code}
 				}
 				checkScenario(t, scenario, heldFromSolver(osplan.ParseModuleSimulation(read("sim"), read("est"), dir)))
 			})
@@ -85,7 +85,7 @@ func TestAHeldDependencyRefusesThePlan(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return string(text)
+		return strings.ReplaceAll(string(text), "\r\n", "\n")
 	}
 	f := newFixture(t)
 	f.sandbox.sim = osplan.Output{Text: read("held.sim.txt"), ExitCode: 100}

@@ -200,7 +200,12 @@ func TestTheUnpackWritesExactModesWhateverTheUmaskIs(t *testing.T) {
 			t.Errorf("%s: %v %v", p, info.Mode(), err)
 		}
 	}
-	// and the state of the assistant is as private as its files need to be
+	// and the directories of the state of the assistant are 0755 and the area of the download 0700
+	for p, want := range map[string]fs.FileMode{"/var/lib/casaos/modules": 0o755, "/etc/casaos/modules": 0o755, "/var/log/casaos": 0o755, "/var/lib/casaos/modules/tmp": 0o700} {
+		if info, err := os.Lstat(f.path(p)); err != nil || info.Mode().Perm() != want {
+			t.Errorf("%s: %v %v, want %v", p, info.Mode(), err, want)
+		}
+	}
 	if info, err := os.Lstat(f.path("/var/lib/casaos/modules/virt.files")); err != nil || info.Mode().Perm() != 0o644 {
 		t.Errorf("the list: %v %v", info, err)
 	}

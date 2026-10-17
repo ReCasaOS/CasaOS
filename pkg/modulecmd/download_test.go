@@ -102,7 +102,7 @@ func TestTheDownloadFollowsAnArchiveToTheHostsOfGitHubAndNowhereElse(t *testing.
 				t.Errorf("/%s: the redirect was followed: %v", path, seen)
 			}
 		}
-		if path == "loop" && len(seen) > maxRedirects+1 {
+		if path == "loop" && len(seen) > 6 {
 			t.Errorf("a loop was followed %d times", len(seen))
 		}
 	}
