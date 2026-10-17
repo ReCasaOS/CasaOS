@@ -135,7 +135,7 @@ func Install(ctx context.Context, env Env, c command) int {
 	if env.EUID() != 0 {
 		return say(CodeNotRoot)
 	}
-	if err := os.MkdirAll(env.Roots.state(), 0o755); err != nil {
+	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
 		return say(CodeLockFailed)
 	}
 	release, err := env.Host.Lock(env.Roots.lock())
@@ -358,7 +358,7 @@ func (in *install) stepUnpack() *stepFailure {
 	defer tarFile.Close()
 	// from here the box may hold files of the module
 	in.unpackBegun = true
-	if err := os.MkdirAll(in.env.Roots.state(), 0o755); err != nil {
+	if err := makeDirs(in.env.Roots.state(), 0o755); err != nil {
 		return in.fail(CodeUnpackFailed, err)
 	}
 	jr, own, err := openJournal(in.env.Roots.files(in.entry.Name))
@@ -405,7 +405,7 @@ func (in *install) stepManifest() *stepFailure {
 	if !manifestMatches(m, in.entry.Manifest) {
 		return in.fail(CodeManifestMismatch, errors.New("the manifest of the archive is not the catalogue's"))
 	}
-	if err := os.MkdirAll(in.env.Roots.manifests(), 0o755); err != nil {
+	if err := makeDirs(in.env.Roots.manifests(), 0o755); err != nil {
 		return in.fail(CodeManifestWrite, err)
 	}
 	// the version first: the manifest is what makes the module installed

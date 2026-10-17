@@ -149,6 +149,8 @@ type fixture struct {
 	envVars map[string]string
 	isTTY   bool
 	input   string
+	// cleanup undoes what a test did to the box on purpose, before the box is compared with what it was
+	cleanup func()
 }
 
 type fixtureOpt func(*fixtureCfg)

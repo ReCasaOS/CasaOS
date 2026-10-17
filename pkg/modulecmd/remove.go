@@ -210,7 +210,7 @@ func Remove(ctx context.Context, env Env, c command) int {
 	if env.EUID() != 0 {
 		return say(CodeNotRoot)
 	}
-	if err := os.MkdirAll(env.Roots.state(), 0o755); err != nil {
+	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
 		return say(CodeLockFailed)
 	}
 	release, err := env.Host.Lock(env.Roots.lock())
@@ -226,6 +226,8 @@ func Remove(ctx context.Context, env Env, c command) int {
 		return say(CodeLogUnwritable)
 	}
 	defer j.close()
+	// what an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
+	_ = emptyDir(env.Roots.tmp())
 
 	roots := env.Roots
 	present := false

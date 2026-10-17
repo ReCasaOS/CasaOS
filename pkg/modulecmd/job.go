@@ -48,7 +48,7 @@ func newJob(env Env, name string) *job {
 // openLog starts the log of this run: the log of an earlier run is replaced, so that a log is one run.
 func (j *job) openLog() error {
 	dir := j.env.Roots.logs()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := makeDirs(dir, 0o755); err != nil {
 		return err
 	}
 	path := j.env.Roots.logFile(j.name)
@@ -60,7 +60,7 @@ func (j *job) openLog() error {
 		return err
 	}
 	j.log = f
-	return nil
+	return f.Chmod(0o644)
 }
 
 func (j *job) close() {

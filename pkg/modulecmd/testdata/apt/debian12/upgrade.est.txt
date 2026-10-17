@@ -1,0 +1,13 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  casaos-mod-b
+The following NEW packages will be installed:
+  casaos-mod-a
+The following packages will be upgraded:
+  casaos-mod-b
+1 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.
+Need to get 0 B/1416 B of archives.
+After this operation, 154 kB of additional disk space will be used.
+E: Trivial Only specified but this is not a trivial operation.

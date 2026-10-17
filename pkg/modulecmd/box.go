@@ -308,5 +308,14 @@ func (b *box) SimulateApt(packages []string) osmodule.AptResult {
 	if err != nil {
 		return failed("apt did not answer")
 	}
-	return osplan.ParseModuleSimulation(sim, est, dir)
+	return heldFromSolver(osplan.ParseModuleSimulation(sim, est, dir))
+}
+
+// heldFromSolver takes the failure of a simulation that apt could not solve because of a held package for what it is. A held package that a dependency needs changed is not one that apt
+// says "will be changed": asked to install, apt says it cannot correct the problems because of the held ones.
+func heldFromSolver(res osmodule.AptResult) osmodule.AptResult {
+	if res.Failure == osmodule.RefusedAptFailed && strings.Contains(res.Detail, "you have held broken packages") {
+		res.Failure = osmodule.RefusedHeld
+	}
+	return res
 }

@@ -285,6 +285,9 @@ func (f *fixture) failsAt(step, code, kept string, before map[string]string) {
 	if exit := f.install("--yes"); exit != ExitFailed {
 		t.Fatalf("exit %d:\n%s", exit, f.out)
 	}
+	if f.cleanup != nil {
+		f.cleanup()
+	}
 	lines := f.lines()
 	if last := lines[len(lines)-1]; last != "kept_packages: "+kept {
 		t.Errorf("the last line: %q, want kept_packages: %s", last, kept)
@@ -348,7 +351,14 @@ func TestAFailureAtEachStepIsRolledBackAndKeepsThePackages(t *testing.T) {
 		{"a file of the module is in the way", StepUnpack, osmodule.FileExists, keptAll, func(f *fixture) { f.writeFile("/usr/bin/casaos-virt-management", "someone else's") }},
 		{"a file cannot be written", StepUnpack, CodeUnpackFailed, keptAll, func(f *fixture) { f.host.wrapDest = failingDest(3) }},
 		{"systemd cannot read its units", StepUnits, CodeUnitsFailed, keptAll, func(f *fixture) { f.runner.fail["systemctl daemon-reload"] = 1 }},
-		{"the manifest cannot be written", StepManifest, CodeManifestWrite, keptAll, func(f *fixture) { f.writeFile("/etc/casaos/modules", "a file where the directory goes") }},
+		{"the manifest cannot be written", StepManifest, CodeManifestWrite, keptAll, func(f *fixture) {
+			f.env.StepHook = func(_ context.Context, step, phase string) {
+				if step == StepUnits && phase == "done" {
+					f.writeFile("/etc/casaos/modules", "a file where the directory goes")
+				}
+			}
+			f.cleanup = func() { _ = os.Remove(f.path("/etc/casaos/modules")) }
+		}},
 		{"the unit does not start", StepStart, CodeStartFailed, keptAll, func(f *fixture) { f.runner.fail["systemctl enable --now"] = 1 }},
 		{"the gateway does not answer", StepRoute, CodeRouteTimeout, keptAll, func(f *fixture) { f.gw.never = true }},
 	}

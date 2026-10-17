@@ -52,11 +52,32 @@ func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
 	return nil
 }
 
+// makeDirs makes the directories of a path that are missing, each with exactly perm whatever the umask is. A directory that is there is left as it is.
+func makeDirs(path string, perm fs.FileMode) error {
+	if info, err := os.Stat(path); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", path)
+		}
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if parent := filepath.Dir(path); parent != path {
+		if err := makeDirs(parent, perm); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(path, perm); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return os.Chmod(path, perm)
+}
+
 // emptyDir removes what is in a directory and keeps the directory. A directory that is not there is made (0700).
 func emptyDir(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return os.MkdirAll(dir, 0o700)
+		return makeDirs(dir, 0o700)
 	}
 	if err != nil {
 		return err
@@ -117,6 +138,9 @@ func (j *journal) add(abs string) error {
 			return err
 		}
 		j.f = f
+		if err := f.Chmod(0o644); err != nil {
+			return err
+		}
 	}
 	if _, err := j.f.WriteString(abs + "\n"); err != nil {
 		return err
