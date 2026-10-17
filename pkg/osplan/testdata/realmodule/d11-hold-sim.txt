@@ -1,0 +1,10 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following held packages will be changed:
+  rvm-held
+The following packages will be upgraded:
+  rvm-held
+1 upgraded, 0 newly installed, 0 to remove and 2 not upgraded.
+Inst rvm-held [1.0] (2.0 127.0.0.1 [all])
+Conf rvm-held (2.0 127.0.0.1 [all])

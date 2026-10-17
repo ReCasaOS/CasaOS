@@ -1,0 +1,11 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following held packages will be changed:
+  rvm-held
+The following packages will be upgraded:
+  rvm-held
+1 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+Need to get 10.1 kB of archives.
+After this operation, 4096 B of additional disk space will be used.
+'http://127.0.0.1:8762/./rvm-held_2.0_all.deb' rvm-held_2.0_all.deb 10108 MD5Sum:ce17abcb8ce8bfe98f33a61c1e139c42

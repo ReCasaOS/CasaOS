@@ -1,0 +1,12 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  rvm-dep
+The following NEW packages will be installed:
+  rvm-dep rvm-main
+0 upgraded, 2 newly installed, 0 to remove and 3 not upgraded.
+Need to get 351 kB of archives.
+After this operation, 348 kB of additional disk space will be used.
+'http://127.0.0.1:8761/./rvm-dep_1.0_all.deb' rvm-dep_1.0_all.deb 308888 MD5Sum:3a1647858da150bb1fb6cd5b239c054f
+'http://127.0.0.1:8761/./rvm-main_1.0_all.deb' rvm-main_1.0_all.deb 42308 MD5Sum:44d3391540d5ce02b6a61be6684a7f28

@@ -8,23 +8,31 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 )
 
-// The simulation of installing the packages of a module: "apt-get -s install --no-install-recommends <packages>", and the same transaction with the trivial-only option for the sizes (a
-// simulation prints none). They run in the same sandbox as the plan of the upgrade, in English, with the same environment (SandboxEnv) and the same discipline: the commands are built here,
+// The simulation of installing the packages of a module: "apt-get -s install --no-install-recommends <packages>", and the same transaction with --print-uris for the sizes (a simulation
+// prints none). They run in the same sandbox as the plan of the upgrade, in English, with the same environment (SandboxEnv) and the same discipline: the commands are built here,
 // compared by equality, and nothing else is handed to the sandbox. The difference is the lists: the install that follows runs on the lists the box has, with no update, so the simulation reads
 // them (and the sources) as they are, and only apt's cache is moved into the sandbox.
+//
+// The command that says the sizes must be one that cannot install. "-o APT::Get::Trivial-Only=true" is not: apt counts a transaction as trivial when the number of packages it changes is the
+// number of names it was given, and goes on with it (a module of one package was installed, with its maintainer scripts, by the plan: testdata/realmodule/d11-trivial-trivialonly.txt). With
+// --print-uris apt says what it would download and use, prints the addresses, and ends with status 0 before it fetches or installs anything (testdata/realmodule/capture.sh runs it
+// for every case on apt 2.2.4 and apt 2.6.1 and finds the status of dpkg, its history and the log of the planner as they were).
 
 // moduleMaxPackages is the most packages of a module (the manifest has 40 at most).
 const moduleMaxPackages = 40
 
+// moduleOptions are the options of both commands, in this order: the cache of apt in the sandbox directory, no locking, and no log of the planner. The last is what the file that APT_CONFIG
+// names says too (AptConfigText), and is said again here because the planner writes /var/log/apt/eipp.log.xz, as root, for every "-s install" that is not told otherwise (apt 2.2.4 and
+// 2.6.1), and that log is the one of the last real transaction of the box.
 func moduleOptions(dir string) []string {
-	return []string{"-o", "Dir::Cache=" + dir + "/cache", "-o", "Debug::NoLocking=true"}
+	return []string{"-o", "Dir::Cache=" + dir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner="}
 }
 
 // moduleHead is the command up to the packages: the verb and its options, all fixed.
 func moduleHead(dir string, estimate bool) []string {
 	tail := []string{"-s", "install", "--no-install-recommends"}
 	if estimate {
-		tail = []string{"-o", "APT::Get::Trivial-Only=true", "install", "--no-install-recommends"}
+		tail = []string{"--print-uris", "install", "--no-install-recommends"}
 	}
 	return slices.Concat([]string{"apt-get"}, moduleOptions(dir), tail)
 }
@@ -58,8 +66,8 @@ func ModuleSimArgv(dir string, packages []string) ([]string, error) {
 	return moduleArgv(dir, false, packages)
 }
 
-// ModuleEstimateArgv is the same transaction, not simulated, that apt stops at the question of whether to go on, after it has said what it downloads and what it uses: it is how the sizes
-// are read (the sandbox's apt-get with Trivial-Only, as EstimateArgv is for the upgrade).
+// ModuleEstimateArgv is the same transaction with --print-uris: apt says what it downloads and what it uses, prints the addresses of the archives and ends, installing nothing and fetching
+// nothing. It is how the sizes are read (ParseURIEstimate).
 func ModuleEstimateArgv(dir string, packages []string) ([]string, error) {
 	return moduleArgv(dir, true, packages)
 }
@@ -91,10 +99,11 @@ var (
 // heldError is what apt says, and stops at, when a package is held and it was told to go on without being asked.
 const heldError = "E: Held packages were changed and -y was used without --allow-change-held-packages."
 
-// withoutInstallNotes takes out of the output of a simulation of an install what ParseSolver does not know, which an upgrade never prints, and gives the held packages that the output names.
-// A line it does not know stays in, for ParseSolver to refuse. Nothing is guessed: a block is its exact header and the lines indented under it.
-func withoutInstallNotes(text string) (string, []string, *Failure) {
-	var kept, held []string
+// withoutInstallNotes takes out of the output of a simulation of an install what ParseSolver does not know, which an upgrade never prints, and gives the held packages that the output names
+// and the packages that it says are already the newest version. A line it does not know stays in, for ParseSolver to refuse. Nothing is guessed: a block is its exact header and the lines
+// indented under it.
+func withoutInstallNotes(text string) (string, []string, []string, *Failure) {
+	var kept, held, newest []string
 	block := ""
 	for _, l := range splitOutput(text) {
 		switch {
@@ -102,7 +111,7 @@ func withoutInstallNotes(text string) (string, []string, *Failure) {
 			if block == heldHeader {
 				for _, name := range strings.Fields(l) {
 					if !packageName.MatchString(name) {
-						return "", nil, unparsedAt("bad_name", name)
+						return "", nil, nil, unparsedAt("bad_name", name)
 					}
 					held = append(held, name)
 				}
@@ -113,38 +122,81 @@ func withoutInstallNotes(text string) (string, []string, *Failure) {
 			continue
 		case alreadyNewest.MatchString(l):
 			block = ""
+			newest = append(newest, strings.Fields(l)[0])
 			continue
 		}
 		block = ""
 		kept = append(kept, l)
 	}
-	return strings.Join(kept, "\n"), held, nil
+	return strings.Join(kept, "\n"), held, newest, nil
 }
 
-// ParseModuleSimulation reads the outputs of ModuleSimArgv (sim) and ModuleEstimateArgv (estimate), run in the sandbox directory dir, as what the plan of a module needs of apt: the packages
-// to install and to upgrade, those it would remove or downgrade or finds held, and the sizes. It reads the simulation with ParseSolver, which it shares with the plan of the upgrade, and the
-// sizes with ParseEstimate: anything that is not understood is a Failure of the result, never a partial answer. The sizes are Known only if the estimate is the same transaction as the
-// simulation. The text of apt is English (SandboxEnv sets LC_ALL=C); a translated one is not understood and is a failure.
-func ParseModuleSimulation(sim, estimate Output, dir string) osmodule.AptResult {
+// unmetHeader starts the block in which apt names what it could not meet when the packages cannot be installed together ("pkg : Depends: other (>= 2) but 1.0 is to be installed"),
+// where the last line it ends with ("you have held broken packages") says it for a conflict as well as for a hold.
+const unmetHeader = "The following packages have unmet dependencies:"
+
+// unmetDependencies are the lines of that block, as they may be shown: at most maxDetailLines of them, each printable ASCII, trimmed and cut.
+func unmetDependencies(text string) []string {
+	var out []string
+	in := false
+	for _, l := range splitOutput(text) {
+		switch {
+		case l == unmetHeader:
+			in = true
+		case in && strings.HasPrefix(l, " "):
+			if s := sanitizeLine(l); s != "" && len(out) < maxDetailLines {
+				out = append(out, s)
+			}
+		default:
+			in = false
+		}
+	}
+	return out
+}
+
+// ParseModuleSimulation reads the outputs of ModuleSimArgv (sim) and ModuleEstimateArgv (estimate) for the packages that were asked about, as what the plan of a module needs of apt: the
+// packages to install and to upgrade, those it would remove or downgrade or finds held, and the sizes. It reads the simulation with ParseSolver, which it shares with the plan of the
+// upgrade, and the sizes with ParseURIEstimate: anything that is not understood is a Failure of the result, never a partial answer. The sizes are Known only if the estimate is the same
+// transaction as the simulation. The text of apt is English (SandboxEnv sets LC_ALL=C); a translated one is not understood and is a failure.
+//
+// Every package that was asked about must be in the answer under the name it was asked for: an Inst line of that name, or the line that says it is already the newest version. apt reads a
+// name with a "." or a "+" in it as a regular expression when no package has the name (mod.lean selects modclean), and a name that a package provides as that package; the simulation of
+// such a name is the simulation of something else, and is RefusedPackageNotExact.
+func ParseModuleSimulation(sim, estimate Output, packages []string) osmodule.AptResult {
 	failed := func(f *Failure) osmodule.AptResult {
 		return osmodule.AptResult{Failure: osmodule.RefusedAptFailed, Detail: f.Error()}
+	}
+	if !packagesOK(packages) {
+		return failed(failf(CodeInternal, nil, "a list of packages that apt was not asked about"))
 	}
 	if sim.ExitCode != 0 && slices.Contains(splitOutput(sim.Text), heldError) {
 		return osmodule.AptResult{Failure: osmodule.RefusedHeld, Detail: heldError}
 	}
-	text, held, f := withoutInstallNotes(sim.Text)
+	text, held, newest, f := withoutInstallNotes(sim.Text)
 	if f != nil {
 		return failed(f)
 	}
 	run, f := ParseSolver(Output{Text: text, ExitCode: sim.ExitCode, Truncated: sim.Truncated})
 	if f != nil {
-		return failed(f)
+		res := failed(f)
+		if unmet := unmetDependencies(sim.Text); sim.ExitCode != 0 && len(unmet) > 0 {
+			res.Detail = "unmet dependencies: " + strings.Join(unmet, "; ") + " (" + f.Error() + ")"
+		}
+		return res
+	}
+	var named []string
+	for _, in := range run.Inst {
+		named = append(named, in.Name)
+	}
+	named = append(named, newest...)
+	if missing := slices.DeleteFunc(slices.Clone(packages), func(p string) bool { return slices.Contains(named, p) }); len(missing) > 0 {
+		return osmodule.AptResult{Failure: osmodule.RefusedPackageNotExact, Detail: "package_not_exact: " + strings.Join(missing, " ")}
 	}
 	sorted := func(in []string) []string { s := slices.Clone(in); slices.Sort(s); return s }
 	res := osmodule.AptResult{
 		ToInstall: sorted(run.New), ToUpgrade: sorted(run.Upgraded), Removes: sorted(run.Removals()), Downgrades: sorted(run.Downgraded), Held: sorted(held),
 	}
-	if est := ParseEstimate(estimate, run.Summary, dir); est.Known {
+	if est := ParseURIEstimate(estimate, run.Summary); est.Known {
 		res.Known, res.DownloadBytes, res.ExtraBytes = true, *est.DownloadBytes, *est.ExtraBytes
 	}
 	return res
