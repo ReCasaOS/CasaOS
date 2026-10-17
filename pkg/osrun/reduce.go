@@ -335,7 +335,11 @@ func resultOfPhase(kind, phase string) bool {
 // the machine and the clock cannot change. Nothing that is read after it can move it, but the owner's closing it.
 func sealedBy(s State) bool {
 	switch s.Name {
-	case StateSucceeded, StateSucceededWithFindings, StateRefreshed, StateRehearsalDone:
+	case StateSucceeded, StateSucceededWithFindings:
+		// The files and the verdict are today's: an earlier unit that ended with the restart to come agrees with them, and is not the
+		// attempt that decided the run. It is the check's end that does.
+		return s.Phase == PhaseVerify
+	case StateRefreshed, StateRehearsalDone:
 		return true
 	case StateFailed:
 		return !s.PNR && s.Reason != ReasonStart

@@ -968,3 +968,37 @@ func TestAUnitThatIsAlreadyUndoingItsStopCannotBeCalledOff(t *testing.T) {
 		}
 	}
 }
+
+func TestASuccessIsWrittenDownAtTheEndOfTheCheckAndNotOfAnEarlierUnit(t *testing.T) {
+	// The files and the verdict are read as they are today. The unit of the hop that ended before the restart agrees with them, and is not the
+	// one that decided the run: the check after the restart is the latest attempt, and the next number is the one after it.
+	repaired := hopInBlock(t, BlockFull).stop(1, 7, BlockFull, 1, ClassNetwork, true).end(1, "stopped")
+	repaired.attempt(2, PhaseRecover, BlockFull, WhoOwner).start(2, PhaseRecover, bootA)
+	repaired.add(Marker{Kind: MkRebootPending, N: 2, Boot: bootA, Kernel: "6.1.0-37-amd64"}).end(2, "ok")
+	repaired.add(Marker{Kind: MkRebootRequested}).attempt(3, PhaseVerify, "", WhoAuto).start(3, PhaseVerify, bootB)
+	repaired.blockStart(3, 1, BlockAfter).blockDone(3, 1, BlockAfter).add(Marker{Kind: MkVerifyDone, N: 3, Boot: bootB}).end(3, "ok")
+	repaired.files.DoneMinimal, repaired.files.DoneFull, repaired.files.DonePrereboot, repaired.files.DoneAfter = true, true, true, true
+	for name, c := range map[string]struct {
+		l       *runLog
+		attempt int
+	}{
+		"a hop": {hopVerified(t), 2}, "a hop that was repaired": {repaired, 3},
+	} {
+		for verdict, want := range map[string]struct {
+			v    VerifyResult
+			name string
+		}{
+			"clean": {VerifyResult{}, StateSucceeded}, "with warnings": {VerifyResult{Warnings: 2}, StateSucceededWithFindings},
+		} {
+			in := c.l.input()
+			in.Boot.Now = bootB
+			v := want.v
+			in.Verify = &v
+			s := reduced(t, in)
+			is(t, s, want.name, "")
+			if s.Phase != PhaseVerify || s.Attempt != c.attempt || NextAttempt(in) != c.attempt+1 {
+				t.Errorf("%s, %s: phase %q attempt %d, next attempt %d", name, verdict, s.Phase, s.Attempt, NextAttempt(in))
+			}
+		}
+	}
+}
