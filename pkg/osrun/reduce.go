@@ -609,7 +609,9 @@ func (c *ctx) running() State {
 	s.Block = a.Block
 	switch name {
 	case StateRefreshing, StateRehearsing, StateRunning:
-		s.Abortable = !c.pnr && !pastAbort(a.LastStart)
+		// A unit that has said it stopped, or that it is done, is on its way out (undoing, or about to end): stopping it now cuts that
+		// short.
+		s.Abortable = !c.pnr && !pastAbort(a.LastStart) && a.Stop == nil && a.Result == nil && a.Unwound == ""
 	}
 	return s
 }

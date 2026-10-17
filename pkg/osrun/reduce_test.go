@@ -945,3 +945,26 @@ func TestTheTimingOfAnInputThatHasNoneIsTheShippedOne(t *testing.T) {
 	in.Timing.GraceQuiet = 5 * time.Second
 	is(t, reduced(t, quiet(in, 20*time.Second)), StateInterrupted, "")
 }
+
+func TestAUnitThatIsAlreadyUndoingItsStopCannotBeCalledOff(t *testing.T) {
+	// The unit said it stopped before the point of no return and is putting the box back; or it said it is done and has not yet ended.
+	// Stopping the unit then cuts the undoing half way, so the owner is not offered the abort.
+	rehearsed := newLog(t, RunRehearsal).attempt(1, PhaseRehearse, "", WhoAuto).start(1, PhaseRehearse, bootA)
+	rehearsed.blockStart(1, 5, BlockDownload).blockDone(1, 5, BlockDownload).add(Marker{Kind: MkRehearsalReady, N: 1})
+	for name, c := range map[string]struct {
+		l    *runLog
+		want string
+	}{
+		"in the download":                       {hopInBlock(t, BlockDownload), StateRunning},
+		"after its stop":                        {hopInBlock(t, BlockDownload).stop(1, 5, BlockDownload, 3, ClassNetwork, false), StateRunning},
+		"after its stop, with the box put back": {hopInBlock(t, BlockDownload).stop(1, 5, BlockDownload, 3, ClassNetwork, false).unwound(1, "ok"), StateRunning},
+		"a rehearsal that said it was ready":    {rehearsed, StateRehearsing},
+	} {
+		s := reduced(t, running(c.l.input()))
+		is(t, s, c.want, "")
+		wantAbort := name == "in the download"
+		if s.Abortable != wantAbort || isOneOf(ActionsFor(s), ActionAbort) != wantAbort {
+			t.Errorf("%s: abortable %v, buttons %v", name, s.Abortable, ActionsFor(s))
+		}
+	}
+}
