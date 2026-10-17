@@ -28,12 +28,20 @@ func TestAListOfFilesIsReadAndWrittenBack(t *testing.T) {
 	if err != nil || !slices.Equal(back, paths) {
 		t.Errorf("read back %v, %v", back, err)
 	}
-	// nothing at all is a list of nothing, both ways
-	if got, err := ParseFiles(nil); err != nil || len(got) != 0 {
+	// nothing at all is not a list, both ways: a list that was cut short at its start must not read as a module that has no files
+	var bad *Invalid
+	if got, err := ParseFiles(nil); !errors.As(err, &bad) || bad.Reason != ReasonMissing || got != nil {
 		t.Errorf("an empty list: %v %v", got, err)
 	}
-	if raw, err := FormatFiles(nil); err != nil || len(raw) != 0 {
+	if got, err := ParseFiles([]byte{}); err == nil || got != nil {
+		t.Errorf("an empty list: %v %v", got, err)
+	}
+	if raw, err := FormatFiles(nil); !errors.As(err, &bad) || bad.Reason != ReasonMissing || raw != nil {
 		t.Errorf("a list of nothing: %q %v", raw, err)
+	}
+	// and a list of one path is one
+	if got, err := ParseFiles([]byte("/usr/bin/a\n")); err != nil || !slices.Equal(got, []string{"/usr/bin/a"}) {
+		t.Errorf("a list of one: %v %v", got, err)
 	}
 }
 
@@ -44,9 +52,9 @@ func TestAPathIsInTheListOnlyIfItIsInsideAnAllowedDirectory(t *testing.T) {
 			ok   bool
 		}{
 			{"/" + dir + "/file", true},
-			{"/" + dir + "/sub/dir/file", true},
-			{"/" + dir, false},       // the directory itself is not a file
-			{"/" + dir + "/", false}, // nor with its slash
+			{"/" + dir + "/sub/dir/file", !isUnitDir(dir)}, // (a directory of units has no subdirectory)
+			{"/" + dir, false},                             // the directory itself is not a file
+			{"/" + dir + "/", false},                       // nor with its slash
 			{"/" + dir + "x/file", false},
 			{"/" + dir[:len(dir)-1] + "/file", false},
 			{"/" + dir[:strings.LastIndex(dir, "/")+1] + "file", false}, // the parent of the directory
@@ -80,15 +88,15 @@ func TestAPathIsInTheListOnlyIfItIsInsideAnAllowedDirectory(t *testing.T) {
 		}
 	}
 	// where the bound of a whole path is
-	long := func(n int) string { // a path of n bytes after the first slash, in names of at most 100
+	long := func(n int) string { // a path of n bytes after the first slash, in names of at most 200 (no more than MaxDepth of them)
 		rel := AllowedDirs[0] + "/"
 		for len(rel) < n {
 			chunk := n - len(rel)
 			switch {
-			case chunk == 101:
-				chunk = 99
-			case chunk > 100:
-				chunk = 100
+			case chunk == 201:
+				chunk = 199
+			case chunk > 200:
+				chunk = 200
 			}
 			rel += strings.Repeat("a", chunk)
 			if len(rel) < n {
@@ -194,6 +202,8 @@ func TestTheBoundsAreWhereTheContractPutsThem(t *testing.T) {
 		"bytes of a path":          {MaxPathBytes, 1024},
 		"bytes of a name":          {MaxElementBytes, 255},
 		"bytes of an archive":      {MaxArchiveBytes, 200 << 20},
+		"names below a directory":  {MaxDepth, 8},
+		"directories made":         {MaxDirs, 200},
 		"bytes of a tar stream":    {MaxStreamBytes, 400<<20 + 64<<20},
 		"bytes of an address":      {maxURLBytes, 512},
 		"factor of the archive":    {DiskArchiveFactor, 3},

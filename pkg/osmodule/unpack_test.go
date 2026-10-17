@@ -32,6 +32,26 @@ type fakeFS struct {
 	// onLstat is called with the number of the call: a test uses it to change the world between two readings of it.
 	onLstat func(n int)
 	lstats  int
+	// onMkdir is called with the path, before the directory is made: a test uses it to make the directory first.
+	onMkdir func(p string)
+}
+
+// real is where a path is on this file system: /lib is a link to usr/lib on a system with a merged /usr, and a path below it is a path below usr/lib, as for the kernel.
+func (f *fakeFS) real(p string) string {
+	if n := f.nodes["/lib"]; n != nil && n.mode&fs.ModeSymlink != 0 && strings.HasPrefix(p, "/lib/") {
+		return "/usr/lib" + p[len("/lib"):]
+	}
+	return p
+}
+
+// newMergedFS is a file system with a merged /usr: /lib is a link to usr/lib.
+func newMergedFS() *fakeFS {
+	f := newFS()
+	for _, p := range []string{"/lib/systemd/system", "/lib/systemd"} {
+		delete(f.nodes, p)
+	}
+	f.nodes["/lib"] = &node{mode: fs.ModeSymlink | 0o777, target: "usr/lib"}
+	return f
 }
 
 func newFS() *fakeFS {
@@ -50,59 +70,70 @@ func (f *fakeFS) Lstat(p string) (fs.FileMode, error) {
 	if f.lstatEr != nil {
 		return 0, f.lstatEr
 	}
-	n, ok := f.nodes[p]
+	n, ok := f.nodes[f.real(p)]
 	if !ok {
 		return 0, fs.ErrNotExist
 	}
 	return n.mode, nil
 }
 
-func (f *fakeFS) MkdirAll(p string, perm fs.FileMode) error {
-	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
-	for i := range parts {
-		sub := "/" + strings.Join(parts[:i+1], "/")
-		switch n := f.nodes[sub]; {
-		case n == nil:
-			f.nodes[sub] = &node{mode: fs.ModeDir | perm}
-			f.log = append(f.log, "mkdir "+sub)
-		case n.mode&fs.ModeSymlink != 0 || !n.mode.IsDir():
-			return fmt.Errorf("%s is not a directory", sub)
-		}
+func (f *fakeFS) Mkdir(p string, perm fs.FileMode) error {
+	if f.onMkdir != nil {
+		f.onMkdir(p)
 	}
+	p = f.real(p)
+	if n := f.nodes[path.Dir(p)]; n == nil || !n.mode.IsDir() {
+		return fs.ErrNotExist // (a directory goes in a directory that is there, not behind a link)
+	}
+	if f.nodes[p] != nil {
+		return fmt.Errorf("%s: %w", p, fs.ErrExist)
+	}
+	f.nodes[p] = &node{mode: fs.ModeDir | perm}
+	f.log = append(f.log, "mkdir "+p)
 	return nil
 }
 
 type fakeFile struct {
-	fs   *fakeFS
-	path string
-	perm fs.FileMode
-	buf  bytes.Buffer
+	fs      *fakeFS
+	path    string
+	perm    fs.FileMode
+	replace bool
+	buf     bytes.Buffer
 }
 
-func (f *fakeFS) NewFile(p string, perm fs.FileMode) (File, error) {
+func (f *fakeFS) NewFile(p string, perm fs.FileMode, replace bool) (File, error) {
 	if p == f.failOn {
 		return nil, errors.New("disk full")
 	}
-	if n := f.nodes[path.Dir(p)]; n == nil || !n.mode.IsDir() {
+	if n := f.nodes[path.Dir(f.real(p))]; n == nil || !n.mode.IsDir() {
 		return nil, fs.ErrNotExist // (a file goes in a directory that is there)
 	}
-	if n := f.nodes[p]; n != nil && n.mode&fs.ModeSymlink != 0 {
+	if n := f.nodes[f.real(p)]; n != nil && n.mode&fs.ModeSymlink != 0 {
 		return nil, errors.New("would write through a link")
 	}
-	return &fakeFile{fs: f, path: p, perm: perm}, nil
+	return &fakeFile{fs: f, path: f.real(p), perm: perm, replace: replace}, nil
 }
 
 func (w *fakeFile) Write(b []byte) (int, error) { return w.buf.Write(b) }
+
+// Commit publishes the file as a careful file system does: what is at the path is replaced only if the file was asked to replace it.
 func (w *fakeFile) Commit() error {
+	if w.fs.nodes[w.path] != nil && !w.replace {
+		return fmt.Errorf("%s: %w", w.path, fs.ErrExist)
+	}
 	w.fs.nodes[w.path] = &node{mode: w.perm, data: slices.Clone(w.buf.Bytes())}
 	w.fs.log = append(w.fs.log, "file "+w.path)
 	return nil
 }
 func (w *fakeFile) Abort() { w.fs.log = append(w.fs.log, "abort "+w.path) }
 
-func (f *fakeFS) Symlink(target, p string) error {
+func (f *fakeFS) Symlink(target, p string, replace bool) error {
+	p = f.real(p)
 	if n := f.nodes[path.Dir(p)]; n == nil || !n.mode.IsDir() {
 		return fs.ErrNotExist
+	}
+	if f.nodes[p] != nil && !replace {
+		return fmt.Errorf("%s: %w", p, fs.ErrExist)
 	}
 	f.nodes[p] = &node{mode: fs.ModeSymlink | 0o777, target: target}
 	f.log = append(f.log, "link "+p)
@@ -110,7 +141,7 @@ func (f *fakeFS) Symlink(target, p string) error {
 }
 
 func (f *fakeFS) put(p string, mode fs.FileMode, data string) {
-	f.nodes[p] = &node{mode: mode, data: []byte(data)}
+	f.nodes[f.real(p)] = &node{mode: mode, data: []byte(data)}
 }
 
 // ---- archives ----------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -277,7 +308,7 @@ func goodEntries() []tent {
 
 func unpack(t *testing.T, dst *fakeFS, own []string, ents ...tent) (Result, error) {
 	t.Helper()
-	return Unpack(bytes.NewReader(tarOf(t, ents...)), dst, own)
+	return Unpack(bytes.NewReader(tarOf(t, ents...)), dst, own, nil)
 }
 
 func wantRefusedFor(t *testing.T, what string, err error, code string) {
@@ -594,7 +625,7 @@ func TestAnArchiveThatBreaksARuleWritesNothing(t *testing.T) {
 			// something fine comes first, to be sure it is not written either
 			ents = append([]tent{{name: sysroot + "usr/bin/fine", mode: 0o755, body: "fine"}}, ents...)
 			dst := newFS()
-			_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil)
+			_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil, nil)
 			wantRefused(t, err, c.code)
 			if len(dst.log) != 0 {
 				t.Errorf("something was written: %v", dst.log)
@@ -632,7 +663,7 @@ func TestEntriesThatTheWriterOfTarWillNotWriteAreRefusedToo(t *testing.T) {
 		{"a header that is the wrong sum", "unpack_corrupt", [][]byte{manifest, append(slices.Clone(good[:148]), append([]byte("0000001\x00"), good[156:]...)...)}},
 	} {
 		dst := newFS()
-		_, err := Unpack(bytes.NewReader(rawTar(c.ents...)), dst, nil)
+		_, err := Unpack(bytes.NewReader(rawTar(c.ents...)), dst, nil, nil)
 		wantRefusedFor(t, c.name, err, c.code)
 		if len(dst.log) != 0 {
 			t.Errorf("%s: written %v", c.name, dst.log)
@@ -641,7 +672,7 @@ func TestEntriesThatTheWriterOfTarWillNotWriteAreRefusedToo(t *testing.T) {
 	// nothing at all, and a tar with nothing in it: no manifest
 	for name, raw := range map[string][]byte{"nothing": nil, "an end and nothing before": make([]byte, 1024), "bytes that are no tar": bytes.Repeat([]byte("garbage "), 500)} {
 		dst := newFS()
-		_, err := Unpack(bytes.NewReader(raw), dst, nil)
+		_, err := Unpack(bytes.NewReader(raw), dst, nil, nil)
 		var r *Refused
 		if !errors.As(err, &r) || len(dst.log) != 0 {
 			t.Errorf("%s: %v %v", name, err, dst.log)
@@ -668,7 +699,7 @@ func TestADestinationThatIsALinkOrBehindOneIsNotWrittenTo(t *testing.T) {
 	} {
 		dst := newFS()
 		setup(dst)
-		_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, []string{"/usr/bin/fine"})
+		_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, []string{"/usr/bin/fine"}, nil)
 		var r *Refused
 		if !errors.As(err, &r) || r.Code != "unpack_path" {
 			t.Errorf("%s: error = %v", name, err)
@@ -680,12 +711,12 @@ func TestADestinationThatIsALinkOrBehindOneIsNotWrittenTo(t *testing.T) {
 	// a part of the way that is a file where there should be a directory
 	dst := newFS()
 	dst.put("/var/lib/casaos/a", 0o644, "x")
-	_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil)
+	_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil, nil)
 	wantRefused(t, err, "file_exists")
 	// a file system that cannot be looked at is not a refusal of the archive
 	dst = newFS()
 	dst.lstatEr = errors.New("input/output error")
-	_, err = Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil)
+	_, err = Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil, nil)
 	var r *Refused
 	if err == nil || errors.As(err, &r) || len(dst.log) != 0 {
 		t.Errorf("an error of the disk: %v %v", err, dst.log)
@@ -693,7 +724,7 @@ func TestADestinationThatIsALinkOrBehindOneIsNotWrittenTo(t *testing.T) {
 	// directories that exist already are no obstacle
 	dst = newFS()
 	dst.nodes["/var/lib/casaos/a"] = &node{mode: fs.ModeDir | 0o700}
-	if _, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil); err != nil {
+	if _, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil, nil); err != nil {
 		t.Errorf("a directory that is there: %v", err)
 	}
 }
@@ -842,14 +873,14 @@ func TestAnArchiveOrADestinationThatChangesBetweenTheReadingsIsNotUnpacked(t *te
 		if n == 2 {
 			h.r = bytes.NewReader(evil)
 		}
-	}}, dst, nil)
+	}}, dst, nil, nil)
 	wantRefused(t, err, "unpack_corrupt")
 	if len(dst.log) != 0 {
 		t.Errorf("written %v", dst.log)
 	}
 	// the same archive every time is fine
 	dst = newFS()
-	if _, err := Unpack(&hooked{r: bytes.NewReader(good), onStart: func(int, *hooked) {}}, dst, nil); err != nil {
+	if _, err := Unpack(&hooked{r: bytes.NewReader(good), onStart: func(int, *hooked) {}}, dst, nil, nil); err != nil {
 		t.Errorf("%v", err)
 	}
 	// a file that appears on the disk between the readings
@@ -858,7 +889,7 @@ func TestAnArchiveOrADestinationThatChangesBetweenTheReadingsIsNotUnpacked(t *te
 		if n == 2 {
 			dst.put("/usr/bin/casaos-virt-management", 0o755, "someone else's")
 		}
-	}}, dst, nil)
+	}}, dst, nil, nil)
 	wantRefused(t, err, "file_exists")
 	if len(dst.log) != 0 {
 		t.Errorf("written %v", dst.log)
@@ -870,7 +901,7 @@ func TestAnArchiveOrADestinationThatChangesBetweenTheReadingsIsNotUnpacked(t *te
 		if n == 2 {
 			dst.nodes["/usr/bin/casaos-virt-management"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"}
 		}
-	}}, dst, []string{"/usr/bin/casaos-virt-management"})
+	}}, dst, []string{"/usr/bin/casaos-virt-management"}, nil)
 	wantRefused(t, err, "unpack_path")
 	if len(dst.log) != 0 {
 		t.Errorf("written %v", dst.log)
@@ -879,7 +910,7 @@ func TestAnArchiveOrADestinationThatChangesBetweenTheReadingsIsNotUnpacked(t *te
 
 func TestTheErrorOfARefusalSaysWhereWithoutRepeatingWhatTheArchiveSaid(t *testing.T) {
 	name := sysroot + "usr/sbin/x\x1b[2J" + strings.Repeat("a", 300)
-	_, err := Unpack(bytes.NewReader(rawTar(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), rawEntry(name, tar.TypeReg, 0, "", ""))), newFS(), nil)
+	_, err := Unpack(bytes.NewReader(rawTar(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), rawEntry(name, tar.TypeReg, 0, "", ""))), newFS(), nil, nil)
 	var r *Refused
 	if !errors.As(err, &r) {
 		t.Fatal(err)
@@ -892,7 +923,7 @@ func TestTheErrorOfARefusalSaysWhereWithoutRepeatingWhatTheArchiveSaid(t *testin
 // A name in a tar is a string that ends at its first NUL, for every reader of tar: the part after it is not read, by this reader any more than by another.
 func TestANameInATarEndsAtItsFirstNUL(t *testing.T) {
 	dst := newFS()
-	res, err := Unpack(bytes.NewReader(rawTar(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), rawEntry(sysroot+"usr/bin/ok\x00/../../../etc/passwd", tar.TypeReg, 1, "", "x"))), dst, nil)
+	res, err := Unpack(bytes.NewReader(rawTar(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), rawEntry(sysroot+"usr/bin/ok\x00/../../../etc/passwd", tar.TypeReg, 1, "", "x"))), dst, nil, nil)
 	if err != nil || !slices.Equal(res.Files, []string{"/usr/bin/ok"}) || dst.nodes["/etc/passwd"] != nil {
 		t.Errorf("%v %v", err, res.Files)
 	}
@@ -942,7 +973,7 @@ func TestAFileThatTheArchiveHasLessOfThanItsHeaderSaidIsNotPutInPlace(t *testing
 	good := tarOf(t, goodEntries()...)
 	cut := good[:bytes.Index(good, []byte("<html>"))+3]
 	dst := newFS()
-	res, err := Unpack(&hooked{r: bytes.NewReader(good), onStart: func(int, *hooked) {}, onSeek: func(off int64, h *hooked) { h.r = bytes.NewReader(cut) }}, dst, nil)
+	res, err := Unpack(&hooked{r: bytes.NewReader(good), onStart: func(int, *hooked) {}, onSeek: func(off int64, h *hooked) { h.r = bytes.NewReader(cut) }}, dst, nil, nil)
 	if err == nil {
 		t.Fatal("no error")
 	}
@@ -958,12 +989,12 @@ func TestAnInsecurePathThatTheReaderOfTarFlagsIsRefusedAsAPath(t *testing.T) {
 	good := tarOf(t, goodEntries()...)
 	t.Setenv("GODEBUG", "tarinsecurepath=0")
 	dst := newFS()
-	_, err := Unpack(bytes.NewReader(evil), dst, nil)
+	_, err := Unpack(bytes.NewReader(evil), dst, nil, nil)
 	wantRefused(t, err, "unpack_path")
 	if len(dst.log) != 0 {
 		t.Errorf("written %v", dst.log)
 	}
-	if _, err := Unpack(bytes.NewReader(good), newFS(), nil); err != nil {
+	if _, err := Unpack(bytes.NewReader(good), newFS(), nil, nil); err != nil {
 		t.Errorf("a good archive: %v", err)
 	}
 }
