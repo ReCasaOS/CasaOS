@@ -305,3 +305,22 @@ func TestTheCatalogueIsReadUpToItsBoundsAndNotBeyond(t *testing.T) {
 		t.Error("a name of 33 letters")
 	}
 }
+
+// An address of the most bytes that is allowed, and one more.
+func TestTheAddressOfAnArchiveIsBoundedAtFiveHundredAndTwelveBytes(t *testing.T) {
+	const base = "https://github.com/ReCasaOS/CasaOS-VirtManagement/releases/download/v0.1.0/"
+	const before, after = "linux-amd64-casaos-", "-v0.1.0.tar.gz"
+	for _, c := range []struct {
+		length int
+		ok     bool
+	}{{512, true}, {513, false}, {511, true}} {
+		url := base + before + strings.Repeat("a", c.length-len(base)-len(before)-len(after)) + after
+		if len(url) != c.length {
+			t.Fatalf("the case is %d bytes", len(url))
+		}
+		_, err := ParseCatalogue([]byte(catalogueWith(t, "modules.0.assets.amd64.url", `"`+url+`"`)))
+		if (err == nil) != c.ok {
+			t.Errorf("an address of %d bytes: %v", c.length, err)
+		}
+	}
+}

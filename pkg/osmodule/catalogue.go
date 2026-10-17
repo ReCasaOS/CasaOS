@@ -65,7 +65,7 @@ var (
 	tagRe     = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 	commitRe  = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	sha256Re  = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	archiveRe = regexp.MustCompile(`^linux-(amd64|arm64)-casaos-[a-z-]+-v[0-9.]+\.tar\.gz$`)
+	archiveRe = regexp.MustCompile(`^linux-(amd64|arm64)-casaos-[a-z-]+-(v[0-9.]+)\.tar\.gz$`)
 )
 
 // ParseCatalogue reads a catalogue and checks everything in it. The error is an *Invalid that names the place; the Catalogue is empty whenever there is an error.
@@ -142,8 +142,11 @@ func (e Entry) validate(at string) error {
 // tag, over https from github.com, named for this architecture and this tag, and nothing more (no port, no user, no query, no fragment, no other directory, no escape), with a sha256.
 func (e Entry) validAsset(arch string, a Asset) bool {
 	archive, ok := strings.CutPrefix(a.URL, "https://github.com/ReCasaOS/"+e.Component+"/releases/download/"+e.Tag+"/")
-	return ok && len(a.URL) <= maxURLBytes && sha256Re.MatchString(a.SHA256) && archiveRe.MatchString(archive) &&
-		strings.HasPrefix(archive, "linux-"+arch+"-") && strings.HasSuffix(archive, "-"+e.Tag+".tar.gz")
+	if !ok || len(a.URL) > maxURLBytes || !sha256Re.MatchString(a.SHA256) {
+		return false
+	}
+	m := archiveRe.FindStringSubmatch(archive)
+	return m != nil && m[1] == arch && m[2] == e.Tag
 }
 
 // Asset is the archive of the entry for an architecture ("amd64", "arm64"), and whether there is one.

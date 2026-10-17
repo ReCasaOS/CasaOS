@@ -143,7 +143,7 @@ func validate(m Manifest, name string) error {
 	if m.Name != name {
 		return invalid("name", ReasonValue)
 	}
-	if n := utf8.RuneCountInString(m.Title); n == 0 || n > maxTitleRunes || !printable(m.Title) || strings.TrimSpace(m.Title) == "" {
+	if n := utf8.RuneCountInString(m.Title); n > maxTitleRunes || !printable(m.Title) || strings.TrimSpace(m.Title) == "" {
 		return invalid("title", ReasonValue)
 	}
 	if utf8.RuneCountInString(m.Description) > maxDescRunes || !printable(m.Description) {
@@ -238,7 +238,7 @@ func printable(s string) bool {
 
 // decodeStrict decodes the JSON text raw into dst, a pointer to a struct, and refuses what another reader of the same text (jq in the installer, the dashboard) could read otherwise: bytes
 // that are not UTF-8 (the decoder of Go turns them into U+FFFD), a key that comes twice, a key that is a known one only because the decoder of Go folds the case (it takes "NAME" for
-// "name", and the long s for an s), a field that is not known, words after the value.
+// "name", and the long s for an s), a field that is not known; words after the value are an error of the decoder.
 func decodeStrict(raw []byte, dst any) error {
 	if !utf8.Valid(raw) {
 		return errors.New("not UTF-8")
@@ -253,14 +253,7 @@ func decodeStrict(raw []byte, dst any) error {
 	if !exactKeys(tree, reflect.TypeOf(dst)) {
 		return errors.New("a key is not a field")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	if err := decoder.Decode(dst); err != nil {
-		return err
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("words after the value")
-	}
-	return nil
+	return json.Unmarshal(raw, dst)
 }
 
 // exactKeys says whether every key of every object of the tree (the generic reading of a document) is, letter for letter, the name that a field of the type t has in its json tag.

@@ -224,3 +224,44 @@ func TestAManifestIsTakenOnlyIfAnyOtherReaderWouldReadTheSame(t *testing.T) {
 		t.Error("a null for the operating systems")
 	}
 }
+
+// The reader that the manifest and the catalogue share, on a field that has no rule of its own: what it refuses, it refuses for itself.
+func TestTheStrictReaderRefusesOnItsOwnWhatNoFieldWouldCatch(t *testing.T) {
+	type doc struct {
+		A string `json:"a"`
+		B []struct {
+			C string `json:"c"`
+		} `json:"b"`
+	}
+	good := `{"a":"x","b":[{"c":"y"}]}`
+	var d doc
+	if err := decodeStrict([]byte(good), &d); err != nil || d.A != "x" || d.B[0].C != "y" {
+		t.Fatalf("%+v %v", d, err)
+	}
+	for name, text := range map[string]string{
+		"bytes that are not UTF-8":            "{\"a\":\"\xff\"}",
+		"a key twice":                         `{"a":"x","a":"y"}`,
+		"a key twice in a list":               `{"b":[{"c":"x","c":"y"}]}`,
+		"a key in capitals":                   `{"A":"x"}`,
+		"a key in capitals in a list":         `{"b":[{"C":"y"}]}`,
+		"a field that is not known":           `{"z":"x"}`,
+		"a field that is not known in a list": `{"b":[{"z":"y"}]}`,
+		"words after the value":               good + ` {}`,
+		"a second value":                      good + good,
+		"a value that is not the type":        `{"a":5}`,
+		"nothing":                             ``,
+		"a null in place of the text":         `null`,
+	} {
+		var d doc
+		err := decodeStrict([]byte(text), &d)
+		if name == "a null in place of the text" {
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("%s: taken as %+v", name, d)
+		}
+	}
+}

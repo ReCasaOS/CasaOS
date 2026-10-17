@@ -111,6 +111,12 @@ func TestTheAllowListTakesTheTwoCommandsOfAModuleAndNothingNear(t *testing.T) {
 			t.Errorf("%s for another directory", name)
 		}
 	}
+	// a directory that is not a sandbox directory, with a command built for it by hand
+	for _, dir := range []string{"/tmp", "/", "/var/tmp/casaos-os-plan.", "/var/tmp/other.1"} {
+		if AllowedModuleArgv(moduleArgvOf(dir, "-s", "install", "--no-install-recommends", "pkg-a"), dir) {
+			t.Errorf("the directory %q", dir)
+		}
+	}
 	// the verb
 	for _, verb := range []string{"remove", "purge", "upgrade", "dist-upgrade", "update", "autoremove", "download", "source"} {
 		a := slices.Clone(sim)
@@ -152,9 +158,9 @@ Suggested packages:
 Recommended packages:
   qemu-system-x86
 The following NEW packages will be installed:
-  libfdt1 libiscsi7 libvirt-clients libvirt-daemon libvirt0 qemu-utils
+  qemu-utils libvirt0 libfdt1 libiscsi7 libvirt-daemon libvirt-clients
 The following packages will be upgraded:
-  libc6 zlib1g
+  zlib1g libc6
 2 upgraded, 6 newly installed, 0 to remove and 3 not upgraded.
 Inst libc6 [2.31-13+deb11u11] (2.36-9+deb12u14 Debian:12.15/oldstable [amd64])
 Inst libfdt1 (1.6.1-4+b1 Debian:12.15/oldstable [amd64])
@@ -285,8 +291,12 @@ Inst libvirt0 [9.0.0-3] (9.0.0-4 Debian:12.15/oldstable [amd64])
 	}
 	// a name that is not a package's in the list of the held is not understood
 	bad := strings.Replace(held, "  libvirt0 libc6\n", "  libvirt0 /etc/passwd\n", 1)
-	if res := ParseModuleSimulation(out(bad, 0), out("", 0), testDir); res.Failure != "apt_failed" {
+	if res := ParseModuleSimulation(out(bad, 0), out("", 0), testDir); res.Failure != "apt_failed" || !strings.Contains(res.Detail, "bad_name") {
 		t.Errorf("%+v", res)
+	}
+	// the words of a hold in a text that apt did not end with an error are not a hold
+	if res := ParseModuleSimulation(out(stopped, 0), out("", 0), testDir); res.Failure != "apt_failed" {
+		t.Errorf("a hold with status 0: %+v", res)
 	}
 }
 
@@ -306,11 +316,15 @@ func TestWhatAptDoesNotSayInTheWordsItUsesIsNotGuessedAt(t *testing.T) {
 		}),
 		"the Inst lines of other packages": wrap(func(s string) string { return strings.Replace(s, "Inst qemu-utils", "Inst qemu-tools", 1) }),
 		"a line that apt does not print":   wrap(func(s string) string { return s + "Everything is fine.\n" }),
-		"a section twice":                  wrap(func(s string) string { return s + "The following packages will be upgraded:\n  libc6 zlib1g\n" }),
-		"a control character":              wrap(func(s string) string { return strings.Replace(s, "Inst libfdt1", "Inst libfdt1\x1b[2J", 1) }),
-		"a line of 5000 characters":        wrap(func(s string) string { return s + "Conf " + strings.Repeat("a", 5000) + "\n" }),
+		"a line that says a package is the newest, and is not about a package": wrap(func(s string) string {
+			return s + "Not a package is already the newest version (1.0).\n"
+		}),
+		"a line that says it with no version": wrap(func(s string) string { return s + "pkg-a is already the newest version\n" }),
+		"a section twice":                     wrap(func(s string) string { return s + "The following packages will be upgraded:\n  libc6 zlib1g\n" }),
+		"a control character":                 wrap(func(s string) string { return strings.Replace(s, "Inst libfdt1", "Inst libfdt1\x1b[2J", 1) }),
+		"a line of 5000 characters":           wrap(func(s string) string { return s + "Conf " + strings.Repeat("a", 5000) + "\n" }),
 		"a name that is not a package's in a list": wrap(func(s string) string {
-			return strings.Replace(s, "  libfdt1 libiscsi7 libvirt-clients", "  libfdt1 $(id) libvirt-clients", 1)
+			return strings.Replace(s, "  qemu-utils libvirt0", "  qemu-utils $(id)", 1)
 		}),
 		"a block of suggestions that is not indented": wrap(func(s string) string { return strings.Replace(s, "  numad radvd\n", "numad radvd\n", 1) }),
 	} {

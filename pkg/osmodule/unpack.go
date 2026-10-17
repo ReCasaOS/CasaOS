@@ -193,7 +193,7 @@ func scan(src io.ReadSeeker) (*UnpackPlan, error) {
 		}
 		e.offset = offset
 		if e.kind == kFile {
-			if hdr.Size < 0 || hdr.Size > MaxTotalBytes-total {
+			if hdr.Size > MaxTotalBytes-total {
 				return nil, refuse(UnpackLimits, "the files are too large")
 			}
 			total += hdr.Size
@@ -294,7 +294,7 @@ func aboveAllowed(rel string) bool {
 // safeLinkTarget says whether a link points only below the directory the link is in: relative, made of safe names, never ".." (so there is no way up, in one step or by going down first), and
 // never an empty part.
 func safeLinkTarget(target string) bool {
-	if target == "" || len(target) > MaxElementBytes {
+	if len(target) > MaxElementBytes {
 		return false
 	}
 	for _, el := range strings.Split(target, "/") {
@@ -380,7 +380,7 @@ func checkDestination(plan *UnpackPlan, dst Destination, own []string) error {
 		case mode&fs.ModeSymlink != 0:
 			return refuse(UnpackPath, e.rel)
 		case e.kind == kDir && mode.IsDir():
-		case e.kind == kDir || mode.IsDir():
+		case e.kind == kDir:
 			return refuse(FileExists, e.rel)
 		case strings.HasPrefix(e.rel, "etc/casaos/") && !strings.HasSuffix(e.rel, ".sample") && mode.IsRegular():
 			e.action = aKeep // a configuration that is there stays as it is, whoever wrote it

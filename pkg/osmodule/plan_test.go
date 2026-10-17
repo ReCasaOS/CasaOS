@@ -236,6 +236,10 @@ func TestThePlanIdIsTheHashOfWhatTheInstallDependsOn(t *testing.T) {
 	if PlanID("a", "b", virtSHA, "debian", "12", []string{"x", "y"}) == PlanID("a", "b", virtSHA, "debian", "12", []string{"x y"}) {
 		t.Error("the packages of the id are not told apart")
 	}
+	// the id is of the packages in order, whatever order they are given in
+	if PlanID("a", "b", virtSHA, "debian", "12", []string{"y", "x"}) != PlanID("a", "b", virtSHA, "debian", "12", []string{"x", "y"}) {
+		t.Error("the id depends on the order of the packages")
+	}
 	// a refused plan has no id
 	refused := newBox()
 	refused.osVersion = "11"
@@ -406,6 +410,28 @@ func TestTheRoomIsTheWholeOfWhatTheInstallWritesOnBothFileSystems(t *testing.T) 
 	if r := Plan(virtCatalogue(t), "virt", huge); r.Refused != "disk_short" {
 		t.Errorf("sizes that are the largest there are: %q", r.Refused)
 	}
+	// sizes that add up to more than a number can hold are not a small number: the sum of two (the largest download and the largest extra), and a product (an archive of a third of the
+	// largest number, three times)
+	for name, set := range map[string]func(*fakeBox){
+		"a sum":     func(b *fakeBox) { b.sim.DownloadBytes, b.sim.ExtraBytes = math.MaxInt64, math.MaxInt64 },
+		"a product": func(b *fakeBox) { b.archiveBytes = map[string]int64{virtURL: math.MaxInt64/3 + 1} },
+	} {
+		wrap := newBox()
+		wrap.free = map[string]int64{TmpDir: 10 * gb, UsrDir: 10 * gb}
+		wrap.archiveBytes = map[string]int64{virtURL: 10 * mb}
+		set(wrap)
+		if r := Plan(virtCatalogue(t), "virt", wrap); r.Refused != "disk_short" {
+			t.Errorf("%s that goes past the largest number: %q", name, r.Refused)
+		}
+	}
+	// an archive of no bytes is an archive of a size that is not known
+	zero := newBox()
+	zero.sim.DownloadBytes, zero.sim.ExtraBytes = 0, 0
+	zero.archiveBytes = map[string]int64{virtURL: 0}
+	zero.free = map[string]int64{TmpDir: 100 * mb, UsrDir: 100 * mb}
+	if r := Plan(virtCatalogue(t), "virt", zero); r.Refused != "disk_short" || r.Archive.Bytes != nil {
+		t.Errorf("an archive of 0 bytes: %q %v", r.Refused, r.Archive.Bytes)
+	}
 	negative := newBox()
 	negative.sim.DownloadBytes = -5 * gb
 	negative.archiveBytes = map[string]int64{virtURL: -5 * gb}
@@ -437,6 +463,13 @@ func TestThePlanNeverAsksAptWhenThePlanIsAlreadyRefusedOrWhenThereIsNothingToIns
 	if r.PlanID == "" {
 		t.Error("no id")
 	}
+	// the room is not looked at for a plan that is going to be refused, whether or not there are packages
+	old := newBox()
+	old.osVersion = "11"
+	old.hasApt = false
+	if r := Plan(catalogue, "virt", old); r.Refused != "os" || old.called("FreeBytes "+TmpDir) || r.Checks[7].Detail != DetailNotChecked || r.Checks[8].Detail != "" || !r.Checks[8].OK {
+		t.Errorf("refused %q, disk %+v, apt %+v, calls %v", r.Refused, r.Checks[7], r.Checks[8], old.calls)
+	}
 	// the architecture of the box decides which packages are asked about
 	arm := newBox()
 	arm.arch = "arm64"
@@ -460,7 +493,8 @@ func TestACatalogueWithoutTheModuleOrWithAnImpossibleNameGivesAPlanThatSaysSo(t 
 	for _, name := range []string{"nothing", "", "Virt", "virt ", "virt\n", "../virt", "virt/../virt", "vi\x00rt", strings.Repeat("a", 33), "virt.json", "-virt"} {
 		box := newBox()
 		r := Plan(virtCatalogue(t), name, box)
-		if r.Refused != "catalogue" || r.Name != name && r.Name != "" {
+		// (a name that is a name is said back; one that is not is not)
+		if want := map[bool]string{true: name, false: ""}[nameRe.MatchString(name)]; r.Refused != "catalogue" || r.Name != want {
 			t.Errorf("name %q: refused %q", name, r.Refused)
 		}
 		if got := checkCodes(r); !slices.Equal(got, allChecks) {
@@ -491,7 +525,7 @@ func TestTheVersionOfReCasaOSAgainstTheOldestThatWorks(t *testing.T) {
 		{"v0.5.23", true}, {"v0.5.22", false},
 		{"0.5.23-rc1", false}, {"0.5.24-rc1", true}, {"0.5.23+build5", true}, {"0.5.23-0-gabc123", false}, {"0.6.0-beta.2", true},
 		{"0.5.23.1", false}, {"0.5", false}, {"", false}, {"v", false}, {"latest", false}, {"0.5.x", false}, {"0.5.23\n", false}, {" 0.5.23", false}, {"0.5.23 ", false},
-		{"00000.5.23", false}, {"10000.0.0", false}, {"0.5.23-", false}, {"0.5.23-rc 1", false}, {"0.5.23-" + strings.Repeat("a", 41), false}, {"0.5.23\x00", false},
+		{"00000.5.23", false}, {"10000.0.0", false}, {"0.5.23-", false}, {"0.5.23-rc 1", false}, {"0.5.24-" + strings.Repeat("a", 41), false}, {"0.5.24-" + strings.Repeat("a", 40), true}, {"0.5.23\x00", false},
 	} {
 		box := newBox()
 		box.version = c.have

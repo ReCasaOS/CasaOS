@@ -182,3 +182,26 @@ func TestTheNumberAndTheSizeOfAListAreBounded(t *testing.T) {
 		}
 	}
 }
+
+// The bounds that the contract names, written as numbers: the tests above try each side of a bound through its name, which would move with it.
+func TestTheBoundsAreWhereTheContractPutsThem(t *testing.T) {
+	for name, c := range map[string][2]int64{
+		"entries in an archive":    {MaxEntries, 5000},
+		"bytes of files unpacked":  {MaxTotalBytes, 400 << 20},
+		"bytes of a manifest":      {MaxBytes, 64 << 10},
+		"bytes of a catalogue":     {MaxCatalogueBytes, 1 << 20},
+		"modules in a catalogue":   {MaxCatalogueModules, 64},
+		"bytes of a path":          {MaxPathBytes, 1024},
+		"bytes of a name":          {MaxElementBytes, 255},
+		"bytes of an archive":      {MaxArchiveBytes, 200 << 20},
+		"bytes of a tar stream":    {MaxStreamBytes, 400<<20 + 64<<20},
+		"bytes of an address":      {maxURLBytes, 512},
+		"factor of the archive":    {DiskArchiveFactor, 3},
+		"factor of the download":   {DiskAptDownloadFactor, 1},
+		"factor of the extra disk": {DiskAptExtraFactor, 1},
+	} {
+		if c[0] != c[1] {
+			t.Errorf("%s: %d, want %d", name, c[0], c[1])
+		}
+	}
+}

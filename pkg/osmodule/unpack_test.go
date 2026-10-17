@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"math/rand"
+	"path"
 	"slices"
 	"strings"
 	"testing"
@@ -82,6 +83,9 @@ func (f *fakeFS) NewFile(p string, perm fs.FileMode) (File, error) {
 	if p == f.failOn {
 		return nil, errors.New("disk full")
 	}
+	if n := f.nodes[path.Dir(p)]; n == nil || !n.mode.IsDir() {
+		return nil, fs.ErrNotExist // (a file goes in a directory that is there)
+	}
 	if n := f.nodes[p]; n != nil && n.mode&fs.ModeSymlink != 0 {
 		return nil, errors.New("would write through a link")
 	}
@@ -97,6 +101,9 @@ func (w *fakeFile) Commit() error {
 func (w *fakeFile) Abort() { w.fs.log = append(w.fs.log, "abort "+w.path) }
 
 func (f *fakeFS) Symlink(target, p string) error {
+	if n := f.nodes[path.Dir(p)]; n == nil || !n.mode.IsDir() {
+		return fs.ErrNotExist
+	}
 	f.nodes[p] = &node{mode: fs.ModeSymlink | 0o777, target: target}
 	f.log = append(f.log, "link "+p)
 	return nil
@@ -513,6 +520,8 @@ func TestAnArchiveThatBreaksARuleWritesNothing(t *testing.T) {
 		{"a name outside the sysroot", []tent{{name: "evil"}}, "unpack_path"},
 		{"a manifest that is a copy", []tent{{name: "module.json.bak"}}, "unpack_path"},
 		{"a manifest in capitals", []tent{{name: "MODULE.JSON"}}, "unpack_path"},
+		{"a root file that is not one of the three", []tent{{name: "COPYING"}}, "unpack_path"},
+		{"a readme", []tent{{name: "README.md"}}, "unpack_path"},
 		{"a licence with a suffix", []tent{{name: "LICENSE.txt"}}, "unpack_path"},
 		{"another directory of build", []tent{{name: "build/other/x"}}, "unpack_path"},
 		{"the sysroot that is a file", []tent{{name: "build/sysroot"}}, "unpack_path"},
@@ -810,6 +819,7 @@ type hooked struct {
 	r       *bytes.Reader
 	starts  int
 	onStart func(starts int, h *hooked)
+	onSeek  func(off int64, h *hooked)
 }
 
 func (h *hooked) Read(p []byte) (int, error) { return h.r.Read(p) }
@@ -817,6 +827,9 @@ func (h *hooked) Seek(off int64, whence int) (int64, error) {
 	if whence == io.SeekStart && off == 0 {
 		h.starts++
 		h.onStart(h.starts, h)
+	}
+	if whence == io.SeekStart && off != 0 && h.onSeek != nil {
+		h.onSeek(off, h)
 	}
 	return h.r.Seek(off, whence)
 }
@@ -882,5 +895,87 @@ func TestANameInATarEndsAtItsFirstNUL(t *testing.T) {
 	res, err := Unpack(bytes.NewReader(rawTar(rawEntry("module.json", tar.TypeReg, 2, "", "{}"), rawEntry(sysroot+"usr/bin/ok\x00/../../../etc/passwd", tar.TypeReg, 1, "", "x"))), dst, nil)
 	if err != nil || !slices.Equal(res.Files, []string{"/usr/bin/ok"}) || dst.nodes["/etc/passwd"] != nil {
 		t.Errorf("%v %v", err, res.Files)
+	}
+}
+
+func TestTheStreamIsBoundedAtItsLengthAndNotOneByteMore(t *testing.T) {
+	base := bigArchive(sysroot+"var/lib/casaos/big", 10, 0).length
+	exact := bigArchive(sysroot+"var/lib/casaos/big", 10, MaxStreamBytes-base)
+	if exact.length != MaxStreamBytes {
+		t.Fatalf("the case is %d bytes", exact.length)
+	}
+	if _, err := ValidateArchive(exact, newFS(), nil); err != nil {
+		t.Errorf("a stream of %d bytes: %v", MaxStreamBytes, err)
+	}
+	_, err := ValidateArchive(bigArchive(sysroot+"var/lib/casaos/big", 10, MaxStreamBytes-base+1), newFS(), nil)
+	wantRefused(t, err, "unpack_limits")
+}
+
+func TestTheTargetOfALinkIsBoundedInAll(t *testing.T) {
+	target := func(n int) string { return strings.Repeat("a/", (n-1)/2) + strings.Repeat("a", 1+(n-1)%2) }
+	for _, c := range []struct {
+		length int
+		ok     bool
+	}{{255, true}, {256, false}, {300, false}, {1, true}} {
+		link := target(c.length)
+		if len(link) != c.length {
+			t.Fatalf("the case is %d bytes", len(link))
+		}
+		_, err := unpack(t, newFS(), nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/bin/l", typ: tar.TypeSymlink, link: link})
+		if (err == nil) != c.ok {
+			t.Errorf("a link of %d bytes: %v", c.length, err)
+		}
+	}
+}
+
+func TestADirectoryIsNeverMadeOverAFileEvenTheModulesOwn(t *testing.T) {
+	dst := newFS()
+	dst.put("/usr/share/casaos/x", 0o644, "a file")
+	_, err := unpack(t, dst, []string{"/usr/share/casaos/x"}, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/share/casaos/x/", typ: tar.TypeDir})
+	wantRefused(t, err, "file_exists")
+	if len(dst.log) != 0 || string(dst.nodes["/usr/share/casaos/x"].data) != "a file" {
+		t.Errorf("written %v", dst.log)
+	}
+}
+
+func TestAFileThatTheArchiveHasLessOfThanItsHeaderSaidIsNotPutInPlace(t *testing.T) {
+	good := tarOf(t, goodEntries()...)
+	cut := good[:bytes.Index(good, []byte("<html>"))+3]
+	dst := newFS()
+	res, err := Unpack(&hooked{r: bytes.NewReader(good), onStart: func(int, *hooked) {}, onSeek: func(off int64, h *hooked) { h.r = bytes.NewReader(cut) }}, dst, nil)
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if dst.nodes["/usr/share/casaos/virt/index.html"] != nil || slices.Contains(res.Files, "/usr/share/casaos/virt/index.html") || !slices.Contains(dst.log, "abort /usr/share/casaos/virt/index.html") {
+		t.Errorf("log %v, files %v", dst.log, res.Files)
+	}
+}
+
+// The reader of tar can be told to flag the names it finds insecure (GODEBUG=tarinsecurepath=0, which is not the default); the unpack refuses them as the paths they are, and still unpacks
+// a good archive.
+func TestAnInsecurePathThatTheReaderOfTarFlagsIsRefusedAsAPath(t *testing.T) {
+	evil := tarOf(t, tent{name: "module.json", body: "{}"}, tent{name: "../etc/passwd"})
+	good := tarOf(t, goodEntries()...)
+	t.Setenv("GODEBUG", "tarinsecurepath=0")
+	dst := newFS()
+	_, err := Unpack(bytes.NewReader(evil), dst, nil)
+	wantRefused(t, err, "unpack_path")
+	if len(dst.log) != 0 {
+		t.Errorf("written %v", dst.log)
+	}
+	if _, err := Unpack(bytes.NewReader(good), newFS(), nil); err != nil {
+		t.Errorf("a good archive: %v", err)
+	}
+}
+
+func TestTheDirectoriesAboveTheAllowedOnesAreNamedAndNeverMade(t *testing.T) {
+	dst := newFS()
+	for _, p := range []string{"/lib/systemd/system", "/lib/systemd", "/lib"} {
+		delete(dst.nodes, p)
+	}
+	res, err := unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "lib/", typ: tar.TypeDir, mode: 0o700},
+		tent{name: sysroot + "lib/systemd/", typ: tar.TypeDir, mode: 0o700}, tent{name: sysroot + "usr/bin/x", body: "x"})
+	if err != nil || !slices.Equal(dst.log, []string{"file /usr/bin/x"}) || dst.nodes["/lib"] != nil || !slices.Equal(res.Files, []string{"/usr/bin/x"}) {
+		t.Errorf("%v %v %v", err, dst.log, res.Files)
 	}
 }

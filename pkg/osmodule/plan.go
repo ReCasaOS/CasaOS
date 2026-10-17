@@ -222,7 +222,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 	if standing && simulated && sim.Failure == "" {
 		disk = diskCheck(box, asset, sim, &r.Archive)
 	}
-	checks = append(checks, disk, aptCheck(len(packages) > 0, aptThere, simulated, sim))
+	checks = append(checks, disk, aptCheck(aptThere, simulated, sim))
 
 	r.Checks = checks
 	for _, c := range checks {
@@ -256,7 +256,7 @@ func sortedCopy(in []string) []string {
 	return out
 }
 
-// PlanID is the id that binds an install to the plan the owner saw: "m1-" and the first 32 hexadecimal digits of the SHA-256 of the module, its tag, the sha256 of the archive for this
+// PlanID is the id that binds an install to the plan that was shown: "m1-" and the first 32 hexadecimal digits of the SHA-256 of the module, its tag, the sha256 of the archive for this
 // architecture, the packages to install (sorted) and the operating system, written as a JSON object with its keys in this order so that no two sets of values are the same text.
 func PlanID(name, tag, archiveSHA256, osID, osVersion string, toInstall []string) string {
 	text, _ := json.Marshal(struct {
@@ -376,11 +376,9 @@ func satMul(a, k int64) int64 {
 	return a * k
 }
 
-// aptCheck says whether apt is there and what it said of the packages: a simulation that failed, that found a package held, or that would remove or downgrade anything refuses the plan.
-func aptCheck(needed, there, simulated bool, sim AptResult) Check {
+// aptCheck says whether apt is there (it is, for a module that needs no package) and what it said of the packages: a simulation that failed, that found a package held, or that would remove or downgrade anything refuses the plan.
+func aptCheck(there, simulated bool, sim AptResult) Check {
 	switch {
-	case !needed:
-		return Check{Code: CheckApt, OK: true}
 	case !there:
 		return Check{Code: CheckApt, Detail: "apt-get is not there", refusal: RefusedAptMissing}
 	case !simulated:

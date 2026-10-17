@@ -54,10 +54,10 @@ func safeRel(rel string) bool {
 	return true
 }
 
-// underAllowed says whether a relative, safe path is inside one of the allowed directories, and not that directory itself.
+// underAllowed says whether a relative, safe path (so, one with no slash at its end) is inside one of the allowed directories, and so not one of them.
 func underAllowed(rel string) bool {
 	for _, dir := range AllowedDirs {
-		if rest, ok := strings.CutPrefix(rel, dir+"/"); ok && rest != "" {
+		if strings.HasPrefix(rel, dir+"/") {
 			return true
 		}
 	}
