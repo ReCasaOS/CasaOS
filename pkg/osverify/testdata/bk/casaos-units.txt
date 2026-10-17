@@ -1,0 +1,7 @@
+casaos-app-management.service active
+casaos-gateway.service active
+casaos-local-storage.service active
+casaos-message-bus.service active
+casaos-os-upgrade.service active
+casaos-user-service.service active
+casaos.service active

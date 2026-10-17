@@ -165,6 +165,9 @@ func sanitizeLine(l string) string {
 	return l
 }
 
+// SanitizeLine is sanitizeLine for the packages that say what a unit or apt printed: a line as it may be shown, printable ASCII, a URL reduced to its scheme and host, and cut.
+func SanitizeLine(l string) string { return sanitizeLine(l) }
+
 func detailOf(lines []string) string {
 	var out []string
 	for _, l := range lines {

@@ -85,6 +85,31 @@ type SystemService interface {
 	// StopSystemOSPlan cancels the plan that is being made, and waits (no longer than wait) for it to have
 	// removed its directory: the core's end.
 	StopSystemOSPlan(wait time.Duration)
+	// SetSystemOSUpgradeBeta turns the upgrade of the operating system on or off for what begins something (the flag file); an
+	// *OSUpgradeRefusal run_open says that it is not turned off while a run is open.
+	SetSystemOSUpgradeBeta(enabled bool) error
+	// GetSystemOSUpgradeStatus is how the upgrade is going, for the page that polls it: it runs no apt, takes no lock of a run, and
+	// answers whatever the state of the machine.
+	GetSystemOSUpgradeStatus() OSUpgradeStatus
+	// StartSystemOSUpgrade starts the upgrade (or its rehearsal) for the plan that the owner read; the owner's buttons below act on
+	// the run that it makes. Each of them answers the status that follows it, and an *OSUpgradeRefusal says why it did not act.
+	StartSystemOSUpgrade(req OSUpgradeStartRequest) (OSUpgradeStatus, error)
+	// StartSystemOSUpgradeRefresh brings the release that the machine runs to its last state, before a plan is made: a run of its own kind, with no point of no return.
+	StartSystemOSUpgradeRefresh(req OSUpgradeRefreshRequest) (OSUpgradeStatus, error)
+	RebootSystemOSUpgrade() (OSUpgradeStatus, error)
+	ResumeSystemOSUpgrade() (OSUpgradeStatus, error)
+	AbortSystemOSUpgrade() (OSUpgradeStatus, error)
+	AckSystemOSUpgrade(req OSUpgradeAckRequest) (OSUpgradeStatus, error)
+	// GetSystemOSUpgradeRunbook is the owner's own text of the run that is open, for the owner who takes it over.
+	GetSystemOSUpgradeRunbook() (*OSUpgradeRunbook, error)
+	// StartSystemOSUpgradeSettle starts the loop that looks at the upgrade that is open, once, when the core is ready to serve;
+	// StopSystemOSUpgradeSettle ends it and waits, for no longer than wait, for the look that is being made.
+	StartSystemOSUpgradeSettle(ctx context.Context)
+	StopSystemOSUpgradeSettle(wait time.Duration)
+	// OSUpgradeMuted says whether the alerts about the apps' containers are to be kept quiet: an upgrade holds the machine, or let
+	// go of it less than ten minutes ago. SetOSUpgradeNotifier sets what tells the owner of what became of an upgrade.
+	OSUpgradeMuted() bool
+	SetOSUpgradeNotifier(notify func(key, sentence string))
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()
@@ -120,6 +145,8 @@ type systemService struct {
 	packageUpdates *systemPackageUpdater
 	// osPlan is the job that makes the plan of the upgrade of the operating system.
 	osPlan osPlanJob
+	// osUpgrade is what the core keeps in memory of the upgrade that it runs: its loop, and nothing that the upgrade is.
+	osUpgrade osUpgradeEngine
 }
 
 func (c *systemService) GetDeviceInfo() model.DeviceInfo {
@@ -624,11 +651,11 @@ func (s *systemService) GetCPUPower() map[string]string {
 }
 
 func (s *systemService) SystemReboot() error {
-	return runSystemctlPowerAction("reboot")
+	return s.systemPower("reboot")
 }
 
 func (s *systemService) SystemShutdown() error {
-	return runSystemctlPowerAction("poweroff")
+	return s.systemPower("poweroff")
 }
 
 func runSystemctlPowerAction(action string) error {

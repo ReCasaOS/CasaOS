@@ -9,7 +9,7 @@ import (
 func init() {
 	register(
 		Check{Code: "network_uplink", Group: GroupNetwork, Title: "The machine is reached by a cable", Run: checkUplink},
-		Check{Code: "network_names", Group: GroupNetwork, Title: "The names of the network cards are checked before the restart", Run: checkNetworkNames},
+		Check{Code: "network_names", Group: GroupNetwork, Title: "The names of the network cards are not checked", Run: checkNetworkNames},
 	)
 }
 
@@ -81,10 +81,11 @@ func checkUplink(ctx context.Context, p Probe) Result {
 	}
 }
 
+// checkNetworkNames only says that nobody looks: a new release can name a card otherwise, and nothing here, in the unit or after the restart reads the names or pins them.
 func checkNetworkNames(context.Context, Probe) Result {
 	return Result{
-		Severity: Info, Title: "The names of the network cards are checked before the restart",
-		Detail: "A new release can name the network cards differently, and a card that has another name than the one the machine's settings give it has no network. The step that comes before the restart looks at each card, and pins its name when it would change. This report does not.",
+		Severity: Info, Title: "The names of the network cards are not checked",
+		Detail: "A new release can name the network cards differently, and a card that has another name than the one the machine's settings give it has no network. Nothing in the upgrade looks at the names or pins them: write down the names now (ip -br link), and be where you can see the machine's console when it restarts.",
 		Action: ActionNone,
 	}
 }

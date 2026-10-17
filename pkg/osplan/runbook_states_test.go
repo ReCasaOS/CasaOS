@@ -297,7 +297,7 @@ func TestBlock6SaysThatAnInterruptedDpkgOrAnUnmetDependencyIsNeitherTheLockNorTh
 		}
 	}
 	// the prose of the block does not say that it ends the same way after a restart or a dead terminal, whatever happened
-	if !strings.Contains(rb.Text, "apt stops at its first command here (it is neither a lock nor the network), and the STOP says to go forward by hand with the commands of the table") {
+	if !suiteAuto && !strings.Contains(rb.Text, "apt stops at its first command here (it is neither a lock nor the network), and the STOP says to go forward by hand with the commands of the table") {
 		t.Error("the prose of block 6 says nothing of an interrupted dpkg")
 	}
 }
@@ -526,11 +526,20 @@ func TestBlock5TakesItsMarkerBackWhenAptFailedBeforeItChangedAnything(t *testing
 	}
 }
 
+// stopLogName is the file that the stops after the point of no return send the owner to for what dpkg and the scripts of the packages printed: the log of apt's pty in the owner's
+// text, and the log of the unit in the unit's, where apt has no pty and term.log holds nothing of it.
+func stopLogName() string {
+	if suiteAuto {
+		return "output.log"
+	}
+	return "/var/log/apt/term.log"
+}
+
 // The stops after the point of no return name the logs that hold what the terminal does not (screen keeps 100 lines, tmux 2000, a dead terminal none).
 func TestTheStopsAfterThePointOfNoReturnNameTheLogs(t *testing.T) {
 	_, rb := realRunbook(t)
 	ok := typed(rb, "CONFIRM", "I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON")
-	logs := []string{"/var/log/apt/term.log", "/var/log/apt/history.log", "/var/log/dpkg.log"}
+	logs := []string{stopLogName(), "/var/log/apt/history.log", "/var/log/dpkg.log"}
 	left := "Reading package lists...\n12 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"
 	for _, tc := range []struct {
 		name, id, prev string
@@ -565,7 +574,7 @@ func TestTheStopsAfterThePointOfNoReturnNameTheLogs(t *testing.T) {
 	b := newShellBox(t)
 	b.write("bk/done-download", "")
 	b.write("fake/upgrade-fails", "")
-	if out, _ := b.run(ok, "minimal"); strings.Contains(out, "/var/log/apt/term.log") {
+	if out, _ := b.run(ok, "minimal"); strings.Contains(out, stopLogName()) {
 		t.Errorf("a stop of before the marker names the logs: %q", out)
 	}
 }
@@ -627,10 +636,11 @@ func TestBlock8StartsTheTimersThatWereRunningAndRemovesTheirState(t *testing.T) 
 		t.Error("the state of the timers is left behind when the hop has ended")
 	}
 	// the state is removed when the block ENDS, not before: a block that stops after it has started the timers (Docker cannot be asked) goes on from the state, run again
+	// (the unit's block does not stop for a Docker that cannot be asked: it ends, and takes the state away)
 	b = newShellBox(t)
 	setupBlock8(b)
 	b.fake("curl", "exit 6")
-	if out, code := b.run(rb, "after"); code == 0 || !b.exists("timers.state") {
+	if out, code := b.run(rb, "after"); !suiteAuto && (code == 0 || !b.exists("timers.state")) {
 		t.Errorf("a block that stops: exit %d, the state of the timers is there: %v, %q", code, b.exists("timers.state"), out)
 	}
 	// the state is not there (it was removed, or block 1 was not run by this text): the block says so, starts nothing, and ends
@@ -870,7 +880,7 @@ exit 0`)
 		outs[i] = &bytes.Buffer{}
 		cmds[i] = exec.Command(sh, script)
 		cmds[i].Dir = b.dir
-		cmds[i].Env = append(os.Environ(), "FAKE=./fake")
+		cmds[i].Env = b.environ()
 		cmds[i].Stdout, cmds[i].Stderr = outs[i], outs[i]
 	}
 	for _, c := range cmds {
@@ -1123,7 +1133,7 @@ func TestTheRepairLadderOfBlock6SimulatesTheRepairAndTheFullUpgradeAfterItAndGua
 			t.Errorf("%s: exit %d, %q", tc.name, code, out)
 		}
 		if strings.Contains(tc.stops, "protected") || strings.Contains(tc.stops, "essential") {
-			for _, want := range []string{"DO NOT UNDO ANYTHING", "/var/log/apt/term.log"} {
+			for _, want := range []string{"DO NOT UNDO ANYTHING", stopLogName()} {
 				if !strings.Contains(out, want) {
 					t.Errorf("%s: the stop does not say %q: %q", tc.name, want, out)
 				}
@@ -1291,10 +1301,7 @@ func TestEveryRoomStopOfBlock0SaysWhatToDo(t *testing.T) {
 	}
 	q := *p
 	q.Disk = nil
-	coarse, err := BuildRunbook(q)
-	if err != nil {
-		t.Fatal(err)
-	}
+	coarse := buildFor(t, q)
 	for path, want := range map[string]string{"/var/cache/apt/archives": "/var/cache/apt/archives has less than 1.5 GB free.", "/": "/ has less than 2 GB free."} {
 		b := newShellBox(t)
 		setupVerify(t, b)

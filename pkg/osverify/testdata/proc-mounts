@@ -1,0 +1,17 @@
+sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0
+proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0
+udev /dev devtmpfs rw,nosuid,relatime,size=1989072k,nr_inodes=497268,mode=755 0 0
+devpts /dev/pts devpts rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=000 0 0
+tmpfs /run tmpfs rw,nosuid,nodev,noexec,relatime,size=402432k,mode=755 0 0
+/dev/sda1 / ext4 rw,relatime,errors=remount-ro 0 0
+securityfs /sys/kernel/security securityfs rw,nosuid,nodev,noexec,relatime 0 0
+tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0
+cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime 0 0
+/dev/sdb1 /mnt/disk1 ext4 rw,relatime 0 0
+/dev/sdc1 /mnt/disk2 ext4 rw,relatime 0 0
+/mnt/disk1:/mnt/disk2 /DATA/pool fuse.mergerfs rw,relatime,user_id=0,group_id=0,default_permissions,allow_other 0 0
+/dev/sdd1 /mnt/disk3 ext4 rw,relatime 0 0
+/mnt/disk3 /media/Media\040Library fuse.mergerfs rw,relatime,user_id=0,group_id=0,default_permissions,allow_other 0 0
+mergerfs-tools /srv/not-a-pool fuse rw,nosuid,nodev,relatime,user_id=0,group_id=0 0 0
+sshfs /mnt/remote fuse.sshfs rw,nosuid,nodev,relatime,user_id=0,group_id=0 0 0
+overlay /var/lib/docker/overlay2/0f3a/merged overlay rw,relatime,lowerdir=/var/lib/docker/overlay2/l/AAA,upperdir=/var/lib/docker/overlay2/0f3a/diff 0 0

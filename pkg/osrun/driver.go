@@ -1,0 +1,121 @@
+package osrun
+
+// Driver is the shell that the unit of an upgrade runs: it takes the blocks that the core listed for ONE attempt and runs them one by one, writes one marker line for
+// each thing that happens, undoes what the blocks changed while the point of no return is not behind it, and never restarts the machine. The unit starts it as
+// /bin/sh <run folder>/driver.sh, with the nonce, the folder, the phase, the attempt and the run in its environment.
+//
+// The text is constant: nothing of the machine is written into it. What it needs is in the environment of the unit, or in files of the run's folder that SHA256SUMS
+// covers (the list of the blocks of an attempt is the one file that is not in it: every id in a list is checked against the closed set that the text holds). It is a
+// raw string, and not a file that is embedded, because a checkout that turns line ends into CR LF breaks a shell, and the compiler takes the carriage returns out of a raw
+// string.
+//
+// What it must keep: no pipeline (a reader that leaves early kills the writer with status 141), no trap (a stop kills the unit, and the core reads a lost unit from the files),
+// no command that restarts the machine, no job control, no tracing (block 3 holds the owner's sources, credentials included), the standard input of every child is
+// /dev/null, the nonce is in no child's environment, every marker is one printf, and the exit status is 0 whatever happened (the markers say what happened), but for a log of the run that cannot be opened for appending: that is 2, and nothing has been done. The tests of the
+// text are here (driver_test.go: the golden, these properties, the closed sets), and the tests that run it are in pkg/osplan (driver_*_test.go), beside the blocks that it runs.
+const Driver = `#!/bin/sh
+# casaos-os-upgrade driver. It runs the blocks that the core listed for ONE attempt, writes one marker line for each event, undoes what the blocks changed while the point of
+# no return is not behind it, and never restarts the machine. The text is constant: nothing of the machine is written into it. What it needs is in the environment of the
+# unit, or in files of the run's folder that SHA256SUMS covers.
+set -u
+LC_ALL=C; export LC_ALL
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+N=${CASAOS_OSU_NONCE:?}; unset CASAOS_OSU_NONCE
+D=${CASAOS_OSU_DIR:?}; PH=${CASAOS_OSU_PHASE:?}; AT=${CASAOS_OSU_ATTEMPT:?}; : "${CASAOS_OSU_RUN:?}"
+export CASAOS_OSU_DIR CASAOS_OSU_RUN CASAOS_OSU_ATTEMPT
+case "$PH" in refresh|rehearse|run|recover|verify|unwind) ;; *) exit 0 ;; esac
+case "$AT" in [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;; *) exit 0 ;; esac
+exec >> "$D/output.log" 2>&1
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# a boot id is a UUID or a dash: a line with anything else in its place is no marker
+uuidof() {
+  case "$1" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s\n' "$1" ;; *) printf '%s\n' - ;; esac
+}
+boot() { uuidof "$(cat /proc/sys/kernel/random/boot_id 2> /dev/null || true)"; }
+mark() { k=$1; shift; line="CASAOS_OSU_$k $N $AT"; for a in "$@"; do line="$line $a"; done; printf '%s\n' "$line" >> "$D/markers"; }
+mark UNIT_START "$PH" "$(boot)" $$ "$(ts)"
+end() { mark UNIT_END "$1" "$(ts)"; exit 0; }
+cd "$D" || end stopped
+BK=$(cat "$D/bk-path" 2> /dev/null || true)
+case "$BK" in /var/backups/casaos-os-upgrade-*) ;; *) BK=/nonexistent ;; esac
+pnr() { [ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ]; }
+# nothing of this folder is trusted when its sums do not hold: the driver says so, undoes nothing and ends
+sha256sum -c --quiet SHA256SUMS > /dev/null 2>&1 && [ "$BK" != /nonexistent ] || { p=0; pnr && p=1; mark STOP 0 driver 1 integrity "$p" "$(ts)"; end stopped; }
+# a fresh attempt begins where nothing is done: a done file that this run did not write (a block that the owner ran by hand, another run) would make it skip a block, and the folder
+# that holds it is nobody's to undo
+if [ "$AT" = 1 ]; then
+  case "$PH" in run|rehearse|refresh)
+    set -- "$BK/"done-*
+    if [ -e "$1" ]; then p=0; pnr && p=1; mark STOP 0 driver 1 integrity "$p" "$(ts)"; end stopped; fi ;;
+  esac
+fi
+# a run of the refresh has no point of no return, and what it left half done is dpkg's: block F finishes it when dpkg says so
+refreshing() { [ "$PH" != refresh ] || return 0; case "$BK" in /var/backups/casaos-os-upgrade-refresh-*) return 0 ;; esac; return 1; }
+# before the point of no return only, and in the order of the table at the end of the owner's runbook: the sources, what dpkg left (a refresh only, and only once it began to
+# change packages), the timers, then the folder. The timers come last because the block that mends what dpkg left stops them again, and they come back whenever the folder says
+# that it was about to stop them or did. The folder is put aside only when all of that was put back: one that is not stays where it is, with its copy of /etc/apt.
+unwind() {
+  pnr && return 1
+  ok=ok
+  if [ -d "$BK/apt-orig" ]; then
+    if [ -f "$BK/restore-sources.sh" ]; then sh "$BK/restore-sources.sh" < /dev/null || ok=partial; else ok=partial; fi
+  fi
+  if refreshing && [ -d "$BK" ] && [ -e "$BK/begun-rupgrade" ] && [ -f "$D/blocks/forward.sh" ] && [ -n "$(dpkg --audit 2>&1)" ]; then sh "$D/blocks/forward.sh" < /dev/null || ok=partial; fi
+  TS=/var/backups/casaos-os-upgrade-timers.state
+  if [ -e "$BK/done-timers" ] || [ -e "$BK/timers-stopping" ]; then
+    if [ -s "$TS" ]; then
+      back=ok
+      for u in $(awk '$2 == "active" { print $1 }' "$TS"); do systemctl start "$u" || back=partial; done
+      [ "$back" = ok ] && rm -f "$TS" || ok=partial
+    fi
+  fi
+  if [ -d "$BK" ] && [ "$ok" = ok ]; then mv "$BK" "$D/bk-aborted" || ok=partial; fi
+  mark UNWOUND "$ok" "$(ts)"
+}
+# a block ended with a status that is not 0, or the owner asked to stop: $1 the place in the list, $2 the id, $3 the status, $4 the class
+stopat() {
+  p=0; pnr && p=1
+  mark STOP "$1" "$2" "$3" "$4" "$p" "$(ts)"
+  [ "$p" = 1 ] || [ "$PH" = verify ] || unwind < /dev/null
+  end stopped
+}
+[ -f "$D/lists/$AT.list" ] || stopat 0 list 1 integrity
+want=$(grep -c '' "$D/lists/$AT.list" 2> /dev/null || true)
+want=$((want + 0))
+[ "$PH" = unwind ] || [ "$want" -gt 0 ] || stopat 0 list 1 integrity
+[ "$PH" != unwind ] || [ "$want" -eq 0 ] || stopat 0 list 1 integrity
+idx=0
+while read -r id; do
+  idx=$((idx + 1))
+  case "$id" in verify|timers|snapshot|sources|download|minimal|full|prereboot|after|forward|rcheck|rsources|rupgrade|rdone) ;; *) stopat "$idx" list 1 integrity ;; esac
+  if [ -e "$BK/done-$id" ]; then mark BLOCK_SKIPPED "$idx" "$id"; continue; fi
+  rm -f "$D/stop-class"
+  # a block that the log does not say began is not run: the log is where the core reads what the unit did, and a hop that runs on without it can only be found in its files
+  mark BLOCK_START "$idx" "$id" "$(ts)" || stopat "$idx" "$id" 1 integrity
+  # the owner's call to stop is read AFTER the start of the block is written: the core writes the flag, then reads the markers, and one of the two sees the other
+  if [ -e "$D/abort" ] && ! pnr; then stopat "$idx" "$id" 0 abort; fi
+  [ "$id" != minimal ] || sync
+  rc=0; sh "$D/blocks/$id.sh" < /dev/null || rc=$?
+  [ "$rc" -ne 0 ] || { mark BLOCK_DONE "$idx" "$id" "$(ts)"; continue; }
+  cls=$(cat "$D/stop-class" 2> /dev/null || true); case "$cls" in ''|*[!a-z_]*|?????????????????????????????????*) cls=unknown ;; esac
+  stopat "$idx" "$id" "$rc" "$cls"
+done < "$D/lists/$AT.list"
+[ "$idx" -eq "$want" ] || stopat "$idx" list 1 integrity
+# the end of a phase is the end of its last block, whatever the list said: a result that is not the files' is not written
+case "$PH" in
+  refresh) [ -e "$BK/done-rdone" ] || stopat "$idx" list 1 integrity
+           want=no; why=none; { read -r want why < "$BK/refresh-reboot"; } 2> /dev/null || true
+           case "$want" in yes|no) ;; *) want=no ;; esac; case "$why" in ''|*[!A-Za-z0-9_.-]*|?????????????????????????????????????????????????????????????????*) why=none ;; esac
+           mark REFRESH_DONE "$want" "$why" "$(ts)"; [ ! -d "$BK" ] || mv "$BK" "$D/bk-done" || true ;;
+  rehearse) [ -e "$BK/done-download" ] || stopat "$idx" list 1 integrity
+           mark REHEARSAL_READY "$(ts)" ;;
+  run|recover)
+           [ -e "$BK/done-prereboot" ] || stopat "$idx" list 1 integrity
+           kernel=$(cat "$BK/kernel" 2> /dev/null || true); case "$kernel" in ''|*[!A-Za-z0-9_.+~:-]*|?????????????????????????????????????????????????????????????????*) kernel=unknown ;; esac
+           if [ -s "$BK/boot_id" ]; then mark REBOOT_PENDING "$(uuidof "$(cat "$BK/boot_id")")" "$kernel" "$(ts)"; else mark REBOOT_NOT_NEEDED "$kernel" "$(ts)"; fi ;;
+  verify) [ -e "$BK/done-after" ] || stopat "$idx" list 1 integrity
+           mark VERIFY_DONE "$(boot)" "$(ts)" ;;
+  unwind) unwind < /dev/null || stopat 0 unwind 1 guard ;;
+esac
+end ok
+`
