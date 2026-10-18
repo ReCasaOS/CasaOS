@@ -41,6 +41,10 @@ func TestTheEstimateOfAModuleChangesNothingOnTheBox(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// the file that stands for the list of the automatically installed packages, empty, as the plan makes it
+	if err := os.WriteFile(filepath.Join(root, ModuleStatesFile(dir)), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	defer os.RemoveAll(filepath.Join(root, dir))
 
 	run := func(argv []string) Output {
@@ -70,7 +74,7 @@ func TestTheEstimateOfAModuleChangesNothingOnTheBox(t *testing.T) {
 		t.Fatalf("%s is installed in %s already: the proof needs a chroot where it is not", pkg, root)
 	}
 	_ = os.Remove(filepath.Join(root, "/var/log/apt/eipp.log.xz"))
-	files := []string{"/var/lib/dpkg/status", "/var/log/apt/history.log", "/var/log/dpkg.log", "/var/lib/dpkg/lock"}
+	files := []string{"/var/lib/dpkg/status", "/var/lib/apt/extended_states", "/var/log/apt/history.log", "/var/log/dpkg.log", "/var/lib/dpkg/lock"}
 	before := map[string][32]byte{}
 	for _, f := range files {
 		before[f] = digest(f)
@@ -105,6 +109,34 @@ func TestTheEstimateOfAModuleChangesNothingOnTheBox(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Join(root, dir, "cache", "archives")); len(entries) > 1 {
 		t.Errorf("something was downloaded: %v", entries)
+	}
+
+	// a package that is installed as a dependency (CASAOS_MODULE_CHROOT_AUTO names one): apt is asked to install it by both commands, and the list of the box is as it was
+	if auto := os.Getenv("CASAOS_MODULE_CHROOT_AUTO"); auto != "" {
+		autoSim, _ := ModuleSimArgv(dir, []string{auto})
+		autoEst, _ := ModuleEstimateArgv(dir, []string{auto})
+		listBefore := digest("/var/lib/apt/extended_states")
+		for name, argv := range map[string][]string{"simulation": autoSim, "estimate": autoEst} {
+			got := run(argv)
+			if got.ExitCode != 0 || bytes.Contains([]byte(got.Text), []byte("set to manually installed")) {
+				t.Errorf("the %s of %s:\n%s", name, auto, got.Text)
+			}
+		}
+		if digest("/var/lib/apt/extended_states") != listBefore {
+			t.Errorf("the list of the automatically installed packages was rewritten for %s", auto)
+		}
+		// ...and the control: with the list of the box the estimate (which is not a simulation: apt does as it says short of the installing) marks the package and rewrites the list, which
+		// is put back
+		listFile := filepath.Join(root, "/var/lib/apt/extended_states")
+		saved, err := os.ReadFile(listFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = os.WriteFile(listFile, saved, 0o644) }()
+		old := run(slices.Concat([]string{"apt-get", "-o", "Dir::Cache=" + dir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner=", "--print-uris", "install", "--no-install-recommends"}, []string{auto}))
+		if !bytes.Contains([]byte(old.Text), []byte(auto+" set to manually installed.")) || digest("/var/lib/apt/extended_states") == listBefore {
+			t.Errorf("the control did not mark %s, so this test would not have seen the box's list rewritten:\n%s", auto, old.Text)
+		}
 	}
 
 	// the control: the command of the earlier version, with the trivial-only option, is a transaction of one package for one name, and apt goes on with it

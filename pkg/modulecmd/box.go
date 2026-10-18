@@ -326,6 +326,10 @@ func (b *box) SimulateApt(packages []string) osmodule.AptResult {
 			return failed("sandbox: " + err.Error())
 		}
 	}
+	// the list of the automatically installed packages that apt rewrites when it is asked to install one of them: its own, empty, so that the box's is never opened for writing
+	if err := sb.WriteFile(osplan.ModuleStatesFile(dir), nil, 0o600); err != nil {
+		return failed("sandbox: " + err.Error())
+	}
 	simArgv, err := osplan.ModuleSimArgv(dir, packages)
 	if err != nil {
 		return failed("the packages are not ones apt is asked about")

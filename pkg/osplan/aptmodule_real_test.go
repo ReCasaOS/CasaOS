@@ -55,6 +55,9 @@ func TestTheRealOutputOfAptForEachCaseOfAModuleIsReadAsWhatHappens(t *testing.T)
 		"hold":       {asked: []string{"rvm-held"}, upgrade: []string{"rvm-held"}, held: []string{"rvm-held"}, download: both(10_100), extra: both(4096)},
 		"nothing":    {asked: []string{"rvm-done"}, download: both(0), extra: both(0)},
 		"mixed":      {asked: []string{"rvm-solo", "rvm-done"}, install: []string{"rvm-solo"}, download: both(13_200), extra: both(12_300)},
+		// a package that is installed as a dependency: with the list of the sandbox apt says nothing of it; with the box's it marks it as installed by hand and says so
+		"auto":        {asked: []string{"rvm-autodep"}, download: both(0), extra: both(0)},
+		"auto-marked": {asked: []string{"rvm-autodep"}, download: both(0), extra: both(0)},
 		// what cannot be done
 		"unmet-held":    {asked: []string{"rvm-needs"}, failure: "apt_failed", detail: []string{"unmet dependencies", "rvm-needs : Depends: rvm-lib (>= 2) but 1.0 is to be installed", "Unable to correct problems"}},
 		"unmet-missing": {asked: []string{"rvm-bad"}, failure: "apt_failed", detail: []string{"unmet dependencies", "rvm-bad : Depends: rvm-nothere but it is not installable"}},
