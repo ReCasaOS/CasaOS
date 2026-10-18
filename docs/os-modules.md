@@ -116,6 +116,74 @@ The plan asks the box, and changes nothing. Its checks, in this order, are `cata
 
 The simulation is `apt-get -s install --no-install-recommends <packages>` and the sizes come from `apt-get --print-uris install --no-install-recommends <packages>`, both in a sandbox and with the log of the planner turned off. The second says what apt would download and use, prints the addresses and ends, installing and downloading nothing. (`-o APT::Get::Trivial-Only=true` is not used for this: apt goes on with a transaction that has as many packages as names, which installs it.) The sandbox keeps the settings of the box that decide what is installed, among them `APT::Default-Release`.
 
+## Installing and removing from the dashboard: the routes of the core and the job
+
+The core runs the module assistant (`casaos module ...`) in its own process for what only reads, and as a transient unit for what changes the box. The routes are below `/v1/sys`, behind the token of the group like the others.
+
+| Route | Does | Token |
+|---|---|---|
+| `GET /v1/sys/modules` | the list: the catalogue of this release joined with what is installed (`catalogue` with `ok` and, when it is not, `error`: `none`, `unreadable` or `invalid`, with `detail`; `modules`), as `casaos module list` prints it. A catalogue that is not there or does not pass is an empty list that says so, never a partial one. | the group's |
+| `POST /v1/sys/modules/{name}/plan` | the plan of an install, made in the core, for at most 60 seconds, one plan at a time: the object of `casaos module plan` (checks, `refused`, packages, archive, `plan_id`). A plan that is refused is still a plan: 200, with `refused` set. | the access token in the header |
+| `POST /v1/sys/modules/{name}/install` | starts the unit of the install for the plan the user read. Body `{"plan_id": "m1-..."}`. 202 with the status. | the access token in the header |
+| `POST /v1/sys/modules/{name}/remove` | starts the unit of the remove. Body `{}`. 202 with the status. | the access token in the header |
+| `GET /v1/sys/modules/{name}/status` | `{"job": ..., "status": ...}`: how the job of the module is going, and the object of `casaos module status`. | the group's |
+
+What starts a unit or runs apt takes the access token in the `Authorization` header and no other: not the one in `?token=`, not the refresh token (401). `{name}` is checked with the rule of the name of a module before anything else, and a name that does not pass is a 400. The bodies are strict JSON, as those of the upgrade of the operating system are: one object, no field that the request does not have, no key twice, no key spelled otherwise, at most 64 KiB; what is wrong is a 400 `bad_request` that names the field (`name`, `plan_id` or `body`) and never repeats what was sent. Every answer is `{"success", "message", "data"}` and is not to be kept (`Cache-Control: no-store`).
+
+A request that is refused is a 409 with the code in `data.error_code`, the English reason in `data.error` and what makes the code precise in `data.data`; `bad_request` is a 400 and `start_failed` a 500.
+
+| Code | Meaning |
+|---|---|
+| `bad_request` | the name, the body or a field is not valid (`data.data.field`). |
+| `not_root` | the core does not run as root. |
+| `unsupported` | the host is not a Debian-family system with `apt-get` and `systemd-run`. |
+| `busy` | something else is at work, `data.data.reason` says what: a job of a module (its log says it has not ended and it was seen alive less than 30 seconds ago, or its unit runs), a package update, an update of Docker, the update of ReCasaOS, the upgrade of the operating system (its unit, or its flag, which is read so that a flag that cannot be read is an open one), a package manager that holds dpkg's lock or a lock that cannot be looked at, or a run of the assistant by hand that holds its lock. Nothing is written when it is said. |
+| `plan_changed` | the plan the box makes now is not the one with that `plan_id` (the archive, the tag, the packages or the system changed): read the new plan and confirm again. |
+| `plan_timeout` | the plan could not be made in its time. |
+| `not_installed` | a remove of a module of which nothing is on the box (no manifest, no list of files, no version). A module that an install left half done is something to remove. |
+| `start_failed` | the log could not be written or systemd did not start the unit. Nothing was changed, and the log of the module says so (`failed`, code `start_failed`). |
+| the codes of the plan | an install is refused with the code of the first check of its plan that fails: `catalogue`, `os`, `arch`, `recasaos`, `already_installed`, `foreign_unit`, `busy`, `disk_short`, `disk_unknown`, `apt_missing`, `apt_failed`, `apt_removes`, `apt_downgrades`, `held_package`, `package_not_exact`; `data.data.checks` is the list of the checks. |
+
+The jobs make the box busy for what changes it: `casaos-module-*.service` is among the units that the packages window, the update of Docker, the update of ReCasaOS, the automatic updates, the backups and the upgrade of the operating system ask about before they start, and a module job is not started while any of them runs.
+
+### The unit
+
+An install is `systemd-run --quiet --no-block --collect --unit=casaos-module-<name>.service --property=Type=exec --setenv=CASAOS_MODULE_NONCE=<32 hex digits> -- /usr/bin/casaos module install <name> --yes --plan-id <id>`, and a remove is the same with `module remove <name> --yes`. The command line is closed: the name is a name of a module, the id is `m1-` and 32 hexadecimal digits, the nonce is 32 hexadecimal digits from the system's random source, and no word holds a dollar sign or a percent sign. The unit sets nothing else, `CASAOS_MODULE_TEST` never.
+
+The core writes the first line of the log of the module before it starts the unit, holding the lock of the assistant (a log that a run is writing is not touched, and a run started by hand meanwhile is refused as busy):
+
+```
+CASAOS_MODULE_QUEUED <nonce> <name> <time>
+```
+
+The unit replaces the log with its own lines (see the grammar in `pkg/modulecmd/job.go`), which carry the same nonce. When systemd would not start the unit, the core closes the log itself: the queued line, `failed: start_failed`, what systemd said (as text, behind `| `), and `CASAOS_MODULE_RESULT <nonce> <name> failed - start_failed - <time>`. The core keeps nothing about a job in memory and writes no file but this log: the state is read from the log and from the unit each time, so a restart of the core in the middle of a job, or after it, changes nothing, and the core never starts a job again by itself.
+
+### The state of a job
+
+`data.job` of the status, and of the answer of an install and of a remove:
+
+| Field | |
+|---|---|
+| `name` | the module. |
+| `state` | `idle`, `running`, `succeeded`, `refused`, `failed` or `interrupted` (below). |
+| `step` | where the job is: the step of the last `CASAOS_MODULE_STEP` line. An install goes `packages`, `download`, `verify`, `unpack`, `units`, `manifest`, `start`, `route`, `done`; a remove `stop`, `files`, `manifest`, `reload`, `done`; the rollback of an install that failed runs the steps of a remove behind `rollback_` (`rollback_stop`, ...). For a job that failed it is the step of the result (`""` when it failed before its first step); for one that succeeded it is `done`; for one that was refused or has not begun it is `""`. |
+| `code` | why the job was refused or failed: the code of the result line (the codes of the plan, `plan_changed`, `busy`, `not_installed`, `checksum_mismatch`, `download_failed`, `download_too_large`, `packages_failed`, `held_package`, `unpack_path`, `file_exists`, `units_failed`, `manifest_invalid`, `start_failed`, `route_timeout`, `interrupted`, `internal_error`, ...); `""` otherwise. |
+| `undo` | `rolled_back` or `rollback_incomplete` for an install that failed after it had changed the box (`casaos module remove` finishes an incomplete rollback), `""` otherwise. |
+| `kept_packages` | the packages of the module that an install which failed leaves on the box, from the sentence `kept_packages:` that comes before the result: a list (empty when none), or `null` when it is not said or not known. Packages are never removed. |
+| `started_at`, `ended_at` | the times of the first line and of the result line, RFC 3339 in UTC; `""` when there is none. |
+| `log_tail` | the last 20 lines of the log, as text: printable ASCII, a URL reduced to its host, at most 200 characters. They come from tools and from the module; the page shows them as text. |
+
+| State | When |
+|---|---|
+| `idle` | no job: the log has no line of a job of this module, and no unit runs. A log of a run by hand (nonce `-`) is not a job. |
+| `running` | no result line, and the unit is active, or it was gone for less than 30 seconds since the last sign of life of the job (a marker, or the time the log was written), or systemd does not answer and the last sign of life is less than 30 minutes old. A time of the log more than 30 seconds in the future is not a sign of life. |
+| `succeeded` | a `CASAOS_MODULE_RESULT ... ok done - - ...` line with the nonce of the job. |
+| `refused` | a result line `refused`: nothing was changed; `code` says why. |
+| `failed` | a result line `failed`: `step`, `code`, `undo`, `kept_packages`. |
+| `interrupted` | no result line, and the unit is gone for more than 30 seconds (it was ended in the middle: killed, the machine was restarted): `step` is where it was. Nothing was undone: `casaos module remove` finishes the work. A job whose unit never came (and a unit that was refused before it could write: another run of the assistant held its lock) is `interrupted` with `step` `""`. |
+
+A line is the word of the job only if it is a whole line (ended by a new line) of exactly the shape of a marker, its time in UTC to the second, with the nonce of the job and the name of the module, that does not begin with the `| ` of the output of a tool; the fields of a result line must agree with its verdict. The first result line is final: nothing after it changes the job, and a job that finished stays what it was for as long as its log is there (the next job of that module replaces the log). The nonce of the job is the one the core wrote; when it has to be found again after a restart it is the first marker of the module in the log that has one, and a marker with the nonce `-` never counts. A log is read whole up to 8 MiB, and beyond that by its first and last 4 MiB; of a line the first 4096 bytes are held.
+
 ## What a module says about an upgrade of the operating system
 
 `os_upgrade` is declarative, with a small HTTP contract and no hook that runs code:
