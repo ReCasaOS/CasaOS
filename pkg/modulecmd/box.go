@@ -280,7 +280,12 @@ func (b *box) PackageManagerBusy() (bool, error) {
 	for i, p := range dpkgLocks {
 		locks[i] = b.env.Roots.Path(p)
 	}
-	return b.env.Host.DpkgLockHeld(locks)
+	held, err := b.env.Host.DpkgLockHeld(locks)
+	if err != nil && !held && errors.Is(err, fs.ErrPermission) && b.env.EUID() != 0 {
+		// the locks are root's (0640): a user who may not open them does not know, and root, who does, is asked again by the install
+		return false, osmodule.ErrNeedsRoot
+	}
+	return held, err
 }
 
 // OSUpgradeBusy reads the flag of an open upgrade of the operating system as the core does: only a flag that is not there is no flag.

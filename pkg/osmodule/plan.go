@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -46,6 +47,14 @@ const (
 // system that the module does not support). Such a check is not ok, and is never the reason of the refusal. It is the plan that says it, with a mark of its own: the same words in the
 // answer of apt or of a Box are the words of a check that failed.
 const DetailNotChecked = "not_checked"
+
+// DetailNeedsRoot is what the check of the package manager says when the user who asks for the plan is not root, who is the only one that can look at the locks of dpkg and apt: it was not
+// made, it is not the reason of a refusal, and the install makes it again. The words start with the mark of a check that was not made.
+const DetailNeedsRoot = DetailNotChecked + ": needs root, the install checks it as root"
+
+// ErrNeedsRoot is what a Box answers when it cannot tell whether a package manager holds the machine because the user is not root (and not for another reason): the plan does not take it for
+// a machine that is busy, nor for one that is not.
+var ErrNeedsRoot = errors.New("needs root")
 
 // maxAptDetail is the most characters of what apt says when it could not make an answer, as the apt check shows it: more than the other checks, because it is where the lines that name
 // what could not be met are (the others say a name or a number).
@@ -232,7 +241,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 
 	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
 	checks = append(checks, installedCheck(box, entry), foreignUnitCheck(box, entry), busyCheck(box))
-	standing := !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK })
+	standing := !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK && !c.skipped })
 
 	packages := PackagesFor(entry.Manifest, arch)
 	aptThere := len(packages) == 0 || box.AptGetExists()
@@ -364,12 +373,14 @@ func busyCheck(box Box) Check {
 	pm, pmErr := box.PackageManagerBusy()
 	up, upErr := box.OSUpgradeBusy()
 	switch {
-	case pmErr != nil || upErr != nil:
+	case upErr != nil || (pmErr != nil && !errors.Is(pmErr, ErrNeedsRoot)):
 		return Check{Code: CheckBusy, Detail: "unreadable"}
 	case up:
 		return Check{Code: CheckBusy, Detail: "os_upgrade"}
 	case pm:
 		return Check{Code: CheckBusy, Detail: "package_manager"}
+	case pmErr != nil: // (the locks, for a user who is not root)
+		return Check{Code: CheckBusy, Detail: DetailNeedsRoot, skipped: true}
 	}
 	return Check{Code: CheckBusy, OK: true}
 }
