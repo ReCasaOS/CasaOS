@@ -32,7 +32,7 @@ import (
 )
 
 // The assistant against the real gateway, the binary that ReCasaOS/CasaOS-Gateway builds, with the real files, in a copy of a Debian chroot that is to be spared (the test writes
-// /etc/casaos/gateway.ini and the runtime path of the gateway, and runs the gateway there; the file /.rv-chroot, which only a copy that was made for this has, says that it is one):
+// /etc/casaos/gateway.ini and the runtime path of the gateway, and runs the gateway there; the file /.casaos-test-chroot, which only a copy that was made for this has, says that it is one):
 //
 //	CASAOS_MODULECMD_REAL_GATEWAY=/usr/local/bin/casaos-gateway <this test binary> -test.run TestTheRealGateway
 //
@@ -44,7 +44,7 @@ func realGatewayBinary(t *testing.T) string {
 	if bin == "" {
 		t.Skip("needs the binary of the gateway, in a chroot to spare (CASAOS_MODULECMD_REAL_GATEWAY=/usr/local/bin/casaos-gateway)")
 	}
-	if _, err := os.Stat("/.rv-chroot"); err != nil || os.Geteuid() != 0 {
+	if _, err := os.Stat("/.casaos-test-chroot"); err != nil || os.Geteuid() != 0 {
 		t.Skip("not a copy of a chroot made for this, or not root")
 	}
 	return bin
@@ -149,7 +149,7 @@ func freePort(t *testing.T) string {
 }
 
 func gatewayINI(port, address, cert, key string) string {
-	return fmt.Sprintf("[common]\nruntimepath=/var/run/casaos\n\n[gateway]\nport=%s\naddress=%s\ntlscert=%s\ntlskey=%s\nhttpsport=0\nLogPath=/tmp/rv-gateway-log\n", port, address, cert, key)
+	return fmt.Sprintf("[common]\nruntimepath=/var/run/casaos\n\n[gateway]\nport=%s\naddress=%s\ntlscert=%s\ntlskey=%s\nhttpsport=0\nLogPath=/tmp/casaos-gateway-test-log\n", port, address, cert, key)
 }
 
 // registerRoute registers a route the way the services do, with the secret of the boot
