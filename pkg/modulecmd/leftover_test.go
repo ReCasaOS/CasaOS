@@ -23,7 +23,7 @@ func leave(f *fixture) {
 	f.writeFile(leftoverFile, "an earlier version")
 	f.writeFile("/usr/bin/casaos-virt-management", "an earlier version")
 	f.writeFile("/usr/lib/systemd/system/another.service", "not the module's") // (the directory is not empty)
-	f.writeFile(filesList, leftoverFile+"\n/usr/bin/casaos-virt-management\n")
+	f.writeList(fileEntry(leftoverFile, "an earlier version"), fileEntry("/usr/bin/casaos-virt-management", "an earlier version"))
 	f.writeFile(dirsList, strings.Join(madeDirs, "\n")+"\n")
 }
 
@@ -234,12 +234,8 @@ func TestWhenTheRollbackIsIncompleteTheListsNameWhatWasWrittenAndNotWhatWasPlann
 		}, onFile: func() {
 			if n++; n == 3 { // the unit, the third and last
 				f.writeFile("/usr/lib/systemd/system/"+testUnit, "someone else's unit")
-				// ...and a file that was written is, by now, a directory that the rollback does not delete as a file
-				p := f.path("/usr/bin/casaos-virt-management")
-				if err := os.Remove(p); err != nil {
-					t.Error(err)
-				}
-				if err := os.Mkdir(p, 0o755); err != nil {
+				// ...and what the rollback has to take away of the program is, by now, a directory that it does not delete as a file
+				if err := os.MkdirAll(tempName(f.path("/usr/bin/casaos-virt-management"))+"/in", 0o755); err != nil {
 					t.Error(err)
 				}
 			}
@@ -255,12 +251,15 @@ func TestWhenTheRollbackIsIncompleteTheListsNameWhatWasWrittenAndNotWhatWasPlann
 	if err != nil || !slices.Equal(files, []string{"/usr/bin/casaos-virt-management", "/etc/casaos/virt-management.conf.sample"}) {
 		t.Errorf("the list after the stop: %v %v", files, err)
 	}
+	if !strings.Contains(f.out.String(), resultMarker+" - virt failed unpack "+osmodule.FileExists+" rollback_incomplete ") {
+		t.Errorf("the result does not say the rollback is incomplete:\n%s", f.out)
+	}
 	dirs, err := osmodule.ParseDirs([]byte(f.read(dirsList)))
 	if err != nil || !slices.Equal(sorted(dirs), sorted([]string{"/usr/lib/systemd/system", "/usr/lib"})) {
 		t.Errorf("the list of the directories after the stop: %v %v", dirs, err)
 	}
 	// once it is mended, a remove finishes the work, and the file of somebody else is not touched
-	if err := os.Remove(f.path("/usr/bin/casaos-virt-management")); err != nil {
+	if err := os.RemoveAll(tempName(f.path("/usr/bin/casaos-virt-management"))); err != nil {
 		t.Fatal(err)
 	}
 	if code := f.remove("--yes"); code != ExitOK {
@@ -281,7 +280,9 @@ func TestAListIsWrittenWholeOrTakenAway(t *testing.T) {
 	if err := os.MkdirAll(f.env.Roots.state(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := in.recordFiles(wantFiles); err != nil || f.read(filesList) != strings.Join(wantFiles, "\n")+"\n" {
+	entries := archiveEntries()
+	raw, _ := osmodule.FormatFilesList(entries)
+	if err := in.recordFiles(entries); err != nil || f.read(filesList) != string(raw) {
 		t.Errorf("the files: %v %q", err, f.read(filesList))
 	}
 	if err := in.recordDirs(madeDirs); err != nil || f.read(dirsList) != strings.Join(madeDirs, "\n")+"\n" {
@@ -298,7 +299,7 @@ func TestAListIsWrittenWholeOrTakenAway(t *testing.T) {
 		t.Errorf("twice: %v", err)
 	}
 	// what a list cannot hold is an error, and writes nothing
-	if err := in.recordFiles([]string{"/etc/passwd"}); err == nil || f.exists(filesList) {
+	if err := in.recordFiles([]osmodule.FileEntry{fileEntry("/etc/passwd", "x")}); err == nil || f.exists(filesList) {
 		t.Errorf("a path that is not the module's: %v", err)
 	}
 	if err := in.recordDirs([]string{"/usr/bin/x"}); err == nil || f.exists(dirsList) {

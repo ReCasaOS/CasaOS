@@ -6,9 +6,22 @@ import (
 	"strings"
 )
 
-// The list of the files of a module, /var/lib/casaos/modules/<name>.files: every file that the install put down, one absolute path per line, and what the remove deletes, and nothing else.
-// The list is read back from the disk when it is used, so it is read as data: a line that is not a path the install could have written is a list that is not taken, whole, and not a
-// line that is skipped.
+// The list of the files of a module, /var/lib/casaos/modules/<name>.files: every file and link that the install put down, one absolute path to a line, what the remove deletes, and nothing
+// else. The list is read back from the disk when it is used, so it is read as data: a line that is not a path the install could have written is a list that is not taken, whole, and not
+// a line that is skipped.
+//
+// The list says, for each path, what it should hold: the sha256 of a file's bytes, the target of a link. A remove, a rollback and an install that replaces a file act on a path only if it
+// still holds that, so that a path that was planned and never written (a kill came first), or that somebody changed or took since, is never deleted or replaced for the module's:
+//
+//	casaos-module-files 1
+//	f <sha256, lower case hex>[,<another>] <absolute path>
+//	l <target>[,<another>] <absolute path>
+//
+// Two contents are acceptable for a path only while an install replaces a file of its own (the one that was there, and the one that comes): whichever is on the disk when a kill came is
+// the module's. A list with no first line is of the earlier format, one path to a line, and names what cannot be checked: it is read, as unverified.
+
+// FilesHeader is the first line of a list that records the contents.
+const FilesHeader = "casaos-module-files 1"
 
 // AllowedDirs are the directories, relative to the root of the system, that a module may put files in: the unpack refuses any other destination, and the list holds no path outside them.
 // Not all of what is in them: a module puts down its program in usr/bin, its unit in a directory of units, and the sample of its configuration in etc/casaos, each directly in the
@@ -26,8 +39,10 @@ const (
 	// MaxPathBytes is the longest path of a file of a module (relative to the root), MaxElementBytes the longest name in it.
 	MaxPathBytes    = 1024
 	MaxElementBytes = 255
-	// MaxFilesBytes is the most of a list that is read: the longest path of every entry.
-	MaxFilesBytes = MaxEntries * (MaxPathBytes + 2)
+	// maxLineBytes is the longest line of a list: the kind, two contents (two targets of a link at the most), a slash and a path, and the end of the line.
+	maxLineBytes = 2 + 2*MaxElementBytes + 1 + 1 + 1 + MaxPathBytes + 1
+	// MaxFilesBytes is the most of a list that is read: the longest line of every entry, and the first line.
+	MaxFilesBytes = len(FilesHeader) + 1 + MaxEntries*maxLineBytes
 )
 
 // safeElement says whether a name of a path is one that a module may use: the characters of a file name of a program, a unit or a configuration, never a space, a control, a character
@@ -123,12 +138,133 @@ func ValidDirPath(p string) bool {
 	return ok && aboveAllowed(rel)
 }
 
-// ParseFiles reads the content of a list: one valid path to a line, each line ended by a new line, none twice, at least one and at most MaxEntries. Anything else is an error and no list;
-// an empty list is one too, since a list that was cut short at its start reads as one and must not read as a module that has no files.
-func ParseFiles(raw []byte) ([]string, error) { return parsePaths("files", raw, ValidFilePath) }
+// A FileEntry is a path of a list and what it should hold: for a file the sha256 of its bytes in lower case hex, for a link its target. Want has two contents only while an install replaces
+// a file of its own: the one that was there and the one that comes.
+type FileEntry struct {
+	Path string
+	Link bool
+	Want []string
+}
 
-// FormatFiles is the content of the list of the paths, in the order given: the paths are checked as ParseFiles would, so that what is written is what can be read.
-func FormatFiles(paths []string) ([]byte, error) { return formatPaths("files", paths, ValidFilePath) }
+// A FilesList is a list as it was read. Verified says that it records the contents; a list of the earlier format names paths and nothing to check them against, and has entries with no Want.
+type FilesList struct {
+	Entries  []FileEntry
+	Verified bool
+}
+
+// Paths are the paths of the entries, in order.
+func (l FilesList) Paths() []string {
+	out := make([]string, len(l.Entries))
+	for i, e := range l.Entries {
+		out[i] = e.Path
+	}
+	return out
+}
+
+func isSum(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// validEntry says whether an entry is one that can be written and read back: a path of the list, one content or two different, each of the kind of the entry.
+func validEntry(e FileEntry) bool {
+	if !ValidFilePath(e.Path) || len(e.Want) < 1 || len(e.Want) > 2 || len(e.Want) == 2 && e.Want[0] == e.Want[1] {
+		return false
+	}
+	for _, w := range e.Want {
+		if e.Link && !safeLinkTarget(w) || !e.Link && !isSum(w) {
+			return false
+		}
+	}
+	return true
+}
+
+// ParseFilesList reads the content of a list, in either format: one valid line to an entry, each line ended by a new line, no path twice, at least one entry and at most MaxEntries.
+// Anything else is an error and no list; an empty list is one too, since a list that was cut short at its start reads as one and must not read as a module that has no files.
+func ParseFilesList(raw []byte) (FilesList, error) {
+	rest, ok := bytes.CutPrefix(raw, []byte(FilesHeader+"\n"))
+	if !ok {
+		paths, err := parsePaths("files", raw, ValidFilePath)
+		if err != nil {
+			return FilesList{}, err
+		}
+		entries := make([]FileEntry, len(paths))
+		for i, p := range paths {
+			entries[i] = FileEntry{Path: p}
+		}
+		return FilesList{Entries: entries}, nil
+	}
+	if len(raw) > MaxFilesBytes {
+		return FilesList{}, invalid("files", ReasonTooLarge)
+	}
+	if len(rest) == 0 {
+		return FilesList{}, invalid("files", ReasonMissing)
+	}
+	text, ok := strings.CutSuffix(string(rest), "\n")
+	if !ok {
+		return FilesList{}, invalid("files", ReasonUnreadable)
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > MaxEntries {
+		return FilesList{}, invalid("files", ReasonTooMany)
+	}
+	seen := make(map[string]bool, len(lines))
+	list := FilesList{Verified: true}
+	for i, line := range lines {
+		fields := strings.Split(line, " ")
+		var e FileEntry
+		if len(fields) == 3 && (fields[0] == "f" || fields[0] == "l") {
+			e = FileEntry{Path: fields[2], Link: fields[0] == "l", Want: strings.Split(fields[1], ",")}
+		}
+		if !validEntry(e) || seen[e.Path] {
+			return FilesList{}, invalid("files:"+strconv.Itoa(i+2), ReasonValue)
+		}
+		seen[e.Path] = true
+		list.Entries = append(list.Entries, e)
+	}
+	return list, nil
+}
+
+// ParseFiles is the paths of a list, in either format.
+func ParseFiles(raw []byte) ([]string, error) {
+	l, err := ParseFilesList(raw)
+	if err != nil {
+		return nil, err
+	}
+	return l.Paths(), nil
+}
+
+// FormatFilesList is the content of the list of the entries, in the order given: the entries are checked as ParseFilesList would, so that what is written is what can be read.
+func FormatFilesList(entries []FileEntry) ([]byte, error) {
+	if len(entries) == 0 {
+		return nil, invalid("files", ReasonMissing)
+	}
+	if len(entries) > MaxEntries {
+		return nil, invalid("files", ReasonTooMany)
+	}
+	var b bytes.Buffer
+	b.WriteString(FilesHeader + "\n")
+	seen := make(map[string]bool, len(entries))
+	for i, e := range entries {
+		if !validEntry(e) || seen[e.Path] {
+			return nil, invalid("files:"+strconv.Itoa(i+2), ReasonValue)
+		}
+		seen[e.Path] = true
+		kind := "f"
+		if e.Link {
+			kind = "l"
+		}
+		b.WriteString(kind + " " + strings.Join(e.Want, ",") + " " + e.Path + "\n")
+	}
+	return b.Bytes(), nil
+}
 
 // ParseDirs and FormatDirs are the same for the list of the directories that the install of a module made (<name>.dirs), which the remove deletes, if they are empty, after its files.
 func ParseDirs(raw []byte) ([]string, error) { return parsePaths("dirs", raw, ValidDirPath) }

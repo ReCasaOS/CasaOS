@@ -183,13 +183,11 @@ func TestARemoveNeverDeletesAFileAnotherModulesListOwns(t *testing.T) {
 }
 
 func TestARemoveThatCannotFinishLeavesWhatIsNeededToFinishIt(t *testing.T) {
-	t.Run("a file is a directory now", func(t *testing.T) {
+	t.Run("what is to be deleted cannot be", func(t *testing.T) {
 		f := installed(t)
-		p := f.path("/etc/casaos/virt-management.conf.sample")
-		if err := os.Remove(p); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Mkdir(p, 0o755); err != nil {
+		// (a temporary name of the unpack that is a directory: it is not deleted as a file)
+		p := tempName(f.path("/etc/casaos/virt-management.conf.sample"))
+		if err := os.MkdirAll(p+"/in", 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if code := f.remove("--yes"); code != ExitFailed {
@@ -205,7 +203,7 @@ func TestARemoveThatCannotFinishLeavesWhatIsNeededToFinishIt(t *testing.T) {
 			t.Errorf("not said:\n%s", f.out)
 		}
 		// once it is mended, a run again finishes
-		if err := os.Remove(p); err != nil {
+		if err := os.RemoveAll(p); err != nil {
 			t.Fatal(err)
 		}
 		if code := f.remove("--yes"); code != ExitOK {

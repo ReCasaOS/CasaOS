@@ -346,9 +346,9 @@ func TestAnArchiveIsUnpackedAndTheListOfWhatWasWrittenIsGivenWithTheUnitLast(t *
 		t.Errorf("manifest %q, directories %v", res.Manifest, res.Dirs)
 	}
 	// the list is one that can be written, and read back
-	if raw, err := FormatFiles(res.Files); err != nil {
+	if raw, err := FormatFilesList(entriesOf(res)); err != nil {
 		t.Errorf("the list of the files is not a list: %v", err)
-	} else if back, err := ParseFiles(raw); err != nil || !slices.Equal(back, res.Files) {
+	} else if back, err := ParseFilesList(raw); err != nil || !back.Verified || !slices.Equal(back.Paths(), res.Files) {
 		t.Errorf("read back %v, %v", back, err)
 	}
 	// what is on the disk is what was in the archive

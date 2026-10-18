@@ -88,8 +88,11 @@ func removeEntry(real string) (removed bool, err error) {
 	return true, nil
 }
 
-// written is what an install put down, as the unpack says it: the files and links, and the directories it made (the deepest first).
-type written struct{ files, dirs []string }
+// written is what an install put down, as the unpack says it: the files and links with what each holds, and the directories it made (the deepest first).
+type written struct {
+	files []osmodule.FileEntry
+	dirs  []string
+}
 
 // teardown undoes an install, whatever state it is in: the units are stopped and disabled, the files that are still there (and are no other module's) are deleted, then the directories the
 // install made, if they are empty, then the manifest, the version and the lists, then systemd reads its units again. What it deletes is what only holds, when it is given (the rollback of an
@@ -112,12 +115,16 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 		j.hook(ctx, prefix+s, "done")
 	}
 	roots := j.env.Roots
-	var list, dirs []string
+	var (
+		list     osmodule.FilesList
+		dirs     []string
+		listPath []string
+	)
 	if only != nil {
-		list, dirs = only.files, only.dirs
+		list, dirs = osmodule.FilesList{Entries: only.files, Verified: true}, only.dirs
 	} else {
 		var err error
-		if list, err = readFilesList(roots.files(name)); err != nil {
+		if list, err = readFilesEntries(roots.files(name)); err != nil {
 			j.say("the list of the files of %s cannot be read", name)
 			return 1, StepStop, CodeFilesUnreadable
 		}
@@ -125,14 +132,15 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 			j.say("the list of the directories of %s cannot be read", name)
 			return 1, StepStop, CodeFilesUnreadable
 		}
-		if list == nil {
+		if list.Entries == nil {
 			j.say("there is no list of the files of %s: no file is deleted", name)
 		}
 	}
+	listPath = list.Paths()
 	// stop
 	step(StepStop)
 	stuck := 0
-	for _, unit := range unitNames(manifestUnit, list) {
+	for _, unit := range unitNames(manifestUnit, listPath) {
 		if !j.stopUnit(ctx, unit) {
 			stuck++
 		}
@@ -171,14 +179,31 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 		}
 	}
 	failed := 0
-	for _, p := range list {
+	for _, e := range list.Entries {
+		p := e.Path
+		real := roots.Path(p)
+		// (the temporary name an unpack writes under is the module's whatever the file is)
+		if _, err := removeEntry(tempName(real)); err != nil {
+			j.say("not removed: %s (%s)", printable(p, 200), printable(err.Error(), 100))
+			failed++
+		}
 		if other, ok := owner[p]; ok {
 			j.say("kept, it is the list of %s too: %s", other, printable(p, 200))
 			continue
 		}
-		real := roots.Path(p)
-		for _, target := range []string{real, tempName(real)} {
-			if _, err := removeEntry(target); err != nil {
+		if !list.Verified {
+			j.say("left: %s (the list is of an earlier format: if it is the module's, delete it by hand)", printable(p, 200))
+			continue
+		}
+		switch h, err := holds(real, e); {
+		case err != nil:
+			j.say("not removed: %s (%s)", printable(p, 200), printable(err.Error(), 100))
+			failed++
+		case h == holdsOther:
+			// not what the install put there, or not what it was to put: somebody else's, or the half of a write that was never done
+			j.say("left: %s (changed)", printable(p, 200))
+		case h == holdsOurs:
+			if _, err := removeEntry(real); err != nil {
 				j.say("not removed: %s (%s)", printable(p, 200), printable(err.Error(), 100))
 				failed++
 			}

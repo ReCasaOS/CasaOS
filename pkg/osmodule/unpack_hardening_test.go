@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -546,7 +547,7 @@ func TestTheFilesThatMayBeWrittenAreGivenBeforeAnythingIsWritten(t *testing.T) {
 	var calls [][]string
 	var dirs [][]string
 	var seen []int
-	res, err := Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func(files, ds []string) error {
+	res, err := Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func(files []string, _ map[string]Want, ds []string) error {
 		calls = append(calls, slices.Clone(files))
 		dirs = append(dirs, slices.Clone(ds))
 		seen = append(seen, len(dst.log), len(dst.nodes))
@@ -569,7 +570,7 @@ func TestTheFilesThatMayBeWrittenAreGivenBeforeAnythingIsWritten(t *testing.T) {
 		t.Errorf("last = %s", last)
 	}
 	// the list can be kept as it is, and so can the directories
-	if raw, err := FormatFiles(calls[0]); err != nil {
+	if raw, err := FormatFilesList(entriesFor(calls[0])); err != nil {
 		t.Errorf("%v", err)
 	} else if back, err := ParseFiles(raw); err != nil || !slices.Equal(back, calls[0]) {
 		t.Errorf("%v %v", back, err)
@@ -583,7 +584,7 @@ func TestTheFilesThatMayBeWrittenAreGivenBeforeAnythingIsWritten(t *testing.T) {
 	dst = newFS()
 	dst.failOn = "/etc/casaos/virt-management.conf.sample"
 	calls = nil
-	res, err = Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func(files, _ []string) error { calls = append(calls, files); return nil }})
+	res, err = Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func(files []string, _ map[string]Want, _ []string) error { calls = append(calls, files); return nil }})
 	if err == nil || len(calls) != 1 || len(calls[0]) != 4 || len(res.Files) >= 4 {
 		t.Fatalf("%v planned %v written %v", err, calls, res.Files)
 	}
@@ -602,7 +603,7 @@ func TestIfTheFilesCannotBeRecordedNothingIsWritten(t *testing.T) {
 	boom := errors.New("no room for the list")
 	dst := newFS()
 	delete(dst.nodes, "/etc/casaos")
-	res, err := Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func([]string, []string) error { return boom }})
+	res, err := Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func([]string, map[string]Want, []string) error { return boom }})
 	var r *Refused
 	if !errors.Is(err, boom) || errors.As(err, &r) {
 		t.Errorf("error = %v", err)
@@ -612,13 +613,13 @@ func TestIfTheFilesCannotBeRecordedNothingIsWritten(t *testing.T) {
 	}
 	// an archive that is refused is not recorded
 	called := false
-	_, err = Unpack(bytes.NewReader(tarOf(t, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/sbin/x"})), newFS(), nil, Options{Unit: testUnit, OnPlanned: func([]string, []string) error { called = true; return nil }})
+	_, err = Unpack(bytes.NewReader(tarOf(t, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/sbin/x"})), newFS(), nil, Options{Unit: testUnit, OnPlanned: func([]string, map[string]Want, []string) error { called = true; return nil }})
 	wantRefused(t, err, "unpack_path")
 	if called {
 		t.Error("recorded an archive that is refused")
 	}
 	// and nor is one that only gets validated
-	if _, err := ValidateArchive(bytes.NewReader(tarOf(t, goodEntries()...)), newFS(), nil, Options{Unit: testUnit, OnPlanned: func([]string, []string) error { called = true; return nil }}); err != nil || called {
+	if _, err := ValidateArchive(bytes.NewReader(tarOf(t, goodEntries()...)), newFS(), nil, Options{Unit: testUnit, OnPlanned: func([]string, map[string]Want, []string) error { called = true; return nil }}); err != nil || called {
 		t.Errorf("%v %v", err, called)
 	}
 }
@@ -635,6 +636,47 @@ func TestASampleThatIsNotAFileIsInTheWayEvenWhenTheModuleListedIt(t *testing.T) 
 		wantRefusedFor(t, what, err, "file_exists")
 		if len(dst.log) != 0 {
 			t.Errorf("%s: written %v", what, dst.log)
+		}
+	}
+}
+
+// What each path is to hold is given with the plan and with the result: the sha256 of the bytes of the file that was checked, the target of a link; and a stop half way gives it for what
+// was written only
+func TestTheUnpackSaysWhatEachPathIsToHold(t *testing.T) {
+	dst := newFS()
+	var planned map[string]Want
+	res, err := Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func(files []string, want map[string]Want, _ []string) error {
+		planned = want
+		if len(want) != len(files) {
+			t.Errorf("%d contents for %d paths", len(want), len(files))
+		}
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(strings.Repeat("\x7fELF", 300)))
+	for _, w := range []map[string]Want{planned, res.Want} {
+		if got := w["/usr/bin/casaos-virt-management"]; got.Link || got.Value != hex.EncodeToString(sum[:]) {
+			t.Errorf("the program: %+v", got)
+		}
+		if got := w["/usr/bin/virt"]; !got.Link || got.Value != "casaos-virt-management" {
+			t.Errorf("the link: %+v", got)
+		}
+		if len(w) != len(res.Files) {
+			t.Errorf("%d contents for %d files", len(w), len(res.Files))
+		}
+	}
+	// half way
+	dst = newFS()
+	dst.failOn = "/etc/casaos/virt-management.conf.sample"
+	res, err = Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit})
+	if err == nil || len(res.Want) != len(res.Files) || len(res.Files) == 0 {
+		t.Errorf("%v: %d contents for %d files", err, len(res.Want), len(res.Files))
+	}
+	for _, p := range res.Files {
+		if _, ok := res.Want[p]; !ok {
+			t.Errorf("%s is written and has no content", p)
 		}
 	}
 }

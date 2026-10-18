@@ -16,14 +16,16 @@ func TestAListOfFilesIsReadAndWrittenBack(t *testing.T) {
 		"/lib/systemd/system/a@.service",
 		"/usr/lib/systemd/system/casaos-virt-management.service",
 	}
-	raw, err := FormatFiles(paths)
+	raw, err := FormatFilesList(entriesFor(paths))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := strings.Join(paths, "\n") + "\n"; string(raw) != want {
-		t.Errorf("content = %q", raw)
-	}
 	back, err := ParseFiles(raw)
+	if err != nil || !slices.Equal(back, paths) {
+		t.Errorf("read back %v, %v", back, err)
+	}
+	// ...and the earlier format, one path to a line, is read as well
+	back, err = ParseFiles([]byte(strings.Join(paths, "\n") + "\n"))
 	if err != nil || !slices.Equal(back, paths) {
 		t.Errorf("read back %v, %v", back, err)
 	}
@@ -35,7 +37,7 @@ func TestAListOfFilesIsReadAndWrittenBack(t *testing.T) {
 	if got, err := ParseFiles([]byte{}); err == nil || got != nil {
 		t.Errorf("an empty list: %v %v", got, err)
 	}
-	if raw, err := FormatFiles(nil); !errors.As(err, &bad) || bad.Reason != ReasonMissing || raw != nil {
+	if raw, err := FormatFilesList(nil); !errors.As(err, &bad) || bad.Reason != ReasonMissing || raw != nil {
 		t.Errorf("a list of nothing: %q %v", raw, err)
 	}
 	// and a list of one path is one
@@ -221,15 +223,15 @@ func TestTheNumberAndTheSizeOfAListAreBounded(t *testing.T) {
 	for i := 0; i < MaxEntries+1; i++ {
 		paths = append(paths, fmt.Sprintf("/usr/bin/f%d", i))
 	}
-	if _, err := FormatFiles(paths[:MaxEntries]); err != nil {
+	if _, err := FormatFilesList(entriesFor(paths[:MaxEntries])); err != nil {
 		t.Errorf("writing %d paths: %v", MaxEntries, err)
 	}
-	if _, err := FormatFiles(paths); !errors.As(err, &bad) || bad.Reason != ReasonTooMany {
+	if _, err := FormatFilesList(entriesFor(paths)); !errors.As(err, &bad) || bad.Reason != ReasonTooMany {
 		t.Errorf("writing %d paths: %v", MaxEntries+1, err)
 	}
 	for _, p := range [][]string{{"/etc/passwd"}, {"/usr/bin/a", "/usr/bin/a"}, {"usr/bin/a"}, {"/usr/bin/a\n/usr/bin/b"}, {"/usr/bin/a\n"}} {
-		if raw, err := FormatFiles(p); err == nil {
-			t.Errorf("FormatFiles(%q) = %q", p, raw)
+		if raw, err := FormatFilesList(entriesFor(p)); err == nil {
+			t.Errorf("FormatFilesList(%q) = %q", p, raw)
 		}
 	}
 }

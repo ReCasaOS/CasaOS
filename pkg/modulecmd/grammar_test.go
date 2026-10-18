@@ -233,10 +233,8 @@ func TestTheOutputOfEveryExitPathIsInTheOneGrammar(t *testing.T) {
 		{"a remove with no confirmation", true, func(f *fixture) context.Context { f.input = ""; return bg }, ExitRefused},
 		{"a remove that is declined", true, func(f *fixture) context.Context { f.isTTY, f.input = true, "n\n"; return bg }, ExitRefused},
 		{"a remove, the unit does not stop", true, func(f *fixture) context.Context { f.runner.fail["systemctl disable --now"] = 1; return bg }, ExitFailed},
-		{"a remove, a file is a directory now", true, func(f *fixture) context.Context {
-			p := f.path("/etc/casaos/virt-management.conf.sample")
-			_ = os.Remove(p)
-			_ = os.Mkdir(p, 0o755)
+		{"a remove, what is to be deleted cannot be", true, func(f *fixture) context.Context {
+			_ = os.MkdirAll(tempName(f.path("/etc/casaos/virt-management.conf.sample"))+"/in", 0o755)
 			return bg
 		}, ExitFailed},
 		{"a remove, systemd cannot read its units", true, func(f *fixture) context.Context { f.runner.fail["systemctl daemon-reload"] = 1; return bg }, ExitFailed},
