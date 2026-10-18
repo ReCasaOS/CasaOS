@@ -27,6 +27,8 @@ type moduleBox struct {
 	env     modulecmd.Env
 	// busyFile is the flag of an open upgrade of the operating system, which is not there until a test puts it
 	busyFile string
+	// binary is the file that stands for /usr/bin/casaos, the program the unit runs: a regular, executable file until a test changes it
+	binary string
 
 	mu       sync.Mutex
 	clock    time.Time
@@ -110,6 +112,11 @@ func newModuleBox(t *testing.T) *moduleBox {
 	b.updater.now = b.now
 	b.updater.command = b.command
 	b.updater.start = b.startUnit
+	b.updater.stat = b.stat
+	b.binary = filepath.Join(t.TempDir(), "casaos")
+	if err := os.WriteFile(b.binary, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	b.updater.dpkgLockState = func() (bool, error) {
 		b.mu.Lock()
 		defer b.mu.Unlock()
@@ -130,7 +137,7 @@ func newModuleBox(t *testing.T) *moduleBox {
 func (b *moduleBox) restarted() *systemService {
 	b.t.Helper()
 	fresh := newTestSystemPackageUpdater(b.t)
-	fresh.now, fresh.command, fresh.start = b.now, b.command, b.startUnit
+	fresh.now, fresh.command, fresh.start, fresh.stat = b.now, b.command, b.startUnit, b.stat
 	fresh.dpkgLockState = b.updater.dpkgLockState
 	fresh.moduleEnv = b.updater.moduleEnv
 	return &systemService{packageUpdates: fresh}
@@ -154,8 +161,20 @@ func (b *moduleBox) setUnit(unit, state string) {
 	b.units[unit] = state
 }
 
+// stat is the box's file system as the core asks it for the program of the unit: /usr/bin/casaos is the file of the box, and any other path is the machine's own.
+func (b *moduleBox) stat(path string) (os.FileInfo, error) {
+	if path == systemModuleBinary {
+		return os.Stat(b.binary)
+	}
+	return os.Stat(path)
+}
+
+// command is a process that is run with the context it is given: one whose context has ended does not run, as a real one does not.
 func (b *moduleBox) command(ctx context.Context, name string, args ...string) ([]byte, error) {
 	b.commands.Add(1)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	b.mu.Lock()
 	silent, units := b.silent, make(map[string]string, len(b.units))
 	for k, v := range b.units {
@@ -164,6 +183,14 @@ func (b *moduleBox) command(ctx context.Context, name string, args ...string) ([
 	b.mu.Unlock()
 	if silent && name == "systemctl" {
 		return nil, os.ErrDeadlineExceeded
+	}
+	// a fake of `systemctl show <unit> --property=LoadState --value`: "loaded" for a unit that the test put, "not-found" for any other (that a unit that ended and was collected says it, and
+	// that a unit that runs says "loaded", is to be proved on a real guest: docs/os-modules.md)
+	if name == "systemctl" && len(args) >= 3 && args[0] == "show" && args[2] == "--property=LoadState" {
+		if _, ok := units[args[1]]; ok {
+			return []byte("loaded\n"), nil
+		}
+		return []byte("not-found\n"), nil
 	}
 	return moduleSystemd(units)(ctx, name, args...)
 }

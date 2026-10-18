@@ -116,8 +116,8 @@ type SystemService interface {
 	// (an *ModuleRefusal says why not), PlanSystemModule says what installing it would do and GetSystemModuleStatus how the job of the module is going.
 	ListSystemModules() (modulecmd.ListResult, error)
 	PlanSystemModule(name string) (osmodule.PlanResult, error)
-	StartSystemModuleInstall(name, planID string) (SystemModuleStatus, error)
-	StartSystemModuleRemove(name string) (SystemModuleStatus, error)
+	StartSystemModuleInstall(ctx context.Context, name, planID string) (SystemModuleStatus, error)
+	StartSystemModuleRemove(ctx context.Context, name string) (SystemModuleStatus, error)
 	GetSystemModuleStatus(name string) (SystemModuleStatus, error)
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string

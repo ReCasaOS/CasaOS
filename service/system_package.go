@@ -128,13 +128,12 @@ type systemPackageUpdater struct {
 	// (unix nanoseconds); 0 when it answered the last time.
 	unitSilentSince atomic.Int64
 
-	// moduleMu makes the starts of the jobs of the modules take turns: one is started at a time, and the one after it sees it.
-	moduleMu sync.Mutex
+	// moduleStart makes the starts of the jobs of the modules take turns: one is started at a time, and the one after it sees it. A start that waits gives up when its request ends.
+	moduleStart turnstile
 	// moduleEnv is the world the module assistant is run in, in the core's process; nil means the box's own.
 	moduleEnv func() modulecmd.Env
-	// modulePlanSlot lets one plan of a module be made at a time; it is made on first use.
-	modulePlanOnce sync.Once
-	modulePlanSlot chan struct{}
+	// modulePlan lets one plan of a module be made at a time.
+	modulePlan turnstile
 }
 
 // untranslatedCommand runs a package tool with its output in English. apt translates its

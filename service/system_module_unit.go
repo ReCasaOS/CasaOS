@@ -3,9 +3,12 @@ package service
 import (
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
+	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 )
 
@@ -16,6 +19,9 @@ const (
 	systemModuleUnits      = systemModuleUnitPrefix + "*.service"
 	// systemModuleBinary is the program the unit runs: the core, which is also the module assistant (`casaos module ...`).
 	systemModuleBinary = "/usr/bin/casaos"
+	// systemModuleStopTimeout is how long systemd waits for the unit to stop (TimeoutStopSec) before it kills what is left of it: what the assistant needs to stop (it ends the command it is
+	// in, and then rolls the install back) and a margin for the last lines of its log.
+	systemModuleStopTimeout = modulecmd.StopWithin + 80*time.Second
 )
 
 // the verbs of a job
@@ -51,6 +57,9 @@ func systemModuleUnitArgs(verb, name, planID, nonce string) ([]string, error) {
 	}
 	args := []string{
 		"--quiet", "--no-block", "--collect", "--unit=" + systemModuleUnit(name), "--property=Type=exec",
+		// a stop (systemctl stop, a shutdown) asks the assistant alone to stop, which it does in its own way (it asks apt and dpkg to leave, and rolls back), and kills what is left only after
+		// the time that it needs; with the kind of kill of a unit that is not set, apt and dpkg would be told to stop with it, and killed after 90 seconds
+		"--property=KillMode=mixed", "--property=TimeoutStopSec=" + strconv.Itoa(int(systemModuleStopTimeout/time.Second)),
 		"--setenv=CASAOS_MODULE_NONCE=" + nonce,
 		"--", systemModuleBinary, "module", verb, name, "--yes",
 	}

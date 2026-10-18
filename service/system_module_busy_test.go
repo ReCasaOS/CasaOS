@@ -11,8 +11,15 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 )
 
-// moduleSystemd is what systemd says to `systemctl show <name or pattern> --property=ActiveState --value`: the state of a unit by name, and for a pattern the state of every unit that
-// matches, one to a line, and nothing for a pattern that matches none. state maps the units that systemd has loaded to their ActiveState; a unit it does not have is inactive.
+// moduleSystemd is a fake of one command of systemd, `systemctl show <name or pattern> --property=ActiveState --value`, and of nothing else of it. state maps the units that systemd has
+// loaded to their ActiveState. It models exactly this, which has not been seen on a real system (the proof on a guest checks it: "To be proved on a real guest" in docs/os-modules.md):
+//
+//   - a name: the unit's ActiveState on a line, and "inactive" for a unit that is not loaded;
+//   - a pattern (a word with a *, a ? or a [): the ActiveState of every loaded unit whose name the pattern matches as a shell glob (path.Match), in the order of the names, each followed by
+//     an empty line, as systemctl separates the blocks of several units;
+//   - a pattern that matches no unit: an empty output, and no error (exit status 0).
+//
+// What is read of the answer is its words (strings.Fields), so the reading does not depend on the empty lines; the matching of the pattern and the empty output are what the fake assumes.
 func moduleSystemd(state map[string]string) func(context.Context, string, ...string) ([]byte, error) {
 	return func(_ context.Context, name string, args ...string) ([]byte, error) {
 		if name != "systemctl" || len(args) < 2 || args[0] != "show" {

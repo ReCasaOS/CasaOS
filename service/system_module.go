@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -78,12 +79,12 @@ func (s *systemService) PlanSystemModule(name string) (osmodule.PlanResult, erro
 	return s.systemPackageUpdater().planModule(name)
 }
 
-func (s *systemService) StartSystemModuleInstall(name, planID string) (SystemModuleStatus, error) {
-	return s.systemPackageUpdater().startModuleInstall(name, planID)
+func (s *systemService) StartSystemModuleInstall(ctx context.Context, name, planID string) (SystemModuleStatus, error) {
+	return s.systemPackageUpdater().startModuleInstall(ctx, name, planID)
 }
 
-func (s *systemService) StartSystemModuleRemove(name string) (SystemModuleStatus, error) {
-	return s.systemPackageUpdater().startModuleRemove(name)
+func (s *systemService) StartSystemModuleRemove(ctx context.Context, name string) (SystemModuleStatus, error) {
+	return s.systemPackageUpdater().startModuleRemove(ctx, name)
 }
 
 func (s *systemService) GetSystemModuleStatus(name string) (SystemModuleStatus, error) {
@@ -105,13 +106,21 @@ func (u *systemPackageUpdater) listModules() (modulecmd.ListResult, error) {
 	return modulecmd.List(ctx, u.moduleWorld())
 }
 
-// planSlot makes the plans take turns: each is a few processes of apt, and a plan is not worth waiting more for than the time a plan has. The slot is given back by the function that is
-// returned; ok is false when ctx ended first.
-func (u *systemPackageUpdater) planSlot(ctx context.Context) (release func(), ok bool) {
-	u.modulePlanOnce.Do(func() { u.modulePlanSlot = make(chan struct{}, 1) })
+// A turnstile lets one in at a time, and lets one that waits give up when its context ends. The zero value is ready.
+type turnstile struct {
+	once sync.Once
+	slot chan struct{}
+}
+
+// enter is the turn, given back by the function that is returned; ok is false when ctx ended before the turn came (and for a ctx that has ended, whoever has the turn).
+func (t *turnstile) enter(ctx context.Context) (leave func(), ok bool) {
+	t.once.Do(func() { t.slot = make(chan struct{}, 1) })
+	if ctx.Err() != nil {
+		return nil, false
+	}
 	select {
-	case u.modulePlanSlot <- struct{}{}:
-		return func() { <-u.modulePlanSlot }, true
+	case t.slot <- struct{}{}:
+		return func() { <-t.slot }, true
 	case <-ctx.Done():
 		return nil, false
 	}
@@ -119,7 +128,7 @@ func (u *systemPackageUpdater) planSlot(ctx context.Context) (release func(), ok
 
 // makePlan is the plan of installing the module called name, made now, within ctx. A plan that apt was ended in for the time it has is a plan_timeout, not a plan that says apt gave no answer.
 func (u *systemPackageUpdater) makePlan(ctx context.Context, name string) (osmodule.PlanResult, error) {
-	release, ok := u.planSlot(ctx)
+	release, ok := u.modulePlan.enter(ctx)
 	if !ok {
 		return osmodule.PlanResult{}, refuseModule(ModulePlanTimeout, "the plan could not be made in the time it has", nil)
 	}
@@ -185,41 +194,70 @@ func (u *systemPackageUpdater) moduleSupport() (systemPackageSupport, error) {
 	return support, nil
 }
 
-// moduleBlocked is the refusal, when something else is at work that a job of a module must not start beside; nil when nothing is. It is fail closed: what cannot be seen is taken for
-// busy. Something else is: a job of a module whose log says it has not ended and that was seen alive a moment ago (a job whose unit systemd does not have yet is one), a unit that changes
-// the box (another job of a module, a package update, an update of Docker, the update of ReCasaOS, the upgrade of the operating system) or the flag of one, or a package manager that holds
-// dpkg's lock, or a lock of dpkg that cannot be looked at.
-func (u *systemPackageUpdater) moduleBlocked(ctx context.Context, env modulecmd.Env) error {
-	busy := func(reason string) error {
-		return refuseModule(ModuleBusy, "Another job or package operation is running on this box: "+reason, map[string]any{"reason": reason})
+// moduleProgram refuses a start when the program that the unit runs is not there as a program: a regular file that can be run (a link to one is one). systemd-run would queue the unit
+// all the same, and the job would read as running for 30 seconds and then as interrupted, with nothing to say why.
+func (u *systemPackageUpdater) moduleProgram() error {
+	if info, err := u.stat(systemModuleBinary); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+		return nil
 	}
+	return refuseModule(ModuleStartFailed, "The module assistant, "+systemModuleBinary+", is not there as a program that can be run. Nothing was started.", nil)
+}
+
+// busyModule is a refusal because something else is at work, with what it is (data.reason): every busy says it.
+func busyModule(detail, reason string) *ModuleRefusal {
+	return refuseModule(ModuleBusy, detail, map[string]any{"reason": reason})
+}
+
+// moduleBusy is busyModule for a box that is being changed by something else.
+func moduleBusy(reason string) *ModuleRefusal {
+	return busyModule("Another job or package operation is running on this box: "+reason, reason)
+}
+
+// moduleBlocked is the refusal, when something else is at work that a job of a module must not start beside; nil when nothing is. It is fail closed: what cannot be seen is taken for
+// busy. Something else is: a job of a module whose log says it has not ended and that was seen alive a moment ago (a job whose unit systemd does not have yet is one), or whose unit
+// systemd would not say anything of and whose log does not say it ended, a unit that changes the box (another job of a module, a package update, an update of Docker, the update of
+// ReCasaOS, the upgrade of the operating system) or the flag of one, or a package manager that holds dpkg's lock, or a lock of dpkg that cannot be looked at.
+func (u *systemPackageUpdater) moduleBlocked(ctx context.Context, env modulecmd.Env) error {
 	names, err := modulecmd.JobLogs(env)
 	if err != nil {
-		return busy("the logs of the jobs of the modules cannot be read")
+		return moduleBusy("the logs of the jobs of the modules cannot be read")
 	}
 	for _, name := range names {
-		job, err := modulecmd.ReadJob(env, name, modulecmd.UnitGone, u.now())
-		if err != nil {
-			return busy("the log of the module " + name + " cannot be read")
-		}
-		if job.State == modulecmd.JobRunning {
-			return busy("a job of the module " + name + " is running")
+		sight := u.moduleSight(name)
+		job, err := modulecmd.ReadJob(env, name, sight, u.now())
+		switch {
+		case err != nil:
+			return moduleBusy("the log of the module " + name + " cannot be read")
+		case job.State == modulecmd.JobRunning:
+			return moduleBusy("a job of the module " + name + " is running")
+		case job.State == modulecmd.JobInterrupted && sight == modulecmd.UnitUnknown:
+			// (a unit that is gone is a job that is over; one that systemd would not say anything of may be at work in a quiet apt)
+			return moduleBusy("systemd does not say whether the unit of the job of the module " + name + " has ended")
 		}
 	}
 	reason, isBusy, err := u.maintenanceState(ctx, "", u.command)
 	switch {
 	case isBusy:
-		return busy(reason)
+		return moduleBusy(reason)
 	case err != nil:
-		return busy("whether another package manager is at work could not be seen")
+		return moduleBusy("whether another package manager is at work could not be seen")
 	}
 	return nil
 }
 
+// moduleTurn is the turn to start a job, which is waited for no longer than the request that asks it: a start that waits behind a plan that hangs gives up with its request.
+func (u *systemPackageUpdater) moduleTurn(ctx context.Context) (leave func(), err error) {
+	leave, ok := u.moduleStart.enter(ctx)
+	if !ok {
+		return nil, busyModule("Another job of a module is being started.", "another job of a module is being started")
+	}
+	return leave, nil
+}
+
 // startModuleInstall starts the unit that installs the module called name for the plan that the user read (planID). It checks again what the plan checked and what only matters now:
 // nothing else is at work, the plan the box makes now is the one that was read, and it is not refused. It writes the first line of the log and returns as soon as systemd has the unit; an
-// *ModuleRefusal says why nothing was started.
-func (u *systemPackageUpdater) startModuleInstall(name, planID string) (SystemModuleStatus, error) {
+// *ModuleRefusal says why nothing was started. reqCtx is the request's: the start waits for the starts before it no longer than that.
+func (u *systemPackageUpdater) startModuleInstall(reqCtx context.Context, name, planID string) (SystemModuleStatus, error) {
 	switch {
 	case !osmodule.ValidName(name):
 		return SystemModuleStatus{}, badModuleRequest("name")
@@ -230,12 +268,20 @@ func (u *systemPackageUpdater) startModuleInstall(name, planID string) (SystemMo
 	if err != nil {
 		return SystemModuleStatus{}, err
 	}
-	u.moduleMu.Lock()
-	defer u.moduleMu.Unlock()
+	if err := u.moduleProgram(); err != nil {
+		return SystemModuleStatus{}, err
+	}
+	leave, err := u.moduleTurn(reqCtx)
+	if err != nil {
+		return SystemModuleStatus{}, err
+	}
+	defer leave()
 	env := u.moduleWorld()
-	ctx, cancel := context.WithTimeout(context.Background(), systemModuleStartTimeout)
-	defer cancel()
-	if err := u.moduleBlocked(ctx, env); err != nil {
+	// a first look, before the plan: a box that is busy is told so without waiting for apt
+	look, cancelLook := context.WithTimeout(context.Background(), systemModuleStartTimeout)
+	err = u.moduleBlocked(look, env)
+	cancelLook()
+	if err != nil {
 		return SystemModuleStatus{}, err
 	}
 	// the plan has its own time, and is not counted in the start's
@@ -247,19 +293,41 @@ func (u *systemPackageUpdater) startModuleInstall(name, planID string) (SystemMo
 	}
 	switch {
 	case plan.Refused != "":
-		return SystemModuleStatus{}, refuseModule(string(plan.Refused), "The module cannot be installed: "+string(plan.Refused)+".", map[string]any{"checks": plan.Checks})
+		return SystemModuleStatus{}, refusalOfPlan(plan)
 	case plan.PlanID != planID:
 		return SystemModuleStatus{}, refuseModule(ModulePlanChanged, "The plan is no longer the one that was read: read the new plan and confirm again.", nil)
 	}
-	// a plan takes a while: something may have started meanwhile
-	if err := u.moduleBlocked(ctx, env); err != nil {
+	job, err := u.launchChecked(support, env, moduleVerbInstall, name, planID, nil)
+	if err != nil {
 		return SystemModuleStatus{}, err
 	}
-	return u.launchModule(support, env, moduleVerbInstall, name, planID)
+	return SystemModuleStatus{Job: job, Status: u.statusAfterLaunch(env, name)}, nil
+}
+
+// refusalOfPlan is the refusal of a start whose plan is refused: the code of the plan, and its checks. A plan that is refused because the box is busy says what with, as every busy does.
+func refusalOfPlan(plan osmodule.PlanResult) *ModuleRefusal {
+	refusal := refuseModule(string(plan.Refused), "The module cannot be installed: "+string(plan.Refused)+".", map[string]any{"checks": plan.Checks})
+	if plan.Refused == osmodule.CheckBusy {
+		reason := "the plan found something else at work"
+		for _, c := range plan.Checks {
+			if c.Code == osmodule.CheckBusy {
+				switch c.Detail {
+				case "unreadable":
+					reason = "whether the upgrade of the operating system or a package manager is at work could not be seen"
+				case "os_upgrade":
+					reason = "the upgrade of the operating system is open or at work"
+				case "package_manager":
+					reason = "a package manager is at work"
+				}
+			}
+		}
+		refusal.Data["reason"] = reason
+	}
+	return refusal
 }
 
 // startModuleRemove starts the unit that removes the module called name.
-func (u *systemPackageUpdater) startModuleRemove(name string) (SystemModuleStatus, error) {
+func (u *systemPackageUpdater) startModuleRemove(reqCtx context.Context, name string) (SystemModuleStatus, error) {
 	if !osmodule.ValidName(name) {
 		return SystemModuleStatus{}, badModuleRequest("name")
 	}
@@ -267,31 +335,73 @@ func (u *systemPackageUpdater) startModuleRemove(name string) (SystemModuleStatu
 	if err != nil {
 		return SystemModuleStatus{}, err
 	}
-	u.moduleMu.Lock()
-	defer u.moduleMu.Unlock()
+	if err := u.moduleProgram(); err != nil {
+		return SystemModuleStatus{}, err
+	}
+	leave, err := u.moduleTurn(reqCtx)
+	if err != nil {
+		return SystemModuleStatus{}, err
+	}
+	defer leave()
 	env := u.moduleWorld()
+	job, err := u.launchChecked(support, env, moduleVerbRemove, name, "", func(ctx context.Context) error {
+		switch modulecmd.RemoveRefusal(ctx, env, name) {
+		case "":
+			return nil
+		case modulecmd.CodeNotInstalled:
+			return refuseModule(ModuleNotInstalled, "There is nothing of this module to remove.", nil)
+		}
+		return moduleBusy("a package manager or the upgrade of the operating system is at work")
+	})
+	if err != nil {
+		return SystemModuleStatus{}, err
+	}
+	return SystemModuleStatus{Job: job, Status: u.statusAfterLaunch(env, name)}, nil
+}
+
+// launchChecked looks at the box once more and starts the job, holding the lock of the updater as the starts of a package update and of an update of Docker do: none of them looks at the
+// box while another is between its look and its unit. The look has a time of its own, since what was done before it (a plan) took the time it took. check, when it is given, is asked after
+// the look and holding the lock, and may refuse. The lock is not held for the plan, which takes a minute, nor for the answer.
+func (u *systemPackageUpdater) launchChecked(support systemPackageSupport, env modulecmd.Env, verb, name, planID string, check func(ctx context.Context) error) (modulecmd.Job, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), systemModuleStartTimeout)
 	defer cancel()
 	if err := u.moduleBlocked(ctx, env); err != nil {
-		return SystemModuleStatus{}, err
+		return modulecmd.Job{}, err
 	}
-	switch modulecmd.RemoveRefusal(ctx, env, name) {
-	case "":
-	case modulecmd.CodeNotInstalled:
-		return SystemModuleStatus{}, refuseModule(ModuleNotInstalled, "There is nothing of this module to remove.", nil)
-	default:
-		return SystemModuleStatus{}, refuseModule(ModuleBusy, "A package manager or the upgrade of the operating system is at work.", nil)
+	if check != nil {
+		if err := check(ctx); err != nil {
+			return modulecmd.Job{}, err
+		}
 	}
-	return u.launchModule(support, env, moduleVerbRemove, name, "")
+	return u.launchModule(support, env, verb, name, planID)
 }
 
-// launchModule writes the first line of the log of the job, starts its unit and says the job is running. A unit that systemd would not start is a log that says so, and nothing was changed.
-func (u *systemPackageUpdater) launchModule(support systemPackageSupport, env modulecmd.Env, verb, name, planID string) (SystemModuleStatus, error) {
-	failed := func(detail string, err error) (SystemModuleStatus, error) {
+// queuedJob is the job as the first line of its log says it is: queued, and its unit on its way.
+func queuedJob(name, nonce string, queuedAt time.Time) modulecmd.Job {
+	return modulecmd.ReduceLines(name, nonce, []string{strings.TrimSuffix(modulecmd.QueuedLine(name, nonce, queuedAt), "\n")}, modulecmd.UnitActive, queuedAt, time.Time{})
+}
+
+// statusAfterLaunch is what the assistant says of the module, for the answer of a start: no reason to keep the click waiting for it, and the module is named whatever comes of it.
+func (u *systemPackageUpdater) statusAfterLaunch(env modulecmd.Env, name string) modulecmd.StatusResult {
+	ctx, cancel := context.WithTimeout(context.Background(), systemModuleLaunchStatusTimeout)
+	defer cancel()
+	if s, err := modulecmd.StatusOf(ctx, env, name); err == nil {
+		return s
+	}
+	return modulecmd.StatusResult{Name: name}
+}
+
+// launchModule writes the first line of the log of the job, starts its unit and gives the job. A unit that systemd would not start is a log that says so, and nothing was changed. When
+// systemd-run reports an error the unit may be there all the same (a bus that was too slow can say it failed after the job was queued, and its reply can be lost): systemd is asked, and
+// the log is left as it is, and the job is the one the log says, unless systemd answered that it has no such unit, and the log is still the first line the core wrote.
+func (u *systemPackageUpdater) launchModule(support systemPackageSupport, env modulecmd.Env, verb, name, planID string) (modulecmd.Job, error) {
+	failed := func(detail string, err error) (modulecmd.Job, error) {
 		if err != nil {
 			logger.Error("a job of a module could not be started", zap.String("module", name), zap.String("verb", verb), zap.Error(err))
 		}
-		return SystemModuleStatus{}, refuseModule(ModuleStartFailed, detail, nil)
+		return modulecmd.Job{}, refuseModule(ModuleStartFailed, detail, nil)
 	}
 	nonce, err := dockerpkg.NewNonce()
 	if err != nil {
@@ -305,24 +415,41 @@ func (u *systemPackageUpdater) launchModule(support systemPackageSupport, env mo
 	queuedAt := u.now().UTC()
 	if err := modulecmd.Queue(env, name, nonce, queuedAt); err != nil {
 		if errors.Is(err, modulecmd.ErrLockHeld) {
-			return SystemModuleStatus{}, refuseModule(ModuleBusy, "Another run of the module assistant is at work.", map[string]any{"reason": "the lock of the module assistant is held"})
+			return modulecmd.Job{}, busyModule("Another run of the module assistant is at work.", "the lock of the module assistant is held")
 		}
 		return failed("The log of the job could not be written. Nothing was started.", err)
 	}
-	if output, err := u.start(support.systemdPath, systemModuleUnit(name), args...); err != nil {
-		said := strings.Split(trimSystemPackageOutput(output), "\n")
-		if abandonErr := modulecmd.Abandon(env, name, nonce, queuedAt, u.now().UTC(), said); abandonErr != nil {
-			logger.Error("the log of a job that was not started could not be closed", zap.String("module", name), zap.Error(abandonErr))
-		}
-		return failed("The job could not be started. Nothing was changed.", fmt.Errorf("start the job: %s: %w", trimSystemPackageOutput(output), err))
+	output, err := u.start(support.systemdPath, systemModuleUnit(name), args...)
+	if err == nil {
+		// what the first line of the log says, without reading it back: the job is queued and its unit is on its way
+		return queuedJob(name, nonce, queuedAt), nil
 	}
-	// what the first line of the log says, without reading it back: the job is queued and its unit is on its way
-	job := modulecmd.ReduceLines(name, nonce, []string{strings.TrimSuffix(modulecmd.QueuedLine(name, nonce, queuedAt), "\n")}, modulecmd.UnitActive, queuedAt, time.Time{})
-	status := modulecmd.StatusResult{Name: name}
-	ctx, cancel := context.WithTimeout(context.Background(), systemModuleLaunchStatusTimeout)
-	defer cancel()
-	if s, err := modulecmd.StatusOf(ctx, env, name); err == nil {
-		status = s
+	said := trimSystemPackageOutput(output)
+	err = fmt.Errorf("start the job: %s: %w", said, err)
+	exists, answered := u.unitExists(systemModuleUnit(name))
+	switch {
+	case exists:
+		logger.Warn("systemd-run reported an error and the unit of a job of a module is there: its own words will say how it goes", zap.String("module", name), zap.Error(err))
+		return u.jobAfterAnError(env, name, nonce, queuedAt), nil
+	case !answered:
+		logger.Warn("systemd-run reported an error and systemd does not say whether the unit of a job of a module is there: the job is waited for", zap.String("module", name), zap.Error(err))
+		return u.jobAfterAnError(env, name, nonce, queuedAt), nil
 	}
-	return SystemModuleStatus{Job: job, Status: status}, nil
+	switch abandonErr := modulecmd.Abandon(env, name, nonce, queuedAt, u.now().UTC(), strings.Split(said, "\n")); {
+	case errors.Is(abandonErr, modulecmd.ErrLockHeld) || errors.Is(abandonErr, modulecmd.ErrLogChanged):
+		// the unit began between the answer of systemd and now: it holds the lock, or has written its own lines
+		logger.Warn("systemd-run reported an error and the unit of a job of a module began all the same", zap.String("module", name), zap.Error(err))
+		return u.jobAfterAnError(env, name, nonce, queuedAt), nil
+	case abandonErr != nil:
+		logger.Error("the log of a job that was not started could not be closed", zap.String("module", name), zap.Error(abandonErr))
+	}
+	return failed("The job could not be started. Nothing was changed.", err)
+}
+
+// jobAfterAnError is the job whose unit may be there although systemd-run said it was not: what its log says, which is the first line the core wrote when the unit has not yet begun.
+func (u *systemPackageUpdater) jobAfterAnError(env modulecmd.Env, name, nonce string, queuedAt time.Time) modulecmd.Job {
+	if job, err := modulecmd.ReadJob(env, name, u.moduleSight(name), u.now()); err == nil && job.State != modulecmd.JobIdle {
+		return job
+	}
+	return queuedJob(name, nonce, queuedAt)
 }

@@ -53,7 +53,7 @@ func TestAnInstallStartsTheUnitOfTheModuleForThePlanThatWasRead(t *testing.T) {
 	b := newModuleBox(t)
 	plan := b.planned("virt")
 	b.advance(time.Minute)
-	status, err := b.system.StartSystemModuleInstall("virt", plan.PlanID)
+	status, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestAnInstallStartsTheUnitOfTheModuleForThePlanThatWasRead(t *testing.T) {
 	}
 	want := []string{
 		"/usr/bin/systemd-run", "casaos-module-virt.service",
-		"--quiet", "--no-block", "--collect", "--unit=casaos-module-virt.service", "--property=Type=exec",
+		"--quiet", "--no-block", "--collect", "--unit=casaos-module-virt.service", "--property=Type=exec", "--property=KillMode=mixed", "--property=TimeoutStopSec=420",
 		"--setenv=CASAOS_MODULE_NONCE=" + nonce,
 		"--", "/usr/bin/casaos", "module", "install", "virt", "--yes", "--plan-id", plan.PlanID,
 	}
@@ -98,7 +98,7 @@ func TestAnInstallStartsTheUnitOfTheModuleForThePlanThatWasRead(t *testing.T) {
 func TestARemoveStartsTheUnitOfTheModule(t *testing.T) {
 	b := newModuleBox(t)
 	b.install("virt")
-	status, err := b.system.StartSystemModuleRemove("virt")
+	status, err := b.system.StartSystemModuleRemove(context.Background(), "virt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestARemoveStartsTheUnitOfTheModule(t *testing.T) {
 	nonce := b.nonceOfLog("virt")
 	want := []string{
 		"/usr/bin/systemd-run", "casaos-module-virt.service",
-		"--quiet", "--no-block", "--collect", "--unit=casaos-module-virt.service", "--property=Type=exec",
+		"--quiet", "--no-block", "--collect", "--unit=casaos-module-virt.service", "--property=Type=exec", "--property=KillMode=mixed", "--property=TimeoutStopSec=420",
 		"--setenv=CASAOS_MODULE_NONCE=" + nonce,
 		"--", "/usr/bin/casaos", "module", "remove", "virt", "--yes",
 	}
@@ -122,7 +122,7 @@ func TestEveryJobHasANonceOfItsOwn(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 30; i++ {
 		plan := b.planned("virt")
-		if _, err := b.system.StartSystemModuleInstall("virt", plan.PlanID); err != nil {
+		if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID); err != nil {
 			t.Fatal(err)
 		}
 		nonce := b.nonceOfLog("virt")
@@ -137,7 +137,7 @@ func TestEveryJobHasANonceOfItsOwn(t *testing.T) {
 
 func TestTwoStartsAtOnceAreOneJob(t *testing.T) {
 	installVirt := func(b *moduleBox, plans map[string]string) error {
-		_, err := b.system.StartSystemModuleInstall("virt", plans["virt"])
+		_, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plans["virt"])
 		return err
 	}
 	for name, tc := range map[string]struct {
@@ -147,14 +147,14 @@ func TestTwoStartsAtOnceAreOneJob(t *testing.T) {
 		"the same module": {false, func(b *moduleBox, plans map[string]string, _ int) error { return installVirt(b, plans) }},
 		"two modules": {false, func(b *moduleBox, plans map[string]string, i int) error {
 			name := []string{"virt", "tool"}[i%2]
-			_, err := b.system.StartSystemModuleInstall(name, plans[name])
+			_, err := b.system.StartSystemModuleInstall(context.Background(), name, plans[name])
 			return err
 		}},
 		"an install and a remove": {true, func(b *moduleBox, plans map[string]string, i int) error {
 			if i%2 == 0 {
 				return installVirt(b, plans)
 			}
-			_, err := b.system.StartSystemModuleRemove("tool")
+			_, err := b.system.StartSystemModuleRemove(context.Background(), "tool")
 			return err
 		}},
 	} {
@@ -256,9 +256,9 @@ func TestAJobIsRefusedWhileTheBoxIsBeingChanged(t *testing.T) {
 				before := b.tree()
 				var err error
 				if verb == "install" {
-					_, err = b.system.StartSystemModuleInstall("virt", plan.PlanID)
+					_, err = b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID)
 				} else {
-					_, err = b.system.StartSystemModuleRemove("virt")
+					_, err = b.system.StartSystemModuleRemove(context.Background(), "virt")
 				}
 				if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBusy || refusal.Data["reason"] == "" || refusal.Data["reason"] == nil {
 					t.Errorf("refused with %+v", refusal)
@@ -289,7 +289,7 @@ func TestWhatIsOverDoesNotKeepAJobAway(t *testing.T) {
 	// units that are not running
 	b.setUnit("casaos-module-tool.service", "inactive")
 	b.setUnit(systemPackageUpdateUnit, "failed")
-	if _, err := b.system.StartSystemModuleInstall("virt", b.planned("virt").PlanID); err != nil {
+	if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", b.planned("virt").PlanID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -298,15 +298,15 @@ func TestAQueuedJobWhoseUnitNeverCameIsOverAfterThirtySeconds(t *testing.T) {
 	b := newModuleBox(t)
 	b.install("virt")
 	b.unitSays("virt", b.queuedLine("virt", unitSightNonce, 0))
-	if _, err := b.system.StartSystemModuleRemove("virt"); moduleRefusalOf(t, err).Code != ModuleBusy {
+	if _, err := b.system.StartSystemModuleRemove(context.Background(), "virt"); moduleRefusalOf(t, err).Code != ModuleBusy {
 		t.Fatalf("a job that was queued a moment ago: %v", err)
 	}
 	b.advance(modulecmd.InterruptedAfter - time.Second)
-	if _, err := b.system.StartSystemModuleRemove("virt"); moduleRefusalOf(t, err).Code != ModuleBusy {
+	if _, err := b.system.StartSystemModuleRemove(context.Background(), "virt"); moduleRefusalOf(t, err).Code != ModuleBusy {
 		t.Fatalf("a job that was queued 29 seconds ago: %v", err)
 	}
 	b.advance(time.Second)
-	if _, err := b.system.StartSystemModuleRemove("virt"); err != nil {
+	if _, err := b.system.StartSystemModuleRemove(context.Background(), "virt"); err != nil {
 		t.Fatalf("thirty seconds later: %v", err)
 	}
 }
@@ -325,7 +325,7 @@ func TestAStartLooksAtTheBoxAgainAfterThePlan(t *testing.T) {
 	calls.Store(0)
 	b.env.Runner = hookRunner{inner: b.env.Runner.(hookRunner).inner, calls: &calls, at: last, fn: func() { b.setUnit(systemPackageUpdateUnit, "active") }}
 	before := b.tree()
-	_, err := b.system.StartSystemModuleInstall("virt", plan.PlanID)
+	_, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID)
 	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBusy {
 		t.Fatalf("%v", err)
 	}
@@ -344,7 +344,7 @@ func TestTheClickBindsToThePlanThatWasRead(t *testing.T) {
 		"the id of another module's plan": other.PlanID,
 	} {
 		before := b.tree()
-		_, err := b.system.StartSystemModuleInstall("virt", id)
+		_, err := b.system.StartSystemModuleInstall(context.Background(), "virt", id)
 		if refusal := moduleRefusalOf(t, err); refusal.Code != ModulePlanChanged {
 			t.Errorf("%s: refused with %+v", name, refusal)
 		}
@@ -354,7 +354,7 @@ func TestTheClickBindsToThePlanThatWasRead(t *testing.T) {
 	b.entries[0].Assets.AMD64.SHA256 = strings.Repeat("f", 64)
 	b.writeCatalogue()
 	before := b.tree()
-	_, err := b.system.StartSystemModuleInstall("virt", plan.PlanID)
+	_, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID)
 	if refusal := moduleRefusalOf(t, err); refusal.Code != ModulePlanChanged {
 		t.Fatalf("the archive changed: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestTheClickBindsToThePlanThatWasRead(t *testing.T) {
 	b.entries[0].Tag = "v0.2.0"
 	b.entries[0].Assets.AMD64.URL = strings.Replace(b.entries[0].Assets.AMD64.URL, "v0.1.0", "v0.2.0", -1)
 	b.writeCatalogue()
-	if _, err := b.system.StartSystemModuleInstall("virt", good.PlanID); moduleRefusalOf(t, err).Code != ModulePlanChanged {
+	if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", good.PlanID); moduleRefusalOf(t, err).Code != ModulePlanChanged {
 		t.Fatalf("the tag changed: %v", err)
 	}
 	// the system changes: the box is another
@@ -374,14 +374,14 @@ func TestTheClickBindsToThePlanThatWasRead(t *testing.T) {
 	b.writeCatalogue()
 	again := b.planned("virt")
 	b.write("/etc/os-release", "ID=ubuntu\nVERSION_ID=\"24.04\"\n")
-	if _, err := b.system.StartSystemModuleInstall("virt", again.PlanID); moduleRefusalOf(t, err).Code != ModulePlanChanged {
+	if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", again.PlanID); moduleRefusalOf(t, err).Code != ModulePlanChanged {
 		t.Fatalf("the system changed: %v", err)
 	}
 	if len(b.startedUnits()) != 0 {
 		t.Error("a unit was started")
 	}
 	// and the plan that is made now is good
-	if _, err := b.system.StartSystemModuleInstall("virt", b.planned("virt").PlanID); err != nil {
+	if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", b.planned("virt").PlanID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -423,7 +423,7 @@ func TestAPlanThatIsRefusedRefusesTheStartWithItsOwnCode(t *testing.T) {
 				t.Fatalf("the plan: %+v, %v", got, err)
 			}
 			before := b.tree()
-			_, err = b.system.StartSystemModuleInstall("virt", plan.PlanID)
+			_, err = b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID)
 			refusal := moduleRefusalOf(t, err)
 			if refusal.Code != c.code {
 				t.Errorf("refused with %q, want %q", refusal.Code, c.code)
@@ -446,10 +446,13 @@ func TestARequestThatIsNotValidIsRefusedBeforeAnythingIsLookedAt(t *testing.T) {
 	before, asked := b.tree(), b.commands.Load()
 	for _, name := range []string{"", "Virt", "vi rt", "../virt", "virt/x", "-virt", "1virt", "vi$rt", "vi%rt", "virt\n", "virt\x00", strings.Repeat("a", 33), "vïrt", "a.b"} {
 		for what, call := range map[string]func() error{
-			"plan":    func() error { _, err := b.system.PlanSystemModule(name); return err },
-			"install": func() error { _, err := b.system.StartSystemModuleInstall(name, plan.PlanID); return err },
-			"remove":  func() error { _, err := b.system.StartSystemModuleRemove(name); return err },
-			"status":  func() error { _, err := b.system.GetSystemModuleStatus(name); return err },
+			"plan": func() error { _, err := b.system.PlanSystemModule(name); return err },
+			"install": func() error {
+				_, err := b.system.StartSystemModuleInstall(context.Background(), name, plan.PlanID)
+				return err
+			},
+			"remove": func() error { _, err := b.system.StartSystemModuleRemove(context.Background(), name); return err },
+			"status": func() error { _, err := b.system.GetSystemModuleStatus(name); return err },
 		} {
 			refusal := moduleRefusalOf(t, call())
 			if refusal.Code != ModuleBadRequest || refusal.Data["field"] != "name" {
@@ -458,7 +461,7 @@ func TestARequestThatIsNotValidIsRefusedBeforeAnythingIsLookedAt(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"", "m1-", "m2-" + strings.Repeat("0", 32), "m1-" + strings.Repeat("0", 31), "m1-" + strings.Repeat("0", 33), "m1-" + strings.Repeat("A", 32), strings.Repeat("0", 64), plan.PlanID + "\n", " " + plan.PlanID} {
-		_, err := b.system.StartSystemModuleInstall("virt", id)
+		_, err := b.system.StartSystemModuleInstall(context.Background(), "virt", id)
 		if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBadRequest || refusal.Data["field"] != "plan_id" {
 			t.Errorf("the id %q: %+v", id, refusal)
 		}
@@ -494,8 +497,11 @@ func TestAJobIsStartedOnlyByRootOnASystemThatCanRunIt(t *testing.T) {
 			tc.setup(b)
 			before := b.tree()
 			for what, call := range map[string]func() error{
-				"install": func() error { _, err := b.system.StartSystemModuleInstall("virt", plan.PlanID); return err },
-				"remove":  func() error { _, err := b.system.StartSystemModuleRemove("tool"); return err },
+				"install": func() error {
+					_, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID)
+					return err
+				},
+				"remove": func() error { _, err := b.system.StartSystemModuleRemove(context.Background(), "tool"); return err },
 			} {
 				if refusal := moduleRefusalOf(t, call()); refusal.Code != tc.code {
 					t.Errorf("%s: %+v", what, refusal)
@@ -522,21 +528,21 @@ func TestAJobIsStartedOnlyByRootOnASystemThatCanRunIt(t *testing.T) {
 func TestARemoveOfWhatIsNotThereIsRefused(t *testing.T) {
 	b := newModuleBox(t)
 	before := b.tree()
-	_, err := b.system.StartSystemModuleRemove("virt")
+	_, err := b.system.StartSystemModuleRemove(context.Background(), "virt")
 	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleNotInstalled {
 		t.Fatalf("%+v", refusal)
 	}
 	b.assertNothingWritten(before)
 	// what an install that was rolled back half way leaves is something to remove
 	b.write("/var/lib/casaos/modules/virt.files", "casaos-module-files 1\n")
-	if _, err := b.system.StartSystemModuleRemove("virt"); err != nil {
+	if _, err := b.system.StartSystemModuleRemove(context.Background(), "virt"); err != nil {
 		t.Fatalf("a module that left its list: %v", err)
 	}
 	// and a module that the catalogue no longer has is removed all the same
 	b.setCatalogue("tool")
 	b.install("virt")
 	b.unitSays("virt", b.queuedLine("virt", unitSightNonce, -time.Hour), b.result(unitSightNonce, "virt", "ok", "done", "-", "-", -time.Hour))
-	if _, err := b.system.StartSystemModuleRemove("virt"); err != nil {
+	if _, err := b.system.StartSystemModuleRemove(context.Background(), "virt"); err != nil {
 		t.Fatalf("a module that is not in the catalogue: %v", err)
 	}
 }
@@ -549,7 +555,7 @@ func TestAUnitThatSystemdWillNotStartLeavesAWholeRunInTheLog(t *testing.T) {
 	b.startErr = errors.New("exit status 1")
 	b.startOut = "Failed to connect to bus: No such file or directory https://user:pw@example.org/x\n"
 	b.advance(time.Minute)
-	_, err := b.system.StartSystemModuleInstall("virt", plan.PlanID)
+	_, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID)
 	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleStartFailed {
 		t.Fatalf("%+v", refusal)
 	}
@@ -567,7 +573,7 @@ func TestAUnitThatSystemdWillNotStartLeavesAWholeRunInTheLog(t *testing.T) {
 	}
 	// and nothing is in the way of the next one
 	b.startErr = nil
-	if _, err := b.system.StartSystemModuleInstall("virt", plan.PlanID); err != nil {
+	if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID); err != nil {
 		t.Fatalf("the next start: %v", err)
 	}
 }
@@ -588,13 +594,13 @@ func TestAStartDoesNotTouchTheLogOfARunThatHoldsTheLock(t *testing.T) {
 	}
 	defer release()
 	before := b.tree()
-	_, err = b.system.StartSystemModuleInstall("virt", plan.PlanID)
-	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBusy {
-		t.Errorf("install: %+v", refusal)
+	_, err = b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID)
+	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBusy || refusal.Data["reason"] == nil || refusal.Data["reason"] == "" {
+		t.Errorf("install: %+v, %v", refusal, refusal.Data)
 	}
-	_, err = b.system.StartSystemModuleRemove("tool")
-	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBusy {
-		t.Errorf("remove: %+v", refusal)
+	_, err = b.system.StartSystemModuleRemove(context.Background(), "tool")
+	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBusy || refusal.Data["reason"] == nil || refusal.Data["reason"] == "" {
+		t.Errorf("remove: %+v, %v", refusal, refusal.Data)
 	}
 	if len(b.startedUnits()) != 0 {
 		t.Error("a unit was started")
@@ -665,7 +671,7 @@ func TestTheStatusFollowsTheLogAndTheUnit(t *testing.T) {
 func TestARestartOfTheCoreFindsTheJobAgain(t *testing.T) {
 	b := newModuleBox(t)
 	plan := b.planned("virt")
-	if _, err := b.system.StartSystemModuleInstall("virt", plan.PlanID); err != nil {
+	if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID); err != nil {
 		t.Fatal(err)
 	}
 	nonce := b.nonceOfLog("virt")
@@ -683,7 +689,7 @@ func TestARestartOfTheCoreFindsTheJobAgain(t *testing.T) {
 		t.Fatalf("running: %+v, %v", st.Job, err)
 	}
 	// and it is not started again, by this core or by the next
-	if _, err := core.StartSystemModuleInstall("virt", plan.PlanID); moduleRefusalOf(t, err).Code != ModuleBusy {
+	if _, err := core.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID); moduleRefusalOf(t, err).Code != ModuleBusy {
 		t.Fatalf("a job that runs: %v", err)
 	}
 	// the unit ends
@@ -701,7 +707,7 @@ func TestARestartOfTheCoreFindsTheJobAgain(t *testing.T) {
 func TestACoreThatRestartsNeverStartsAJobThatWasInterrupted(t *testing.T) {
 	b := newModuleBox(t)
 	plan := b.planned("virt")
-	if _, err := b.system.StartSystemModuleInstall("virt", plan.PlanID); err != nil {
+	if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID); err != nil {
 		t.Fatal(err)
 	}
 	nonce := b.nonceOfLog("virt")
@@ -778,10 +784,10 @@ func TestWithNoCatalogueTheModulesOfferNothingAndNothingChanges(t *testing.T) {
 	if err != nil || plan.Refused != osmodule.CheckCatalogue || plan.PlanID != "" {
 		t.Errorf("the plan: %+v, %v", plan, err)
 	}
-	if _, err := b.system.StartSystemModuleInstall("virt", "m1-"+strings.Repeat("0", 32)); moduleRefusalOf(t, err).Code != osmodule.CheckCatalogue {
+	if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", "m1-"+strings.Repeat("0", 32)); moduleRefusalOf(t, err).Code != osmodule.CheckCatalogue {
 		t.Errorf("install: %v", err)
 	}
-	if _, err := b.system.StartSystemModuleRemove("virt"); moduleRefusalOf(t, err).Code != ModuleNotInstalled {
+	if _, err := b.system.StartSystemModuleRemove(context.Background(), "virt"); moduleRefusalOf(t, err).Code != ModuleNotInstalled {
 		t.Errorf("remove: %v", err)
 	}
 	st, err := b.system.GetSystemModuleStatus("virt")
@@ -860,7 +866,7 @@ func TestAPlanHasTheTimeItHasAndPlansTakeTurns(t *testing.T) {
 		t.Errorf("a plan with 300 ms took %v", took)
 	}
 	// a start whose plan hangs is refused the same, and starts nothing
-	if _, err := b.system.StartSystemModuleInstall("virt", plan.PlanID); moduleRefusalOf(t, err).Code != ModulePlanTimeout {
+	if _, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID); moduleRefusalOf(t, err).Code != ModulePlanTimeout {
 		t.Fatalf("the start: %v", err)
 	}
 	// several at once: all end, each within its time
@@ -936,11 +942,11 @@ func TestTwoStartsThatBothFoundTheBoxFreeAreStillOneJob(t *testing.T) {
 		start     func(b *moduleBox, plan string) error
 	}{
 		"install": {false, func(b *moduleBox, plan string) error {
-			_, err := b.system.StartSystemModuleInstall("virt", plan)
+			_, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan)
 			return err
 		}},
 		"remove": {true, func(b *moduleBox, _ string) error {
-			_, err := b.system.StartSystemModuleRemove("virt")
+			_, err := b.system.StartSystemModuleRemove(context.Background(), "virt")
 			return err
 		}},
 	} {
@@ -996,9 +1002,9 @@ func TestARemoveIsRefusedWhenTheAssistantFindsTheBoxBusy(t *testing.T) {
 	b.install("virt")
 	b.write("/var/lib/casaos/os-upgrade/busy", "")
 	before := b.tree()
-	_, err := b.system.StartSystemModuleRemove("virt")
-	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBusy {
-		t.Fatalf("%+v", refusal)
+	_, err := b.system.StartSystemModuleRemove(context.Background(), "virt")
+	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBusy || refusal.Data["reason"] == nil || refusal.Data["reason"] == "" {
+		t.Fatalf("%+v, %v", refusal, refusal.Data)
 	}
 	if len(b.startedUnits()) != 0 {
 		t.Error("a unit was started")
@@ -1017,7 +1023,7 @@ func TestTheAnswerOfAStartNamesTheModuleWhateverTheAssistantSaysOfIt(t *testing.
 	if err := os.Symlink("modules", dir); err != nil {
 		t.Skip("a link cannot be made here")
 	}
-	status, err := b.system.StartSystemModuleRemove("virt")
+	status, err := b.system.StartSystemModuleRemove(context.Background(), "virt")
 	if err != nil {
 		t.Fatal(err)
 	}

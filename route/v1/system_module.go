@@ -90,7 +90,7 @@ func PlanSystemModule(ctx echo.Context) error {
 }
 
 // @Summary  install a module
-// @Description Starts the unit that installs the module, for the plan that the user read (plan_id): the plan is made again now and must be the same, and nothing else may be changing the box. The body is strict JSON, {"plan_id": "m1-..."}, with no field besides it. 202 with the status (data.job.state is running; follow it with GET /sys/modules/{name}/status); 400 bad_request (data.data.field) for a name, a body or a field that is not valid; 409 with data.error_code when it is refused: not_root, unsupported, busy (data.data.reason), plan_changed, plan_timeout, and the codes of the plan's checks (catalogue, os, arch, recasaos, already_installed, foreign_unit, disk_short, disk_unknown, apt_missing, apt_failed, apt_removes, apt_downgrades, held_package, package_not_exact, with data.data.checks); 500 start_failed when the unit could not be started: nothing was changed. The token goes in the Authorization header, and is not the refresh token.
+// @Description Starts the unit that installs the module, for the plan that the user read (plan_id): the plan is made again now and must be the same, and nothing else may be changing the box. The body is strict JSON, {"plan_id": "m1-..."}, with no field besides it. 202 with the status (data.job.state is running; follow it with GET /sys/modules/{name}/status); 400 bad_request (data.data.field) for a name, a body or a field that is not valid; 409 with data.error_code when it is refused: not_root, unsupported, busy (data.data.reason), plan_changed, plan_timeout, and the codes of the plan's checks (catalogue, os, arch, recasaos, already_installed, foreign_unit, disk_short, disk_unknown, apt_missing, apt_failed, apt_removes, apt_downgrades, held_package, package_not_exact, with data.data.checks); 500 start_failed when the unit could not be started (the log could not be written, systemd did not start it, or /usr/bin/casaos is not a program that can be run): nothing was changed. Every busy carries data.data.reason. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Accept   application/json
 // @Tags sys
@@ -113,7 +113,7 @@ func InstallSystemModule(ctx echo.Context) error {
 	if req.PlanID == "" {
 		return moduleFailed(ctx, badOSUpgradeRequest("plan_id"))
 	}
-	status, err := service.MyService.System().StartSystemModuleInstall(name, req.PlanID)
+	status, err := service.MyService.System().StartSystemModuleInstall(ctx.Request().Context(), name, req.PlanID)
 	if err != nil {
 		return moduleFailed(ctx, err)
 	}
@@ -121,7 +121,7 @@ func InstallSystemModule(ctx echo.Context) error {
 }
 
 // @Summary  remove a module
-// @Description Starts the unit that removes the module: its unit is stopped and disabled, and exactly the files it put down are deleted, with its manifest. It never purges packages and never touches the module's data. The body is {}. 202 with the status (data.job.state is running); 400 bad_request for a name or a body that is not valid; 409 with data.error_code when it is refused: not_root, unsupported, busy (data.data.reason), not_installed. 500 start_failed when the unit could not be started: nothing was changed. The token goes in the Authorization header, and is not the refresh token.
+// @Description Starts the unit that removes the module: its unit is stopped and disabled, and exactly the files it put down are deleted, with its manifest. It never purges packages and never touches the module's data. The body is {}. 202 with the status (data.job.state is running); 400 bad_request for a name or a body that is not valid; 409 with data.error_code when it is refused: not_root, unsupported, busy (data.data.reason), not_installed. 500 start_failed when the unit could not be started (the log could not be written, systemd did not start it, or /usr/bin/casaos is not a program that can be run): nothing was changed. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Accept   application/json
 // @Tags sys
@@ -141,7 +141,7 @@ func RemoveSystemModule(ctx echo.Context) error {
 	if err := readOSUpgradeBody(ctx, &nothing); err != nil {
 		return moduleFailed(ctx, err)
 	}
-	status, err := service.MyService.System().StartSystemModuleRemove(name)
+	status, err := service.MyService.System().StartSystemModuleRemove(ctx.Request().Context(), name)
 	if err != nil {
 		return moduleFailed(ctx, err)
 	}
@@ -149,7 +149,7 @@ func RemoveSystemModule(ctx echo.Context) error {
 }
 
 // @Summary  how the job of a module is going, and the module
-// @Description data.job is the job that the core started for the module, or the last that it started: state (idle, running, succeeded, refused, failed or interrupted), step (where it is, or where it failed), code (why it was refused or failed), undo (rolled_back or rollback_incomplete for an install that failed after it changed the box), kept_packages (the packages an install that failed left on the box, null when it is not known), started_at, ended_at and log_tail (the last 20 lines of the log, as text). data.status is the module as the assistant says it: installed, version, unit (active, enabled) and route (answers). It runs no apt and takes no lock of a job: it is safe to ask every few seconds. 400 bad_request for a name that is not a module's.
+// @Description data.job is the job that the core started for the module, or the last that it started: state (idle, running, succeeded, refused, failed or interrupted), step (where it is, or where it failed), code (why it was refused or failed), undo (rolled_back or rollback_incomplete for an install that failed after it changed the box), kept_packages (the packages an install that failed left on the box, null when it is not known), started_at, ended_at and log_tail (the last 20 lines of the log that are not marker lines, as text). data.status is the module as the assistant says it: installed, version, unit (active, enabled) and route (answers). It runs no apt and takes no lock of a job: it is safe to ask every few seconds. 400 bad_request for a name that is not a module's.
 // @Produce  application/json
 // @Tags sys
 // @Security ApiKeyAuth

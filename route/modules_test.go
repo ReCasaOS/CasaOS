@@ -1,6 +1,7 @@
 package route
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -57,6 +58,8 @@ type fakeModuleSystem struct {
 	service.SystemService
 	calls []string
 	err   error
+	// ended is whether the context that the last start was given had ended
+	ended bool
 }
 
 func (f *fakeModuleSystem) status() service.SystemModuleStatus {
@@ -73,13 +76,13 @@ func (f *fakeModuleSystem) PlanSystemModule(name string) (osmodule.PlanResult, e
 	return osmodule.PlanResult{Name: name, Checks: []osmodule.Check{}, PlanID: modulePlanID}, f.err
 }
 
-func (f *fakeModuleSystem) StartSystemModuleInstall(name, planID string) (service.SystemModuleStatus, error) {
-	f.calls = append(f.calls, "install "+name+" "+planID)
+func (f *fakeModuleSystem) StartSystemModuleInstall(ctx context.Context, name, planID string) (service.SystemModuleStatus, error) {
+	f.calls, f.ended = append(f.calls, "install "+name+" "+planID), ctx.Err() != nil
 	return f.status(), f.err
 }
 
-func (f *fakeModuleSystem) StartSystemModuleRemove(name string) (service.SystemModuleStatus, error) {
-	f.calls = append(f.calls, "remove "+name)
+func (f *fakeModuleSystem) StartSystemModuleRemove(ctx context.Context, name string) (service.SystemModuleStatus, error) {
+	f.calls, f.ended = append(f.calls, "remove "+name), ctx.Err() != nil
 	return f.status(), f.err
 }
 
@@ -400,6 +403,33 @@ func TestTheServiceIsAskedWhatTheRequestSays(t *testing.T) {
 		system.calls = nil
 		if recorder := moduleCall(e, c.method, c.target, c.body, access, ""); recorder.Code >= 300 || len(system.calls) != 1 || system.calls[0] != c.want {
 			t.Errorf("%s: %d, the service was asked %q, want %q", c.target, recorder.Code, system.calls, c.want)
+		}
+	}
+}
+
+// A start waits for the starts before it, and gives up when the request that asks it does: the service is given the context of the request.
+func TestAStartIsGivenTheContextOfItsRequest(t *testing.T) {
+	system := &fakeModuleSystem{}
+	access, _, _ := theTokensOfTheTests(t, system)
+	e := InitV1Router()
+	for _, c := range []struct{ name, target, body string }{
+		{"install", "/v1/sys/modules/virt/install", `{"plan_id":"` + modulePlanID + `"}`},
+		{"remove", "/v1/sys/modules/virt/remove", `{}`},
+	} {
+		for _, over := range []bool{false, true} {
+			ctx, cancel := context.WithCancel(context.Background())
+			if over {
+				cancel()
+			}
+			request := httptest.NewRequest(http.MethodPost, c.target, strings.NewReader(c.body)).WithContext(ctx)
+			request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			request.Header.Set(echo.HeaderAuthorization, access)
+			system.calls, system.ended = nil, !over
+			e.ServeHTTP(httptest.NewRecorder(), request)
+			cancel()
+			if len(system.calls) != 1 || system.ended != over {
+				t.Errorf("%s, request over = %v: the service was asked %v, with a context that had ended = %v", c.name, over, system.calls, system.ended)
+			}
 		}
 	}
 }
