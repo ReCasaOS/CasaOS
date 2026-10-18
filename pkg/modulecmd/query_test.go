@@ -164,7 +164,7 @@ func TestPlanIsOneObjectWithTheChecksInOrder(t *testing.T) {
 		}
 		codes = append(codes, m["code"].(string))
 	}
-	if !slices.Equal(codes, []string{"catalogue", "os", "arch", "recasaos", "already_installed", "foreign_unit", "busy", "disk", "apt"}) {
+	if !slices.Equal(codes, []string{"catalogue", "os", "arch", "recasaos", "already_installed", "foreign_unit", "busy", "dpkg_state", "disk", "apt"}) {
 		t.Errorf("checks: %v", codes)
 	}
 	pk := v["packages"].(map[string]any)
@@ -287,8 +287,11 @@ func TestListAndPlanAndStatusWriteNothingOnTheBox(t *testing.T) {
 			if len(diffs) > 0 {
 				t.Errorf("the box changed:\n%s", strings.Join(diffs, "\n"))
 			}
-			// the only commands they run ask systemd
+			// the only commands they run ask systemd, and dpkg for its audit (which reads)
 			for _, c := range f.runner.calls[calls:] {
+				if slices.Equal(c, []string{"dpkg", "--audit"}) {
+					continue
+				}
 				if c[0] != "systemctl" || !slices.Contains([]string{"show", "is-active", "is-enabled"}, c[1]) {
 					t.Errorf("a command that is not a question: %q", c)
 				}

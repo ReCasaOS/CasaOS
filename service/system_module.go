@@ -20,7 +20,7 @@ import (
 // core writes and whose other lines the unit writes, and the unit itself are read each time, so that a restart of the core in the middle of a job changes nothing.
 
 // The codes that a request about a module is refused with (ModuleRefusal.Code); the plan's own codes (osmodule.Check*, osmodule.Refused*: catalogue, os, arch, recasaos,
-// already_installed, foreign_unit, busy, disk_short, disk_unknown, apt_missing, apt_failed, apt_removes, apt_downgrades, held_package, package_not_exact) are said as they are.
+// already_installed, foreign_unit, busy, dpkg_state, disk_short, disk_unknown, apt_missing, apt_failed, apt_removes, apt_downgrades, held_package, package_not_exact) are said as they are.
 const (
 	ModuleBadRequest   = "bad_request"
 	ModuleNotRoot      = "not_root"

@@ -41,6 +41,7 @@ const (
 	CodeLockFailed         = "lock_failed"
 	CodeFilesUnreadable    = "files_unreadable"
 	CodePackagesFailed     = "packages_failed"
+	CodeDpkgBroken         = "dpkg_broken"
 	CodeHeldPackage        = osmodule.RefusedHeld
 	CodeDownloadFailed     = "download_failed"
 	CodeDownloadTooLarge   = "download_too_large"
@@ -73,6 +74,9 @@ const (
 const (
 	// killGrace is how long a command that is asked to stop (SIGTERM) is given to leave before what is left of it is killed.
 	killGrace = 20 * time.Second
+	// aptFinish is how long apt-get, asked to stop, is given to finish the dpkg run it is in (Cmd.Finish) before it is stopped as any command is: it plus killGrace is within StopWithin,
+	// which the unit's TimeoutStopSec is built from.
+	aptFinish = 5 * time.Minute
 	// StopWithin is how long a run needs, from the SIGTERM that asks it to stop, to be over: the command it is in is given killGrace to leave, then the rollback has rollbackTime, and the
 	// command that ends the rollback is given killGrace in its turn. A unit that waits for less before it kills what is left cuts the rollback of an install.
 	StopWithin = 2*killGrace + rollbackTime
@@ -378,9 +382,12 @@ func (in *install) stepPackages() *stepFailure {
 	if err != nil {
 		return in.fail(CodePackagesFailed, err)
 	}
+	if f := in.repairDpkg(); f != nil {
+		return f
+	}
 	tail := &tailWriter{Writer: in.toolWriter()}
 	in.aptStarted = true
-	out, err := in.env.Runner.Run(in.ctx, Cmd{Argv: argv, Env: childEnv(in.env), Stdout: tail, Timeout: aptTimeout})
+	out, err := in.env.Runner.Run(in.ctx, Cmd{Argv: argv, Env: childEnv(in.env), Stdout: tail, Timeout: aptTimeout, Finish: aptFinish})
 	switch {
 	case err != nil:
 		return in.fail(CodePackagesFailed, err)

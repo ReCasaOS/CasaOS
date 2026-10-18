@@ -137,19 +137,35 @@ func runProcess(ctx context.Context, exe string, c Cmd, grace time.Duration) (Ou
 		select {
 		case err = <-waited:
 		case <-ctx.Done():
-			asked := time.Now()
-			sig := syscall.SIGTERM
-			if grace == 0 {
-				sig = syscall.SIGKILL
+			reaped := false
+			if c.Finish > 0 && grace > 0 {
+				// the leader alone is asked to finish (see Cmd.Finish) and is waited for: apt-get leaves when dpkg has, so what the group still holds when it is gone is not at work
+				_ = syscall.Kill(pid, syscall.SIGINT)
+				timer := time.NewTimer(c.Finish)
+				select {
+				case err = <-waited:
+					reaped = true
+				case <-timer.C:
+				}
+				timer.Stop()
 			}
-			_ = syscall.Kill(-pid, sig)
-			killer := time.AfterFunc(grace, func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
-			err = <-waited
-			// ponytail: polling every 50 ms; a zombie that nobody reaps keeps the group "there" for the whole grace
-			for time.Since(asked) < grace && !groupGone(pid) {
-				time.Sleep(50 * time.Millisecond)
+			if !reaped || !groupGone(pid) {
+				asked := time.Now()
+				sig := syscall.SIGTERM
+				if grace == 0 {
+					sig = syscall.SIGKILL
+				}
+				_ = syscall.Kill(-pid, sig)
+				killer := time.AfterFunc(grace, func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+				if !reaped {
+					err = <-waited
+				}
+				// ponytail: polling every 50 ms; a zombie that nobody reaps keeps the group "there" for the whole grace
+				for time.Since(asked) < grace && !groupGone(pid) {
+					time.Sleep(50 * time.Millisecond)
+				}
+				killer.Stop()
 			}
-			killer.Stop()
 		}
 		// whatever is left of the group is ended with the command: apt's methods are in it
 		_ = syscall.Kill(-pid, syscall.SIGKILL)

@@ -29,6 +29,9 @@ type fakeBox struct {
 	packageManager, osUpgrade       bool
 	packageManagerErr, osUpgradeErr error
 
+	dpkgInterrupted []string
+	dpkgErr         error
+
 	free    map[string]int64
 	freeErr map[string]error
 
@@ -71,6 +74,10 @@ func (b *fakeBox) PackageManagerBusy() (bool, error) {
 func (b *fakeBox) OSUpgradeBusy() (bool, error) {
 	b.calls = append(b.calls, "OSUpgradeBusy")
 	return b.osUpgrade, b.osUpgradeErr
+}
+func (b *fakeBox) DpkgAudit() ([]string, error) {
+	b.calls = append(b.calls, "DpkgAudit")
+	return b.dpkgInterrupted, b.dpkgErr
 }
 func (b *fakeBox) FreeBytes(path string) (int64, error) {
 	b.calls = append(b.calls, "FreeBytes "+path)
@@ -140,7 +147,7 @@ func failed(r PlanResult) []string {
 	return out
 }
 
-var allChecks = []string{"catalogue", "os", "arch", "recasaos", "already_installed", "foreign_unit", "busy", "disk", "apt"}
+var allChecks = []string{"catalogue", "os", "arch", "recasaos", "already_installed", "foreign_unit", "busy", "dpkg_state", "disk", "apt"}
 
 func TestAPlanOfAModuleThatCanBeInstalled(t *testing.T) {
 	box := newBox()
@@ -474,8 +481,8 @@ func TestThePlanNeverAsksAptWhenThePlanIsAlreadyRefusedOrWhenThereIsNothingToIns
 	old := newBox()
 	old.osVersion = "11"
 	old.hasApt = false
-	if r := Plan(catalogue, "virt", old); r.Refused != "os" || old.called("FreeBytes "+TmpDir) || r.Checks[7].Detail != DetailNotChecked || r.Checks[8].Detail != "" || !r.Checks[8].OK {
-		t.Errorf("refused %q, disk %+v, apt %+v, calls %v", r.Refused, r.Checks[7], r.Checks[8], old.calls)
+	if r := Plan(catalogue, "virt", old); r.Refused != "os" || old.called("FreeBytes "+TmpDir) || r.Checks[8].Detail != DetailNotChecked || r.Checks[9].Detail != "" || !r.Checks[9].OK {
+		t.Errorf("refused %q, disk %+v, apt %+v, calls %v", r.Refused, r.Checks[8], r.Checks[9], old.calls)
 	}
 	// the architecture of the box decides which packages are asked about
 	arm := newBox()
