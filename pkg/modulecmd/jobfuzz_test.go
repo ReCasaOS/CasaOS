@@ -156,7 +156,11 @@ func TestAFileIsReducedAsItsLinesAre(t *testing.T) {
 	for seed := int64(1); seed <= 150; seed++ {
 		rnd := rand.New(rand.NewSource(seed))
 		lines := randomLog(rnd)
-		writeJobLog(t, env, strings.Join(lines, "\n")+"\n")
+		content := strings.Join(lines, "\n") + "\n"
+		if len(lines) == 0 {
+			content = "" // (a file with no line in it is an empty file, which is not a file with one empty line)
+		}
+		writeJobLog(t, env, content)
 		for _, unit := range []UnitSight{UnitGone, UnitActive, UnitUnknown} {
 			got, err := ReadJob(env, jName, unit, at(2000))
 			if err != nil {

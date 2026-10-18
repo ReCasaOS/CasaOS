@@ -18,12 +18,17 @@ import (
 // a marker, of the job's module, with the job's nonce, and does not begin with the "| " of the output of a tool; the nonce of the job is the one the core wrote, and when it is
 // not given (a core that was restarted) it is the first marker of the log that has one, a marker with the nonce "-" (a run by hand) never counting.
 //
-// idle         no job: no marker of a job in the log, and no unit
+// idle         no job: no marker of a job in the log (a log that is no job's, or none), and no unit
 // running      no RESULT line, and the unit runs, or it was seen a moment ago (see InterruptedAfter), or systemd does not answer and the log is not old (SilentAfter)
 // succeeded    a RESULT ok line
 // refused      a RESULT refused line: nothing was changed, and Code says why
 // failed       a RESULT failed line: Step and Code say where and why, Undo whether what was done was undone
 // interrupted  no RESULT line, and the unit is gone: it was ended in the middle (the log says where), and nothing was undone; the core never starts it again
+//
+// A log with nothing in it is not the absence of a log: the unit empties the log when it starts and says its first marker when its plan is made, which takes up to a minute. It reads as
+// running while it was written lately (or the unit runs), and as interrupted when it was not and the unit is gone (a unit killed between the two).
+//
+// The state carries the end of the log as text, without the marker lines: they carry the nonce, which is not for whoever reads a status.
 //
 // A RESULT line is final: the first one wins, and nothing that comes after it changes the job. A job that finished stays what it was for as long as the log is there.
 
@@ -61,6 +66,8 @@ const (
 
 	// queuedMarker begins the first line of the log of a job that the core started: CASAOS_MODULE_QUEUED <nonce> <name> <time>.
 	queuedMarker = "CASAOS_MODULE_QUEUED"
+	// markerPrefix begins every marker line, whatever follows.
+	markerPrefix = "CASAOS_MODULE_"
 )
 
 // A UnitSight is what systemd says of the unit of the job.
@@ -92,7 +99,7 @@ type Job struct {
 	// StartedAt and EndedAt are the times of the first marker and of the RESULT line, RFC 3339 in UTC; "" when there is none.
 	StartedAt string `json:"started_at"`
 	EndedAt   string `json:"ended_at"`
-	// LogTail is the last TailLines lines of the log, as text: printable ASCII, a URL reduced to its host, cut.
+	// LogTail is the last TailLines lines of the log that are not marker lines, as text: printable ASCII, a URL reduced to its host, cut.
 	LogTail []string `json:"log_tail"`
 }
 
@@ -173,6 +180,7 @@ func QueuedLine(name, nonce string, at time.Time) string {
 // A Reducer reads the log of a module line by line and says how the job it holds is going. The zero value is not usable; NewReducer makes one.
 type Reducer struct {
 	name, nonce string
+	fed         bool // a line, of any kind, was given
 	first, last time.Time
 	step        string
 	result      *marker
@@ -189,14 +197,18 @@ func NewReducer(name, nonce string) *Reducer {
 // Feed gives the reducer the next line of the log, without its new line. whole says that the line ended with one and was read to its end: the last line of a log that is being written
 // does not, and a line that is cut is not whole either. Only a whole line can be a marker.
 func (r *Reducer) Feed(line string, whole bool) {
+	r.fed = true
 	if len(line) > maxLine {
 		line, whole = line[:maxLine], false
 	}
-	if len(r.tail) == TailLines {
-		copy(r.tail, r.tail[1:])
-		r.tail = r.tail[:TailLines-1]
+	// a marker line carries the nonce, and what is said of the job is said to whoever may read it: the tail is the sentences of the assistant and the output of the tools
+	if !strings.HasPrefix(line, markerPrefix) {
+		if len(r.tail) == TailLines {
+			copy(r.tail, r.tail[1:])
+			r.tail = r.tail[:TailLines-1]
+		}
+		r.tail = append(r.tail, line)
 	}
-	r.tail = append(r.tail, line)
 	if !whole {
 		return
 	}
@@ -265,9 +277,12 @@ func stamp(t time.Time) string {
 func (r *Reducer) Job(unit UnitSight, now, logWritten time.Time) Job {
 	job := Job{Name: r.name, State: JobIdle, LogTail: []string{}}
 	if r.first.IsZero() {
-		// no marker of a job: whatever the log holds is nobody's we know of
-		if unit == UnitActive {
+		// no marker of a job: whatever the log holds is nobody's we know of, unless it holds nothing, which is a unit that has truncated it and not yet said a word
+		switch {
+		case unit == UnitActive:
 			job.State = JobRunning
+		case !r.fed && !logWritten.IsZero():
+			job.State = quietState(unit, now, logWritten)
 		}
 		return job
 	}
@@ -296,17 +311,23 @@ func (r *Reducer) Job(unit UnitSight, now, logWritten time.Time) Job {
 		job.State = JobRunning
 		return job
 	}
+	job.State = quietState(unit, now, r.last, logWritten)
+	return job
+}
+
+// quietState is the state of a job whose unit is not known to run and that has not ended: running when there is a sign of life that is recent enough (the time of the last marker, the time
+// the log was written; a zero time is none, and so is one that is more than clockSlack in the future), and interrupted when there is not.
+func quietState(unit UnitSight, now time.Time, signs ...time.Time) string {
 	limit := InterruptedAfter
 	if unit == UnitUnknown {
 		limit = SilentAfter
 	}
-	job.State = JobInterrupted
-	for _, t := range []time.Time{r.last, logWritten} {
+	for _, t := range signs {
 		if age := now.Sub(t); !t.IsZero() && age >= -clockSlack && age < limit {
-			job.State = JobRunning
+			return JobRunning
 		}
 	}
-	return job
+	return JobInterrupted
 }
 
 func dashless(s string) string {

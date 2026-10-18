@@ -20,8 +20,7 @@ import (
 )
 
 // The commands of the assistant run with no shell, the standard input from /dev/null, an environment of their own and nothing of the process's, in a group of their own that is ended as
-// a whole when the context is: asked to stop first (apt must be allowed to leave dpkg in a state it can go on from), and killed when it has not after the grace.
-const killGrace = 20 * time.Second
+// a whole when the context is: asked to stop first (apt must be allowed to leave dpkg in a state it can go on from), and killed when it has not after the grace (killGrace).
 
 type execRunner struct{ tools toolPaths }
 

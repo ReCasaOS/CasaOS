@@ -3,6 +3,9 @@ package modulecmd
 import (
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"os"
 	"strings"
 	"time"
 
@@ -16,6 +19,9 @@ import (
 
 // errBadJob is a name or a nonce that a job cannot have.
 var errBadJob = errors.New("not a module name or not a nonce")
+
+// ErrLogChanged is the error of Abandon for a log that is no longer the first line of the job: a unit started, and the log holds what it has written.
+var ErrLogChanged = errors.New("the log is no longer the queued line of the job")
 
 // withLock runs write while the lock of the assistant is held and the folder of the logs is there. ErrLockHeld is the error of a lock that a run holds.
 func withLock(env Env, write func(env Env) error) error {
@@ -49,7 +55,8 @@ func Queue(env Env, name, nonce string, at time.Time) error {
 }
 
 // Abandon makes the log of a job whose unit could not be started a whole run: the queued line (queuedAt is the time Queue was given), what failed, what systemd said (said, as text, behind
-// "| " like the output of a tool) and a RESULT line that says failed, start_failed, with nothing undone because nothing was done. It does not wait for the lock.
+// "| " like the output of a tool) and a RESULT line that says failed, start_failed, with nothing undone because nothing was done. It does not wait for the lock. It writes only while the log
+// is exactly the queued line of this job, or is not there: a unit that did start has replaced the log with its own lines, and they are not for the core to overwrite (ErrLogChanged).
 func Abandon(env Env, name, nonce string, queuedAt, at time.Time, said []string) error {
 	if !nameRe.MatchString(name) || !dockerpkg.ValidNonce(nonce) {
 		return errBadJob
@@ -66,7 +73,35 @@ func Abandon(env Env, name, nonce string, queuedAt, at time.Time, said []string)
 		}
 	}
 	fmt.Fprintf(&b, "%s %s %s failed - %s - %s\n", resultMarker, nonce, name, CodeStartFailed, at.UTC().Format(time.RFC3339))
+	queued := QueuedLine(name, nonce, queuedAt)
 	return withLock(env, func(env Env) error {
+		if err := logIsOnly(env.Roots.logFile(name), queued); err != nil {
+			return err
+		}
 		return writeFileAtomic(env.Roots.logFile(name), []byte(b.String()), 0o644)
 	})
+}
+
+// logIsOnly says, as a nil, that the log at path holds exactly want, or is not there (nothing of anybody's to keep); ErrLogChanged when it holds anything else. A log that is not a
+// regular file, or that cannot be read, is an error of its own.
+func logIsOnly(path, want string) error {
+	f, err := os.OpenFile(path, os.O_RDONLY|noFollow|nonBlock, 0)
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
+		return nil
+	case err != nil:
+		return err
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("the log is not a regular file: %v", err)
+	}
+	got, err := io.ReadAll(io.LimitReader(f, int64(len(want))+1))
+	if err != nil {
+		return err
+	}
+	if string(got) != want {
+		return ErrLogChanged
+	}
+	return nil
 }

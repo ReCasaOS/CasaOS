@@ -1,6 +1,7 @@
 package modulecmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -175,6 +176,22 @@ func TestWhatIsNotTheJobsWordNeverEndsTheJob(t *testing.T) {
 		"a step with a bad name":             jStep(jNonce, "Packages", "done", 5),
 		"a step with a dash":                 jStep(jNonce, "pack-ages", "done", 5),
 		"a step far too long":                jStep(jNonce, strings.Repeat("a", 33), "done", 5),
+		// the queued line is the core's first line, and is read as strictly as the others: it is a job's word only as it is written
+		"a queued line with a field too many":           jQueued(jNonce, 5) + " x",
+		"a queued line with the result's fields":        jQueued(jNonce, 5) + " ok done - -",
+		"a queued line of another module":               strings.Replace(jQueued(jNonce, 5), " virt ", " other ", 1),
+		"a queued line with a nonce in capitals":        jQueued(strings.ToUpper(jNonce), 5),
+		"a queued line with a short nonce":              jQueued(jNonce[:31], 5),
+		"a queued line with no nonce":                   strings.Replace(jQueued(jNonce, 5), jNonce, "", 1),
+		"a queued line with a time in a zone":           "CASAOS_MODULE_QUEUED " + jNonce + " virt " + strings.TrimSuffix(jts(5), "Z") + "+00:00",
+		"a queued line with a fraction of a second":     "CASAOS_MODULE_QUEUED " + jNonce + " virt " + strings.TrimSuffix(jts(5), "Z") + ".5Z",
+		"a queued line with no time":                    "CASAOS_MODULE_QUEUED " + jNonce + " virt",
+		"a queued line in the output of a tool":         "| " + jQueued(jNonce, 5),
+		"a queued line with a tab":                      strings.Replace(jQueued(jNonce, 5), " virt ", "\tvirt ", 1),
+		"a queued line with two blanks":                 strings.Replace(jQueued(jNonce, 5), " virt ", "  virt ", 1),
+		"a queued line that ends with a return":         jQueued(jNonce, 5) + "\r",
+		"a queued line, the name of the marker changed": strings.Replace(jQueued(jNonce, 5), "QUEUED", "QUEUEDX", 1),
+		"a queued line with the nonce of a run by hand": jQueued("-", 5),
 	}
 	for name, line := range forged {
 		t.Run(name, func(t *testing.T) {
@@ -276,7 +293,7 @@ func TestTheTailIsTheLastTwentyLinesSaid(t *testing.T) {
 		t.Errorf("not the last lines: first %q last %q", got.LogTail[0], got.LogTail[TailLines-1])
 	}
 	// shorter logs are whole, and an empty tail is a list
-	if short := reduce(jNonce, lines[:4], UnitActive, at(5)); len(short.LogTail) != 4 {
+	if short := reduce(jNonce, lines[:4], UnitActive, at(5)); len(short.LogTail) != 3 {
 		t.Errorf("%d lines", len(short.LogTail))
 	}
 	if idle := reduce(jNonce, nil, UnitGone, at(5)); idle.LogTail == nil || len(idle.LogTail) != 0 {
@@ -388,6 +405,100 @@ func TestAGiantLineIsCutWhenItIsGiven(t *testing.T) {
 	for _, l := range r.tail {
 		if len(l) > maxLine {
 			t.Fatalf("a line of %d bytes is held", len(l))
+		}
+	}
+}
+
+// The nonce is what makes a line of the log the job's word, and what a status says goes to whoever may read the status: the tail has the sentences of the assistant and the output of the
+// tools, and not one marker line, so that the nonce is in no answer.
+func TestTheTailHasNoMarkerAndSoNotTheNonce(t *testing.T) {
+	lines := []string{jQueued(jNonce, 0)}
+	for i := 0; i < 30; i++ {
+		lines = append(lines, jStep(jNonce, "packages", "begin", i), fmt.Sprintf("| tool line %02d", i), jStep(jNonce, "packages", "done", i))
+	}
+	lines = append(lines, "failed at step packages: packages_failed", "kept_packages: aa", jResult(jNonce, "failed", "packages", "packages_failed", "rolled_back", 40))
+	for _, unit := range []UnitSight{UnitActive, UnitGone} {
+		got := reduce(jNonce, lines, unit, at(41))
+		for _, l := range got.LogTail {
+			if strings.Contains(l, "CASAOS_MODULE") || strings.Contains(l, jNonce) {
+				t.Errorf("a marker in the tail: %q", l)
+			}
+		}
+		// the markers do not take the place of the lines of the tools: the last twenty of what is left
+		if len(got.LogTail) != TailLines || got.LogTail[TailLines-1] != "kept_packages: aa" || got.LogTail[TailLines-2] != "failed at step packages: packages_failed" || got.LogTail[TailLines-3] != "| tool line 29" {
+			t.Errorf("the tail is %q", got.LogTail)
+		}
+		raw, err := json.Marshal(got)
+		if err != nil || strings.Contains(string(raw), jNonce) {
+			t.Errorf("the nonce is in what is said of the job: %s, %v", raw, err)
+		}
+	}
+	// a line that begins like a marker is not a line of a tool or a sentence, whatever its shape: the lines that are not whole, a marker of another job, one with a nonce that is not one
+	odd := []string{jQueued(jNonce, 0), "| tool", jStep(jOther, "packages", "begin", 1), "CASAOS_MODULE_STEP", "CASAOS_MODULE_RESULT " + jNonce + " virt ok", "CASAOS_MODULE_NEW x y"}
+	got := reduce(jNonce, odd, UnitActive, at(5))
+	if !reflect.DeepEqual(got.LogTail, []string{"| tool"}) {
+		t.Errorf("the tail is %q", got.LogTail)
+	}
+	// and the answer of a start, which is made from the first line of the log
+	if queued := reduce(jNonce, []string{jQueued(jNonce, 0)}, UnitActive, at(1)); len(queued.LogTail) != 0 || queued.LogTail == nil {
+		t.Errorf("the tail of a job that was queued is %#v", queued.LogTail)
+	}
+}
+
+func TestTheTailIsTwentyLines(t *testing.T) {
+	if TailLines != 20 {
+		t.Errorf("TailLines = %d: the page and the doc say 20", TailLines)
+	}
+}
+
+// The unit truncates the log when it starts and says its first marker when its plan is made, which takes up to a minute: an empty log is a unit that has not said a word yet, and not a box
+// that has no job. It reads as the job of a unit does that has said nothing since the log was written.
+func TestAnEmptyLogIsAUnitThatHasNotSaidAWordYet(t *testing.T) {
+	for name, tc := range map[string]struct {
+		unit    UnitSight
+		written time.Time
+		now     time.Time
+		want    string
+	}{
+		"written a moment ago, no unit seen":               {UnitGone, at(95), at(100), JobRunning},
+		"written 29 seconds ago, no unit seen":             {UnitGone, at(71), at(100), JobRunning},
+		"written 30 seconds ago, no unit seen":             {UnitGone, at(70), at(100), JobInterrupted},
+		"written an hour ago, no unit seen":                {UnitGone, at(-3500), at(100), JobInterrupted},
+		"written an hour ago, the unit runs":               {UnitActive, at(-3500), at(100), JobRunning},
+		"written a moment ago, systemd silent":             {UnitUnknown, at(95), at(100), JobRunning},
+		"written 20 minutes ago, systemd silent":           {UnitUnknown, at(100 - 20*60), at(100), JobRunning},
+		"written 31 minutes ago, systemd silent":           {UnitUnknown, at(100 - 31*60), at(100), JobInterrupted},
+		"written in the future, a clock put back":          {UnitGone, at(100 + 7200), at(100), JobInterrupted},
+		"written a little in the future, a clock put back": {UnitGone, at(110), at(100), JobRunning},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := ReduceLines(jName, jNonce, nil, tc.unit, tc.now, tc.written)
+			if got.State != tc.want || got.Step != "" || got.StartedAt != "" || got.EndedAt != "" || got.LogTail == nil || len(got.LogTail) != 0 {
+				t.Errorf("%+v, want %s", got, tc.want)
+			}
+		})
+	}
+	// no log at all, and a log that is somebody's and not a job's, are no job
+	for name, tc := range map[string]struct {
+		lines   []string
+		written time.Time
+	}{
+		"no log":                         {nil, time.Time{}},
+		"a log of a tool's lines":        {[]string{"| apt says"}, at(99)},
+		"a log of a run by hand":         {[]string{jStep("-", "packages", "begin", 1)}, at(99)},
+		"a log with an empty line":       {[]string{""}, at(99)},
+		"a log with a line not finished": {[]string{"CASAOS_MODULE_STE"}, at(99)},
+	} {
+		for _, unit := range []UnitSight{UnitGone, UnitUnknown} {
+			t.Run(name, func(t *testing.T) {
+				r := NewReducer(jName, jNonce)
+				for i, l := range tc.lines {
+					r.Feed(l, i < len(tc.lines)-1 || l != "CASAOS_MODULE_STE")
+				}
+				if got := r.Job(unit, at(100), tc.written); got.State != JobIdle {
+					t.Errorf("unit %v: %+v", unit, got)
+				}
+			})
 		}
 	}
 }

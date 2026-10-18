@@ -50,7 +50,7 @@ func TestAJobIsReadFromTheLogOfTheModule(t *testing.T) {
 	}
 	job, err := ReadJob(env, jName, UnitGone, at(40))
 	// the last marker is old, and the file was written eight seconds ago: the unit was talking
-	if err != nil || job.State != JobRunning || job.Step != "packages" || len(job.LogTail) != 3 {
+	if err != nil || job.State != JobRunning || job.Step != "packages" || len(job.LogTail) != 1 {
 		t.Fatalf("%+v, %v", job, err)
 	}
 	if err := os.Chtimes(path, at(2), at(2)); err != nil {
@@ -122,8 +122,8 @@ func TestAHostileLogIsReadAsText(t *testing.T) {
 	if job, _ := ReadJob(env, jName, UnitGone, at(1000)); job.State != JobSucceeded {
 		t.Errorf("%+v", job)
 	}
-	// and a log that is all NULs, or has no line in it at all
-	for _, c := range []string{strings.Repeat("\x00", 100000), strings.Repeat("z", 100000), ""} {
+	// and a log that is all NULs, or is text that is no marker (an empty log is something else: see TestAnEmptyLogIsAUnitThatHasNotYetSaidAWord)
+	for _, c := range []string{strings.Repeat("\x00", 100000), strings.Repeat("z", 100000), "| a line of a tool\n", "refused: busy\n", "\n"} {
 		writeJobLog(t, env, c)
 		if job, err := ReadJob(env, jName, UnitGone, at(0)); err != nil || job.State != JobIdle {
 			t.Errorf("%+v, %v", job, err)
@@ -404,5 +404,162 @@ func TestAJobThatCouldNotBeStartedSaysThreeLinesOfWhatSystemdSaidAtMost(t *testi
 	}
 	if got := strings.Count(string(raw), "\n| "); got != 3 || strings.Contains(string(raw), "four") {
 		t.Errorf("%d lines of systemd's: %q", got, raw)
+	}
+}
+
+// The core closes the log of a job whose unit it could not start only while the log is still the first line it wrote: a unit that did start replaces the log with its own lines, and what
+// it wrote is its word, not the core's.
+func TestAJobIsAbandonedOnlyWhileTheLogIsStillItsQueuedLine(t *testing.T) {
+	queued := QueuedLine(jName, jNonce, at(100))
+	for name, tc := range map[string]struct {
+		log     *string // nil: no log at all
+		changed bool
+	}{
+		"its queued line":                          {&queued, false},
+		"no log at all":                            {nil, false},
+		"the lines of the unit that ran":           {strPtr(logOf(jStep(jNonce, "packages", "begin", 101), jStep(jNonce, "packages", "done", 102), jResult(jNonce, "ok", "done", "-", "-", 103))), true},
+		"the lines of the unit that is at it":      {strPtr(logOf(jStep(jNonce, "packages", "begin", 101))), true},
+		"a log that the unit emptied":              {strPtr(""), true},
+		"the queued line of another job":           {strPtr(QueuedLine(jName, jOther, at(100))), true},
+		"its queued line, written at another time": {strPtr(QueuedLine(jName, jNonce, at(99))), true},
+		"its queued line and a line more":          {strPtr(queued + "| apt\n"), true},
+		"its queued line without a new line":       {strPtr(strings.TrimSuffix(queued, "\n")), true},
+		"the lines of a run by hand":               {strPtr(logOf(jStep("-", "packages", "begin", 101))), true},
+		"a real result":                            {strPtr(logOf(jQueued(jNonce, 100), jResult(jNonce, "ok", "done", "-", "-", 103))), true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := jobBox(t)
+			path := env.Roots.logFile(jName)
+			if tc.log != nil {
+				writeJobLog(t, env, *tc.log)
+			}
+			err := Abandon(env, jName, jNonce, at(100), at(105), []string{"Failed to connect to bus"})
+			if tc.changed {
+				if !errors.Is(err, ErrLogChanged) {
+					t.Fatalf("Abandon() = %v, want ErrLogChanged", err)
+				}
+				if got, _ := os.ReadFile(path); string(got) != *tc.log {
+					t.Errorf("the log was written: %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job, _ := ReadJob(env, jName, UnitGone, at(106)); job.State != JobFailed || job.Code != "start_failed" {
+				t.Errorf("%+v", job)
+			}
+		})
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+// What the core says when it abandons a job is these lines, exactly: the queued line, the sentence, what systemd said as text, and the result.
+func TestTheLogOfAnAbandonedJobIsExactlyThis(t *testing.T) {
+	env := jobBox(t)
+	if err := Queue(env, jName, jNonce, at(100)); err != nil {
+		t.Fatal(err)
+	}
+	if err := Abandon(env, jName, jNonce, at(100), at(102), []string{"Failed to connect to bus: no such file", "second line"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(env.Roots.logFile(jName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := logOf(jQueued(jNonce, 100), "failed: start_failed", "| Failed to connect to bus: no such file", "| second line", jResult(jNonce, "failed", "-", "start_failed", "-", 102))
+	if string(got) != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestAnEmptyLogFileReadsAsAUnitThatHasNotSaidAWordYet(t *testing.T) {
+	env := jobBox(t)
+	path := writeJobLog(t, env, "")
+	// the unit truncated it a moment ago, and its plan goes on
+	if err := os.Chtimes(path, at(95), at(95)); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := ReadJob(env, jName, UnitGone, at(100)); err != nil || job.State != JobRunning || job.Name != jName {
+		t.Errorf("a moment ago: %+v, %v", job, err)
+	}
+	// and it was killed between the truncate and its first marker
+	if job, _ := ReadJob(env, jName, UnitGone, at(200)); job.State != JobInterrupted || job.Step != "" || job.StartedAt != "" {
+		t.Errorf("later: %+v", job)
+	}
+	if job, _ := ReadJob(env, jName, UnitActive, at(200)); job.State != JobRunning {
+		t.Errorf("the unit runs: %+v", job)
+	}
+	// a module that has no log is the other thing
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if job, _ := ReadJob(env, jName, UnitGone, at(200)); job.State != JobIdle {
+		t.Errorf("no log: %+v", job)
+	}
+}
+
+// toolLines are n bytes of the lines of a tool (n is 0 or at least 3).
+func toolLines(n int) string {
+	var b strings.Builder
+	for n > 0 {
+		k := min(n, 1000)
+		if n-k > 0 && n-k < 3 {
+			k = n - 3
+		}
+		b.WriteString("| " + strings.Repeat("f", k-3) + "\n")
+		n -= k
+	}
+	return b.String()
+}
+
+// aLogOfSize is a log of exactly size bytes: head, the lines of a tool up to the byte where, middle, the lines of a tool again, and tail at the end.
+func aLogOfSize(t *testing.T, size, where int, head, middle, tail string) string {
+	t.Helper()
+	log := head + toolLines(where-len(head)) + middle
+	log += toolLines(size-len(log)-len(tail)) + tail
+	if len(log) != size {
+		t.Fatalf("the log is %d bytes, not %d", len(log), size)
+	}
+	return log
+}
+
+// A log is read whole up to 8 MiB, and beyond it by its first and its last 4 MiB: a run does not make a log of that size, and one that is larger is read at its two ends.
+func TestAnEightMebibyteLogIsReadWholeAndALargerOneAtItsTwoEnds(t *testing.T) {
+	if logScanBytes != 8<<20 {
+		t.Fatalf("the cap of what is read of a log is %d bytes, not 8 MiB", logScanBytes)
+	}
+	const limit = 8 << 20
+	head := logOf(jQueued(jNonce, 0), jStep(jNonce, "packages", "begin", 1))
+	result := logOf(jResult(jNonce, "ok", "done", "-", "-", 41))
+	env := jobBox(t)
+	for name, tc := range map[string]struct {
+		size, at int
+		middle   string
+		tail     string
+		read     bool // whether the result is read
+	}{
+		"8 MiB, the result in the middle":     {limit, limit/2 + 5000, result, "", true},
+		"8 MiB, the result at the end":        {limit, 0, "", result, true},
+		"9 MiB, the result in the middle":     {limit + 1<<20, limit/2 + 512<<10, result, "", false},
+		"9 MiB, the result at the end":        {limit + 1<<20, 0, "", result, true},
+		"9 MiB, the result at the start":      {limit + 1<<20, len(head), result, "", true},
+		"9 MiB, the result in the first half": {limit + 1<<20, limit/2 - 5000, result, "", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			where := tc.at
+			if where == 0 {
+				where = len(head) + 5000
+			}
+			writeJobLog(t, env, aLogOfSize(t, tc.size, where, head, tc.middle, tc.tail))
+			job, err := ReadJob(env, jName, UnitGone, at(1000))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := job.State == JobSucceeded; got != tc.read {
+				t.Errorf("the result is read = %v, want %v: %+v", got, tc.read, job)
+			}
+		})
 	}
 }

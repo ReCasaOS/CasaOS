@@ -70,6 +70,14 @@ const (
 	tarName                = "archive.tar"
 )
 
+const (
+	// killGrace is how long a command that is asked to stop (SIGTERM) is given to leave before what is left of it is killed.
+	killGrace = 20 * time.Second
+	// StopWithin is how long a run needs, from the SIGTERM that asks it to stop, to be over: the command it is in is given killGrace to leave, then the rollback has rollbackTime, and the
+	// command that ends the rollback is given killGrace in its turn. A unit that waits for less before it kills what is left cuts the rollback of an install.
+	StopWithin = 2*killGrace + rollbackTime
+)
+
 // aptInstallArgv is the install of the packages: no questions, no recommends, never a package removed, the configuration files that are there kept, a wait for dpkg's lock. The names
 // are checked here again, since they end up on a command line.
 func aptInstallArgv(packages []string) ([]string, error) {
