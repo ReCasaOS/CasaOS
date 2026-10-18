@@ -158,8 +158,20 @@ func readFilesList(path string) ([]string, error) { return readList(path, osmodu
 // readDirsList reads the list of the directories that the install of a module made, in the same way.
 func readDirsList(path string) ([]string, error) { return readList(path, osmodule.ParseDirs) }
 
+// readFilesEntries reads the list of the files of a module with what each is to hold: an empty list, with no entries, when there is none.
+func readFilesEntries(path string) (osmodule.FilesList, error) {
+	raw, err := readRegular(path, int64(osmodule.MaxFilesBytes))
+	if errors.Is(err, fs.ErrNotExist) {
+		return osmodule.FilesList{}, nil
+	}
+	if err != nil {
+		return osmodule.FilesList{}, err
+	}
+	return osmodule.ParseFilesList(raw)
+}
+
 func readList(path string, parse func([]byte) ([]string, error)) ([]string, error) {
-	raw, err := readRegular(path, osmodule.MaxFilesBytes)
+	raw, err := readRegular(path, int64(osmodule.MaxFilesBytes))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}

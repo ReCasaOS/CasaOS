@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -41,21 +44,33 @@ func unitNames(manifestUnit string, list []string) []string {
 	return out
 }
 
-// stopUnit stops and disables a unit. A unit systemd does not know is already stopped; one that is still running after the attempt is not, and is the reason the files stay.
-func (j *job) stopUnit(ctx context.Context, unit string) bool {
-	out, err := j.sh(ctx, systemctlTimeout, "systemctl", "disable", "--now", unit)
-	if err == nil && out.ExitCode == 0 {
+// unitIsStopped asks systemd, and only the two words that say a unit is not running count as stopped: "inactive" (which is also what a unit that systemd does not know says) and "failed".
+// An error, no answer, any other word (activating, deactivating, reloading, active, anything) is a unit that is not known to be stopped, and the files stay. It is asked on a context of its
+// own, bounded: a run that was told to stop must still be able to find out, since the answer is what decides whether anything is deleted.
+func (j *job) unitIsStopped(ctx context.Context, unit string) bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), systemctlTimeout)
+	defer cancel()
+	out, err := j.env.Runner.Run(ctx, Cmd{Argv: []string{"systemctl", "is-active", unit}, Env: childEnv(j.env), Timeout: systemctlTimeout})
+	if err != nil {
+		return false
+	}
+	switch strings.TrimSpace(out.Text) {
+	case "inactive", "failed":
 		return true
 	}
-	state, err := j.env.Runner.Run(ctx, Cmd{Argv: []string{"systemctl", "is-active", unit}, Env: childEnv(j.env), Timeout: systemctlTimeout})
-	if err == nil {
-		switch strings.TrimSpace(state.Text) {
-		case "active", "activating", "deactivating", "reloading":
-			j.say("the unit %s is still running", printable(unit, 80))
-			return false
-		}
+	return false
+}
+
+// stopUnit stops and disables a unit, and then asks whether it is stopped: what `systemctl disable --now` said (or that the run was ended while it ran) does not decide that.
+func (j *job) stopUnit(ctx context.Context, unit string) bool {
+	out, err := j.sh(ctx, systemctlTimeout, "systemctl", "disable", "--now", unit)
+	if !j.unitIsStopped(ctx, unit) {
+		j.say("the unit %s is not known to be stopped", printable(unit, 80))
+		return false
 	}
-	j.say("the unit %s could not be disabled; it is not running", printable(unit, 80))
+	if err != nil || out.ExitCode != 0 {
+		j.say("the unit %s could not be disabled; it is not running", printable(unit, 80))
+	}
 	return true
 }
 
@@ -76,8 +91,11 @@ func removeEntry(real string) (removed bool, err error) {
 	return true, nil
 }
 
-// written is what an install put down, as the unpack says it: the files and links, and the directories it made (the deepest first).
-type written struct{ files, dirs []string }
+// written is what an install put down, as the unpack says it: the files and links with what each holds, and the directories it made (the deepest first).
+type written struct {
+	files []osmodule.FileEntry
+	dirs  []string
+}
 
 // teardown undoes an install, whatever state it is in: the units are stopped and disabled, the files that are still there (and are no other module's) are deleted, then the directories the
 // install made, if they are empty, then the manifest, the version and the lists, then systemd reads its units again. What it deletes is what only holds, when it is given (the rollback of an
@@ -86,60 +104,78 @@ type written struct{ files, dirs []string }
 // the making is in them, and is deleted if it is empty). It returns what it could not do, with the step it was in. Nothing that is
 // the module's is forgotten until all of it is gone: a list, a manifest or a version stays while a file does, and a run again finishes the work. markers puts the phases in the log as
 // steps (remove does, the rollback of an install does not).
-func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers bool, only *written) (bad int, phase string) {
+func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, only *written) (bad int, phase, code string) {
 	step := func(s string) {
-		if markers {
-			j.marker(s, "begin")
-			j.hook(ctx, s, "begin")
-		}
+		j.marker(prefix+s, "begin")
+		j.hook(ctx, prefix+s, "begin")
 	}
 	end := func(s string, bad int) {
-		switch {
-		case !markers:
-		case bad > 0:
-			j.marker(s, "failed")
-		default:
-			j.marker(s, "done")
-			j.hook(ctx, s, "done")
+		if bad > 0 {
+			j.marker(prefix+s, "failed")
+			return
 		}
+		j.marker(prefix+s, "done")
+		j.hook(ctx, prefix+s, "done")
 	}
 	roots := j.env.Roots
-	var list, dirs []string
+	var (
+		list       osmodule.FilesList
+		dirs       []string
+		unreadable []string
+	)
 	if only != nil {
-		list, dirs = only.files, only.dirs
+		list, dirs = osmodule.FilesList{Entries: only.files, Verified: true}, only.dirs
 	} else {
 		var err error
-		if list, err = readFilesList(roots.files(name)); err != nil {
-			j.say("the list of the files of %s cannot be read", name)
-			return 1, StepStop
+		if list, err = readFilesEntries(roots.files(name)); err != nil {
+			unreadable = append(unreadable, roots.files(name))
 		}
 		if dirs, err = readDirsList(roots.dirs(name)); err != nil {
-			j.say("the list of the directories of %s cannot be read", name)
-			return 1, StepStop
+			unreadable = append(unreadable, roots.dirs(name))
 		}
-		if list == nil && markers {
+		if list.Entries == nil && len(unreadable) == 0 {
 			j.say("there is no list of the files of %s: no file is deleted", name)
 		}
 	}
-	// stop
+	// stop: the unit of the module is stopped whatever the lists are, since the manifest names it
 	step(StepStop)
 	stuck := 0
-	for _, unit := range unitNames(manifestUnit, list) {
+	for _, unit := range unitNames(manifestUnit, list.Paths()) {
 		if !j.stopUnit(ctx, unit) {
 			stuck++
 		}
 	}
-	end(StepStop, stuck)
-	if stuck > 0 {
-		return stuck, StepStop
+	bad, code = stuck, CodeUnitNotStopped
+	if bad == 0 && ctx.Err() != nil {
+		// told to stop, and nothing is deleted yet: the run stops here, and a run again goes on
+		bad, code = 1, CodeInterrupted
 	}
+	end(StepStop, bad)
+	if bad > 0 {
+		j.say("nothing was deleted")
+		return bad, StepStop, code
+	}
+	// What follows is done whole, whatever the run is told: the unit is stopped, and a module that has lost its program and not its unit, or its files and not its manifest, is worse than
+	// either end. It is a few unlinks and one systemctl, bounded.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTime)
+	defer cancel()
 	// files
 	step(StepFiles)
+	if len(unreadable) > 0 {
+		// A list that cannot be read (cut short, or naming what an install never writes) is not trusted, so nothing is deleted by it, and a run again would read it again: it is for the administrator to
+		// look at and to delete.
+		for _, p := range unreadable {
+			j.say("the list %s cannot be read: nothing was deleted by it", printable(roots.Slash(p), 200))
+			j.say("look at it, and delete %s by hand; then run casaos module remove %s again", printable(roots.Slash(p), 200), name)
+		}
+		end(StepFiles, len(unreadable))
+		return len(unreadable), StepFiles, CodeFilesUnreadable
+	}
 	others, err := (&box{ctx: ctx, env: &j.env}).FilesLists()
 	if err != nil {
 		j.say("the lists of the files of the other modules cannot be read")
 		end(StepFiles, 1)
-		return 1, StepFiles
+		return 1, StepFiles, CodeRemoveIncomplete
 	}
 	owner := map[string]string{}
 	for _, other := range sortedKeys(others) {
@@ -153,14 +189,40 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 		}
 	}
 	failed := 0
-	for _, p := range list {
+	// the directories that lost an entry, to be made durable once the entries are gone
+	touched := map[string]bool{}
+	unlink := func(real string) error {
+		removed, err := removeEntry(real)
+		if removed {
+			touched[filepath.Dir(real)] = true
+		}
+		return err
+	}
+	for _, e := range list.Entries {
+		p := e.Path
+		real := roots.Path(p)
+		// (the temporary name an unpack writes under is the module's whatever the file is)
+		if err := unlink(tempName(real)); err != nil {
+			j.say("not removed: %s (%s)", printable(p, 200), printable(err.Error(), 100))
+			failed++
+		}
 		if other, ok := owner[p]; ok {
 			j.say("kept, it is the list of %s too: %s", other, printable(p, 200))
 			continue
 		}
-		real := roots.Path(p)
-		for _, target := range []string{real, tempName(real)} {
-			if _, err := removeEntry(target); err != nil {
+		if !list.Verified {
+			j.say("left: %s (the list is of an earlier format: if it is the module's, delete it by hand)", printable(p, 200))
+			continue
+		}
+		switch h, err := holds(real, e); {
+		case err != nil:
+			j.say("not removed: %s (%s)", printable(p, 200), printable(err.Error(), 100))
+			failed++
+		case h == holdsOther:
+			// not what the install put there, or not what it was to put: somebody else's, or the half of a write that was never done
+			j.say("left: %s (changed)", printable(p, 200))
+		case h == holdsOurs:
+			if err := unlink(real); err != nil {
 				j.say("not removed: %s (%s)", printable(p, 200), printable(err.Error(), 100))
 				failed++
 			}
@@ -168,35 +230,55 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 	}
 	// the directories the install made, the deepest first, those that are empty: one that holds anything is somebody's, and stays
 	for _, d := range sortedDeepestFirst(dirs) {
+		touched[filepath.Dir(roots.Path(d))] = true
 		if err := removeEmptyDir(roots.Path(d)); err != nil {
 			j.say("not removed: %s (%s)", printable(d, 200), printable(err.Error(), 100))
 			failed++
 		}
 	}
+	for _, dir := range slices.Sorted(maps.Keys(touched)) {
+		syncDir(dir)
+	}
 	end(StepFiles, failed)
 	if failed > 0 {
-		return failed, StepFiles
+		return failed, StepFiles, CodeRemoveIncomplete
 	}
-	// manifest
+	// manifest: the lists stay until systemd has read its units again, so that a run again can do it again
 	step(StepManifest2)
 	gone := 0
-	for _, p := range []string{roots.manifest(name), roots.version(name), roots.files(name), roots.dirs(name), tempName(roots.manifest(name)), tempName(roots.version(name)), tempName(roots.files(name)), tempName(roots.dirs(name))} {
+	for _, p := range []string{roots.manifest(name), roots.version(name), tempName(roots.manifest(name)), tempName(roots.version(name)), tempName(roots.files(name)), tempName(roots.dirs(name))} {
 		if _, err := removeEntry(p); err != nil {
 			j.say("not removed: %s", printable(err.Error(), 100))
 			gone++
 		}
 	}
+	syncDir(roots.manifests())
+	syncDir(roots.state())
 	end(StepManifest2, gone)
 	if gone > 0 {
-		return gone, StepManifest2
+		return gone, StepManifest2, CodeRemoveIncomplete
 	}
 	// reload
 	step(StepReload)
+	reload := 0
 	if out, err := j.sh(ctx, systemctlTimeout, "systemctl", "daemon-reload"); err != nil || out.ExitCode != 0 {
-		j.say("systemctl daemon-reload failed; systemd reads its units again at its next reload")
+		j.say("systemctl daemon-reload failed")
+		reload++
 	}
-	end(StepReload, 0)
-	return 0, ""
+	if reload == 0 {
+		for _, p := range []string{roots.files(name), roots.dirs(name)} {
+			if _, err := removeEntry(p); err != nil {
+				j.say("not removed: %s", printable(err.Error(), 100))
+				reload++
+			}
+		}
+		syncDir(roots.state())
+	}
+	end(StepReload, reload)
+	if reload > 0 {
+		return reload, StepReload, CodeUnitsFailed
+	}
+	return 0, "", ""
 }
 
 // sortedDeepestFirst is the paths, the ones with the most parts first.
@@ -247,48 +329,52 @@ func (j *job) sayLeftovers(name string, packages []string) {
 }
 
 // runRemove takes the module c.name off the box. A module is there to remove when it has a manifest, a list of files or a version: a half-installed one is removed too.
-func runRemove(ctx context.Context, env Env, c command) int {
+func runRemove(ctx context.Context, env Env, c command) (code int) {
 	env = env.withDefaults()
-	say := func(code string) int { fmt.Fprintf(env.Stdout, "refused: %s\n", code); return ExitRefused }
 	if env.EUID() != 0 {
-		return say(CodeNotRoot)
+		return refuseEarly(env, c.name, CodeNotRoot)
 	}
 	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
-		return say(CodeLockFailed)
+		return refuseEarly(env, c.name, CodeLockFailed)
+	}
+	if err := env.Host.SafeDir(env.Roots.state()); err != nil {
+		return refuseEarly(env, c.name, CodeStateUnsafe)
+	}
+	// The question is asked before the lock is taken (see runInstall), and what is checked before it is checked again after it.
+	if !c.yes {
+		if why := removeRefusal(ctx, env, c.name); why != "" {
+			return refuseEarly(env, c.name, why)
+		}
+		if !env.Terminal() {
+			return refuseEarly(env, c.name, CodeConfirmationNeeded)
+		}
+		fmt.Fprintf(env.Stdout, "remove %s: its unit is stopped and disabled, its files and its manifest are deleted; the packages and the data stay\nGo on? [y/N] ", c.name)
+		if !askYes(env.Stdin) {
+			return refuseEarly(env, c.name, CodeDeclined)
+		}
 	}
 	release, err := env.Host.Lock(env.Roots.lock())
 	switch {
 	case errors.Is(err, ErrLockHeld):
-		return say(CodeBusy)
+		return refuseEarly(env, c.name, CodeBusy)
 	case err != nil:
-		return say(CodeLockFailed)
+		return refuseEarly(env, c.name, CodeLockFailed)
 	}
 	defer release()
 	j := newJob(env, c.name)
 	if err := j.openLog(); err != nil {
-		return say(CodeLogUnwritable)
+		return refuseEarly(env, c.name, CodeLogUnwritable)
 	}
 	defer j.close()
+	defer j.recoverRun(&code, func() string { return "-" })
 	// what an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
-	_ = emptyDir(env.Roots.tmp())
-
-	roots := env.Roots
-	present := false
-	for _, p := range []string{roots.manifest(c.name), roots.files(c.name), roots.dirs(c.name), roots.version(c.name)} {
-		if _, err := os.Lstat(p); err == nil || !(errors.Is(err, fs.ErrNotExist) || isNotDir(err)) {
-			present = true
-		}
+	if err := emptyDir(env.Host, env.Roots.tmp()); errors.Is(err, errUnsafe) {
+		return j.refuse(CodeStateUnsafe)
 	}
-	if !present {
-		return j.refuse(CodeNotInstalled)
+	if why := removeRefusal(ctx, env, c.name); why != "" {
+		return j.refuse(why)
 	}
 	bx := &box{ctx: ctx, env: &env}
-	if pm, err := bx.PackageManagerBusy(); pm || err != nil {
-		return j.refuse(CodeBusy)
-	}
-	if up, err := bx.OSUpgradeBusy(); up || err != nil {
-		return j.refuse(CodeBusy)
-	}
 	installed, _, _ := bx.InstalledManifests()
 	manifest := installed[c.name]
 	if manifest.Unit == "" {
@@ -296,35 +382,57 @@ func runRemove(ctx context.Context, env Env, c command) int {
 			manifest = e.Manifest
 		}
 	}
-	if !c.yes {
-		if !env.Terminal() {
-			return j.refuse(CodeConfirmationNeeded)
-		}
-		fmt.Fprintf(env.Stdout, "remove %s: its unit is stopped and disabled, its files and its manifest are deleted; the packages and the data stay\nGo on? [y/N] ", c.name)
-		if !j.askYes() {
-			return j.refuse(CodeDeclined)
-		}
-	}
-	bad, phase := j.teardown(ctx, c.name, manifest.Unit, true, nil)
+	bad, phase, why := j.teardown(ctx, c.name, manifest.Unit, "", nil)
 	if bad > 0 {
-		j.say("failed at step %s: %s", phase, CodeRemoveIncomplete)
-		j.result("failed", phase, CodeRemoveIncomplete)
-		j.say("run casaos module remove %s again to finish", c.name)
+		j.say("failed at step %s: %s", phase, why)
+		switch why {
+		case CodeUnitNotStopped:
+			j.say("stop the unit, then run casaos module remove %s again", c.name)
+		case CodeUnitsFailed:
+			j.say("run systemctl daemon-reload, then casaos module remove %s again", c.name)
+		case CodeFilesUnreadable:
+			// (said above, with the name of the list)
+		default:
+			j.say("run casaos module remove %s again to finish", c.name)
+		}
+		j.result("failed", phase, why, "-")
 		return ExitFailed
 	}
 	j.marker(StepDone, "done")
-	j.result("ok", StepDone, "-")
+	j.result("ok", StepDone, "-", "-")
 	j.say("removed: %s", c.name)
 	j.sayLeftovers(c.name, osmodule.PackagesFor(manifest, env.Arch))
 	return ExitOK
 }
 
+// removeRefusal is the code a remove is refused with: there is nothing of the module to remove, or a package manager or the upgrade of the system is at work.
+func removeRefusal(ctx context.Context, env Env, name string) string {
+	roots := env.Roots
+	present := false
+	for _, p := range []string{roots.manifest(name), roots.files(name), roots.dirs(name), roots.version(name)} {
+		if _, err := os.Lstat(p); err == nil || !(errors.Is(err, fs.ErrNotExist) || isNotDir(err)) {
+			present = true
+		}
+	}
+	if !present {
+		return CodeNotInstalled
+	}
+	bx := &box{ctx: ctx, env: &env}
+	if pm, err := bx.PackageManagerBusy(); pm || err != nil {
+		return CodeBusy
+	}
+	if up, err := bx.OSUpgradeBusy(); up || err != nil {
+		return CodeBusy
+	}
+	return ""
+}
+
 // askYes reads the answer to a question that was asked on the terminal.
-func (j *job) askYes() bool {
+func askYes(in io.Reader) bool {
 	var line string
 	buf := make([]byte, 1)
 	for {
-		n, err := j.env.Stdin.Read(buf)
+		n, err := in.Read(buf)
 		if n > 0 {
 			if buf[0] == '\n' {
 				break

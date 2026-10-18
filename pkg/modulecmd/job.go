@@ -5,22 +5,28 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 )
 
-// The output of install and remove: lines on the standard output and in the log of the module (/var/log/casaos/module-<name>.log), the same lines in both. A line the program says
-// about itself is a marker, a result or a sentence; what the commands it runs print goes in the log only, and every line of it starts with "| ", so that nothing a package prints can
-// look like a marker.
+// The output of install and remove: lines on the standard output and in the log of the module (/var/log/casaos/module-<name>.log), the same lines in both (a run that is refused before it
+// has the lock, and so before it may touch the log, says its lines on the standard output only). A line the program says about itself is a marker, a result or a sentence; what the
+// commands it runs print goes in the log only, and every line of it starts with "| ", so that nothing a package prints can look like a marker.
 //
 //	CASAOS_MODULE_STEP <nonce|-> <name> <step> <begin|done|failed> <time>
-//	CASAOS_MODULE_RESULT <nonce|-> <name> <ok|refused|failed> <step|-> <code|-> <time>
+//	CASAOS_MODULE_RESULT <nonce|-> <name> <ok|refused|failed> <step|-> <code|-> <undo> <time>
 //
-// The nonce is the one the core passes in CASAOS_MODULE_NONCE, "-" when there is none. A run says its outcome in exactly one RESULT line, and sentences of the program follow it at most
-// (what was rolled back, and for an install that failed the last line, kept_packages); a refused run (exit 2) has no STEP line, and a failed one (exit 3) has the failed STEP line before
-// it.
+// This is the whole grammar, and the only place it is written down. The nonce is the one the core passes in CASAOS_MODULE_NONCE, "-" when there is none. A step is a word of lower case
+// letters and underscores: for an install packages, download, verify, unpack, units, manifest, start, route and done; for a remove stop, files, manifest, reload and done; and the steps of
+// the rollback of an install, which are those of a remove behind "rollback_". Every "begin" of a step is followed by its "done" or its "failed", and a step that failed is never "done".
+//
+// A run says its outcome in exactly one RESULT line, and every run that ends says it: a run that is refused (exit 2, nothing changed) has no STEP line and its RESULT line is its last; a
+// run that failed (exit 3) has the failed STEP line before the sentences that say what was undone and what was kept, and its RESULT line is its last, said once the rollback is over, so that
+// a run that is ended in the middle of it has none (and is, for whoever reads the log, a run that was interrupted); undo is "rolled_back" or "rollback_incomplete" for an install that
+// failed, and "-" for the rest. A run that succeeded (exit 0) may say sentences after its RESULT line (what is left on the box, for a remove).
 
 const (
 	stepMarker   = "CASAOS_MODULE_STEP"
@@ -36,6 +42,8 @@ type job struct {
 	log   *os.File
 	mu    sync.Mutex
 	tool  int64 // the bytes of the output of the commands written so far
+	// openStep is the step that has begun and has not ended: a panic ends it, as a failed one
+	openStep string
 }
 
 func newJob(env Env, name string) *job {
@@ -52,12 +60,17 @@ func (j *job) openLog() error {
 	if err := makeDirs(dir, 0o755); err != nil {
 		return err
 	}
-	path := j.env.Roots.logFile(j.name)
-	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", path)
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// not through a link, not a fifo that waits for a reader, and only a regular file once it is open: what is checked is what is written
+	f, err := os.OpenFile(j.env.Roots.logFile(j.name), os.O_WRONLY|os.O_CREATE|noFollow|nonBlock, 0o644)
 	if err != nil {
+		return err
+	}
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		return fmt.Errorf("%s is not a regular file", j.env.Roots.logFile(j.name))
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
 		return err
 	}
 	j.log = f
@@ -87,17 +100,21 @@ func (j *job) say(format string, a ...any) {
 }
 
 func (j *job) marker(step, phase string) {
+	j.openStep = ""
+	if phase == "begin" {
+		j.openStep = step
+	}
 	j.say("%s %s %s %s %s %s", stepMarker, j.nonce, j.name, step, phase, j.now())
 }
 
-func (j *job) result(kind, step, code string) {
+func (j *job) result(kind, step, code, undo string) {
 	if step == "" {
 		step = "-"
 	}
 	if code == "" {
 		code = "-"
 	}
-	j.say("%s %s %s %s %s %s %s", resultMarker, j.nonce, j.name, kind, step, code, j.now())
+	j.say("%s %s %s %s %s %s %s %s", resultMarker, j.nonce, j.name, kind, step, code, undo, j.now())
 }
 
 // toolWriter takes what the commands print into the log, line by line behind "| ", cut at maxToolOutput, with nothing but printable ASCII.
@@ -167,4 +184,35 @@ func (t *tailWriter) Write(p []byte) (int, error) {
 		t.tail = t.tail[len(t.tail)-tailBytes:]
 	}
 	return t.Writer.Write(p)
+}
+
+// panicked writes a panic and its stack in the log (behind "| ", like the output of a command), for whoever looks for what went wrong.
+func (j *job) panicked(r any) {
+	_, _ = fmt.Fprintf(j.toolWriter(), "panic: %v\n%s", r, debug.Stack())
+}
+
+// recoverRun, deferred, turns a panic of a run into a failure: the sentence, the result line and the exit status 3, which is the status of a run that failed (the status that Go gives a
+// panic, 2, says that nothing was changed).
+func (j *job) recoverRun(code *int, undo func() string) {
+	if r := recover(); r != nil {
+		j.panicked(r)
+		step := j.failOpen()
+		if step == "-" {
+			j.say("failed: %s", CodeInternal)
+		} else {
+			j.say("failed at step %s: %s", step, CodeInternal)
+		}
+		j.result("failed", step, CodeInternal, undo())
+		*code = ExitFailed
+	}
+}
+
+// failOpen ends the step that was begun, if there is one, as a failed one, and gives its name ("-" when there is none): a step that has begun has its end.
+func (j *job) failOpen() string {
+	step := j.openStep
+	if step == "" {
+		return "-"
+	}
+	j.marker(step, "failed")
+	return step
 }

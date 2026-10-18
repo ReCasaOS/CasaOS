@@ -3,6 +3,8 @@ package modulecmd
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +56,10 @@ const (
 	CodeUnitNotStopped     = "unit_not_stopped"
 	CodeRemoveIncomplete   = "remove_incomplete"
 	CodeTmpUnusable        = "tmp_unusable"
+	CodeStateUnsafe        = "state_unsafe"
+	CodeInternal           = "internal_error"
+	undoDone               = "rolled_back"
+	undoIncomplete         = "rollback_incomplete"
 	aptTimeout             = 30 * time.Minute
 	systemctlTimeout       = 2 * time.Minute
 	routeWait              = 60 * time.Second
@@ -96,9 +102,24 @@ func (j *job) sh(ctx context.Context, timeout time.Duration, argv ...string) (Ou
 // refuse ends the run as refused: nothing was changed.
 func (j *job) refuse(code string) int {
 	j.say("refused: %s", code)
-	j.result("refused", "-", code)
+	j.result("refused", "-", code, "-")
 	return ExitRefused
 }
+
+// unreadableLists are the lists of the files and of the directories of the module that are there and cannot be read.
+func (j *job) unreadableLists(name string) (bad []string) {
+	roots := j.env.Roots
+	if _, err := readFilesEntries(roots.files(name)); err != nil {
+		bad = append(bad, roots.files(name))
+	}
+	if _, err := readDirsList(roots.dirs(name)); err != nil {
+		bad = append(bad, roots.dirs(name))
+	}
+	return bad
+}
+
+// refuseEarly refuses a run that has not got the lock: it says so on the standard output and touches no log, which is the log of the run that has the lock.
+func refuseEarly(env Env, name, code string) int { return newJob(env, name).refuse(code) }
 
 // An install is the state of one run: what the steps leave for the ones after them.
 type install struct {
@@ -109,9 +130,15 @@ type install struct {
 	packages []string
 	// steps done, for the last line and for what the rollback has to undo
 	packagesDone bool
-	unpackBegun  bool
-	// written is what the unpack put down, set as soon as it returns, and what a rollback deletes: the files and directories of this run and of the earlier install of the module that
-	// was killed, if there was one. It is nil until the lists of that earlier install have been read.
+	// archive is the archive as it was downloaded, open: it was made for this run and is read by this descriptor from the download to the unpack, never opened by its path again.
+	// archiveSum is the sha256 of its bytes, taken as they were written.
+	archive    *os.File
+	archiveSum string
+	// aptStarted is set when apt-get has been started: a run that ends it leaves dpkg in the state it was in
+	aptStarted  bool
+	unpackBegun bool
+	// written is what the unpack put down, set as soon as it returns, and what a rollback deletes (the files that still hold what was written): the files and directories of this run and of
+	// the earlier install of the module that was killed, if there was one. It is nil until the lists of that earlier install have been read.
 	written  *written
 	manifest []byte
 }
@@ -131,53 +158,90 @@ func (in *install) fail(code string, err error) *stepFailure {
 	return &stepFailure{code, err}
 }
 
-// runInstall installs the module c.name: the plan again, then the steps. It returns the exit code.
-func runInstall(ctx context.Context, env Env, c command) int {
+// planRefusal is the code a plan is refused with: its own, a plan id the caller gave that is not its, and a plan other than the one the user was shown and said yes to (asked is its id).
+func planRefusal(c command, plan osmodule.PlanResult, asked string) string {
+	switch {
+	case plan.Refused != "":
+		return string(plan.Refused)
+	case c.planID != "" && c.planID != plan.PlanID, asked != "" && asked != plan.PlanID:
+		return CodePlanChanged
+	}
+	return ""
+}
+
+// runInstall installs the module c.name: the plan, the question when there is to be one, the plan again, then the steps. The question is asked before the lock is taken, since the lock is for
+// the work and held while somebody thinks it would keep every other install and remove from running, and the plan is made again once it is taken, so that what the user said yes to is what
+// is done, or nothing is. It returns the exit code.
+func runInstall(ctx context.Context, env Env, c command) (code int) {
 	env = env.withDefaults()
-	say := func(code string) int { fmt.Fprintf(env.Stdout, "refused: %s\n", code); return ExitRefused }
 	if env.EUID() != 0 {
-		return say(CodeNotRoot)
+		return refuseEarly(env, c.name, CodeNotRoot)
 	}
 	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
-		return say(CodeLockFailed)
+		return refuseEarly(env, c.name, CodeLockFailed)
+	}
+	if err := env.Host.SafeDir(env.Roots.state()); err != nil {
+		return refuseEarly(env, c.name, CodeStateUnsafe)
+	}
+	asked := ""
+	if !c.yes {
+		plan := PlanOf(ctx, env, c.name)
+		if why := planRefusal(c, plan, ""); why != "" {
+			return refuseEarly(env, c.name, why)
+		}
+		if !env.Terminal() {
+			return refuseEarly(env, c.name, CodeConfirmationNeeded)
+		}
+		if !newJob(env, c.name).confirm(plan.Name, plan.Tag, plan.Tier, plan.Packages.ToInstall, plan.Packages.DownloadBytes, plan.Archive.URL, "install") {
+			return refuseEarly(env, c.name, CodeDeclined)
+		}
+		asked = plan.PlanID
 	}
 	release, err := env.Host.Lock(env.Roots.lock())
 	switch {
 	case errors.Is(err, ErrLockHeld):
-		return say(CodeBusy)
+		return refuseEarly(env, c.name, CodeBusy)
 	case err != nil:
-		return say(CodeLockFailed)
+		return refuseEarly(env, c.name, CodeLockFailed)
 	}
 	defer release()
 	j := newJob(env, c.name)
 	if err := j.openLog(); err != nil {
-		return say(CodeLogUnwritable)
+		return refuseEarly(env, c.name, CodeLogUnwritable)
 	}
 	defer j.close()
+	// (a panic before the steps is a failure too; it is a rollback that is not complete when the unpack had begun)
+	var in *install
+	defer j.recoverRun(&code, func() string {
+		if in != nil && in.unpackBegun {
+			return undoIncomplete
+		}
+		return undoDone
+	})
 	// whatever an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
-	if err := emptyDir(env.Roots.tmp()); err != nil {
+	if err := emptyDir(env.Host, env.Roots.tmp()); err != nil {
+		if errors.Is(err, errUnsafe) {
+			return j.refuse(CodeStateUnsafe)
+		}
 		return j.refuse(CodeTmpUnusable)
 	}
-	defer func() { _ = emptyDir(env.Roots.tmp()) }()
+	// a list of an earlier install that cannot be read is a state for the administrator to look at: the module cannot be told from it, and nothing is changed
+	if bad := j.unreadableLists(c.name); len(bad) > 0 {
+		for _, p := range bad {
+			j.say("the list %s cannot be read: look at it, and delete it by hand, and install again", printable(env.Roots.Slash(p), 200))
+		}
+		return j.refuse(CodeFilesUnreadable)
+	}
+	defer func() { _ = emptyDir(env.Host, env.Roots.tmp()) }()
 
-	plan := PlanOf(ctx, env, c.name)
-	switch {
-	case plan.Refused != "":
-		return j.refuse(string(plan.Refused))
-	case c.planID != "" && c.planID != plan.PlanID:
-		return j.refuse(CodePlanChanged)
-	case !c.yes:
-		if !env.Terminal() {
-			return j.refuse(CodeConfirmationNeeded)
-		}
-		if !j.confirm(plan.Name, plan.Tag, plan.Tier, plan.Packages.ToInstall, plan.Packages.DownloadBytes, plan.Archive.URL, "install") {
-			return j.refuse(CodeDeclined)
-		}
+	if why := planRefusal(c, PlanOf(ctx, env, c.name), asked); why != "" {
+		return j.refuse(why)
 	}
 	cat := loadCatalogue(env).cat
 	entry, _ := cat.Find(c.name)
 	asset, _ := entry.Asset(env.Arch)
-	in := &install{job: j, ctx: ctx, entry: entry, asset: asset, packages: osmodule.PackagesFor(entry.Manifest, env.Arch)}
+	in = &install{job: j, ctx: ctx, entry: entry, asset: asset, packages: osmodule.PackagesFor(entry.Manifest, env.Arch)}
+	defer in.closeArchive()
 	return in.steps()
 }
 
@@ -221,7 +285,7 @@ func (in *install) steps() int {
 		if err := in.ctx.Err(); err != nil {
 			f = &stepFailure{CodeInterrupted, err}
 		} else {
-			f = s.do()
+			f = in.guarded(s.do)
 		}
 		if f != nil {
 			in.marker(s.name, "failed")
@@ -235,25 +299,54 @@ func (in *install) steps() int {
 	}
 	in.marker(StepDone, "done")
 	in.say("installed: %s %s", in.entry.Name, in.entry.Tag)
-	in.result("ok", StepDone, "-")
+	in.result("ok", StepDone, "-", "-")
 	return ExitOK
+}
+
+// guarded runs a step. A panic in it is a failure of the step like any other (and so a rollback and an exit status of 3); the stack is in the log.
+func (in *install) guarded(do func() *stepFailure) (f *stepFailure) {
+	defer func() {
+		if r := recover(); r != nil {
+			in.panicked(r)
+			f = &stepFailure{CodeInternal, fmt.Errorf("panic: %s", printable(fmt.Sprint(r), 200))}
+		}
+	}()
+	return do()
+}
+
+// rollback undoes what the unpack and the steps after it did. What it does is not stopped by the signal that interrupted the run; a panic in it is a rollback that could not be finished.
+func (in *install) rollback() (bad int) {
+	defer func() {
+		if r := recover(); r != nil {
+			in.panicked(r)
+			in.failOpen()
+			bad = 1
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(in.ctx), rollbackTime)
+	defer cancel()
+	bad, _, _ = in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, "rollback_", in.written)
+	return bad
 }
 
 // failed rolls back what the steps after the packages did, and says what was kept.
 func (in *install) failed(step string, f *stepFailure) int {
 	in.say("failed at step %s: %s", step, f.code)
-	in.result("failed", step, f.code)
+	undo := undoDone
 	if in.unpackBegun {
-		// what the rollback does is not stopped by the signal that interrupted the run
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(in.ctx), rollbackTime)
-		defer cancel()
-		if bad, _ := in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, false, in.written); bad > 0 {
+		if bad := in.rollback(); bad > 0 {
 			in.say("rollback incomplete: %d things could not be undone; casaos module remove %s finishes it", bad, in.entry.Name)
+			undo = undoIncomplete
 		} else {
 			in.say("rolled back")
 		}
 	}
+	if in.aptStarted && step == StepPackages && (f.code == CodeInterrupted || errors.Is(f.err, context.DeadlineExceeded)) {
+		in.say("apt-get was ended while it worked: dpkg --configure -a is probably needed")
+	}
 	in.say("kept_packages: %s", in.keptPackages())
+	// the last line, said when everything is over: a run that is ended before it is a run that was interrupted
+	in.result("failed", step, f.code, undo)
 	return ExitFailed
 }
 
@@ -278,6 +371,7 @@ func (in *install) stepPackages() *stepFailure {
 		return in.fail(CodePackagesFailed, err)
 	}
 	tail := &tailWriter{Writer: in.toolWriter()}
+	in.aptStarted = true
 	out, err := in.env.Runner.Run(in.ctx, Cmd{Argv: argv, Env: childEnv(in.env), Stdout: tail, Timeout: aptTimeout})
 	switch {
 	case err != nil:
@@ -299,20 +393,32 @@ func (in *install) stepDownload() *stepFailure {
 		return in.fail(CodeDownloadFailed, errors.New("no downloader"))
 	}
 	var lastErr error
+	f, err := createPrivate(in.archivePath())
+	if err != nil {
+		return in.fail(CodeDownloadFailed, err)
+	}
+	kept := false
+	defer func() {
+		if !kept {
+			_ = f.Close()
+			_ = os.Remove(in.archivePath())
+		}
+	}()
 	for try := 1; try <= downloadTries; try++ {
-		f, err := os.OpenFile(in.archivePath(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-		if err != nil {
-			return in.fail(CodeDownloadFailed, err)
-		}
-		_, err = dl.Get(in.ctx, in.asset.URL, f)
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
+		// the bytes are hashed as they are written
+		h := sha256.New()
+		_, err := dl.Get(in.ctx, in.asset.URL, io.MultiWriter(f, h))
 		if err == nil {
+			in.archive, in.archiveSum, kept = f, hex.EncodeToString(h.Sum(nil)), true
 			return nil
 		}
 		lastErr = err
-		_ = os.Remove(in.archivePath())
+		// (the file is started over for the next try)
+		if rerr := f.Truncate(0); rerr != nil {
+			break
+		} else if _, rerr = f.Seek(0, io.SeekStart); rerr != nil {
+			break
+		}
 		if in.ctx.Err() != nil {
 			break
 		}
@@ -333,12 +439,17 @@ func (in *install) stepDownload() *stepFailure {
 	return in.fail(CodeDownloadFailed, lastErr)
 }
 
-func (in *install) stepVerify() *stepFailure {
-	sum, err := sha256File(in.ctx, in.archivePath())
-	if err != nil {
-		return in.fail(CodeDownloadFailed, err)
+// closeArchive lets go of the archive; the file is taken away with the area of the download.
+func (in *install) closeArchive() {
+	if in.archive != nil {
+		_ = in.archive.Close()
+		in.archive = nil
 	}
-	if sum != in.asset.SHA256 {
+}
+
+func (in *install) stepVerify() *stepFailure {
+	if in.archive == nil || in.archiveSum != in.asset.SHA256 {
+		in.closeArchive()
 		_ = os.Remove(in.archivePath())
 		return in.fail(CodeChecksumMismatch, errors.New("the sha256 of the archive is not the catalogue's"))
 	}
@@ -346,7 +457,17 @@ func (in *install) stepVerify() *stepFailure {
 }
 
 func (in *install) stepUnpack() *stepFailure {
-	if err := gunzipTo(in.ctx, in.archivePath(), in.tarPath(), osmodule.MaxStreamBytes); err != nil {
+	// The archive that was checked is the one that is read: by the descriptor it was written by, and the tar it makes is written to a descriptor and read from the same one, so that nothing
+	// that is done to a path in the meantime reaches the unpack.
+	if _, err := in.archive.Seek(0, io.SeekStart); err != nil {
+		return in.fail(CodeUnpackFailed, err)
+	}
+	tarFile, err := createPrivate(in.tarPath())
+	if err != nil {
+		return in.fail(CodeUnpackFailed, err)
+	}
+	defer tarFile.Close()
+	if err := gunzipTo(in.ctx, in.archive, tarFile, osmodule.MaxStreamBytes); err != nil {
 		code := osmodule.UnpackCorrupt
 		if errors.Is(err, ErrTooLarge) {
 			code = osmodule.UnpackLimits
@@ -354,18 +475,13 @@ func (in *install) stepUnpack() *stepFailure {
 		return in.fail(code, err)
 	}
 	_ = os.Remove(in.archivePath())
-	tarFile, err := os.Open(in.tarPath())
-	if err != nil {
-		return in.fail(CodeUnpackFailed, err)
-	}
-	defer tarFile.Close()
 	// from here the box may hold files of the module
 	in.unpackBegun = true
 	if err := makeDirs(in.env.Roots.state(), 0o755); err != nil {
 		return in.fail(CodeUnpackFailed, err)
 	}
-	// what an earlier install of the module that did not finish left: its files may be replaced, and are removed with the rest
-	ownFiles, err := readFilesList(in.env.Roots.files(in.entry.Name))
+	// what an earlier install of the module that did not finish left: what is still as the list says it was is the module's, and may be replaced, and is removed with the rest
+	list, err := readFilesEntries(in.env.Roots.files(in.entry.Name))
 	if err != nil {
 		return in.fail(CodeFilesUnreadable, err)
 	}
@@ -373,14 +489,23 @@ func (in *install) stepUnpack() *stepFailure {
 	if err != nil {
 		return in.fail(CodeFilesUnreadable, err)
 	}
-	res, err := osmodule.Unpack(tarFile, in.env.Host.NewDest(in.env.Roots.Prefix), ownFiles, osmodule.Options{
+	earlier, err := in.stillTheirs(list)
+	if err != nil {
+		return in.fail(CodeUnpackFailed, err)
+	}
+	own := make([]string, len(earlier))
+	for i, e := range earlier {
+		own[i] = e.Path
+	}
+	res, err := osmodule.Unpack(tarFile, in.env.Host.NewDest(in.env.Roots.Prefix), own, osmodule.Options{
 		Unit: in.entry.Manifest.Unit,
-		// the lists are on the disk before the first directory is made and the first file is put in place: a kill from here on leaves a list that names everything that may be there
-		OnPlanned: func(files, dirs []string) error {
-			return in.recordPlanned(union(ownFiles, files), union(ownDirs, dirs))
+		// the lists are on the disk before the first directory is made and the first file is put in place: a kill from here on leaves a list that names everything that may be there, and what
+		// each of them is to hold
+		OnPlanned: func(files []string, want map[string]osmodule.Want, dirs []string) error {
+			return in.recordPlanned(plannedEntries(earlier, files, want), union(ownDirs, dirs))
 		},
 	})
-	in.written = &written{files: union(ownFiles, res.Files), dirs: union(res.Dirs, ownDirs)}
+	in.written = &written{files: writtenEntries(earlier, res), dirs: union(res.Dirs, ownDirs)}
 	if err != nil {
 		// the lists name what the unpack was going to write, which may include the file that made it stop, and somebody else's: from here they name what was written, for a remove that has
 		// to finish what the rollback could not
@@ -392,7 +517,10 @@ func (in *install) stepUnpack() *stepFailure {
 		}
 		return in.fail(CodeUnpackFailed, err)
 	}
-	// the list of the directories is now exactly the ones that were made
+	// the lists are now exactly what was written, and the directories exactly the ones that were made: a path that was planned and is not there is not in them
+	if err := in.recordFiles(in.written.files); err != nil {
+		return in.fail(CodeUnpackFailed, err)
+	}
 	if err := in.recordDirs(in.written.dirs); err != nil {
 		return in.fail(CodeUnpackFailed, err)
 	}
@@ -411,8 +539,67 @@ func union(a, b []string) []string {
 	return out
 }
 
+// stillTheirs are the entries of the list of an earlier install that are still the module's: what is at the path is what the list says. A path where there is nothing was planned and never
+// written; one where there is something else is somebody's now, and so is everything in a list of the earlier format, which says nothing to check: they are left, and said.
+func (in *install) stillTheirs(list osmodule.FilesList) ([]osmodule.FileEntry, error) {
+	var ours []osmodule.FileEntry
+	for _, e := range list.Entries {
+		if !list.Verified {
+			in.say("left: %s (the list is of an earlier format)", printable(e.Path, 200))
+			continue
+		}
+		switch h, err := holds(in.env.Roots.Path(e.Path), e); {
+		case err != nil:
+			return nil, err
+		case h == holdsOurs:
+			ours = append(ours, e)
+		case h == holdsOther:
+			in.say("left: %s (changed)", printable(e.Path, 200))
+		}
+	}
+	return ours, nil
+}
+
+// plannedEntries are the entries of the list while the unpack is about to write: the files of the earlier install that this one does not write, and the files it will write, each with what it
+// is to hold; a file that replaces one of the earlier install holds either, whichever is on the disk when a kill comes. (ponytail: a file that comes to replace a link, or the other way, has
+// the content of the new one only, and the old one would be left, not deleted, by a remove after a kill in that instant.)
+func plannedEntries(earlier []osmodule.FileEntry, files []string, want map[string]osmodule.Want) []osmodule.FileEntry {
+	old := map[string]osmodule.FileEntry{}
+	var out []osmodule.FileEntry
+	for _, e := range earlier {
+		old[e.Path] = e
+		if _, replaced := want[e.Path]; !replaced {
+			out = append(out, e)
+		}
+	}
+	for _, p := range files {
+		w := want[p]
+		e := osmodule.FileEntry{Path: p, Link: w.Link, Want: []string{w.Value}}
+		if o, ok := old[p]; ok && o.Link == w.Link && !slices.Contains(o.Want, w.Value) {
+			e.Want = append(e.Want, o.Want...)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// writtenEntries are what the module owns once the unpack has returned, as it says it: the files of the earlier install that it did not write again, and the files it wrote.
+func writtenEntries(earlier []osmodule.FileEntry, res osmodule.Result) []osmodule.FileEntry {
+	var out []osmodule.FileEntry
+	for _, e := range earlier {
+		if _, again := res.Want[e.Path]; !again {
+			out = append(out, e)
+		}
+	}
+	for _, p := range res.Files {
+		w := res.Want[p]
+		out = append(out, osmodule.FileEntry{Path: p, Link: w.Link, Want: []string{w.Value}})
+	}
+	return out
+}
+
 // recordPlanned writes the list of the files and the list of the directories, whole, before the unpack changes anything.
-func (in *install) recordPlanned(files, dirs []string) error {
+func (in *install) recordPlanned(files []osmodule.FileEntry, dirs []string) error {
 	if err := in.recordFiles(files); err != nil {
 		return err
 	}
@@ -424,13 +611,13 @@ func (in *install) recordPlanned(files, dirs []string) error {
 }
 
 // recordFiles writes the list of the files, or takes it away when there are none.
-func (in *install) recordFiles(files []string) error {
+func (in *install) recordFiles(files []osmodule.FileEntry) error {
 	path := in.env.Roots.files(in.entry.Name)
 	if len(files) == 0 {
 		_, err := removeEntry(path)
 		return err
 	}
-	raw, err := osmodule.FormatFiles(files)
+	raw, err := osmodule.FormatFilesList(files)
 	if err != nil {
 		return err
 	}

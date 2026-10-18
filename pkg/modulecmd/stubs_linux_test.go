@@ -22,7 +22,7 @@ mkdir -p "$state"
 printf '%s\n' "$*" >> "$state/systemctl.log"
 verb="$1"
 if [ -e "$state/fail-$verb" ]; then exit 1; fi
-if [ -e "$state/block-$verb" ]; then rm -f "$state/block-$verb"; : > "$state/reached-$verb"; sleep 30; fi
+if [ -e "$state/block-$verb" ]; then rm -f "$state/block-$verb"; : > "$state/reached-$verb"; sleep 30 & echo $! >> "$state/sleepers"; wait; fi
 case "$verb" in
 show) printf '%s\n' inactive ;;
 enable) : > "$state/enabled-$3" ;;
@@ -38,8 +38,9 @@ root="${0%/usr/bin/apt-get}"
 state="$root/stub"
 mkdir -p "$state"
 printf '%s\n' "$*" >> "$state/apt-get.log"
-printf '%s\n' "pwd=$(pwd) LC_ALL=$LC_ALL LANG=$LANG FRONTEND=$DEBIAN_FRONTEND SECRET=$SECRET_OF_THE_TEST NONCE=$CASAOS_MODULE_NONCE APT_CONFIG=$APT_CONFIG TMPDIR=$TMPDIR" >> "$state/apt-get.env"
+printf '%s\n' "pwd=$(pwd) LC_ALL=$LC_ALL LANG=$LANG FRONTEND=$DEBIAN_FRONTEND SECRET=$SECRET_OF_THE_TEST NONCE=$CASAOS_MODULE_NONCE APT_CONFIG=$APT_CONFIG TMPDIR=$TMPDIR PATH=$PATH" >> "$state/apt-get.env"
 if [ -n "$APT_CONFIG" ] && [ -r "$APT_CONFIG" ]; then cat "$APT_CONFIG" > "$state/apt-config.seen"; fi
+grep '^SigIgn' /proc/$$/status >> "$state/apt-get.sigign"
 for a in "$@"; do
   case "$a" in
   -s) if [ -e "$state/block-sim" ]; then : > "$state/reached-sim"; sleep 30; fi; cat "$state/sim.txt"; exit 0 ;;
@@ -47,9 +48,9 @@ for a in "$@"; do
   esac
 done
 if [ -e "$state/fail-apt" ]; then printf '%s\n' "E: Sub-process /usr/bin/dpkg returned an error code (1)"; exit 100; fi
-if [ -e "$state/block-apt" ]; then rm -f "$state/block-apt"; : > "$state/reached-apt"; sleep 30; fi
+if [ -e "$state/block-apt" ]; then rm -f "$state/block-apt"; : > "$state/reached-apt"; sleep 30 & echo $! >> "$state/sleepers"; wait; fi
 printf '%s\n' "$*" >> "$state/apt-installed"
-printf '%s\n' "Setting up the packages ..."
+printf '%s\n' "Setting up the packages ..." "CASAOS_MODULE_RESULT - virt ok done - - 2000-01-01T00:00:00Z" "CASAOS_MODULE_STEP - virt route done 2000-01-01T00:00:00Z"
 exit 0
 `
 
@@ -83,5 +84,3 @@ func touch(t *testing.T, p string) {
 		t.Fatal(err)
 	}
 }
-
-func exists(p string) bool { _, err := os.Lstat(p); return err == nil }

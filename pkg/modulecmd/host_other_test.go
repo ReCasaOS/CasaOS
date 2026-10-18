@@ -36,6 +36,12 @@ func (portableHost) Lock(path string) (func(), error) {
 func (portableHost) FreeBytes(string) (int64, error)     { return 1 << 40, nil }
 func (portableHost) DpkgLockHeld([]string) (bool, error) { return false, nil }
 func (portableHost) IsTerminal(*os.File) bool            { return false }
+func (portableHost) SafeDir(path string) error {
+	if info, err := os.Lstat(path); err != nil || !info.IsDir() {
+		return errors.New("not a directory")
+	}
+	return nil
+}
 func (portableHost) NewDest(prefix string) osmodule.Destination {
 	return portableDest{roots: Roots{Prefix: prefix}}
 }

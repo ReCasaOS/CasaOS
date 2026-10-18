@@ -17,13 +17,35 @@ func tempName(path string) string {
 	return filepath.Join(filepath.Dir(path), ".cos-"+hex.EncodeToString(sum[:4]))
 }
 
+// afterClear is called after a temporary name that an earlier run left was taken away and before the file is made at it. It does nothing; a test puts there what somebody could put in that
+// instant, to see that the file is made with O_EXCL and so never written through it.
+var afterClear = func(path string) {}
+
+// syncFile and syncDir make a file, and the entries of a directory, durable, as far as the system says. They are variables so that a test can see that they are called, and where.
+var (
+	syncFile = func(f *os.File) error { return f.Sync() }
+	// a system that cannot is no reason to stop
+	syncDir = func(dir string) {
+		if f, err := os.Open(dir); err == nil {
+			_ = f.Sync()
+			_ = f.Close()
+		}
+	}
+)
+
+// createPrivate makes a file that was not there, for root alone: O_EXCL (what is there, a link included, is not opened) and O_NOFOLLOW, opened to read as well, 0600.
+func createPrivate(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL|noFollow, 0o600)
+}
+
 // writeFileAtomic puts data at path whole or not at all. A temporary file of an earlier run is replaced; a link at the temporary name is not written through.
 func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
 	tmp := tempName(path)
 	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	afterClear(tmp)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|noFollow, perm)
 	if err != nil {
 		return err
 	}
@@ -32,7 +54,7 @@ func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := f.Sync(); err != nil {
+	if err := syncFile(f); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err
@@ -73,12 +95,23 @@ func makeDirs(path string, perm fs.FileMode) error {
 	return os.Chmod(path, perm)
 }
 
-// emptyDir removes what is in a directory and keeps the directory. A directory that is not there is made (0700).
-func emptyDir(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
+// errUnsafe is a directory that root may not keep files in.
+var errUnsafe = errors.New("a directory that is not safe")
+
+// emptyDir removes what is in a directory and keeps the directory. A directory that is not there is made (0700); one that is there must be a directory and not a link, owned by the user the
+// assistant runs as and writable by nobody else (Host.SafeDir), or nothing is removed, and the error is errUnsafe: what somebody else could have put in it, or made it point to, is not
+// root's to remove.
+func emptyDir(host Host, dir string) error {
+	switch _, err := os.Lstat(dir); {
+	case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
 		return makeDirs(dir, 0o700)
+	case err != nil:
+		return err
 	}
+	if err := host.SafeDir(dir); err != nil {
+		return fmt.Errorf("%w: %s: %v", errUnsafe, dir, err)
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
@@ -89,12 +122,4 @@ func emptyDir(dir string) error {
 		}
 	}
 	return first
-}
-
-// syncDir makes the entries of a directory durable, as far as the system says; a system that cannot is no reason to stop.
-func syncDir(dir string) {
-	if f, err := os.Open(dir); err == nil {
-		_ = f.Sync()
-		_ = f.Close()
-	}
 }

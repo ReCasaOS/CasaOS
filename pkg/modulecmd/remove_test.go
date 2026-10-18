@@ -47,7 +47,7 @@ func TestARemoveUndoesTheInstallAndSaysWhatIsLeft(t *testing.T) {
 			t.Errorf("the output does not say %q:\n%s", s, out)
 		}
 	}
-	if !strings.Contains(out, resultMarker+" - virt ok done - ") {
+	if !strings.Contains(out, resultMarker+" - virt ok done - - ") {
 		t.Errorf("no result:\n%s", out)
 	}
 	// nothing was purged, and no command that deletes data was run
@@ -183,13 +183,11 @@ func TestARemoveNeverDeletesAFileAnotherModulesListOwns(t *testing.T) {
 }
 
 func TestARemoveThatCannotFinishLeavesWhatIsNeededToFinishIt(t *testing.T) {
-	t.Run("a file is a directory now", func(t *testing.T) {
+	t.Run("what is to be deleted cannot be", func(t *testing.T) {
 		f := installed(t)
-		p := f.path("/etc/casaos/virt-management.conf.sample")
-		if err := os.Remove(p); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Mkdir(p, 0o755); err != nil {
+		// (a temporary name of the unpack that is a directory: it is not deleted as a file)
+		p := tempName(f.path("/etc/casaos/virt-management.conf.sample"))
+		if err := os.MkdirAll(p+"/in", 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if code := f.remove("--yes"); code != ExitFailed {
@@ -205,7 +203,7 @@ func TestARemoveThatCannotFinishLeavesWhatIsNeededToFinishIt(t *testing.T) {
 			t.Errorf("not said:\n%s", f.out)
 		}
 		// once it is mended, a run again finishes
-		if err := os.Remove(p); err != nil {
+		if err := os.RemoveAll(p); err != nil {
 			t.Fatal(err)
 		}
 		if code := f.remove("--yes"); code != ExitOK {
@@ -221,20 +219,21 @@ func TestARemoveThatCannotFinishLeavesWhatIsNeededToFinishIt(t *testing.T) {
 			t.Fatalf("exit %d:\n%s", code, f.out)
 		}
 		sameTree(t, before, f.treeWithoutBookkeeping()) // (nothing of the module was deleted while it runs)
-		if !slices.Contains(f.lines(), "failed at step stop: "+CodeRemoveIncomplete) {
+		if !slices.Contains(f.lines(), "failed at step stop: "+CodeUnitNotStopped) {
 			t.Errorf("not said:\n%s", f.out)
 		}
 	})
 	t.Run("a list that cannot be read", func(t *testing.T) {
 		f := installed(t)
 		f.writeFile("/var/lib/casaos/modules/virt.files", "/etc/passwd\n")
+		f.writeFile("/etc/passwd", "root\n")
 		before := f.treeWithoutBookkeeping()
 		if code := f.remove("--yes"); code != ExitFailed {
 			t.Fatalf("exit %d:\n%s", code, f.out)
 		}
 		sameTree(t, before, f.treeWithoutBookkeeping())
-		if !f.exists("/etc/passwd") && false {
-			t.Error("unreachable")
+		if !f.exists("/etc/passwd") {
+			t.Error("a file outside the allowed places was deleted")
 		}
 	})
 }
@@ -348,7 +347,7 @@ func TestARemoveDeletesTheDirectoriesTheInstallMadeAndNoOther(t *testing.T) {
 			t.Errorf("%s was removed", d)
 		}
 	}
-	if !f.runner.isEnabled(testUnit) {
-		t.Error("the unit was stopped though the list could not be read")
+	if f.runner.isEnabled(testUnit) {
+		t.Error("the unit was not stopped though the list could not be read: the manifest names it")
 	}
 }

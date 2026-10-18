@@ -11,10 +11,14 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 )
 
-// Run is `casaos module ...` as the core's main runs it: args are what follows "module". It ends a run on SIGTERM and SIGINT the way a failure ends it (the step it is in fails with
-// "interrupted" and is rolled back), and a second signal ends the process at once.
+// Run is `casaos module ...` as the core's main runs it: args are what follows "module". It ends a run on SIGTERM, SIGINT and SIGHUP the way a failure ends it (the step it is in fails
+// with "interrupted" and is rolled back), and a second signal ends the process at once.
 func Run(args []string, env Env) int {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	// A write to an output that was closed (`| head`, a pager that was quit) is an error of the write and not the end of a root install: the log is the record. SIGPIPE is taken (not
+	// ignored): an ignored signal stays ignored in the commands that are run, and they are to have it as every program does.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
+	// SIGHUP is a dropped session (ssh): the run ends as it does for SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer stop()
 	go func() {
 		<-ctx.Done()
@@ -24,8 +28,15 @@ func Run(args []string, env Env) int {
 }
 
 // Main runs one command and returns its exit code (ExitOK, ExitRefused, ExitFailed).
-func Main(ctx context.Context, args []string, env Env) int {
+func Main(ctx context.Context, args []string, env Env) (code int) {
 	env = env.withDefaults()
+	// (install and remove turn their own panics into a result line; this is for the rest: a panic is a failure, never the status 2 of "nothing changed")
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(env.Stderr, "casaos module: internal error: %s\n", printable(fmt.Sprint(r), 200))
+			code = ExitFailed
+		}
+	}()
 	c, err := parseArgs(args)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "casaos module: %v\n%s\n", err, usage)

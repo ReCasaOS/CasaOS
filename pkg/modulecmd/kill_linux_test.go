@@ -5,9 +5,10 @@ import (
 	"context"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -191,7 +192,7 @@ func TestASigtermAtEachStepIsARollback(t *testing.T) {
 			if step == StepPackages {
 				kept = "unknown"
 			}
-			if !strings.HasSuffix(out.String(), "kept_packages: "+kept+"\n") {
+			if !regexp.MustCompile(`kept_packages: ` + kept + `\n` + resultMarker + `[^\n]*\n$`).MatchString(out.String()) {
 				t.Errorf("the last line:\n%s", out.String())
 			}
 			sameTree(t, before, b.state())
@@ -238,9 +239,15 @@ func TestASigtermEndsTheCommandThatIsRunning(t *testing.T) {
 			if b.runnerEnabled() {
 				t.Error("the unit is enabled")
 			}
-			// no sleeper of the stubs is left running
-			if left, _ := exec.Command("pgrep", "-f", b.root+"/usr/bin/").Output(); strings.TrimSpace(string(left)) != "" && false {
-				t.Errorf("processes left: %s", left)
+			// no sleeper of the stubs is left running: each wrote its number down, and none of them is a process now
+			sleepers, err := os.ReadFile(stubFile(b.root, "sleepers"))
+			if err != nil || len(strings.Fields(string(sleepers))) == 0 {
+				t.Fatalf("the stub did not say who sleeps: %v", err)
+			}
+			for _, pid := range strings.Fields(string(sleepers)) {
+				if stillAlive(atoi(pid)) {
+					t.Errorf("the process %s of the stub is left running", pid)
+				}
 			}
 		})
 	}
@@ -258,7 +265,7 @@ func TestARealInstallRunsTheCommandsWithAnEnvironmentOfTheirOwn(t *testing.T) {
 	}
 	apt, _ := os.ReadFile(stubFile(b.root, "apt-get.env"))
 	line := strings.TrimSpace(string(apt))
-	for _, want := range []string{"LC_ALL=C", "LANG=C", "FRONTEND=noninteractive", "SECRET=", "NONCE="} {
+	for _, want := range []string{"LC_ALL=C", "LANG=C", "FRONTEND=noninteractive", "SECRET=", "NONCE=", "PATH=/usr/sbin:/usr/bin:/sbin:/bin"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the environment of apt-get lacks %q: %s", want, line)
 		}
@@ -279,11 +286,51 @@ func TestARealInstallRunsTheCommandsWithAnEnvironmentOfTheirOwn(t *testing.T) {
 	if !strings.Contains(string(log), "| Setting up the packages ...\n") || !strings.Contains(string(log), stepMarker+" "+strings.Repeat("ab", 16)+" virt route done ") {
 		t.Errorf("the log:\n%s", log)
 	}
+	// what the apt stub says that looks like a marker or a result is behind "| ", and the only lines of the log that start like a marker are the assistant's own, in the one grammar
+	results := 0
 	for _, l := range strings.Split(string(log), "\n") {
-		if strings.HasPrefix(l, "| ") && strings.Contains(l, stepMarker) {
-			continue
+		switch {
+		case strings.HasPrefix(l, "| "):
+		case strings.HasPrefix(l, stepMarker):
+			if !strings.HasPrefix(l, stepMarker+" "+strings.Repeat("ab", 16)+" virt ") || !stepRe.MatchString(l) {
+				t.Errorf("a marker that is not the assistant's: %q", l)
+			}
+		case strings.HasPrefix(l, resultMarker):
+			results++
+			if !strings.Contains(l, strings.Repeat("ab", 16)) {
+				t.Errorf("a result that is not the assistant's: %q", l)
+			}
 		}
 	}
+	if results != 1 {
+		t.Errorf("%d results in the log:\n%s", results, log)
+	}
+	if !strings.Contains(string(log), "| "+resultMarker+" - virt ok done - - 2000-01-01T00:00:00Z\n") || !strings.Contains(string(log), "| "+stepMarker+" - virt route done 2000-01-01T00:00:00Z\n") {
+		t.Errorf("the stub's own lines that look like markers are not in the log, behind \"| \":\n%s", log)
+	}
+}
+
+// stillAlive says whether a process is running two seconds after it was told to end: a signal takes a moment to be delivered, and a zombie that nobody has waited for yet is gone
+func stillAlive(pid int) bool {
+	for range 40 {
+		if !alive(pid) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return true
+}
+
+// alive says whether a process is running (a zombie is not)
+func alive(pid int) bool {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	// the state is the first field after the name, which is in brackets
+	rest := raw[bytes.LastIndexByte(raw, ')')+1:]
+	fields := strings.Fields(string(rest))
+	return len(fields) > 0 && fields[0] != "Z" && fields[0] != "X"
 }
 
 // dirs are the directories of the box, but for the ones the assistant keeps for itself (its state, its log, its manifests) and the tests' own.
@@ -322,4 +369,39 @@ func sameDirs(t *testing.T, before, after []string) {
 	if !slices.Equal(before, after) {
 		t.Errorf("the directories are not as they were:\n before %q\n after  %q", before, after)
 	}
+}
+
+// A run that is killed in the middle of its rollback has said no result: the lines it left say the rollback began and did not end, which is a run that was interrupted. (The result used to be
+// said before the rollback, and was left on a box that was half installed.) A remove then finishes the work.
+func TestARunKilledInTheMiddleOfItsRollbackHasNoResult(t *testing.T) {
+	b := newRealBox(t)
+	before, dirsBefore := b.state(), b.dirs()
+	touch(t, stubFile(b.root, "fail-enable")) // the unit does not start: the install fails at the start and is rolled back
+	cmd := helperCmd(t, "install", b.helperEnv("rollback_files", "kill")...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); err == nil || !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+		t.Fatalf("not killed: %v\n%s", err, out.String())
+	}
+	log, _ := os.ReadFile(b.path("/var/log/casaos/module-virt.log"))
+	for name, text := range map[string]string{"the output": out.String(), "the log": string(log)} {
+		if regexp.MustCompile(`(?m)^` + resultMarker).MatchString(text) { // (the stub prints a line that looks like one, behind "| ")
+			t.Errorf("%s has a result:\n%s", name, text)
+		}
+		for _, want := range []string{" virt start failed ", " virt rollback_stop done ", " virt rollback_files begin "} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s lacks %q:\n%s", name, want, text)
+			}
+		}
+		if strings.Contains(text, " virt rollback_files done ") || strings.Contains(text, " virt rollback_files failed ") {
+			t.Errorf("%s says the step it was killed in ended:\n%s", name, text)
+		}
+	}
+	_ = os.Remove(stubFile(b.root, "fail-enable"))
+	if code, o := b.call("remove", testName, "--yes"); code != ExitOK {
+		t.Fatalf("remove: %d\n%s", code, o)
+	}
+	sameTree(t, before, b.state())
+	sameDirs(t, dirsBefore, b.dirs())
 }

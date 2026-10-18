@@ -333,7 +333,7 @@ func TestTheRunnerRunsACommandWithItsOwnEnvironmentAndNoStandardInput(t *testing
 	}
 	t.Setenv("SECRET_OF_THE_TEST", "hunter2")
 	t.Setenv("HOME", "/home/someone")
-	r := newRunner(Roots{Prefix: root})
+	r := newRunner(Roots{Prefix: root}, "printer")
 	out, err := r.Run(context.Background(), Cmd{Argv: []string{"printer", "a", "b c"}, Env: []string{"PATH=/x", "LC_ALL=C"}})
 	if err != nil || out.ExitCode != 7 {
 		t.Fatalf("%v %+v", err, out)
@@ -341,8 +341,11 @@ func TestTheRunnerRunsACommandWithItsOwnEnvironmentAndNoStandardInput(t *testing
 	if !strings.Contains(out.Text, "args=a b c\n") || !strings.Contains(out.Text, "path=/x\n") || !strings.Contains(out.Text, "secret=\n") || !strings.Contains(out.Text, "home=\n") || !strings.Contains(out.Text, "cwd=/\n") || strings.Contains(out.Text, "stdin=") {
 		t.Errorf("the command saw:\n%s", out.Text)
 	}
-	// a command that is not there
-	if _, err := r.Run(context.Background(), Cmd{Argv: []string{"nothing"}}); !errors.Is(err, osreadiness.ErrToolMissing) {
+	// a command that is not one of the assistant's, and one that is and is not there
+	if _, err := r.Run(context.Background(), Cmd{Argv: []string{"nothing"}}); !errors.Is(err, osreadiness.ErrNotAllowed) {
+		t.Errorf("not allowed: %v", err)
+	}
+	if _, err := r.Run(context.Background(), Cmd{Argv: []string{"journalctl"}}); !errors.Is(err, osreadiness.ErrToolMissing) {
 		t.Errorf("missing: %v", err)
 	}
 	// the command is looked for in the directories of the box and not in the PATH of the process
@@ -366,7 +369,7 @@ func TestTheRunnerEndsACommandAndWhatItStartedWhenTheContextEnds(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "usr/bin/waiter"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r := newRunner(Roots{Prefix: root})
+	r := newRunner(Roots{Prefix: root}, "waiter")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := r.Run(ctx, Cmd{Argv: []string{"waiter"}}); done <- err }()

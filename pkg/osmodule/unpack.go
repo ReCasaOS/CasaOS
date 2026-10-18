@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"cmp"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,14 @@ const (
 )
 
 const tarBlock = 512
+
+// ReservedPrograms are the programs of the system that the assistant runs as root, or that what it runs runs by name (apt, dpkg and their scripts, systemd): an archive may not put a
+// program of one of these names in usr/bin, where on a system whose /bin is not /usr/bin it would come before the real one in the path. The assistant finds each of them once, before
+// anything is unpacked, and runs them by the path it found. (ponytail: a list of names; a program of another name that exists in /bin and not in /usr/bin is not covered.)
+var ReservedPrograms = []string{
+	"systemctl", "systemd-run", "journalctl", "apt-get", "apt", "apt-cache", "apt-config", "apt-key", "apt-mark", "dpkg", "dpkg-query", "dpkg-deb", "dpkg-divert", "dpkg-statoverride",
+	"update-rc.d", "invoke-rc.d", "deb-systemd-helper", "deb-systemd-invoke", "sh", "dash", "bash", "env",
+}
 
 // the codes of a refusal of an archive
 const (
@@ -86,11 +95,19 @@ type File interface {
 	Abort()
 }
 
+// A Want is what a path that the unpack writes should hold: the sha256 of the bytes of a file in lower case hex, or the target of a link. It is what the list of the files records, and what
+// a remove, a rollback and a later install check before they delete or replace the path.
+type Want struct {
+	Link  bool
+	Value string
+}
+
 // A Result is what an unpack did. Files is the list of the files and links the module owns after it, in the order they were put down, with the units last: what goes in the
-// <name>.files list, and what a rollback deletes. Dirs are the directories the unpack made, and no other, the deepest first, for a rollback or a remove to delete (when they are empty).
-// Both are given when the unpack stops half way too. Manifest is the module.json of the archive, not yet read as a manifest.
+// <name>.files list, and what a rollback deletes; Want says what each of them holds. Dirs are the directories the unpack made, and no other, the deepest first, for a rollback or a remove to
+// delete (when they are empty). All are given when the unpack stops half way too. Manifest is the module.json of the archive, not yet read as a manifest.
 type Result struct {
 	Files    []string
+	Want     map[string]Want
 	Dirs     []string
 	Manifest []byte
 }
@@ -100,10 +117,11 @@ type Options struct {
 	// Unit is the unit of the module, as its manifest names it: the one file an archive may put in a directory of units. Empty, an archive may put none.
 	Unit string
 	// OnPlanned, when it is not nil, is called once, after the checking and before anything is written, with every path of a file or a link that the unpack may write (in the order they
-	// are put down, the units last) and every directory it may make (the parents first): the caller records them, so that a kill half way leaves a record that names everything that the
-	// unpack might have put down, and if it fails nothing is written. What the module owns in the end is the Result's, which can be less: a path that was planned and not written may be a
-	// file that is not the module's (it is what made the unpack stop), so a caller that deletes after a stop deletes what the Result holds, never what it was told in advance.
-	OnPlanned func(files, dirs []string) error
+	// are put down, the units last), what each is to hold, and every directory it may make (the parents first): the caller records them, so that a kill half way leaves a record that names
+	// everything that the unpack might have put down, and if it fails nothing is written. What the module owns in the end is the Result's, which can be less: a path that was planned and not
+	// written may be a file that is not the module's (it is what made the unpack stop), so a caller that deletes after a stop deletes what the Result holds, and only what still holds what
+	// it was to hold, never what it was told in advance.
+	OnPlanned func(files []string, want map[string]Want, dirs []string) error
 }
 
 type kind int
@@ -125,6 +143,14 @@ type entry struct {
 	sum     [sha256.Size]byte // of the bytes of a file
 	target  string
 	replace bool // the module's own file or link, which the new one replaces; anything else that appears at the path is in the way
+}
+
+// want is what the path of the entry should hold once it is written.
+func (e entry) want() Want {
+	if e.kind == kLink {
+		return Want{Link: true, Value: e.target}
+	}
+	return Want{Value: hex.EncodeToString(e.sum[:])}
 }
 
 func (e entry) isUnit() bool {
@@ -308,6 +334,9 @@ func classify(hdr *tar.Header, unit string) (entry, error) {
 		if !placeOK(rel, e.kind, func(name string) bool { return name == unit }) {
 			return entry{}, refuse(UnpackPath, hdr.Name)
 		}
+		if program, ok := strings.CutPrefix(rel, "usr/bin/"); ok && slices.Contains(ReservedPrograms, program) {
+			return entry{}, refuse(UnpackPath, hdr.Name)
+		}
 	case e.kind == kDir && aboveAllowed(rel):
 		e.kind = kIgnored
 		return e, nil
@@ -484,8 +513,8 @@ func checkDestination(plan *UnpackPlan, dst Destination, own []string) error {
 }
 
 // write puts the checked entries on the disk: the directories, then the files and links, then the units; an entry that fails stops the unpack.
-func write(plan *UnpackPlan, src io.ReadSeeker, dst Destination, onPlanned func(files, dirs []string) error) (Result, error) {
-	res := Result{Manifest: plan.Manifest}
+func write(plan *UnpackPlan, src io.ReadSeeker, dst Destination, onPlanned func(files []string, want map[string]Want, dirs []string) error) (Result, error) {
+	res := Result{Manifest: plan.Manifest, Want: map[string]Want{}}
 	order := make([]entry, 0, len(plan.entries))
 	for _, pass := range []func(entry) bool{
 		func(e entry) bool { return !e.isUnit() },
@@ -499,10 +528,12 @@ func write(plan *UnpackPlan, src io.ReadSeeker, dst Destination, onPlanned func(
 	}
 	if onPlanned != nil {
 		planned := make([]string, len(order))
+		want := make(map[string]Want, len(order))
 		for i, e := range order {
 			planned[i] = "/" + e.rel
+			want[planned[i]] = e.want()
 		}
-		if err := onPlanned(planned, slices.Clone(plan.dirs)); err != nil {
+		if err := onPlanned(planned, want, slices.Clone(plan.dirs)); err != nil {
 			return res, fmt.Errorf("recording the files: %w", err)
 		}
 	}
@@ -538,6 +569,7 @@ func write(plan *UnpackPlan, src io.ReadSeeker, dst Destination, onPlanned func(
 			return res, fmt.Errorf("writing %s: %w", abs, err)
 		}
 		res.Files = append(res.Files, abs)
+		res.Want[abs] = e.want()
 	}
 	return res, nil
 }

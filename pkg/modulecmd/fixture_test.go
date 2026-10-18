@@ -376,10 +376,12 @@ type fakeRunner struct {
 	onRun func(ctx context.Context, argv []string)
 	// stdout is given the output the command prints, when the caller streams it
 	said map[string]string
+	// errs maps the start of a command to the error the runner gives for it: a command that could not be run
+	errs map[string]error
 }
 
 func newFakeRunner() *fakeRunner {
-	return &fakeRunner{enabled: map[string]bool{}, fail: map[string]int{}, text: map[string]string{}, said: map[string]string{}}
+	return &fakeRunner{enabled: map[string]bool{}, fail: map[string]int{}, text: map[string]string{}, said: map[string]string{}, errs: map[string]error{}}
 }
 
 func (r *fakeRunner) Run(ctx context.Context, c Cmd) (Output, error) {
@@ -399,6 +401,11 @@ func (r *fakeRunner) Run(ctx context.Context, c Cmd) (Output, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cmd := strings.Join(c.Argv, " ")
+	for prefix, err := range r.errs {
+		if strings.HasPrefix(cmd, prefix) {
+			return Output{}, err
+		}
+	}
 	for prefix, code := range r.fail {
 		if strings.HasPrefix(cmd, prefix) {
 			if c.Stdout != nil {
@@ -566,3 +573,6 @@ func (s *fakeSandbox) Run(_ context.Context, argv []string) (osplan.Output, erro
 	}
 	return s.est, nil
 }
+
+// exists says whether anything is at the path (a link too).
+func exists(p string) bool { _, err := os.Lstat(p); return err == nil }
