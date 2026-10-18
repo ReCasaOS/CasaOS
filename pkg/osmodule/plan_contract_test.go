@@ -1,6 +1,7 @@
 package osmodule
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -266,6 +267,7 @@ func TestTheContractOfTheBox(t *testing.T) {
 		{"a path with /lib in the middle", "/opt/lib/systemd/system/" + unit, "/opt/usr/lib/systemd/system/" + unit, "virt", false, "not_owned /opt/lib/systemd/system/" + unit},
 	} {
 		b := newBox()
+		b.mergedUsr = true
 		b.units = map[string][]string{unit: {c.unitFile}}
 		if c.listed != "" {
 			b.lists = map[string][]string{c.listOwner: {c.listed}}
@@ -277,10 +279,44 @@ func TestTheContractOfTheBox(t *testing.T) {
 	}
 	// a unit that is in the list under one spelling and on the disk under both is owned (the box lists each file once, but a box that lists it twice is not a refusal)
 	b := newBox()
+	b.mergedUsr = true
 	b.units = map[string][]string{unit: {usr, lib}}
 	b.lists = map[string][]string{"virt": {usr}}
 	if got := checkOf(Plan(virtCatalogue(t), "virt", b), "foreign_unit"); !got.OK {
 		t.Errorf("one file, two spellings: %+v", got)
+	}
+
+	// ...but on a system whose /lib is a directory of its own the two are two files: a list that names the one does not own the other
+	for _, c := range []struct {
+		name       string
+		unitFile   string
+		listed     string
+		listOwner  string
+		ok         bool
+		wantDetail string
+	}{
+		{"the same spelling", usr, usr, "virt", true, ""},
+		{"the same spelling under /lib", lib, lib, "virt", true, ""},
+		{"a unit under /usr/lib and a list under /lib", usr, lib, "virt", false, "not_owned " + usr},
+		{"a unit under /lib and a list under /usr/lib", lib, usr, "virt", false, "not_owned " + lib},
+		{"another module's, with the other spelling", usr, lib, "other", false, "not_owned " + usr},
+		{"another module's, the same spelling", lib, lib, "other", false, "owned_by other"},
+	} {
+		b := newBox()
+		b.units = map[string][]string{unit: {c.unitFile}}
+		b.lists = map[string][]string{c.listOwner: {c.listed}}
+		got := checkOf(Plan(virtCatalogue(t), "virt", b), "foreign_unit")
+		if got.OK != c.ok || got.Detail != c.wantDetail {
+			t.Errorf("not merged, %s: %+v, want ok %v and %q", c.name, got, c.ok, c.wantDetail)
+		}
+	}
+	// a box that cannot say how its /lib is kept is a box whose units cannot be told
+	b = newBox()
+	b.mergedUsrErr = errors.New("io")
+	b.units = map[string][]string{unit: {usr}}
+	b.lists = map[string][]string{"virt": {usr}}
+	if got := checkOf(Plan(virtCatalogue(t), "virt", b), "foreign_unit"); got.OK || got.Detail != "unreadable" {
+		t.Errorf("/lib that cannot be looked at: %+v", got)
 	}
 
 	// the oldest release of ReCasaOS is compared with the version of the distribution as it is written in its release file ("v0.5.29") and not with the version of the component

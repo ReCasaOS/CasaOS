@@ -22,6 +22,9 @@ type fakeBox struct {
 	listsErr     error
 	units        map[string][]string
 	unitsErr     error
+	// /lib is a link to usr/lib on this box
+	mergedUsr    bool
+	mergedUsrErr error
 
 	packageManager, osUpgrade       bool
 	packageManagerErr, osUpgradeErr error
@@ -56,6 +59,10 @@ func (b *fakeBox) FilesLists() (map[string][]string, error) {
 func (b *fakeBox) UnitFiles(unit string) ([]string, error) {
 	b.calls = append(b.calls, "UnitFiles")
 	return b.units[unit], b.unitsErr
+}
+func (b *fakeBox) MergedUsr() (bool, error) {
+	b.calls = append(b.calls, "MergedUsr")
+	return b.mergedUsr, b.mergedUsrErr
 }
 func (b *fakeBox) PackageManagerBusy() (bool, error) {
 	b.calls = append(b.calls, "PackageManagerBusy")

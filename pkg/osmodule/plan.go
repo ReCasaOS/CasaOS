@@ -104,6 +104,9 @@ type Box interface {
 	// whose /lib is a link to usr/lib has the file under both names, and the answer has it once). Ownership is compared after "/lib/" is read as "/usr/lib/" on both sides, so that a list
 	// that was written with one spelling owns the file that is listed with the other.
 	UnitFiles(unit string) ([]string, error)
+	// MergedUsr says whether /lib is a link to usr/lib on this box (a system with a merged /usr), which is the only case in which "/lib/x" and "/usr/lib/x" are one file; the unpack decides
+	// the same way, on the same condition.
+	MergedUsr() (bool, error)
 	// PackageManagerBusy says whether a package manager (dpkg, apt, the units that update) holds the machine; OSUpgradeBusy whether the upgrade of the operating system does (its busy flag,
 	// read so that a flag that cannot be read is an error).
 	PackageManagerBusy() (bool, error)
@@ -330,13 +333,19 @@ func foreignUnitCheck(box Box, e Entry) Check {
 	if err != nil {
 		return Check{Code: CheckForeignUnit, Detail: "unreadable"}
 	}
+	merged := false
+	if len(files) > 0 {
+		if merged, err = box.MergedUsr(); err != nil {
+			return Check{Code: CheckForeignUnit, Detail: "unreadable"}
+		}
+	}
 	for _, f := range files {
-		if listed(lists[e.Name], f) {
+		if listed(lists[e.Name], f, merged) {
 			continue
 		}
 		detail := "not_owned " + clip(f)
 		for _, other := range sortedKeys(lists) {
-			if other != e.Name && listed(lists[other], f) {
+			if other != e.Name && listed(lists[other], f, merged) {
 				detail = "owned_by " + clip(other)
 				break
 			}
@@ -346,9 +355,15 @@ func foreignUnitCheck(box Box, e Entry) Check {
 	return Check{Code: CheckForeignUnit, OK: true}
 }
 
-// listed says whether a list of files has the file, whichever of the two names of a directory the list and the box use for it.
-func listed(list []string, file string) bool {
-	return slices.ContainsFunc(list, func(f string) bool { return usrLib(f) == usrLib(file) })
+// listed says whether a list of files has the file, whichever of the two names of a directory the list and the box use for it when the box has one directory for the two (merged).
+func listed(list []string, file string, merged bool) bool {
+	name := func(p string) string {
+		if merged {
+			return usrLib(p)
+		}
+		return p
+	}
+	return slices.ContainsFunc(list, func(f string) bool { return name(f) == name(file) })
 }
 
 // usrLib is a path with the two names of a directory that a system whose /lib is a link to usr/lib gives to a file made one: "/lib/x" is "/usr/lib/x".

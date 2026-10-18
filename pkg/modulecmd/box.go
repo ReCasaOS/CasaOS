@@ -256,6 +256,19 @@ func (b *box) UnitFiles(unit string) ([]string, error) {
 	return out, nil
 }
 
+// MergedUsr says whether /lib is a link on this box, as the unpack looks at it (checkDestination of osmodule): only then is "/lib/x" the file "/usr/lib/x". A /lib that is not there, or
+// is something else than a link, is not; one that cannot be looked at is an error.
+func (b *box) MergedUsr() (bool, error) {
+	info, err := os.Lstat(b.env.Roots.Path("/lib"))
+	switch {
+	case err == nil:
+		return info.Mode()&fs.ModeSymlink != 0, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	}
+	return false, err
+}
+
 func sortedKeys(m map[string][]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
