@@ -30,6 +30,9 @@ func init() {
 // not said in the finding: a report that said "busy" for it would refuse a box that is not.
 var busyUnits = []string{"apt-daily.service", "apt-daily-upgrade.service"}
 
+// BusyUnits are those units, for whoever asks the same question (the module assistant asks them with the units that update ReCasaOS): a copy, in the order they are asked.
+func BusyUnits() []string { return slices.Clone(busyUnits) }
+
 func checkBusy(ctx context.Context, p Probe) Result {
 	busy := func(detail string, data D) Result {
 		return Result{

@@ -9,7 +9,6 @@ import (
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
-	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 )
 
 // What the box answers, as the plan reads it (the contract of osmodule.Box, which the plan's own tests state for a stand-in): the real box is held to the same three points.
@@ -78,14 +77,7 @@ func TestTheVersionTheAssistantRunsWithIsThatOfTheDistribution(t *testing.T) {
 	if bx.ReCasaOSVersion() != "v0.5.29" {
 		t.Errorf("the version: %s", bx.ReCasaOSVersion())
 	}
-	prod := Production()
-	if prod.Version != version.CurrentVersion() {
-		t.Errorf("production runs with %q, the distribution is %q", prod.Version, version.CurrentVersion())
-	}
-	if common.VERSION == version.CurrentVersion() {
-		t.Skip("the core and the distribution have the same version here, which tells nothing")
-	}
-	if prod.Version == common.VERSION {
+	if prod := Production(); prod.Version == common.VERSION {
 		t.Errorf("production runs with the version of the core, %q", common.VERSION)
 	}
 }

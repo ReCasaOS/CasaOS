@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -46,6 +47,14 @@ const (
 // system that the module does not support). Such a check is not ok, and is never the reason of the refusal. It is the plan that says it, with a mark of its own: the same words in the
 // answer of apt or of a Box are the words of a check that failed.
 const DetailNotChecked = "not_checked"
+
+// DetailNeedsRoot is what the check of the package manager says when the user who asks for the plan is not root, who is the only one that can look at the locks of dpkg and apt: it was not
+// made, it is not the reason of a refusal, and the install makes it again. The words start with the mark of a check that was not made.
+const DetailNeedsRoot = DetailNotChecked + ": needs root, the install checks it as root"
+
+// ErrNeedsRoot is what a Box answers when it cannot tell whether a package manager holds the machine because the user is not root (and not for another reason): the plan does not take it for
+// a machine that is busy, nor for one that is not.
+var ErrNeedsRoot = errors.New("needs root")
 
 // maxAptDetail is the most characters of what apt says when it could not make an answer, as the apt check shows it: more than the other checks, because it is where the lines that name
 // what could not be met are (the others say a name or a number).
@@ -95,6 +104,9 @@ type Box interface {
 	// whose /lib is a link to usr/lib has the file under both names, and the answer has it once). Ownership is compared after "/lib/" is read as "/usr/lib/" on both sides, so that a list
 	// that was written with one spelling owns the file that is listed with the other.
 	UnitFiles(unit string) ([]string, error)
+	// MergedUsr says whether /lib is a link to usr/lib on this box (a system with a merged /usr), which is the only case in which "/lib/x" and "/usr/lib/x" are one file; the unpack decides
+	// the same way, on the same condition.
+	MergedUsr() (bool, error)
 	// PackageManagerBusy says whether a package manager (dpkg, apt, the units that update) holds the machine; OSUpgradeBusy whether the upgrade of the operating system does (its busy flag,
 	// read so that a flag that cannot be read is an error).
 	PackageManagerBusy() (bool, error)
@@ -181,8 +193,17 @@ func SystemChecks(e Entry, s System) []Check {
 	return []Check{
 		{Code: CheckOS, OK: osOK, Detail: detail(osOK, "unsupported "+s.OSID+":"+s.OSVersion)},
 		{Code: CheckArch, OK: assetOK, Detail: detail(assetOK, "no archive for "+s.Arch)},
-		{Code: CheckReCasaOS, OK: versionOK, Detail: detail(versionOK, "have "+s.ReCasaOS+" need "+e.Manifest.MinReCasaOS)},
+		{Code: CheckReCasaOS, OK: versionOK, Detail: detail(versionOK, releaseWords(s.ReCasaOS, haveOK, e.Manifest.MinReCasaOS))},
 	}
+}
+
+// releaseWords is what the check of the release says when it fails: the release that the box has and the one that is needed, or "unknown" for a box whose release is not known (the marker
+// of the installer is not there, or does not hold a release): that is not a release that is too old.
+func releaseWords(have string, haveOK bool, need string) string {
+	if !haveOK {
+		return "unknown"
+	}
+	return "have " + have + " need " + need
 }
 
 // PackagesFor are the packages a module needs on an architecture: the common ones and the architecture's, sorted, none twice.
@@ -223,7 +244,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 
 	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
 	checks = append(checks, installedCheck(box, entry), foreignUnitCheck(box, entry), busyCheck(box))
-	standing := !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK })
+	standing := !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK && !c.skipped })
 
 	packages := PackagesFor(entry.Manifest, arch)
 	aptThere := len(packages) == 0 || box.AptGetExists()
@@ -312,13 +333,19 @@ func foreignUnitCheck(box Box, e Entry) Check {
 	if err != nil {
 		return Check{Code: CheckForeignUnit, Detail: "unreadable"}
 	}
+	merged := false
+	if len(files) > 0 {
+		if merged, err = box.MergedUsr(); err != nil {
+			return Check{Code: CheckForeignUnit, Detail: "unreadable"}
+		}
+	}
 	for _, f := range files {
-		if listed(lists[e.Name], f) {
+		if listed(lists[e.Name], f, merged) {
 			continue
 		}
 		detail := "not_owned " + clip(f)
 		for _, other := range sortedKeys(lists) {
-			if other != e.Name && listed(lists[other], f) {
+			if other != e.Name && listed(lists[other], f, merged) {
 				detail = "owned_by " + clip(other)
 				break
 			}
@@ -328,9 +355,15 @@ func foreignUnitCheck(box Box, e Entry) Check {
 	return Check{Code: CheckForeignUnit, OK: true}
 }
 
-// listed says whether a list of files has the file, whichever of the two names of a directory the list and the box use for it.
-func listed(list []string, file string) bool {
-	return slices.ContainsFunc(list, func(f string) bool { return usrLib(f) == usrLib(file) })
+// listed says whether a list of files has the file, whichever of the two names of a directory the list and the box use for it when the box has one directory for the two (merged).
+func listed(list []string, file string, merged bool) bool {
+	name := func(p string) string {
+		if merged {
+			return usrLib(p)
+		}
+		return p
+	}
+	return slices.ContainsFunc(list, func(f string) bool { return name(f) == name(file) })
 }
 
 // usrLib is a path with the two names of a directory that a system whose /lib is a link to usr/lib gives to a file made one: "/lib/x" is "/usr/lib/x".
@@ -355,12 +388,14 @@ func busyCheck(box Box) Check {
 	pm, pmErr := box.PackageManagerBusy()
 	up, upErr := box.OSUpgradeBusy()
 	switch {
-	case pmErr != nil || upErr != nil:
+	case upErr != nil || (pmErr != nil && !errors.Is(pmErr, ErrNeedsRoot)):
 		return Check{Code: CheckBusy, Detail: "unreadable"}
 	case up:
 		return Check{Code: CheckBusy, Detail: "os_upgrade"}
 	case pm:
 		return Check{Code: CheckBusy, Detail: "package_manager"}
+	case pmErr != nil: // (the locks, for a user who is not root)
+		return Check{Code: CheckBusy, Detail: DetailNeedsRoot, skipped: true}
 	}
 	return Check{Code: CheckBusy, OK: true}
 }

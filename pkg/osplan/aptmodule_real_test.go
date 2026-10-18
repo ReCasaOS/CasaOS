@@ -55,6 +55,9 @@ func TestTheRealOutputOfAptForEachCaseOfAModuleIsReadAsWhatHappens(t *testing.T)
 		"hold":       {asked: []string{"rvm-held"}, upgrade: []string{"rvm-held"}, held: []string{"rvm-held"}, download: both(10_100), extra: both(4096)},
 		"nothing":    {asked: []string{"rvm-done"}, download: both(0), extra: both(0)},
 		"mixed":      {asked: []string{"rvm-solo", "rvm-done"}, install: []string{"rvm-solo"}, download: both(13_200), extra: both(12_300)},
+		// a package that is installed as a dependency: with the list of the sandbox apt says nothing of it; with the box's it marks it as installed by hand and says so
+		"auto":        {asked: []string{"rvm-autodep"}, download: both(0), extra: both(0)},
+		"auto-marked": {asked: []string{"rvm-autodep"}, download: both(0), extra: both(0)},
 		// what cannot be done
 		"unmet-held":    {asked: []string{"rvm-needs"}, failure: "apt_failed", detail: []string{"unmet dependencies", "rvm-needs : Depends: rvm-lib (>= 2) but 1.0 is to be installed", "Unable to correct problems"}},
 		"unmet-missing": {asked: []string{"rvm-bad"}, failure: "apt_failed", detail: []string{"unmet dependencies", "rvm-bad : Depends: rvm-nothere but it is not installable"}},
@@ -95,6 +98,47 @@ func TestTheRealOutputOfAptForEachCaseOfAModuleIsReadAsWhatHappens(t *testing.T)
 					t.Errorf("sizes: known %v, %d and %d, want %d and %d", res.Known, res.DownloadBytes, res.ExtraBytes, w.download[label], w.extra[label])
 				}
 			})
+		}
+	}
+}
+
+// the names in the block of unmet dependencies are the ones that can be held: what the real apt says, and not the words it says them with
+func TestTheNamesInTheBlockOfUnmetDependenciesAreNamesAndNothingElse(t *testing.T) {
+	for _, label := range []string{"d11", "d12"} {
+		for name, want := range map[string][]string{
+			"unmet-held":    {"rvm-needs", "rvm-lib"},
+			"unmet-missing": {"rvm-bad", "rvm-nothere"},
+			"trivial":       nil,
+			"nothing":       nil,
+		} {
+			sim, _ := realModuleCase(t, label, name)
+			if got := UnmetNames(sim.Text); !slices.Equal(got, want) {
+				t.Errorf("%s %s: %q, want %q", label, name, got, want)
+			}
+		}
+	}
+}
+
+func TestTheNamesInTheBlockOfUnmetDependenciesAreReadFromTheBlockOnly(t *testing.T) {
+	text := progressLines + `Some packages could not be installed.
+
+The following packages have unmet dependencies:
+ pkg-a : Depends: libfoo1 (>= 2.0) but 1.5 is to be installed or
+                  libfoo2 but it is not going to be installed
+         Breaks: libc6:i386 (< 2.36) but 2.31 is to be installed
+ pkg-b : PreDepends: other-1.2 but it is not installable
+ Pkg-C : Depends: UPPER
+E: Unable to correct problems, you have held broken packages.
+ libvirt0 is on a line that follows the end of the block.
+libvirt0 and held are words of another line.
+`
+	want := []string{"pkg-a", "libfoo1", "libfoo2", "libc6", "pkg-b", "other-1.2"}
+	if got := UnmetNames(text); !slices.Equal(got, want) {
+		t.Errorf("%q, want %q", got, want)
+	}
+	for _, none := range []string{"", progressLines, "The following packages have unmet dependencies:\n", "pkg-a : Depends: x\n", "The following NEW packages will be installed:\n  pkg-a\n"} {
+		if got := UnmetNames(none); len(got) != 0 {
+			t.Errorf("%q: %q", none, got)
 		}
 	}
 }

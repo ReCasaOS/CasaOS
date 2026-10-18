@@ -9,8 +9,11 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
@@ -23,6 +26,57 @@ import (
 
 // sandboxDirMode is the mode of the directories of the sandbox: apt drops to its own user to fetch, and that user has to walk down to the directories apt gives it.
 const sandboxDirMode fs.FileMode = 0o711
+
+// staleSandboxAfter is how old a sandbox directory is before the next plan or install removes it as the remains of one that was killed (a plan is bounded by a minute).
+const staleSandboxAfter = time.Hour
+
+// sandboxParent is where the sandbox directories are, and the directory that is swept for the stale ones: /var/tmp, whatever the Roots say. A test points it elsewhere.
+var sandboxParent = osplan.SandboxParent
+
+// sweepStaleSandboxes removes the sandbox directories of parent that are older than olderThan: a plan that was killed did not remove its own. Only a directory (never a link) that has the
+// name of one, that belongs to the user who runs, that nobody else may write in and that is on the file system of its parent; what else is there is not the assistant's and is left. The
+// ones removed are returned, and the first error with them.
+func sweepStaleSandboxes(parent string, now time.Time, olderThan time.Duration) ([]string, error) {
+	entries, err := os.ReadDir(parent)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return nil, err
+	}
+	parentStat, ok := parentInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, errors.New("who owns the directory cannot be seen")
+	}
+	var removed []string
+	var first error
+	for _, e := range entries {
+		if !osplan.IsSandboxDirName(e.Name()) {
+			continue
+		}
+		p := filepath.Join(parent, e.Name())
+		info, err := os.Lstat(p) // (a link is not a directory here)
+		if err != nil || !info.IsDir() || now.Sub(info.ModTime()) < olderThan {
+			continue
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || int(stat.Uid) != os.Geteuid() || stat.Dev != parentStat.Dev || info.Mode().Perm()&0o022 != 0 {
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		removed = append(removed, p)
+	}
+	return removed, first
+}
 
 type aptSandbox struct {
 	roots Roots
@@ -48,6 +102,8 @@ func (s *aptSandbox) MakeDir() (string, func(), error) {
 	if s.dir != "" {
 		return "", nil, errors.New("the sandbox has its directory already")
 	}
+	// the remains of a plan that was killed (SIGKILL is not caught): the next one clears them
+	_, _ = sweepStaleSandboxes(sandboxParent, time.Now(), staleSandboxAfter)
 	dir, err := os.MkdirTemp(osplan.SandboxParent, osplan.SandboxPrefix)
 	if err != nil {
 		return "", nil, err

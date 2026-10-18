@@ -7,9 +7,10 @@ import (
 )
 
 // moduleOpts is the options of the simulation of a module, written out as they are meant (and not built by the code that is tested): the cache of apt in the sandbox directory, no
-// locking, no log of the planner. The sources and the lists are the box's own, because the install that follows uses the lists the box has.
+// locking, no log of the planner, and the list of the packages that are installed as dependencies in a file of the sandbox's (apt marks a package that it is asked to install as
+// installed by hand, and writes the list of the box for it). The sources and the lists are the box's own, because the install that follows uses the lists the box has.
 func moduleOpts(d string) []string {
-	return []string{"-o", "Dir::Cache=" + d + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner="}
+	return []string{"-o", "Dir::Cache=" + d + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner=", "-o", "Dir::State::extended_states=" + d + "/extended_states"}
 }
 
 func moduleArgvOf(d string, tail ...string) []string {
@@ -42,6 +43,16 @@ func TestTheArgvsOfTheSimulationOfAModuleAreWhatTheyAreMeantToBe(t *testing.T) {
 		if i < 1 || a[i-1] != "-o" {
 			t.Errorf("the %s does not turn the log of the planner off: %q", name, a)
 		}
+	}
+	// both keep the list of the automatically installed packages in the sandbox: the one of the box is never opened for writing by a simulation
+	for name, a := range map[string][]string{"simulation": sim, "estimate": est} {
+		i := slices.Index(a, "Dir::State::extended_states="+testDir+"/extended_states")
+		if i < 1 || a[i-1] != "-o" {
+			t.Errorf("the %s does not keep the list of the automatically installed packages in the sandbox: %q", name, a)
+		}
+	}
+	if got := ModuleStatesFile(testDir); got != testDir+"/extended_states" {
+		t.Errorf("the file that stands for the list is %q", got)
 	}
 	// the commands run in English: the parser reads apt's own words and a translation would not be understood
 	if env := SandboxEnv(testDir); !slices.Contains(env, "LC_ALL=C") || !slices.Contains(env, "LANG=C") || !slices.Contains(env, "DEBIAN_FRONTEND=noninteractive") {
@@ -153,23 +164,26 @@ func TestTheAllowListTakesTheTwoCommandsOfAModuleAndNothingNear(t *testing.T) {
 		}
 	}
 	// the head of the simulation and the packages of the estimate do not make a command
-	mixed := slices.Concat(sim[:10], est[10:])
+	head := len(sim) - len(pkgs)
+	mixed := slices.Concat(sim[:head], est[head:])
 	if !AllowedModuleArgv(mixed, testDir) {
 		t.Errorf("the same packages after the head of the simulation: %q", mixed)
 	}
-	if AllowedModuleArgv(slices.Concat(sim[:9], est[10:]), testDir) {
+	if AllowedModuleArgv(slices.Concat(sim[:head-1], est[head:]), testDir) {
 		t.Error("a head that is neither")
 	}
 	// the two commands are not the ones of an earlier version: no trivial-only estimate (which installs a transaction of one package), no log of the planner left on, and no verb with
 	// the other's option
 	for name, a := range map[string][]string{
-		"the estimate that apt installs with": moduleArgvOf(testDir, "-o", "APT::Get::Trivial-Only=true", "install", "--no-install-recommends", "pkg-a"),
-		"the simulation without the log off":  {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "-s", "install", "--no-install-recommends", "pkg-a"},
-		"the estimate without the log off":    {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "--print-uris", "install", "--no-install-recommends", "pkg-a"},
-		"the log turned on":                   {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner=/var/log/x", "--print-uris", "install", "--no-install-recommends", "pkg-a"},
-		"both options":                        moduleArgvOf(testDir, "-s", "--print-uris", "install", "--no-install-recommends", "pkg-a"),
-		"the estimate with the yes":           moduleArgvOf(testDir, "--print-uris", "-y", "install", "--no-install-recommends", "pkg-a"),
-		"the estimate with the install after": moduleArgvOf(testDir, "install", "--print-uris", "--no-install-recommends", "pkg-a"),
+		"the estimate that apt installs with":   moduleArgvOf(testDir, "-o", "APT::Get::Trivial-Only=true", "install", "--no-install-recommends", "pkg-a"),
+		"the simulation without the log off":    {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::State::extended_states=" + testDir + "/extended_states", "-s", "install", "--no-install-recommends", "pkg-a"},
+		"the estimate without the log off":      {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::State::extended_states=" + testDir + "/extended_states", "--print-uris", "install", "--no-install-recommends", "pkg-a"},
+		"the log turned on":                     {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner=/var/log/x", "-o", "Dir::State::extended_states=" + testDir + "/extended_states", "--print-uris", "install", "--no-install-recommends", "pkg-a"},
+		"the simulation on the list of the box": {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner=", "-s", "install", "--no-install-recommends", "pkg-a"},
+		"the list in another file":              {"apt-get", "-o", "Dir::Cache=" + testDir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner=", "-o", "Dir::State::extended_states=/var/lib/apt/extended_states", "-s", "install", "--no-install-recommends", "pkg-a"},
+		"both options":                          moduleArgvOf(testDir, "-s", "--print-uris", "install", "--no-install-recommends", "pkg-a"),
+		"the estimate with the yes":             moduleArgvOf(testDir, "--print-uris", "-y", "install", "--no-install-recommends", "pkg-a"),
+		"the estimate with the install after":   moduleArgvOf(testDir, "install", "--print-uris", "--no-install-recommends", "pkg-a"),
 	} {
 		if AllowedModuleArgv(a, testDir) {
 			t.Errorf("%s is allowed: %q", name, a)
@@ -249,6 +263,39 @@ func TestInstallingWhatIsThereAlreadyIsAnInstallOfNothing(t *testing.T) {
 	res := ParseModuleSimulation(out(sim, 0), out(sim, 0), asked)
 	if res.Failure != "" || len(res.ToInstall) != 0 || len(res.ToUpgrade) != 0 || !res.Known || res.DownloadBytes != 0 || res.ExtraBytes != 0 {
 		t.Errorf("%+v", res)
+	}
+}
+
+// A package that is installed as a dependency is marked as installed by hand when apt is asked to install it, and apt says so in a line of its own (the commands keep the list in the
+// sandbox, so the box's is not rewritten; the line is accepted for what it is, in case apt still says it: it is not part of the transaction).
+func TestAPackageThatAptMarksAsInstalledByHandIsStillWhatItWas(t *testing.T) {
+	marked := "libvirt-clients set to manually installed.\n"
+	sim := progressLines + "libvirt-clients is already the newest version (9.0.0-4).\n" + marked + "qemu-utils is already the newest version (1:7.2+dfsg-7+deb12u16).\n" +
+		"0 upgraded, 0 newly installed, 0 to remove and 4 not upgraded.\n"
+	if res := ParseModuleSimulation(out(sim, 0), out(sim, 0), asked); res.Failure != "" || len(res.ToInstall) != 0 || !res.Known {
+		t.Errorf("the line among the lines of the newest versions: %+v", res)
+	}
+	// and in a transaction that does something
+	for name, c := range map[string][2]string{
+		"after the progress lines": {strings.Replace(simInstall, progressLines, progressLines+marked, 1), strings.Replace(estInstall, progressLines, progressLines+marked, 1)},
+		"before the summary":       {strings.Replace(simInstall, "2 upgraded", marked+"2 upgraded", 1), strings.Replace(estInstall, "2 upgraded", marked+"2 upgraded", 1)},
+	} {
+		res := ParseModuleSimulation(out(c[0], 0), out(c[1], 0), asked)
+		want := ParseModuleSimulation(out(simInstall, 0), out(estInstall, 0), asked)
+		if res.Failure != "" || !slices.Equal(res.ToInstall, want.ToInstall) || !slices.Equal(res.ToUpgrade, want.ToUpgrade) || res.DownloadBytes != want.DownloadBytes || !res.Known {
+			t.Errorf("%s: %+v, want %+v", name, res, want)
+		}
+	}
+	// only that line: not the words of another, not a name that is not a package's, not a line with more in it
+	for _, bad := range []string{
+		"libvirt-clients set to manually installed", "libvirt-clients set to automatically installed.", "libvirt-clients set to manually installed. ", "libvirt-clients set to manually installed.x",
+		"Libvirt-Clients set to manually installed.", " set to manually installed.", "set to manually installed.", "$(id) set to manually installed.", "a b set to manually installed.",
+		"libvirt-clients is set to manually installed.",
+	} {
+		res := ParseModuleSimulation(out(strings.Replace(simInstall, progressLines, progressLines+bad+"\n", 1), 0), out(estInstall, 0), asked)
+		if res.Failure != "apt_failed" {
+			t.Errorf("%q: %+v", bad, res)
+		}
 	}
 }
 

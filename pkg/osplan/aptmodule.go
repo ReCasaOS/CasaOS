@@ -21,12 +21,18 @@ import (
 // moduleMaxPackages is the most packages of a module (the manifest has 40 at most).
 const moduleMaxPackages = 40
 
-// moduleOptions are the options of both commands, in this order: the cache of apt in the sandbox directory, no locking, and no log of the planner. The last is what the file that APT_CONFIG
-// names says too (AptConfigText), and is said again here because the planner writes /var/log/apt/eipp.log.xz, as root, for every "-s install" that is not told otherwise (apt 2.2.4 and
-// 2.6.1), and that log is the one of the last real transaction of the box.
+// moduleOptions are the options of both commands, in this order: the cache of apt in the sandbox directory, no locking, no log of the planner, and the list of the packages that are
+// installed as dependencies in a file of the sandbox's. The log is what the file that APT_CONFIG names says too (AptConfigText), and is said again here because the planner writes
+// /var/log/apt/eipp.log.xz, as root, for every "-s install" that is not told otherwise (apt 2.2.4 and 2.6.1), and that log is the one of the last real transaction of the box. The list
+// is the one apt rewrites, as root and for a simulation as well, when it is asked to install a package that is installed as a dependency: it marks it as installed by hand, says so and
+// writes /var/lib/apt/extended_states (testdata/realmodule/capture.sh, the cases "auto" and "auto-marked").
 func moduleOptions(dir string) []string {
-	return []string{"-o", "Dir::Cache=" + dir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner="}
+	return []string{"-o", "Dir::Cache=" + dir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner=", "-o", "Dir::State::extended_states=" + ModuleStatesFile(dir)}
 }
+
+// ModuleStatesFile is the file in the sandbox directory dir that the commands of a module are told to keep apt's list of the automatically installed packages in. It is made empty before they
+// run: every package of the sandbox is installed by hand, and none is marked, so that nothing is written but in the sandbox.
+func ModuleStatesFile(dir string) string { return dir + "/extended_states" }
 
 // moduleHead is the command up to the packages: the verb and its options, all fixed.
 func moduleHead(dir string, estimate bool) []string {
@@ -94,6 +100,9 @@ var (
 	// the held packages that apt would change; the names are read
 	heldHeader    = "The following held packages will be changed:"
 	alreadyNewest = regexp.MustCompile(`^[a-z0-9][a-z0-9+.:~-]* is already the newest version \([^()]+\)\.$`)
+	// the line apt says, before the summary, for a package that is installed as a dependency and that it is asked to install: it is installed by hand from then on. It says nothing of
+	// the transaction.
+	markedByHand = regexp.MustCompile(`^[a-z0-9][a-z0-9+.:~-]* set to manually installed\.$`)
 )
 
 // heldError is what apt says, and stops at, when a package is held and it was told to go on without being asked.
@@ -124,6 +133,9 @@ func withoutInstallNotes(text string) (string, []string, []string, *Failure) {
 			block = ""
 			newest = append(newest, strings.Fields(l)[0])
 			continue
+		case markedByHand.MatchString(l):
+			block = ""
+			continue
 		}
 		block = ""
 		kept = append(kept, l)
@@ -146,6 +158,33 @@ func unmetDependencies(text string) []string {
 		case in && strings.HasPrefix(l, " "):
 			if s := sanitizeLine(l); s != "" && len(out) < maxDetailLines {
 				out = append(out, s)
+			}
+		default:
+			in = false
+		}
+	}
+	return out
+}
+
+// unmetStop are the words apt says its reasons with in that block, which are not names ("but 1.0 is to be installed or", "but it is not going to be installed").
+var unmetStop = map[string]bool{"but": true, "is": true, "to": true, "be": true, "installed": true, "or": true, "not": true, "installable": true, "it": true, "going": true}
+
+// UnmetNames are the names that the block of unmet dependencies of a simulation that apt could not solve has in it, in the order they come and each once: the package that cannot be
+// installed, what it needs, what it conflicts with (the version of an architecture is the name: "libc6:i386" is "libc6"). Whether one of them is a package that is held is not something
+// apt says in words: it says "you have held broken packages" for a dependency that is not installable at all as well, and the box is asked which of these names are held.
+func UnmetNames(text string) []string {
+	var out []string
+	in := false
+	for _, l := range splitOutput(text) {
+		switch {
+		case l == unmetHeader:
+			in = true
+		case in && strings.HasPrefix(l, " "):
+			for _, w := range strings.FieldsFunc(l, func(r rune) bool { return r == ' ' || r == '\t' || r == '(' || r == ')' || r == ',' || r == '|' }) {
+				w, _, _ = strings.Cut(strings.TrimSuffix(w, ":"), ":")
+				if packageName.MatchString(w) && strings.ContainsAny(w, "abcdefghijklmnopqrstuvwxyz") && !unmetStop[w] && !slices.Contains(out, w) {
+					out = append(out, w)
+				}
 			}
 		default:
 			in = false

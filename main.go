@@ -24,6 +24,7 @@ import (
 
 	util_http "github.com/ReCasaOS/CasaOS-Common/utils/http"
 
+	_ "github.com/ReCasaOS/CasaOS/boot" // (runs `casaos module ...` before the other packages are initialised)
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/pkg/alerts"
 	"github.com/ReCasaOS/CasaOS/pkg/autoupdate"
