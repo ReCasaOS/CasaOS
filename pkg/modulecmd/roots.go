@@ -8,14 +8,15 @@ import (
 // Every path the commands touch is one of these, absolute as the box spells it, and is reached through a Roots: production uses the real file system (an empty Prefix), a test points
 // the Prefix at a temporary directory and nothing is read or written outside it. /DATA is not a path of the commands at all.
 const (
-	pathCatalogue = "/usr/share/casaos/modules/catalogue.json"
-	pathManifests = "/etc/casaos/modules"
-	pathState     = "/var/lib/casaos/modules"
-	pathLogs      = "/var/log/casaos"
-	pathOSRelease = "/etc/os-release"
-	pathGateway   = "/etc/casaos/gateway.ini"
-	pathOSBusy    = "/var/lib/casaos/os-upgrade/busy"
-	pathAptConfD  = "/etc/apt/apt.conf.d"
+	pathCatalogue    = "/usr/share/casaos/modules/catalogue.json"
+	pathManifests    = "/etc/casaos/modules"
+	pathState        = "/var/lib/casaos/modules"
+	pathLogs         = "/var/log/casaos"
+	pathOSRelease    = "/etc/os-release"
+	pathOSReleaseLib = "/usr/lib/os-release" // what os-release(5) falls back to when /etc has none
+	pathGateway      = "/etc/casaos/gateway.ini"
+	pathOSBusy       = "/var/lib/casaos/os-upgrade/busy"
+	pathAptConfD     = "/etc/apt/apt.conf.d"
 )
 
 // dpkgLocks are the files that apt and dpkg lock while they work.

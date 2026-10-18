@@ -88,12 +88,44 @@ func parseOSRelease(raw []byte) (id, version string) {
 	return id, version
 }
 
+// OS is the ID and the VERSION_ID of the file os-release(5) names: /etc/os-release, which on Debian and Ubuntu is a link to ../usr/lib/os-release, and /usr/lib/os-release when there is
+// none in /etc (a link that leads nowhere is none). A file that is there and is not a regular file, or is too large, or does not read, is not looked past: it is a box that cannot be told.
 func (b *box) OS() (string, string) {
-	raw, err := readRegular(b.env.Roots.Path(pathOSRelease), 64<<10)
-	if err != nil {
-		return "", ""
+	for _, p := range []string{pathOSRelease, pathOSReleaseLib} {
+		raw, err := readFollowing(b.env.Roots.Path(p), 64<<10)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", ""
+		}
+		return parseOSRelease(raw)
 	}
-	return parseOSRelease(raw)
+	return "", ""
+}
+
+// readFollowing reads a file that is a regular file once its links are followed, at most max bytes (more is an error). It is for the files the system itself keeps as links.
+func readFollowing(path string, max int64) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > max {
+		return nil, errTooLarge
+	}
+	return raw, nil
 }
 
 func (b *box) Arch() string            { return b.env.Arch }
