@@ -1,0 +1,45 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be upgraded:
+  ca-certificates dpkg e2fsprogs gpgv libc-bin libc6 libcom-err2 libext2fs2
+  libgnutls30 libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 liblzma5
+  libpam-modules libpam-modules-bin libpam-runtime libpam0g libsepol1 libss2
+  libssl1.1 libsystemd0 libtasn1-6 libudev1 login logsave openssl passwd
+  perl-base tzdata
+30 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Need to get 18.0 MB of archives.
+After this operation, 84.0 kB of additional disk space will be used.
+Get:1 http://archive.debian.org/debian-security bullseye-security/main amd64 dpkg amd64 1.20.14 [2542 kB]
+Get:2 http://archive.debian.org/debian-security bullseye-security/main amd64 login amd64 1:4.8.1-1+deb11u1 [656 kB]
+Get:3 http://archive.debian.org/debian-security bullseye-security/main amd64 perl-base amd64 5.32.1-4+deb11u5 [1629 kB]
+Get:4 http://archive.debian.org/debian-security bullseye-security/main amd64 libc6 amd64 2.31-13+deb11u14 [2820 kB]
+Get:5 http://archive.debian.org/debian-security bullseye-security/main amd64 libc-bin amd64 2.31-13+deb11u14 [829 kB]
+Get:6 http://archive.debian.org/debian-security bullseye-security/main amd64 libpam0g amd64 1.4.0-9+deb11u2 [130 kB]
+Get:7 http://archive.debian.org/debian-security bullseye-security/main amd64 libpam-modules-bin amd64 1.4.0-9+deb11u2 [108 kB]
+Get:8 http://archive.debian.org/debian-security bullseye-security/main amd64 libpam-modules amd64 1.4.0-9+deb11u2 [327 kB]
+Get:9 http://archive.debian.org/debian-security bullseye-security/main amd64 libsystemd0 amd64 247.3-7+deb11u8 [377 kB]
+Get:10 http://archive.debian.org/debian-security bullseye-security/main amd64 logsave amd64 1.46.2-2+deb11u1 [75.0 kB]
+Get:11 http://archive.debian.org/debian-security bullseye-security/main amd64 libext2fs2 amd64 1.46.2-2+deb11u1 [257 kB]
+Get:12 http://archive.debian.org/debian-security bullseye-security/main amd64 e2fsprogs amd64 1.46.2-2+deb11u1 [614 kB]
+Get:13 http://archive.debian.org/debian-security bullseye-security/main amd64 libpam-runtime all 1.4.0-9+deb11u2 [208 kB]
+Get:14 http://archive.debian.org/debian-security bullseye-security/main amd64 passwd amd64 1:4.8.1-1+deb11u1 [993 kB]
+Get:15 http://archive.debian.org/debian-security bullseye-security/main amd64 gpgv amd64 2.2.27-2+deb11u3 [626 kB]
+Get:16 http://archive.debian.org/debian-security bullseye-security/main amd64 libcom-err2 amd64 1.46.2-2+deb11u1 [74.3 kB]
+Get:17 http://archive.debian.org/debian-security bullseye-security/main amd64 libtasn1-6 amd64 4.16.0-2+deb11u2 [55.4 kB]
+Get:18 http://archive.debian.org/debian-security bullseye-security/main amd64 libgnutls30 amd64 3.7.1-5+deb11u10 [1345 kB]
+Get:19 http://archive.debian.org/debian-security bullseye-security/main amd64 libk5crypto3 amd64 1.18.3-6+deb11u8 [115 kB]
+Get:20 http://archive.debian.org/debian-security bullseye-security/main amd64 libkrb5support0 amd64 1.18.3-6+deb11u8 [66.5 kB]
+Get:21 http://archive.debian.org/debian-security bullseye-security/main amd64 libkrb5-3 amd64 1.18.3-6+deb11u8 [364 kB]
+Get:22 http://archive.debian.org/debian-security bullseye-security/main amd64 libgssapi-krb5-2 amd64 1.18.3-6+deb11u8 [166 kB]
+Get:23 http://archive.debian.org/debian-security bullseye-security/main amd64 libssl1.1 amd64 1.1.1w-0+deb11u8 [1566 kB]
+Get:24 http://archive.debian.org/debian-security bullseye-security/main amd64 liblzma5 amd64 5.2.5-2.1~deb11u2 [169 kB]
+Get:25 http://archive.debian.org/debian-security bullseye-security/main amd64 libsepol1 amd64 3.1-1+deb11u1 [269 kB]
+Get:26 http://archive.debian.org/debian-security bullseye-security/main amd64 libudev1 amd64 247.3-7+deb11u8 [169 kB]
+Get:27 http://archive.debian.org/debian-security bullseye-security/main amd64 tzdata all 2026b-0+deb11u1 [311 kB]
+Get:28 http://archive.debian.org/debian-security bullseye-security/main amd64 openssl amd64 1.1.1w-0+deb11u8 [860 kB]
+Get:29 http://archive.debian.org/debian-security bullseye-security/main amd64 ca-certificates all 20250419~deb12u1~deb11u1 [175 kB]
+Get:30 http://archive.debian.org/debian-security bullseye-security/main amd64 libss2 amd64 1.46.2-2+deb11u1 [78.9 kB]
+Fetched 18.0 MB in 0s (61.6 MB/s)
+Download complete and in download only mode

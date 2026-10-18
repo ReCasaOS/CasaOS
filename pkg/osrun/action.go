@@ -84,11 +84,18 @@ func HintOf(detailLine string) string {
 			}
 		}
 	}
+	if strings.HasPrefix(detailLine, "STOP: the download did not go through: security.debian.org answered 404 Not Found") {
+		return HintSecurityArchiveGap
+	}
 	return ""
 }
 
 // HintReleaseInfoChange is the hint for a repository whose release information changed.
 const HintReleaseInfoChange = "releaseinfo_change"
+
+// HintSecurityArchiveGap is the hint for a refresh whose download got 404 from security.debian.org: the security mirror of Debian 11 lists files that now live on archive.debian.org,
+// and a line of the sources that the refresh did not recognise still points at it.
+const HintSecurityArchiveGap = "security_archive_gap"
 
 // ActionsFor is the buttons that are valid for a state now, in the order of ActionNames. The server decides, and the page
 // shows exactly these; whether the feature is switched on does not change them. A button that the state alone cannot

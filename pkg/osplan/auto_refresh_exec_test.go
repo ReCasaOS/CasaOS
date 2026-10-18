@@ -1,6 +1,7 @@
 package osplan
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
 )
 
@@ -425,6 +427,87 @@ func TestR2StopsOnAnyRemovalWhateverThePackageIsAndBeforeAnythingIsDownloaded(t 
 		if v := b.verbs(); !slices.Equal(v, []string{"check", "update", "sim-dist"}) {
 			t.Errorf("%s: apt was asked %q", tc.name, v)
 		}
+	}
+}
+
+// A machine whose sources still say security.debian.org for bullseye: apt reads the archive's address for the refresh (R1 writes it, and says which line), and R3 puts the owner's
+// own file back byte for byte, which its hash proves.
+func TestTheRefreshReadsTheSecurityArchiveForAptAndPutsTheOwnersFileBack(t *testing.T) {
+	own := "deb http://deb.debian.org/debian bullseye main\ndeb http://security.debian.org/debian-security bullseye-security main\n"
+	b := newRefreshBox(t, false)
+	b.write("etc-apt/sources.list", own)
+	files := []osreadiness.SourceFile{file("sources.list", own)}
+	for _, f := range d11Box(t) {
+		if f.InParts {
+			files = append(files, f)
+		}
+	}
+	rw, err := RewriteSources(context.Background(), bullseyeToBookworm.ForRefresh(), files, &fakeDecider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.in.Rewritten = rw
+	if b.ar, err = BuildRefresh(b.in); err != nil {
+		t.Fatal(err)
+	}
+	out, code := b.through("rsources")
+	if code != 0 || !strings.Contains(out, "Note: sources.list line 2: deb http://security.debian.org/debian-security bullseye-security main is read for the refresh as deb http://archive.debian.org/debian-security bullseye-security main") {
+		t.Fatalf("exit %d, %q", code, out)
+	}
+	if got := b.read("etc-apt/sources.list"); !strings.Contains(got, "deb http://archive.debian.org/debian-security bullseye-security main\n") || strings.Contains(got, "security.debian.org") {
+		t.Errorf("the sources that apt reads for the refresh: %q", got)
+	}
+	if got := b.read("bk/security-archive"); !strings.Contains(got, "sources.list line 2") {
+		t.Errorf("the mark: %q", got)
+	}
+	if out, code := b.run("rupgrade"); code != 0 {
+		t.Fatalf("R2: exit %d, %q", code, out)
+	}
+	if out, code := b.run("rdone"); code != 0 || b.read("etc-apt/sources.list") != own {
+		t.Errorf("exit %d, %q: the owner's file is %q", code, out, b.read("etc-apt/sources.list"))
+	}
+	// a machine that is on the archive already, or on a mirror of its own, has nothing to say
+	b = newRefreshBox(t, false)
+	if out, code := b.through("rsources"); code != 0 || strings.Contains(out, "Note:") || b.exists("bk/security-archive") {
+		t.Errorf("exit %d, %q", code, out)
+	}
+}
+
+// A download that gets 404 from security.debian.org (the real text of apt 2.2.4, made in a root of Debian 11.11) stops with the class network, and the line of the stop names the
+// host and gives the hint that the page reads. A download that fails for another reason, or whose 404 is from another host, keeps the generic line and no hint.
+func TestR2NamesTheSecurityHostWhenItAnswers404AndOnlyThen(t *testing.T) {
+	real404 := realFile(t, "chroot-d11-refresh-security-404-download.txt")
+	for _, tc := range []struct {
+		name, says string
+		hint       string
+		saying     string
+	}{
+		{"the real text of apt", real404, osrun.HintSecurityArchiveGap, "security.debian.org answered 404 Not Found"},
+		{"the mirror's path of the same archive", "E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/o/openssl/o_1_amd64.deb  404  Not Found [IP: 1.2.3.4 80]\nE: Some files failed to download\n", osrun.HintSecurityArchiveGap, "security.debian.org answered 404 Not Found"},
+		{"a 404 from the owner's mirror", "E: Failed to fetch http://mirror.example.org/debian/pool/main/o/o_1_amd64.deb  404  Not Found [IP: 1.2.3.4 80]\nE: Some files failed to download\n", "", "the network, or a lock held"},
+		{"the release's own mirror", "E: Failed to fetch http://deb.debian.org/debian/pool/main/o/o_1_amd64.deb  404  Not Found [IP: 1.2.3.4 80]\n", "", "the network, or a lock held"},
+		{"the security host does not answer", "E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/o/o_1_amd64.deb  Temporary failure resolving 'security.debian.org'\n", "", "the network, or a lock held"},
+		{"a name that only looks like it", "E: Failed to fetch http://security.debian.org.example.org/debian-security/pool/o.deb  404  Not Found\n", "", "the network, or a lock held"},
+		{"nothing said", "", "", "the network, or a lock held"},
+	} {
+		b := newRefreshBox(t, false)
+		b.write("fake/download-says.txt", tc.says)
+		b.write("fake/download-fails", "")
+		b.through("rsources")
+		out := b.mustStop("rupgrade", osrun.ClassNetwork, tc.saying)
+		if got := osrun.HintOf(lastStop(out)); got != tc.hint {
+			t.Errorf("%s: the hint of %q is %q, want %q", tc.name, lastStop(out), got, tc.hint)
+		}
+		// what apt printed is shown, and kept
+		if tc.says != "" && (!strings.Contains(out, strings.TrimSpace(tc.says[:40])) || b.read("bk/download.txt") != tc.says) {
+			t.Errorf("%s: apt's text is not shown and kept: %q", tc.name, b.read("bk/download.txt"))
+		}
+	}
+	// a download that goes through leaves no mark of a failure, and the block goes on
+	b := newRefreshBox(t, false)
+	b.write("fake/download-says.txt", realFile(t, "chroot-d11-refresh-archive-download.txt"))
+	if out, code := b.through("rupgrade"); code != 0 || b.exists("bk/download.rc") || !strings.Contains(out, "Block R2 done.") {
+		t.Errorf("exit %d, %q", code, out)
 	}
 }
 
