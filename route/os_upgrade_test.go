@@ -126,7 +126,7 @@ func (f *fakeOSUpgradeSystem) GetSystemOSPlan() service.SystemOSPlanStatus {
 
 // theTokensOfTheTests makes the real router recognise real tokens: the key is served by a user-service of the test's, and the box's own secret is written where the
 // services of the box look for it. It gives the access token, the refresh token and the secret, and puts the fake engine in the place of the service.
-func theTokensOfTheTests(t *testing.T, system *fakeOSUpgradeSystem) (access, refresh, secret string) {
+func theTokensOfTheTests(t *testing.T, system service.SystemService) (access, refresh, secret string) {
 	t.Helper()
 	runtimePath := t.TempDir()
 	private, public := signingKeys(t)

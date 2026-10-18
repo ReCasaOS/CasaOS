@@ -144,6 +144,15 @@ func InitV1Router() http.Handler {
 			v1SysGroup.POST("/docker/update", v1.StartDockerUpdate, headerTokenOnly)
 			v1SysGroup.GET("/docker/update/status", v1.GetDockerUpdateStatus)
 
+			// The modules of this release: what can be installed, and the install and the remove, which start a unit as root and so take
+			// the access token in the header and no other, as the upgrade's calls do. The list and the status are read-only and take what
+			// the group takes. The name in the address is checked before anything else.
+			v1SysGroup.GET("/modules", v1.GetSystemModules)
+			v1SysGroup.POST("/modules/:name/plan", v1.PlanSystemModule, headerTokenOnly)
+			v1SysGroup.POST("/modules/:name/install", v1.InstallSystemModule, headerTokenOnly)
+			v1SysGroup.POST("/modules/:name/remove", v1.RemoveSystemModule, headerTokenOnly)
+			v1SysGroup.GET("/modules/:name/status", v1.GetSystemModuleStatus)
+
 			v1SysGroup.GET("/hardware", v1.GetSystemHardwareInfo) // hardware/info
 
 			v1SysGroup.GET("/wsssh", v1.WsSsh)
