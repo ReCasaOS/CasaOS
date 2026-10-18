@@ -1,0 +1,72 @@
+package modulecmd
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
+	"github.com/ReCasaOS/CasaOS/pkg/osplan"
+)
+
+// The core starts a job (the unit that runs install or remove) after it has written the first line of the job's log, and writes a last line itself when the unit could not be started. Both are
+// written while holding the lock of the assistant, that a run holds from before it opens its log to after it ends: a log that a run is writing is not touched, and a run that is started
+// by hand while the core writes is refused as busy. The log is replaced whole and atomically (the first line is all that is in it), so that it is never empty and never half a line.
+
+// errBadJob is a name or a nonce that a job cannot have.
+var errBadJob = errors.New("not a module name or not a nonce")
+
+// withLock runs write while the lock of the assistant is held and the folder of the logs is there. ErrLockHeld is the error of a lock that a run holds.
+func withLock(env Env, write func(env Env) error) error {
+	env = env.withDefaults()
+	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
+		return err
+	}
+	if err := env.Host.SafeDir(env.Roots.state()); err != nil {
+		return fmt.Errorf("%w: %s: %v", errUnsafe, env.Roots.state(), err)
+	}
+	release, err := env.Host.Lock(env.Roots.lock())
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := makeDirs(env.Roots.logs(), 0o755); err != nil {
+		return err
+	}
+	return write(env)
+}
+
+// Queue replaces the log of the module called name with the first line of the job whose nonce this is: the log is the job's from here on, and a unit that is started next truncates it and
+// carries on with the same nonce. It does not wait for the lock (ErrLockHeld when a run has it).
+func Queue(env Env, name, nonce string, at time.Time) error {
+	if !nameRe.MatchString(name) || !dockerpkg.ValidNonce(nonce) {
+		return errBadJob
+	}
+	return withLock(env, func(env Env) error {
+		return writeFileAtomic(env.Roots.logFile(name), []byte(QueuedLine(name, nonce, at)), 0o644)
+	})
+}
+
+// Abandon makes the log of a job whose unit could not be started a whole run: the queued line (queuedAt is the time Queue was given), what failed, what systemd said (said, as text, behind
+// "| " like the output of a tool) and a RESULT line that says failed, start_failed, with nothing undone because nothing was done. It does not wait for the lock.
+func Abandon(env Env, name, nonce string, queuedAt, at time.Time, said []string) error {
+	if !nameRe.MatchString(name) || !dockerpkg.ValidNonce(nonce) {
+		return errBadJob
+	}
+	var b strings.Builder
+	b.WriteString(QueuedLine(name, nonce, queuedAt))
+	b.WriteString("failed: " + CodeStartFailed + "\n")
+	for i, line := range said {
+		if i == 3 {
+			break
+		}
+		if line = printable(osplan.SanitizeLine(line), 200); line != "" {
+			b.WriteString("| " + line + "\n")
+		}
+	}
+	fmt.Fprintf(&b, "%s %s %s failed - %s - %s\n", resultMarker, nonce, name, CodeStartFailed, at.UTC().Format(time.RFC3339))
+	return withLock(env, func(env Env) error {
+		return writeFileAtomic(env.Roots.logFile(name), []byte(b.String()), 0o644)
+	})
+}
