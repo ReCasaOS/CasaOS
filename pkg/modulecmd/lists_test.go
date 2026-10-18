@@ -6,7 +6,7 @@ import (
 )
 
 // A list of an earlier install that cannot be read (cut short, or naming what an install never writes) stops the install before it writes anything, with a refusal that says so: the
-// assistant does not guess what is the module's, and the list is for its owner to look at.
+// assistant does not guess what is the module's, and the list is for the administrator to look at.
 func TestAListOfAnEarlierInstallThatCannotBeReadIsRefusedBeforeAnythingIsWritten(t *testing.T) {
 	refused := "refused: " + CodeFilesUnreadable + "\n"
 	for name, c := range map[string]struct{ path, content string }{

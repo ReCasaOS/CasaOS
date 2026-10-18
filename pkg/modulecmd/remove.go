@@ -162,7 +162,7 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 	// files
 	step(StepFiles)
 	if len(unreadable) > 0 {
-		// A list that cannot be read (cut short, or naming what an install never writes) is not trusted, so nothing is deleted by it, and a run again would read it again: it is for the owner to
+		// A list that cannot be read (cut short, or naming what an install never writes) is not trusted, so nothing is deleted by it, and a run again would read it again: it is for the administrator to
 		// look at and to delete.
 		for _, p := range unreadable {
 			j.say("the list %s cannot be read: nothing was deleted by it", printable(roots.Slash(p), 200))

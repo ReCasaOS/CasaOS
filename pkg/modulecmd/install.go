@@ -225,7 +225,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 		}
 		return j.refuse(CodeTmpUnusable)
 	}
-	// a list of an earlier install that cannot be read is a state for its owner to look at: the module cannot be told from it, and nothing is changed
+	// a list of an earlier install that cannot be read is a state for the administrator to look at: the module cannot be told from it, and nothing is changed
 	if bad := j.unreadableLists(c.name); len(bad) > 0 {
 		for _, p := range bad {
 			j.say("the list %s cannot be read: look at it, and delete it by hand, and install again", printable(env.Roots.Slash(p), 200))

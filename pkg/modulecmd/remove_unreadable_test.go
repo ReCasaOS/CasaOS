@@ -42,7 +42,7 @@ func TestARemoveOverAListThatCannotBeReadStopsTheUnitAndNamesTheListToDelete(t *
 				t.Errorf("it promises that a run again will finish:\n%s", out)
 			}
 			// once the list is gone, a run finishes: no file is deleted by a list that is not there
-			if err := os.Remove(f.path(c.path)); err != nil { // (the owner looked at it and deleted it)
+			if err := os.Remove(f.path(c.path)); err != nil { // (the administrator looked at it and deleted it)
 				t.Fatal(err)
 			}
 			if code := f.remove("--yes"); code != ExitOK {
