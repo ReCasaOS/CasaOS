@@ -158,7 +158,20 @@ func (in *install) fail(code string, err error) *stepFailure {
 	return &stepFailure{code, err}
 }
 
-// runInstall installs the module c.name: the plan again, then the steps. It returns the exit code.
+// planRefusal is the code a plan is refused with: its own, a plan id the caller gave that is not its, and a plan other than the one the user was shown and said yes to (asked is its id).
+func planRefusal(c command, plan osmodule.PlanResult, asked string) string {
+	switch {
+	case plan.Refused != "":
+		return string(plan.Refused)
+	case c.planID != "" && c.planID != plan.PlanID, asked != "" && asked != plan.PlanID:
+		return CodePlanChanged
+	}
+	return ""
+}
+
+// runInstall installs the module c.name: the plan, the question when there is to be one, the plan again, then the steps. The question is asked before the lock is taken, since the lock is for
+// the work and held while somebody thinks it would keep every other install and remove from running, and the plan is made again once it is taken, so that what the user said yes to is what
+// is done, or nothing is. It returns the exit code.
 func runInstall(ctx context.Context, env Env, c command) (code int) {
 	env = env.withDefaults()
 	if env.EUID() != 0 {
@@ -169,6 +182,20 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 	}
 	if err := env.Host.SafeDir(env.Roots.state()); err != nil {
 		return refuseEarly(env, c.name, CodeStateUnsafe)
+	}
+	asked := ""
+	if !c.yes {
+		plan := PlanOf(ctx, env, c.name)
+		if why := planRefusal(c, plan, ""); why != "" {
+			return refuseEarly(env, c.name, why)
+		}
+		if !env.Terminal() {
+			return refuseEarly(env, c.name, CodeConfirmationNeeded)
+		}
+		if !newJob(env, c.name).confirm(plan.Name, plan.Tag, plan.Tier, plan.Packages.ToInstall, plan.Packages.DownloadBytes, plan.Archive.URL, "install") {
+			return refuseEarly(env, c.name, CodeDeclined)
+		}
+		asked = plan.PlanID
 	}
 	release, err := env.Host.Lock(env.Roots.lock())
 	switch {
@@ -207,19 +234,8 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 	}
 	defer func() { _ = emptyDir(env.Host, env.Roots.tmp()) }()
 
-	plan := PlanOf(ctx, env, c.name)
-	switch {
-	case plan.Refused != "":
-		return j.refuse(string(plan.Refused))
-	case c.planID != "" && c.planID != plan.PlanID:
-		return j.refuse(CodePlanChanged)
-	case !c.yes:
-		if !env.Terminal() {
-			return j.refuse(CodeConfirmationNeeded)
-		}
-		if !j.confirm(plan.Name, plan.Tag, plan.Tier, plan.Packages.ToInstall, plan.Packages.DownloadBytes, plan.Archive.URL, "install") {
-			return j.refuse(CodeDeclined)
-		}
+	if why := planRefusal(c, PlanOf(ctx, env, c.name), asked); why != "" {
+		return j.refuse(why)
 	}
 	cat := loadCatalogue(env).cat
 	entry, _ := cat.Find(c.name)

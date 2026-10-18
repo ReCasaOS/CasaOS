@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -339,6 +340,19 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	if err := env.Host.SafeDir(env.Roots.state()); err != nil {
 		return refuseEarly(env, c.name, CodeStateUnsafe)
 	}
+	// The question is asked before the lock is taken (see runInstall), and what is checked before it is checked again after it.
+	if !c.yes {
+		if why := removeRefusal(ctx, env, c.name); why != "" {
+			return refuseEarly(env, c.name, why)
+		}
+		if !env.Terminal() {
+			return refuseEarly(env, c.name, CodeConfirmationNeeded)
+		}
+		fmt.Fprintf(env.Stdout, "remove %s: its unit is stopped and disabled, its files and its manifest are deleted; the packages and the data stay\nGo on? [y/N] ", c.name)
+		if !askYes(env.Stdin) {
+			return refuseEarly(env, c.name, CodeDeclined)
+		}
+	}
 	release, err := env.Host.Lock(env.Roots.lock())
 	switch {
 	case errors.Is(err, ErrLockHeld):
@@ -357,38 +371,15 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	if err := emptyDir(env.Host, env.Roots.tmp()); errors.Is(err, errUnsafe) {
 		return j.refuse(CodeStateUnsafe)
 	}
-
-	roots := env.Roots
-	present := false
-	for _, p := range []string{roots.manifest(c.name), roots.files(c.name), roots.dirs(c.name), roots.version(c.name)} {
-		if _, err := os.Lstat(p); err == nil || !(errors.Is(err, fs.ErrNotExist) || isNotDir(err)) {
-			present = true
-		}
-	}
-	if !present {
-		return j.refuse(CodeNotInstalled)
+	if why := removeRefusal(ctx, env, c.name); why != "" {
+		return j.refuse(why)
 	}
 	bx := &box{ctx: ctx, env: &env}
-	if pm, err := bx.PackageManagerBusy(); pm || err != nil {
-		return j.refuse(CodeBusy)
-	}
-	if up, err := bx.OSUpgradeBusy(); up || err != nil {
-		return j.refuse(CodeBusy)
-	}
 	installed, _, _ := bx.InstalledManifests()
 	manifest := installed[c.name]
 	if manifest.Unit == "" {
 		if e, ok := loadCatalogue(env).cat.Find(c.name); ok {
 			manifest = e.Manifest
-		}
-	}
-	if !c.yes {
-		if !env.Terminal() {
-			return j.refuse(CodeConfirmationNeeded)
-		}
-		fmt.Fprintf(env.Stdout, "remove %s: its unit is stopped and disabled, its files and its manifest are deleted; the packages and the data stay\nGo on? [y/N] ", c.name)
-		if !j.askYes() {
-			return j.refuse(CodeDeclined)
 		}
 	}
 	bad, phase, why := j.teardown(ctx, c.name, manifest.Unit, "", nil)
@@ -414,12 +405,34 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	return ExitOK
 }
 
+// removeRefusal is the code a remove is refused with: there is nothing of the module to remove, or a package manager or the upgrade of the system is at work.
+func removeRefusal(ctx context.Context, env Env, name string) string {
+	roots := env.Roots
+	present := false
+	for _, p := range []string{roots.manifest(name), roots.files(name), roots.dirs(name), roots.version(name)} {
+		if _, err := os.Lstat(p); err == nil || !(errors.Is(err, fs.ErrNotExist) || isNotDir(err)) {
+			present = true
+		}
+	}
+	if !present {
+		return CodeNotInstalled
+	}
+	bx := &box{ctx: ctx, env: &env}
+	if pm, err := bx.PackageManagerBusy(); pm || err != nil {
+		return CodeBusy
+	}
+	if up, err := bx.OSUpgradeBusy(); up || err != nil {
+		return CodeBusy
+	}
+	return ""
+}
+
 // askYes reads the answer to a question that was asked on the terminal.
-func (j *job) askYes() bool {
+func askYes(in io.Reader) bool {
 	var line string
 	buf := make([]byte, 1)
 	for {
-		n, err := j.env.Stdin.Read(buf)
+		n, err := in.Read(buf)
 		if n > 0 {
 			if buf[0] == '\n' {
 				break

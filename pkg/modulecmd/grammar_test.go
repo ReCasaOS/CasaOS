@@ -139,7 +139,7 @@ func TestTheOutputOfEveryExitPathIsInTheOneGrammar(t *testing.T) {
 		exit   int
 	}
 	// the refusals before the run has the lock, and so before it may write the log
-	early := []string{"not root", "the lock is held", "the lock cannot be taken", "the log cannot be written", "a remove, not root", "a remove, the lock is held"}
+	early := []string{"not root", "the lock is held", "the lock cannot be taken", "the log cannot be written", "a remove, not root", "a remove, the lock is held", "no confirmation", "declined", "a remove with no confirmation", "a remove that is declined"}
 	bg := context.Background()
 	holdLock := func(f *fixture) {
 		if err := os.MkdirAll(f.env.Roots.state(), 0o755); err != nil {
