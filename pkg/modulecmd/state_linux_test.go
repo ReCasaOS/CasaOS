@@ -59,6 +59,30 @@ func TestTheFilesOfTheDownloadAreNeverMadeThroughALink(t *testing.T) {
 	}
 }
 
+// ...and neither are they made over a file that is there, whatever it is (a hard link to a file of the assistant's would be written)
+func TestTheFilesOfTheDownloadAreNeverMadeOverAFileThatIsThere(t *testing.T) {
+	for name, c := range map[string]struct{ at, step, path string }{
+		"the archive": {StepPackages, StepDownload, archiveName},
+		"the tar":     {StepVerify, StepUnpack, tarName},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			v := victim(t, f)
+			f.env.StepHook = func(_ context.Context, step, phase string) {
+				if step == c.at && phase == "done" {
+					if err := os.Link(v, f.env.Roots.tmp()+"/"+c.path); err != nil {
+						t.Skip("no hard links here:", err)
+					}
+				}
+			}
+			if code := f.install("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), "failed at step "+c.step+": ") {
+				t.Fatalf("exit %d\n%s", code, f.out)
+			}
+			keptVictim(t, v)
+		})
+	}
+}
+
 // The archive that was checked is the archive that is unpacked: an archive put in its place after the check (by a path, whoever puts it) is not read
 func TestTheArchiveThatWasCheckedIsTheOneThatIsUnpacked(t *testing.T) {
 	for name, swap := range map[string]func(path string, other []byte) error{

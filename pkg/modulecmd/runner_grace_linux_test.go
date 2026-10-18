@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -77,5 +79,28 @@ func TestTheRunnerKillsTheGroupThatDoesNotLeaveInTheGrace(t *testing.T) {
 	}
 	if took < 3*time.Second || took > 6*time.Second {
 		t.Errorf("took %v, the grace is 3s", took)
+	}
+}
+
+// What a command that ended on its own left running in its group is ended with it: apt's methods are in the group, and a program that is not waited for would go on as root
+func TestTheRunnerEndsWhatACommandLeftRunningWhenItEndedOnItsOwn(t *testing.T) {
+	root := t.TempDir()
+	pidFile := filepath.Join(root, "sleeper.pid")
+	script := "#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > \"" + pidFile + "\"\nexit 0\n"
+	exe := filepath.Join(root, "leaver")
+	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runProcess(t.Context(), exe, Cmd{Argv: []string{"leaver"}}, graceOf20)
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("%v %+v", err, out)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid := atoi(strings.TrimSpace(string(raw))); alive(pid) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		t.Errorf("the process %d that the command left is running", pid)
 	}
 }
