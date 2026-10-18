@@ -16,7 +16,7 @@ func TestARemoveWhileAnotherRunsIsRefusedBusy(t *testing.T) {
 	defer release()
 	f.writeFile("/var/log/casaos/module-virt.log", "the log of the job that runs\n")
 	before := f.treeWithoutBookkeeping()
-	if code := f.remove("--yes"); code != ExitRefused || f.out.String() != "refused: busy\n" {
+	if code := f.remove("--yes"); code != ExitRefused || !strings.HasPrefix(f.out.String(), "refused: busy\n"+resultMarker+" - virt refused - busy - ") || strings.Count(f.out.String(), "\n") != 2 {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
 	sameTree(t, before, f.treeWithoutBookkeeping())

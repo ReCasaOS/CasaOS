@@ -55,6 +55,8 @@ const (
 	CodeRemoveIncomplete   = "remove_incomplete"
 	CodeTmpUnusable        = "tmp_unusable"
 	CodeInternal           = "internal_error"
+	undoDone               = "rolled_back"
+	undoIncomplete         = "rollback_incomplete"
 	aptTimeout             = 30 * time.Minute
 	systemctlTimeout       = 2 * time.Minute
 	routeWait              = 60 * time.Second
@@ -97,9 +99,12 @@ func (j *job) sh(ctx context.Context, timeout time.Duration, argv ...string) (Ou
 // refuse ends the run as refused: nothing was changed.
 func (j *job) refuse(code string) int {
 	j.say("refused: %s", code)
-	j.result("refused", "-", code)
+	j.result("refused", "-", code, "-")
 	return ExitRefused
 }
+
+// refuseEarly refuses a run that has not got the lock: it says so on the standard output and touches no log, which is the log of the run that has the lock.
+func refuseEarly(env Env, name, code string) int { return newJob(env, name).refuse(code) }
 
 // An install is the state of one run: what the steps leave for the ones after them.
 type install struct {
@@ -137,28 +142,33 @@ func (in *install) fail(code string, err error) *stepFailure {
 // runInstall installs the module c.name: the plan again, then the steps. It returns the exit code.
 func runInstall(ctx context.Context, env Env, c command) (code int) {
 	env = env.withDefaults()
-	say := func(code string) int { fmt.Fprintf(env.Stdout, "refused: %s\n", code); return ExitRefused }
 	if env.EUID() != 0 {
-		return say(CodeNotRoot)
+		return refuseEarly(env, c.name, CodeNotRoot)
 	}
 	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
-		return say(CodeLockFailed)
+		return refuseEarly(env, c.name, CodeLockFailed)
 	}
 	release, err := env.Host.Lock(env.Roots.lock())
 	switch {
 	case errors.Is(err, ErrLockHeld):
-		return say(CodeBusy)
+		return refuseEarly(env, c.name, CodeBusy)
 	case err != nil:
-		return say(CodeLockFailed)
+		return refuseEarly(env, c.name, CodeLockFailed)
 	}
 	defer release()
 	j := newJob(env, c.name)
 	if err := j.openLog(); err != nil {
-		return say(CodeLogUnwritable)
+		return refuseEarly(env, c.name, CodeLogUnwritable)
 	}
 	defer j.close()
-	// (a panic before the steps is a failure too: nothing has been changed that needs a rollback)
-	defer j.recoverRun(&code)
+	// (a panic before the steps is a failure too; it is a rollback that is not complete when the unpack had begun)
+	var in *install
+	defer j.recoverRun(&code, func() string {
+		if in != nil && in.unpackBegun {
+			return undoIncomplete
+		}
+		return undoDone
+	})
 	// whatever an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
 	if err := emptyDir(env.Roots.tmp()); err != nil {
 		return j.refuse(CodeTmpUnusable)
@@ -182,7 +192,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 	cat := loadCatalogue(env).cat
 	entry, _ := cat.Find(c.name)
 	asset, _ := entry.Asset(env.Arch)
-	in := &install{job: j, ctx: ctx, entry: entry, asset: asset, packages: osmodule.PackagesFor(entry.Manifest, env.Arch)}
+	in = &install{job: j, ctx: ctx, entry: entry, asset: asset, packages: osmodule.PackagesFor(entry.Manifest, env.Arch)}
 	return in.steps()
 }
 
@@ -240,7 +250,7 @@ func (in *install) steps() int {
 	}
 	in.marker(StepDone, "done")
 	in.say("installed: %s %s", in.entry.Name, in.entry.Tag)
-	in.result("ok", StepDone, "-")
+	in.result("ok", StepDone, "-", "-")
 	return ExitOK
 }
 
@@ -260,22 +270,24 @@ func (in *install) rollback() (bad int) {
 	defer func() {
 		if r := recover(); r != nil {
 			in.panicked(r)
+			in.failOpen()
 			bad = 1
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(in.ctx), rollbackTime)
 	defer cancel()
-	bad, _, _ = in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, false, in.written)
+	bad, _, _ = in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, "rollback_", in.written)
 	return bad
 }
 
 // failed rolls back what the steps after the packages did, and says what was kept.
 func (in *install) failed(step string, f *stepFailure) int {
 	in.say("failed at step %s: %s", step, f.code)
-	in.result("failed", step, f.code)
+	undo := undoDone
 	if in.unpackBegun {
 		if bad := in.rollback(); bad > 0 {
 			in.say("rollback incomplete: %d things could not be undone; casaos module remove %s finishes it", bad, in.entry.Name)
+			undo = undoIncomplete
 		} else {
 			in.say("rolled back")
 		}
@@ -284,6 +296,8 @@ func (in *install) failed(step string, f *stepFailure) int {
 		in.say("apt-get was ended while it worked: dpkg --configure -a is probably needed")
 	}
 	in.say("kept_packages: %s", in.keptPackages())
+	// the last line, said when everything is over: a run that is ended before it is a run that was interrupted
+	in.result("failed", step, f.code, undo)
 	return ExitFailed
 }
 

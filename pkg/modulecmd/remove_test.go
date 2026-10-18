@@ -47,7 +47,7 @@ func TestARemoveUndoesTheInstallAndSaysWhatIsLeft(t *testing.T) {
 			t.Errorf("the output does not say %q:\n%s", s, out)
 		}
 	}
-	if !strings.Contains(out, resultMarker+" - virt ok done - ") {
+	if !strings.Contains(out, resultMarker+" - virt ok done - - ") {
 		t.Errorf("no result:\n%s", out)
 	}
 	// nothing was purged, and no command that deletes data was run

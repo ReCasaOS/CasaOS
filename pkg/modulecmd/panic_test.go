@@ -61,7 +61,7 @@ func TestAPanicOutsideTheStepsIsAFailureToo(t *testing.T) {
 			panic("a panic of the test")
 		}
 	}
-	if code := f.install("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), "rollback incomplete") {
+	if code := f.install("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), resultMarker+" - virt failed start start_failed rollback_incomplete ") {
 		t.Errorf("a panic in the rollback: exit %d\n%s", code, f.out)
 	}
 	// in a remove
@@ -71,7 +71,7 @@ func TestAPanicOutsideTheStepsIsAFailureToo(t *testing.T) {
 			panic("a panic of the test")
 		}
 	}
-	if code := f.remove("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), resultMarker+" - virt failed - "+CodeInternal+" ") {
+	if code := f.remove("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), resultMarker+" - virt failed stop "+CodeInternal+" - ") {
 		t.Errorf("a panic in a remove: exit %d\n%s", code, f.out)
 	}
 	// in a command that only reads

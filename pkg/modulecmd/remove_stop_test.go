@@ -45,7 +45,7 @@ func TestARemoveDeletesNothingWhileTheUnitIsNotKnownToBeStopped(t *testing.T) {
 			if got := markers(t, f.lines()); !slices.Equal(got, []string{"stop begin", "stop failed"}) {
 				t.Errorf("markers: %q", got)
 			}
-			if !strings.Contains(out, resultMarker+" - virt failed stop "+CodeUnitNotStopped+" ") {
+			if !strings.Contains(out, resultMarker+" - virt failed stop "+CodeUnitNotStopped+" - ") {
 				t.Errorf("no result:\n%s", out)
 			}
 		})
@@ -123,7 +123,7 @@ func TestAFailingDaemonReloadIsAFailedStepAndAnotherRunDoesItAgain(t *testing.T)
 	if len(got) < 2 || !slices.Equal(got[len(got)-2:], []string{"reload begin", "reload failed"}) || strings.Contains(out, "reload done") || strings.Contains(out, "removed: ") {
 		t.Errorf("markers %q:\n%s", got, out)
 	}
-	if !strings.Contains(out, resultMarker+" - virt failed reload "+CodeUnitsFailed+" ") {
+	if !strings.Contains(out, resultMarker+" - virt failed reload "+CodeUnitsFailed+" - ") {
 		t.Errorf("no result:\n%s", out)
 	}
 	if !f.exists(filesList) {

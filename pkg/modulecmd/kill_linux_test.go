@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -191,7 +192,7 @@ func TestASigtermAtEachStepIsARollback(t *testing.T) {
 			if step == StepPackages {
 				kept = "unknown"
 			}
-			if !strings.HasSuffix(out.String(), "kept_packages: "+kept+"\n") {
+			if !regexp.MustCompile(`kept_packages: ` + kept + `\n` + resultMarker + `[^\n]*\n$`).MatchString(out.String()) {
 				t.Errorf("the last line:\n%s", out.String())
 			}
 			sameTree(t, before, b.state())
@@ -322,4 +323,39 @@ func sameDirs(t *testing.T, before, after []string) {
 	if !slices.Equal(before, after) {
 		t.Errorf("the directories are not as they were:\n before %q\n after  %q", before, after)
 	}
+}
+
+// A run that is killed in the middle of its rollback has said no result: the lines it left say the rollback began and did not end, which is a run that was interrupted. (The result used to be
+// said before the rollback, and was left on a box that was half installed.) A remove then finishes the work.
+func TestARunKilledInTheMiddleOfItsRollbackHasNoResult(t *testing.T) {
+	b := newRealBox(t)
+	before, dirsBefore := b.state(), b.dirs()
+	touch(t, stubFile(b.root, "fail-enable")) // the unit does not start: the install fails at the start and is rolled back
+	cmd := helperCmd(t, "install", b.helperEnv("rollback_files", "kill")...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); err == nil || !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+		t.Fatalf("not killed: %v\n%s", err, out.String())
+	}
+	log, _ := os.ReadFile(b.path("/var/log/casaos/module-virt.log"))
+	for name, text := range map[string]string{"the output": out.String(), "the log": string(log)} {
+		if strings.Contains(text, resultMarker) {
+			t.Errorf("%s has a result:\n%s", name, text)
+		}
+		for _, want := range []string{" virt start failed ", " virt rollback_stop done ", " virt rollback_files begin "} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s lacks %q:\n%s", name, want, text)
+			}
+		}
+		if strings.Contains(text, " virt rollback_files done ") || strings.Contains(text, " virt rollback_files failed ") {
+			t.Errorf("%s says the step it was killed in ended:\n%s", name, text)
+		}
+	}
+	_ = os.Remove(stubFile(b.root, "fail-enable"))
+	if code, o := b.call("remove", testName, "--yes"); code != ExitOK {
+		t.Fatalf("remove: %d\n%s", code, o)
+	}
+	sameTree(t, before, b.state())
+	sameDirs(t, dirsBefore, b.dirs())
 }

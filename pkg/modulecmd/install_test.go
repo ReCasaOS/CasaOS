@@ -15,7 +15,10 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 )
 
-var stepRe = regexp.MustCompile(`^CASAOS_MODULE_STEP (-|[0-9a-f]{32}) ` + testName + ` ([a-z]+) (begin|done|failed) \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
+// resultRe is the RESULT line, in the one shape it has
+var resultRe = regexp.MustCompile(`^CASAOS_MODULE_RESULT (-|[0-9a-f]{32}) ` + testName + ` (ok|refused|failed) ([a-z_]+|-) ([a-z_]+|-) (rolled_back|rollback_incomplete|-) \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
+
+var stepRe = regexp.MustCompile(`^CASAOS_MODULE_STEP (-|[0-9a-f]{32}) ` + testName + ` ([a-z_]+) (begin|done|failed) \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
 
 // markers are the steps of the output, as "step phase", in order; a line that starts like a marker and is not one is a failure of the test.
 func markers(t *testing.T, lines []string) []string {
@@ -128,7 +131,7 @@ func TestAnInstallDoesTheStepsInOrderAndLeavesTheModuleOnTheBox(t *testing.T) {
 			t.Errorf("the log lacks %q", l)
 		}
 	}
-	if last := f.lines()[len(f.lines())-1]; !strings.HasPrefix(last, resultMarker+" - virt ok done - ") {
+	if last := f.lines()[len(f.lines())-1]; !strings.HasPrefix(last, resultMarker+" - virt ok done - - ") {
 		t.Errorf("the last line: %q", last)
 	}
 }
@@ -195,7 +198,7 @@ func TestAnInstallThatIsRefusedChangesNothingAndSaysWhy(t *testing.T) {
 			if !strings.Contains(out, "refused: "+c.code+"\n") {
 				t.Errorf("the output does not say %q:\n%s", c.code, out)
 			}
-			if c.code != CodeNotRoot && !strings.Contains(out, resultMarker+" - virt refused - "+c.code+" ") {
+			if !strings.Contains(out, resultMarker+" - virt refused - "+c.code+" - ") {
 				t.Errorf("no result line for %q:\n%s", c.code, out)
 			}
 			if got := markers(t, f.lines()); len(got) != 0 {
@@ -259,7 +262,7 @@ func TestAnInstallWhileAnotherRunsIsRefusedBusyAndLeavesTheLogOfTheOtherAlone(t 
 		t.Fatal(err)
 	}
 	f.writeFile("/var/log/casaos/module-virt.log", "the log of the job that runs\n")
-	if code := f.install("--yes"); code != ExitRefused || f.out.String() != "refused: busy\n" {
+	if code := f.install("--yes"); code != ExitRefused || !strings.HasPrefix(f.out.String(), "refused: busy\n"+resultMarker+" - virt refused - busy - ") || strings.Count(f.out.String(), "\n") != 2 {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
 	if f.read("/var/log/casaos/module-virt.log") != "the log of the job that runs\n" {
@@ -295,16 +298,25 @@ func (f *fixture) failsAt(step, code, kept string, before map[string]string) {
 		f.cleanup()
 	}
 	lines := f.lines()
-	if last := lines[len(lines)-1]; last != "kept_packages: "+kept {
-		t.Errorf("the last line: %q, want kept_packages: %s", last, kept)
+	// the result is the last line, said once the rollback is over; the sentence of the packages is the one before it
+	if len(lines) < 2 || lines[len(lines)-2] != "kept_packages: "+kept || !resultRe.MatchString(lines[len(lines)-1]) {
+		t.Errorf("the last lines: %q, want kept_packages: %s and the result", lines[max(0, len(lines)-2):], kept)
 	}
-	if got := markers(t, lines); got[len(got)-1] != step+" failed" {
-		t.Errorf("the last marker: %q", got)
+	// the step failed, and everything that follows is the rollback
+	got := markers(t, lines)
+	failedAt := slices.Index(got, step+" failed")
+	if failedAt < 0 {
+		t.Errorf("the markers: %q", got)
+	}
+	for _, m := range got[max(0, failedAt+1):] {
+		if !strings.HasPrefix(m, "rollback_") {
+			t.Errorf("a marker after the failed step that is not the rollback's: %q", got)
+		}
 	}
 	if !slices.Contains(lines, "failed at step "+step+": "+code) {
 		t.Errorf("no 'failed at step %s: %s' in\n%s", step, code, f.out)
 	}
-	if !regexp.MustCompile(`(?m)^` + resultMarker + ` - virt failed ` + step + ` ` + code + ` \S+$`).MatchString(f.out.String()) {
+	if !regexp.MustCompile(`(?m)^` + resultMarker + ` - virt failed ` + step + ` ` + code + ` rolled_back \S+$`).MatchString(f.out.String()) {
 		t.Errorf("no result line for %s %s:\n%s", step, code, f.out)
 	}
 	sameTree(t, before, f.treeWithoutBookkeeping())
@@ -321,7 +333,7 @@ func (f *fixture) failsAt(step, code, kept string, before map[string]string) {
 	}
 	// and the log has it all
 	log := f.read("/var/log/casaos/module-virt.log")
-	if !strings.HasSuffix(log, "kept_packages: "+kept+"\n") || !strings.Contains(log, resultMarker) {
+	if !regexp.MustCompile(`kept_packages: ` + kept + `\n` + resultMarker + `[^\n]*\n$`).MatchString(log) {
 		t.Errorf("the log:\n%s", log)
 	}
 }
@@ -486,8 +498,8 @@ func TestAnInterruptionAtEachStepIsAFailureThatIsRolledBack(t *testing.T) {
 				kept = "unknown"
 			}
 			lines := f.lines()
-			if last := lines[len(lines)-1]; last != "kept_packages: "+kept {
-				t.Errorf("last line %q", last)
+			if len(lines) < 2 || lines[len(lines)-2] != "kept_packages: "+kept || !resultRe.MatchString(lines[len(lines)-1]) {
+				t.Errorf("last lines %q", lines[max(0, len(lines)-2):])
 			}
 			if !slices.Contains(lines, "failed at step "+step+": "+CodeInterrupted) {
 				t.Errorf("not interrupted at %s:\n%s", step, f.out)

@@ -98,22 +98,18 @@ type written struct{ files, dirs []string }
 // the making is in them, and is deleted if it is empty). It returns what it could not do, with the step it was in. Nothing that is
 // the module's is forgotten until all of it is gone: a list, a manifest or a version stays while a file does, and a run again finishes the work. markers puts the phases in the log as
 // steps (remove does, the rollback of an install does not).
-func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers bool, only *written) (bad int, phase, code string) {
+func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, only *written) (bad int, phase, code string) {
 	step := func(s string) {
-		if markers {
-			j.marker(s, "begin")
-			j.hook(ctx, s, "begin")
-		}
+		j.marker(prefix+s, "begin")
+		j.hook(ctx, prefix+s, "begin")
 	}
 	end := func(s string, bad int) {
-		switch {
-		case !markers:
-		case bad > 0:
-			j.marker(s, "failed")
-		default:
-			j.marker(s, "done")
-			j.hook(ctx, s, "done")
+		if bad > 0 {
+			j.marker(prefix+s, "failed")
+			return
 		}
+		j.marker(prefix+s, "done")
+		j.hook(ctx, prefix+s, "done")
 	}
 	roots := j.env.Roots
 	var list, dirs []string
@@ -129,7 +125,7 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 			j.say("the list of the directories of %s cannot be read", name)
 			return 1, StepStop, CodeFilesUnreadable
 		}
-		if list == nil && markers {
+		if list == nil {
 			j.say("there is no list of the files of %s: no file is deleted", name)
 		}
 	}
@@ -284,27 +280,26 @@ func (j *job) sayLeftovers(name string, packages []string) {
 // runRemove takes the module c.name off the box. A module is there to remove when it has a manifest, a list of files or a version: a half-installed one is removed too.
 func runRemove(ctx context.Context, env Env, c command) (code int) {
 	env = env.withDefaults()
-	say := func(code string) int { fmt.Fprintf(env.Stdout, "refused: %s\n", code); return ExitRefused }
 	if env.EUID() != 0 {
-		return say(CodeNotRoot)
+		return refuseEarly(env, c.name, CodeNotRoot)
 	}
 	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
-		return say(CodeLockFailed)
+		return refuseEarly(env, c.name, CodeLockFailed)
 	}
 	release, err := env.Host.Lock(env.Roots.lock())
 	switch {
 	case errors.Is(err, ErrLockHeld):
-		return say(CodeBusy)
+		return refuseEarly(env, c.name, CodeBusy)
 	case err != nil:
-		return say(CodeLockFailed)
+		return refuseEarly(env, c.name, CodeLockFailed)
 	}
 	defer release()
 	j := newJob(env, c.name)
 	if err := j.openLog(); err != nil {
-		return say(CodeLogUnwritable)
+		return refuseEarly(env, c.name, CodeLogUnwritable)
 	}
 	defer j.close()
-	defer j.recoverRun(&code)
+	defer j.recoverRun(&code, func() string { return "-" })
 	// what an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
 	_ = emptyDir(env.Roots.tmp())
 
@@ -341,10 +336,9 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 			return j.refuse(CodeDeclined)
 		}
 	}
-	bad, phase, why := j.teardown(ctx, c.name, manifest.Unit, true, nil)
+	bad, phase, why := j.teardown(ctx, c.name, manifest.Unit, "", nil)
 	if bad > 0 {
 		j.say("failed at step %s: %s", phase, why)
-		j.result("failed", phase, why)
 		switch why {
 		case CodeUnitNotStopped:
 			j.say("stop the unit, then run casaos module remove %s again", c.name)
@@ -353,10 +347,11 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 		default:
 			j.say("run casaos module remove %s again to finish", c.name)
 		}
+		j.result("failed", phase, why, "-")
 		return ExitFailed
 	}
 	j.marker(StepDone, "done")
-	j.result("ok", StepDone, "-")
+	j.result("ok", StepDone, "-", "-")
 	j.say("removed: %s", c.name)
 	j.sayLeftovers(c.name, osmodule.PackagesFor(manifest, env.Arch))
 	return ExitOK

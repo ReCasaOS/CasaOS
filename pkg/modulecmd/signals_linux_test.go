@@ -126,7 +126,7 @@ func TestAPanicAfterTheFirstRenameIsARollbackAndExit3(t *testing.T) {
 	if code := cmd.ProcessState.ExitCode(); code != ExitFailed {
 		t.Fatalf("exit %d:\n%s", code, out.String())
 	}
-	if !strings.Contains(out.String(), resultMarker+" - virt failed unpack "+CodeInternal+" ") {
+	if last := lastLine(out.String()); !strings.HasPrefix(last, resultMarker+" - virt failed unpack "+CodeInternal+" rolled_back ") {
 		t.Errorf("no result line:\n%s", out.String())
 	}
 	sameTree(t, before, b.state())
@@ -134,4 +134,10 @@ func TestAPanicAfterTheFirstRenameIsARollbackAndExit3(t *testing.T) {
 	if b.runnerEnabled() {
 		t.Error("the unit is enabled")
 	}
+}
+
+// lastLine is the last line of a text.
+func lastLine(s string) string {
+	s = strings.TrimRight(s, "\n")
+	return s[strings.LastIndex(s, "\n")+1:]
 }
