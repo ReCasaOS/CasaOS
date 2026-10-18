@@ -236,6 +236,9 @@ func listOf(field string, values []string, valid func(string) bool, max int) err
 	return nil
 }
 
+// ValidName says whether a text is the name of a module: the rule of the name in a manifest, which is also the rule of the name in a catalogue, of a unit's name and of the name in an address.
+func ValidName(s string) bool { return nameRe.MatchString(s) }
+
 // ValidPackageName says whether a name is one that may be handed to apt as a package: lower case letters, digits, "+", "." and "-", two to 64 characters, the first a letter or a digit.
 // A name that ends in "-" or "+" is refused although the pattern of Debian takes it, because the command line of apt reads that last character as an order ("pkg-" removes pkg), and so is
 // one that ends in ".deb", which apt reads as the path of a file.
