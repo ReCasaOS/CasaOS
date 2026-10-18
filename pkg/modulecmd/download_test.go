@@ -240,6 +240,21 @@ func gzipOf(t *testing.T, n int) string {
 	return p
 }
 
+// unzipFile runs gunzipTo on files: the gzip file src to the file dst
+func unzipFile(ctx context.Context, src, dst string, max int64) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	return gunzipTo(ctx, in, out, max)
+}
+
 func TestAGzipBombStopsAtTheCap(t *testing.T) {
 	src := gzipOf(t, 5<<20) // a few kilobytes that are five megabytes
 	if info, _ := os.Stat(src); info.Size() > 64<<10 {
@@ -247,7 +262,7 @@ func TestAGzipBombStopsAtTheCap(t *testing.T) {
 	}
 	dst := filepath.Join(t.TempDir(), "out")
 	const cap = 1 << 20
-	err := gunzipTo(context.Background(), src, dst, cap)
+	err := unzipFile(context.Background(), src, dst, cap)
 	if !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("%v", err)
 	}
@@ -255,28 +270,28 @@ func TestAGzipBombStopsAtTheCap(t *testing.T) {
 		t.Errorf("%d bytes were written", info.Size())
 	}
 	// exactly the cap is fine, one more is not
-	if err := gunzipTo(context.Background(), gzipOf(t, cap), dst, cap); err != nil {
+	if err := unzipFile(context.Background(), gzipOf(t, cap), dst, cap); err != nil {
 		t.Errorf("exactly the cap: %v", err)
 	}
-	if err := gunzipTo(context.Background(), gzipOf(t, cap+1), dst, cap); !errors.Is(err, ErrTooLarge) {
+	if err := unzipFile(context.Background(), gzipOf(t, cap+1), dst, cap); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("one more: %v", err)
 	}
 	// not gzip, and gzip that is cut
 	plain := filepath.Join(t.TempDir(), "plain")
 	_ = os.WriteFile(plain, []byte("not gzip"), 0o644)
-	if err := gunzipTo(context.Background(), plain, dst, cap); err == nil || errors.Is(err, ErrTooLarge) {
+	if err := unzipFile(context.Background(), plain, dst, cap); err == nil || errors.Is(err, ErrTooLarge) {
 		t.Errorf("not gzip: %v", err)
 	}
 	raw, _ := os.ReadFile(gzipOf(t, 1<<20))
 	cut := filepath.Join(t.TempDir(), "cut")
 	_ = os.WriteFile(cut, raw[:len(raw)/2], 0o644)
-	if err := gunzipTo(context.Background(), cut, dst, cap); err == nil {
+	if err := unzipFile(context.Background(), cut, dst, cap); err == nil {
 		t.Error("a cut file is taken")
 	}
 	// the context ends it
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := gunzipTo(ctx, src, dst, cap); !errors.Is(err, context.Canceled) {
+	if err := unzipFile(ctx, src, dst, cap); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled: %v", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 	"golang.org/x/sys/unix"
@@ -21,9 +22,13 @@ func newHost() Host { return linuxHost{} }
 // Lock takes an exclusive flock on the file at path, not waiting. The kernel drops the lock when the process that holds it ends, however it ends, so a lock left by a process that is dead
 // is no lock: the file stays where it is and nothing has to be decided about it. The descriptor is not inherited by the commands the process runs.
 func (linuxHost) Lock(path string) (func(), error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|noFollow, 0o600)
 	if err != nil {
 		return nil, err
+	}
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, &fs.PathError{Op: "lock", Path: path, Err: errors.New("not a regular file")}
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()
@@ -80,6 +85,23 @@ func (linuxHost) DpkgLockHeld(paths []string) (bool, error) {
 }
 
 func (linuxHost) NewDest(prefix string) osmodule.Destination { return linuxDest{prefix: prefix} }
+
+func (linuxHost) SafeDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	switch {
+	case !info.IsDir():
+		return errors.New("not a directory (a link is not one)")
+	case !ok || int(st.Uid) != os.Geteuid():
+		return errors.New("not owned by the user the assistant runs as")
+	case info.Mode().Perm()&0o022 != 0:
+		return errors.New("writable by its group or by others")
+	}
+	return nil
+}
 
 func (linuxHost) IsTerminal(f *os.File) bool {
 	_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)

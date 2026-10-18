@@ -64,7 +64,8 @@ func (d linuxDest) NewFile(p string, perm fs.FileMode, replace bool) (osmodule.F
 	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	afterClear(tmp)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|noFollow, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +101,7 @@ func (w *linuxFile) Commit() error {
 	if err := w.f.Chmod(w.perm); err != nil {
 		return err
 	}
-	if err := w.f.Sync(); err != nil {
+	if err := syncFile(w.f); err != nil {
 		return err
 	}
 	if err := w.f.Close(); err != nil {

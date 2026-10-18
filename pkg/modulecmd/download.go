@@ -3,9 +3,7 @@ package modulecmd
 import (
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -171,41 +169,15 @@ func (c ctxReader) Read(p []byte) (int, error) {
 	return c.r.Read(p)
 }
 
-// sha256File is the sha256 of a file, in lower case hex.
-func sha256File(ctx context.Context, path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, ctxReader{ctx, f}); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// gunzipTo writes the decompressed content of the gzip file src to dst, at most max bytes: the archive of a module is a few megabytes of a tar that is never more than max, and a
-// file that decompresses to more is a bomb and stops at the cap. ErrTooLarge when it does; a file that is not gzip is another error.
-func gunzipTo(ctx context.Context, src, dst string, max int64) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	zr, err := gzip.NewReader(ctxReader{ctx, in})
+// gunzipTo writes the decompressed content of the gzip stream src to dst, at most max bytes: the archive of a module is a few megabytes of a tar that is never more than max, and a
+// stream that decompresses to more is a bomb and stops at the cap. ErrTooLarge when it does; a stream that is not gzip is another error.
+func gunzipTo(ctx context.Context, src io.Reader, dst io.Writer, max int64) error {
+	zr, err := gzip.NewReader(ctxReader{ctx, src})
 	if err != nil {
 		return err
 	}
 	defer zr.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	n, err := io.Copy(out, io.LimitReader(ctxReader{ctx, zr}, max+1))
-	if cerr := out.Close(); err == nil {
-		err = cerr
-	}
+	n, err := io.Copy(dst, io.LimitReader(ctxReader{ctx, zr}, max+1))
 	if err == nil && n > max {
 		err = ErrTooLarge
 	}

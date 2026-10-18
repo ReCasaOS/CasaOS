@@ -318,6 +318,9 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
 		return refuseEarly(env, c.name, CodeLockFailed)
 	}
+	if err := env.Host.SafeDir(env.Roots.state()); err != nil {
+		return refuseEarly(env, c.name, CodeStateUnsafe)
+	}
 	release, err := env.Host.Lock(env.Roots.lock())
 	switch {
 	case errors.Is(err, ErrLockHeld):
@@ -333,7 +336,9 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	defer j.close()
 	defer j.recoverRun(&code, func() string { return "-" })
 	// what an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
-	_ = emptyDir(env.Roots.tmp())
+	if err := emptyDir(env.Host, env.Roots.tmp()); errors.Is(err, errUnsafe) {
+		return j.refuse(CodeStateUnsafe)
+	}
 
 	roots := env.Roots
 	present := false

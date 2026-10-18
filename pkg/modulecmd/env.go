@@ -94,6 +94,9 @@ type Host interface {
 	NewDest(prefix string) osmodule.Destination
 	// IsTerminal says whether the file is a terminal.
 	IsTerminal(f *os.File) bool
+	// SafeDir says why a directory is not one that root may keep files in: it must be a directory and not a link, owned by the user the assistant runs as (root, since install and remove
+	// refuse any other) and writable by nobody else.
+	SafeDir(path string) error
 }
 
 var (
@@ -140,6 +143,7 @@ func (noHost) FreeBytes(string) (int64, error)     { return 0, ErrUnsupported }
 func (noHost) DpkgLockHeld([]string) (bool, error) { return false, ErrUnsupported }
 func (noHost) NewDest(string) osmodule.Destination { return refusingDest{} }
 func (noHost) IsTerminal(*os.File) bool            { return false }
+func (noHost) SafeDir(string) error                { return ErrUnsupported }
 
 func (e Env) withDefaults() Env {
 	if e.Stdin == nil {

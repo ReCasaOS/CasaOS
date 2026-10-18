@@ -60,12 +60,17 @@ func (j *job) openLog() error {
 	if err := makeDirs(dir, 0o755); err != nil {
 		return err
 	}
-	path := j.env.Roots.logFile(j.name)
-	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", path)
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// not through a link, not a fifo that waits for a reader, and only a regular file once it is open: what is checked is what is written
+	f, err := os.OpenFile(j.env.Roots.logFile(j.name), os.O_WRONLY|os.O_CREATE|noFollow|nonBlock, 0o644)
 	if err != nil {
+		return err
+	}
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		return fmt.Errorf("%s is not a regular file", j.env.Roots.logFile(j.name))
+	}
+	if err := f.Truncate(0); err != nil {
+		_ = f.Close()
 		return err
 	}
 	j.log = f

@@ -3,6 +3,8 @@ package modulecmd
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +56,7 @@ const (
 	CodeUnitNotStopped     = "unit_not_stopped"
 	CodeRemoveIncomplete   = "remove_incomplete"
 	CodeTmpUnusable        = "tmp_unusable"
+	CodeStateUnsafe        = "state_unsafe"
 	CodeInternal           = "internal_error"
 	undoDone               = "rolled_back"
 	undoIncomplete         = "rollback_incomplete"
@@ -127,6 +130,10 @@ type install struct {
 	packages []string
 	// steps done, for the last line and for what the rollback has to undo
 	packagesDone bool
+	// archive is the archive as it was downloaded, open: it was made for this run and is read by this descriptor from the download to the unpack, never opened by its path again.
+	// archiveSum is the sha256 of its bytes, taken as they were written.
+	archive    *os.File
+	archiveSum string
 	// aptStarted is set when apt-get has been started: a run that ends it leaves dpkg in the state it was in
 	aptStarted  bool
 	unpackBegun bool
@@ -160,6 +167,9 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
 		return refuseEarly(env, c.name, CodeLockFailed)
 	}
+	if err := env.Host.SafeDir(env.Roots.state()); err != nil {
+		return refuseEarly(env, c.name, CodeStateUnsafe)
+	}
 	release, err := env.Host.Lock(env.Roots.lock())
 	switch {
 	case errors.Is(err, ErrLockHeld):
@@ -182,7 +192,10 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 		return undoDone
 	})
 	// whatever an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
-	if err := emptyDir(env.Roots.tmp()); err != nil {
+	if err := emptyDir(env.Host, env.Roots.tmp()); err != nil {
+		if errors.Is(err, errUnsafe) {
+			return j.refuse(CodeStateUnsafe)
+		}
 		return j.refuse(CodeTmpUnusable)
 	}
 	// a list of an earlier install that cannot be read is a state for its owner to look at: the module cannot be told from it, and nothing is changed
@@ -192,7 +205,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 		}
 		return j.refuse(CodeFilesUnreadable)
 	}
-	defer func() { _ = emptyDir(env.Roots.tmp()) }()
+	defer func() { _ = emptyDir(env.Host, env.Roots.tmp()) }()
 
 	plan := PlanOf(ctx, env, c.name)
 	switch {
@@ -212,6 +225,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 	entry, _ := cat.Find(c.name)
 	asset, _ := entry.Asset(env.Arch)
 	in = &install{job: j, ctx: ctx, entry: entry, asset: asset, packages: osmodule.PackagesFor(entry.Manifest, env.Arch)}
+	defer in.closeArchive()
 	return in.steps()
 }
 
@@ -363,20 +377,32 @@ func (in *install) stepDownload() *stepFailure {
 		return in.fail(CodeDownloadFailed, errors.New("no downloader"))
 	}
 	var lastErr error
+	f, err := createPrivate(in.archivePath())
+	if err != nil {
+		return in.fail(CodeDownloadFailed, err)
+	}
+	kept := false
+	defer func() {
+		if !kept {
+			_ = f.Close()
+			_ = os.Remove(in.archivePath())
+		}
+	}()
 	for try := 1; try <= downloadTries; try++ {
-		f, err := os.OpenFile(in.archivePath(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-		if err != nil {
-			return in.fail(CodeDownloadFailed, err)
-		}
-		_, err = dl.Get(in.ctx, in.asset.URL, f)
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
+		// the bytes are hashed as they are written
+		h := sha256.New()
+		_, err := dl.Get(in.ctx, in.asset.URL, io.MultiWriter(f, h))
 		if err == nil {
+			in.archive, in.archiveSum, kept = f, hex.EncodeToString(h.Sum(nil)), true
 			return nil
 		}
 		lastErr = err
-		_ = os.Remove(in.archivePath())
+		// (the file is started over for the next try)
+		if rerr := f.Truncate(0); rerr != nil {
+			break
+		} else if _, rerr = f.Seek(0, io.SeekStart); rerr != nil {
+			break
+		}
 		if in.ctx.Err() != nil {
 			break
 		}
@@ -397,12 +423,17 @@ func (in *install) stepDownload() *stepFailure {
 	return in.fail(CodeDownloadFailed, lastErr)
 }
 
-func (in *install) stepVerify() *stepFailure {
-	sum, err := sha256File(in.ctx, in.archivePath())
-	if err != nil {
-		return in.fail(CodeDownloadFailed, err)
+// closeArchive lets go of the archive; the file is taken away with the area of the download.
+func (in *install) closeArchive() {
+	if in.archive != nil {
+		_ = in.archive.Close()
+		in.archive = nil
 	}
-	if sum != in.asset.SHA256 {
+}
+
+func (in *install) stepVerify() *stepFailure {
+	if in.archive == nil || in.archiveSum != in.asset.SHA256 {
+		in.closeArchive()
 		_ = os.Remove(in.archivePath())
 		return in.fail(CodeChecksumMismatch, errors.New("the sha256 of the archive is not the catalogue's"))
 	}
@@ -410,7 +441,17 @@ func (in *install) stepVerify() *stepFailure {
 }
 
 func (in *install) stepUnpack() *stepFailure {
-	if err := gunzipTo(in.ctx, in.archivePath(), in.tarPath(), osmodule.MaxStreamBytes); err != nil {
+	// The archive that was checked is the one that is read: by the descriptor it was written by, and the tar it makes is written to a descriptor and read from the same one, so that nothing
+	// that is done to a path in the meantime reaches the unpack.
+	if _, err := in.archive.Seek(0, io.SeekStart); err != nil {
+		return in.fail(CodeUnpackFailed, err)
+	}
+	tarFile, err := createPrivate(in.tarPath())
+	if err != nil {
+		return in.fail(CodeUnpackFailed, err)
+	}
+	defer tarFile.Close()
+	if err := gunzipTo(in.ctx, in.archive, tarFile, osmodule.MaxStreamBytes); err != nil {
 		code := osmodule.UnpackCorrupt
 		if errors.Is(err, ErrTooLarge) {
 			code = osmodule.UnpackLimits
@@ -418,11 +459,6 @@ func (in *install) stepUnpack() *stepFailure {
 		return in.fail(code, err)
 	}
 	_ = os.Remove(in.archivePath())
-	tarFile, err := os.Open(in.tarPath())
-	if err != nil {
-		return in.fail(CodeUnpackFailed, err)
-	}
-	defer tarFile.Close()
 	// from here the box may hold files of the module
 	in.unpackBegun = true
 	if err := makeDirs(in.env.Roots.state(), 0o755); err != nil {
