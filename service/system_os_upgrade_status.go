@@ -37,6 +37,8 @@ type OSUpgradeStatus struct {
 	Busy           bool       `json:"busy"`
 	Since          *time.Time `json:"since"`
 	LastActivityAt *time.Time `json:"last_activity_at"`
+	// LastRefreshAt is when the old release was last brought up to date (RFC 3339, UTC); absent when there is no such time, or it cannot be read.
+	LastRefreshAt *time.Time `json:"last_refresh_at,omitempty"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 	// Failure is what stopped a run: the block, the class (the page has a sentence for each), the status, and the line of the unit's output that said it.
 	Failure *OSUpgradeFailure `json:"failure,omitempty"`
@@ -180,6 +182,7 @@ func (s *systemService) osUpgradeStatusOf(status OSUpgradeStatus, run *osUpgrade
 	status.PNR, status.Reversible, status.HalfUpgraded, status.Busy = state.PNR, state.Reversible, state.HalfUpgraded, state.Busy
 	status.BootUnknown, status.IgnoredMarkers = state.BootUnknown, in.Ignored
 	status.Actions = osrun.ActionsFor(state)
+	status.LastRefreshAt = osUpgradeLastRefresh(s.systemPackageUpdater().now())
 	status.Manual = OSUpgradeManual{BlocksDone: []string{}}
 	status.LogTail = []string{}
 	if !state.Since.IsZero() {
@@ -245,6 +248,21 @@ func (s *systemService) osUpgradeStatusOf(status OSUpgradeStatus, run *osUpgrade
 		}
 	}
 	return status
+}
+
+// osUpgradeLastRefresh is the time in the file of the last refresh, read as osUpgradeNewerRefresh reads it (one small regular file, never a link). A file that is not there, is
+// too long, is not a time, or says a time more than a day ahead of now (written by hand, never by the refresh) is no time: the status does not fail for it.
+func osUpgradeLastRefresh(now time.Time) *time.Time {
+	data, err := readOSUpgradeFile(filepath.Join(osUpgradeRoot, osUpgradeLastRefreshFile), 256)
+	if err != nil {
+		return nil
+	}
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if err != nil || at.After(now.Add(24*time.Hour)) {
+		return nil
+	}
+	at = at.UTC()
+	return &at
 }
 
 // osUpgradePlanAlive says whether the plan job has a plan that is still good.

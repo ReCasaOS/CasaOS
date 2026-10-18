@@ -125,6 +125,7 @@ func osUpgradeButton(ctx echo.Context, press func() (service.OSUpgradeStatus, er
 
 // @Summary  how the upgrade of the operating system is going
 // @Description The state of the upgrade that is open or the last that was, as a code the page puts in words (state, reason, cause, class of what stopped it), the block that runs, whether the point of no return is behind it, whether the machine is held (busy), what the owner can do now (actions, which the page shows as they are), the checks that stand before the restart, the findings of the check afterwards, where the owner stands if they take the run over (manual) and the end of the unit's output with the addresses of the sources reduced to their host. It runs no apt and takes no lock of a run: it is safe to ask every few seconds. beta_enabled says whether the switch of the feature is on; the upgrade that is open is told whatever the switch says.
+// @Description last_refresh_at (RFC 3339, UTC) is when the old release was last brought up to date; it is left out when there is no such time or it cannot be read.
 // @Produce  application/json
 // @Tags sys
 // @Security ApiKeyAuth
