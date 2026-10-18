@@ -178,6 +178,8 @@ func TestWhatIsNotTheJobsWordNeverEndsTheJob(t *testing.T) {
 		"a step far too long":                jStep(jNonce, strings.Repeat("a", 33), "done", 5),
 		// the queued line is the core's first line, and is read as strictly as the others: it is a job's word only as it is written
 		"a queued line with a field too many":           jQueued(jNonce, 5) + " x",
+		"a queued line with a field before the time":    "CASAOS_MODULE_QUEUED " + jNonce + " virt x " + jts(5),
+		"a queued line with two fields before the time": "CASAOS_MODULE_QUEUED " + jNonce + " virt x y " + jts(5),
 		"a queued line with the result's fields":        jQueued(jNonce, 5) + " ok done - -",
 		"a queued line of another module":               strings.Replace(jQueued(jNonce, 5), " virt ", " other ", 1),
 		"a queued line with a nonce in capitals":        jQueued(strings.ToUpper(jNonce), 5),
