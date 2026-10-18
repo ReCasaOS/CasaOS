@@ -38,7 +38,7 @@ root="${0%/usr/bin/apt-get}"
 state="$root/stub"
 mkdir -p "$state"
 printf '%s\n' "$*" >> "$state/apt-get.log"
-printf '%s\n' "pwd=$(pwd) LC_ALL=$LC_ALL LANG=$LANG FRONTEND=$DEBIAN_FRONTEND SECRET=$SECRET_OF_THE_TEST NONCE=$CASAOS_MODULE_NONCE APT_CONFIG=$APT_CONFIG TMPDIR=$TMPDIR" >> "$state/apt-get.env"
+printf '%s\n' "pwd=$(pwd) LC_ALL=$LC_ALL LANG=$LANG FRONTEND=$DEBIAN_FRONTEND SECRET=$SECRET_OF_THE_TEST NONCE=$CASAOS_MODULE_NONCE APT_CONFIG=$APT_CONFIG TMPDIR=$TMPDIR PATH=$PATH" >> "$state/apt-get.env"
 if [ -n "$APT_CONFIG" ] && [ -r "$APT_CONFIG" ]; then cat "$APT_CONFIG" > "$state/apt-config.seen"; fi
 grep '^SigIgn' /proc/$$/status >> "$state/apt-get.sigign"
 for a in "$@"; do

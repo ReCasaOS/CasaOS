@@ -680,3 +680,24 @@ func TestTheUnpackSaysWhatEachPathIsToHold(t *testing.T) {
 		}
 	}
 }
+
+// An archive may not put a program of the system that the assistant runs in usr/bin, as a file or as a link: on a system whose /bin is not /usr/bin it would be found before the real one.
+// A name that only looks like one is fine.
+func TestAnArchiveMayNotPutAProgramOfTheSystemInUsrBin(t *testing.T) {
+	for _, name := range ReservedPrograms {
+		refusedAndNothingWritten(t, name, UnpackPath, newFS(), nil, tent{name: sysroot + "usr/bin/" + name, mode: 0o755, body: "#!/bin/sh\n"})
+		refusedAndNothingWritten(t, name+" as a link", UnpackPath, newFS(), nil, tent{name: sysroot + "usr/bin/" + name, typ: tar.TypeSymlink, link: "fine"})
+	}
+	for _, name := range []string{"systemctl.real", "Systemctl", "systemctl-x", "xsystemctl", "dpkg2", "casaos-virt-management"} {
+		if _, err := unpack(t, newFS(), nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/bin/" + name, mode: 0o755, body: "x"}); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// the other directories have no such rule: nothing else of a module's can be a program of the system
+	for _, name := range ReservedPrograms {
+		if !slices.Contains([]string{"systemctl", "sh"}, name) {
+			continue
+		}
+		refusedAndNothingWritten(t, name+" in the directory of the units", UnpackPath, newFS(), nil, tent{name: sysroot + "usr/lib/systemd/system/" + name, body: "[Service]\n"})
+	}
+}

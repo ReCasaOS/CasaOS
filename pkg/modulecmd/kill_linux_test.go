@@ -259,7 +259,7 @@ func TestARealInstallRunsTheCommandsWithAnEnvironmentOfTheirOwn(t *testing.T) {
 	}
 	apt, _ := os.ReadFile(stubFile(b.root, "apt-get.env"))
 	line := strings.TrimSpace(string(apt))
-	for _, want := range []string{"LC_ALL=C", "LANG=C", "FRONTEND=noninteractive", "SECRET=", "NONCE="} {
+	for _, want := range []string{"LC_ALL=C", "LANG=C", "FRONTEND=noninteractive", "SECRET=", "NONCE=", "PATH=/usr/sbin:/usr/bin:/sbin:/bin"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the environment of apt-get lacks %q: %s", want, line)
 		}

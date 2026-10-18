@@ -26,12 +26,14 @@ const sandboxDirMode fs.FileMode = 0o711
 
 type aptSandbox struct {
 	roots Roots
+	tools toolPaths
 	mu    sync.Mutex
 	dir   string
 }
 
 func newSandbox(roots Roots) func() osplan.Sandbox {
-	return func() osplan.Sandbox { return &aptSandbox{roots: roots} }
+	tools := findTools(roots)
+	return func() osplan.Sandbox { return &aptSandbox{roots: roots, tools: tools} }
 }
 
 func (s *aptSandbox) directory() string {
@@ -127,7 +129,7 @@ func (s *aptSandbox) Run(ctx context.Context, argv []string) (osplan.Output, err
 	if dir == "" || !osplan.AllowedModuleArgv(argv, dir) {
 		return osplan.Output{}, osreadiness.ErrNotAllowed
 	}
-	exe, err := lookIn(argv[0], s.roots.searchDirs())
+	exe, err := s.tools.path(argv[0])
 	if err != nil {
 		return osplan.Output{}, err
 	}

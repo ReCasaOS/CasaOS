@@ -9,10 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 )
@@ -21,26 +23,53 @@ import (
 // a whole when the context is: asked to stop first (apt must be allowed to leave dpkg in a state it can go on from), and killed when it has not after the grace.
 const killGrace = 20 * time.Second
 
-type execRunner struct{ roots Roots }
+type execRunner struct{ tools toolPaths }
 
-func newRunner(roots Roots) Runner { return execRunner{roots: roots} }
+// newRunner makes the runner of a box, and finds its programs now. extra are the names of other programs it may run, which the tests use.
+func newRunner(roots Roots, extra ...string) Runner {
+	return execRunner{tools: findTools(roots, extra...)}
+}
 
-// lookIn is the first regular file somebody may run called name in the directories, which are looked at in this order and not in the PATH of the process.
-func lookIn(name string, dirs []string) (string, error) {
-	for _, dir := range dirs {
-		p := filepath.Join(dir, name)
-		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-			return p, nil
+// toolPaths are the programs the assistant runs, by name, each at the path it was found at: the first regular executable file of that name in the directories of the box, which are looked
+// at in this order and not in the PATH of the process. They are found once, when the runner is made, which is before an archive is unpacked, and a program that an unpack puts in the same
+// directory afterwards is not the one that is run (and an archive may not put one of those names in usr/bin at all, osmodule.ReservedPrograms).
+type toolPaths struct {
+	found map[string]string
+	known map[string]bool // the programs the assistant may run, found or not
+}
+
+// findTools finds the programs of osmodule.ReservedPrograms, and the extra names that a test asks for.
+func findTools(roots Roots, extra ...string) toolPaths {
+	t := toolPaths{found: map[string]string{}, known: map[string]bool{}}
+	for _, name := range append(slices.Clone(osmodule.ReservedPrograms), extra...) {
+		t.known[name] = true
+		for _, dir := range roots.searchDirs() {
+			p := filepath.Join(dir, name)
+			if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+				t.found[name] = p
+				break
+			}
 		}
 	}
-	return "", osreadiness.ErrToolMissing
+	return t
+}
+
+// path is where a program is: the one the assistant found, an error for a program that it did not find, and another for a name that is not one of its programs.
+func (t toolPaths) path(name string) (string, error) {
+	if p, ok := t.found[name]; ok {
+		return p, nil
+	}
+	if t.known[name] {
+		return "", osreadiness.ErrToolMissing
+	}
+	return "", osreadiness.ErrNotAllowed
 }
 
 func (r execRunner) Run(ctx context.Context, c Cmd) (Output, error) {
 	if len(c.Argv) == 0 {
 		return Output{}, errors.New("no command")
 	}
-	exe, err := lookIn(c.Argv[0], r.roots.searchDirs())
+	exe, err := r.tools.path(c.Argv[0])
 	if err != nil {
 		return Output{}, err
 	}

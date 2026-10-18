@@ -33,6 +33,14 @@ const (
 
 const tarBlock = 512
 
+// ReservedPrograms are the programs of the system that the assistant runs as root, or that what it runs runs by name (apt, dpkg and their scripts, systemd): an archive may not put a
+// program of one of these names in usr/bin, where on a system whose /bin is not /usr/bin it would come before the real one in the path. The assistant finds each of them once, before
+// anything is unpacked, and runs them by the path it found. (ponytail: a list of names; a program of another name that exists in /bin and not in /usr/bin is not covered.)
+var ReservedPrograms = []string{
+	"systemctl", "systemd-run", "journalctl", "apt-get", "apt", "apt-cache", "apt-config", "apt-key", "apt-mark", "dpkg", "dpkg-query", "dpkg-deb", "dpkg-divert", "dpkg-statoverride",
+	"update-rc.d", "invoke-rc.d", "deb-systemd-helper", "deb-systemd-invoke", "sh", "dash", "bash", "env",
+}
+
 // the codes of a refusal of an archive
 const (
 	// UnpackPath: an entry that is not allowed, by its name, its type, its link, or where it would be put; a destination that is a link or behind one.
@@ -324,6 +332,9 @@ func classify(hdr *tar.Header, unit string) (entry, error) {
 	switch {
 	case underAllowed(rel):
 		if !placeOK(rel, e.kind, func(name string) bool { return name == unit }) {
+			return entry{}, refuse(UnpackPath, hdr.Name)
+		}
+		if program, ok := strings.CutPrefix(rel, "usr/bin/"); ok && slices.Contains(ReservedPrograms, program) {
 			return entry{}, refuse(UnpackPath, hdr.Name)
 		}
 	case e.kind == kDir && aboveAllowed(rel):
