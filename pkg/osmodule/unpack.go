@@ -88,13 +88,22 @@ type File interface {
 
 // A Result is what an unpack did. Files is the list of the files and links the module owns after it, in the order they were put down, with the units last: what goes in the
 // <name>.files list, and what a rollback deletes. Dirs are the directories the unpack made, and no other, the deepest first, for a rollback or a remove to delete (when they are empty).
-// Both are given when the unpack stops half way too. Kept are the configuration files that were already there and were left as they are. Manifest is the module.json of the archive,
-// not yet read as a manifest.
+// Both are given when the unpack stops half way too. Manifest is the module.json of the archive, not yet read as a manifest.
 type Result struct {
 	Files    []string
 	Dirs     []string
-	Kept     []string
 	Manifest []byte
+}
+
+// Options are what an unpack is told besides the archive and the file system.
+type Options struct {
+	// Unit is the unit of the module, as its manifest names it: the one file an archive may put in a directory of units. Empty, an archive may put none.
+	Unit string
+	// OnPlanned, when it is not nil, is called once, after the checking and before anything is written, with every path of a file or a link that the unpack may write (in the order they
+	// are put down, the units last) and every directory it may make (the parents first): the caller records them, so that a kill half way leaves a record that names everything that the
+	// unpack might have put down, and if it fails nothing is written. What the module owns in the end is the Result's, which can be less: a path that was planned and not written may be a
+	// file that is not the module's (it is what made the unpack stop), so a caller that deletes after a stop deletes what the Result holds, never what it was told in advance.
+	OnPlanned func(files, dirs []string) error
 }
 
 type kind int
@@ -106,13 +115,6 @@ const (
 	kIgnored // an entry that is read and not written: a directory above the allowed ones, the licence, the notice
 )
 
-type action int
-
-const (
-	aWrite action = iota
-	aKeep         // a configuration that is there and stays
-)
-
 // an entry of the archive that is to be written, as the first reading saw it
 type entry struct {
 	rel     string // the path under the sysroot, no slash at the start
@@ -122,7 +124,6 @@ type entry struct {
 	size    int64
 	sum     [sha256.Size]byte // of the bytes of a file
 	target  string
-	action  action
 	replace bool // the module's own file or link, which the new one replaces; anything else that appears at the path is in the way
 }
 
@@ -130,22 +131,17 @@ func (e entry) isUnit() bool {
 	return strings.HasPrefix(e.rel, "usr/lib/systemd/system/") || strings.HasPrefix(e.rel, "lib/systemd/system/")
 }
 
-// a directory to make, with the mode the archive gives it (the one of a directory that is only on the way to something is 0755)
-type dirMake struct {
-	abs  string
-	perm fs.FileMode
-}
-
-// An UnpackPlan is what the checking of an archive leaves: what to write, in the order of the archive, the directories to make, parents first, and the manifest.
+// An UnpackPlan is what the checking of an archive leaves: what to write, in the order of the archive, the directories to make (all with 0755: they are only on the way to the allowed
+// directory), parents first, and the manifest.
 type UnpackPlan struct {
 	entries  []entry
-	dirs     []dirMake
+	dirs     []string
 	Manifest []byte
 }
 
 // ValidateArchive reads the whole archive and the whole destination and says whether Unpack would write it; it writes nothing.
-func ValidateArchive(src io.ReadSeeker, dst Destination, own []string) (*UnpackPlan, error) {
-	plan, err := scan(src)
+func ValidateArchive(src io.ReadSeeker, dst Destination, own []string, opts Options) (*UnpackPlan, error) {
+	plan, err := scan(src, opts.Unit)
 	if err != nil {
 		return nil, err
 	}
@@ -156,29 +152,26 @@ func ValidateArchive(src io.ReadSeeker, dst Destination, own []string) (*UnpackP
 }
 
 // Unpack unpacks the archive onto dst, after checking all of it. own are the files that this module's earlier install wrote (its list of files): they may be replaced, and no other file
-// may, not even one that appears after the checking. onPlanned, when it is not nil, is called once with every path that the unpack may write (files and links, in the order they are put
-// down, the units last), before anything is written: the caller records them, so that a kill half way leaves a list that names what the unpack might have put down, and if it fails nothing
-// is written. The list of what the module owns in the end is the Result's, which can be shorter: a path that was planned and not written may be a file that is not the module's (it is
-// what made the unpack stop), so a caller that deletes after a stop deletes what the Result holds, never what it was told in advance. When the unpack stops half way the Result holds what
-// was written and the directories it made, with the error, and the caller rolls back with it; the unpack deletes nothing.
-func Unpack(src io.ReadSeeker, dst Destination, own []string, onPlanned func(paths []string) error) (Result, error) {
-	plan, err := ValidateArchive(src, dst, own)
+// may, not even one that appears after the checking. When the unpack stops half way the Result holds what was written and the directories it made, with the error, and the caller rolls
+// back with it; the unpack deletes nothing.
+func Unpack(src io.ReadSeeker, dst Destination, own []string, opts Options) (Result, error) {
+	plan, err := ValidateArchive(src, dst, own, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	// the archive and the destination are read once more: what is written is what was checked, or it is nothing
-	again, err := ValidateArchive(src, dst, own)
+	again, err := ValidateArchive(src, dst, own, opts)
 	if err != nil {
 		return Result{}, err
 	}
 	if !reflect.DeepEqual(plan, again) {
 		return Result{}, refuse(UnpackCorrupt, "the archive or the destination changed")
 	}
-	return write(plan, src, dst, own, onPlanned)
+	return write(plan, src, dst, opts.OnPlanned)
 }
 
 // scan reads the archive and checks every entry against the rules that do not need the destination.
-func scan(src io.ReadSeeker) (*UnpackPlan, error) {
+func scan(src io.ReadSeeker, unit string) (*UnpackPlan, error) {
 	end, err := src.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, refuse(UnpackCorrupt, "the archive cannot be read")
@@ -216,7 +209,7 @@ func scan(src io.ReadSeeker) (*UnpackPlan, error) {
 		if err != nil {
 			return nil, refuse(UnpackCorrupt, "the archive cannot be read")
 		}
-		e, err := classify(hdr)
+		e, err := classify(hdr, unit)
 		if err != nil {
 			return nil, err
 		}
@@ -274,7 +267,7 @@ func scan(src io.ReadSeeker) (*UnpackPlan, error) {
 }
 
 // classify says what an entry of the archive is, or why it is not allowed: by its type, its name and, for a link, its target. An entry that is read and not written has no rel.
-func classify(hdr *tar.Header) (entry, error) {
+func classify(hdr *tar.Header, unit string) (entry, error) {
 	// (a file made of holes is read by the reader of Go as a file of the size it has when filled, and then it is not in the archive where its header says)
 	for key := range hdr.PAXRecords {
 		if strings.HasPrefix(key, "GNU.sparse") {
@@ -312,7 +305,7 @@ func classify(hdr *tar.Header) (entry, error) {
 	e.rel = rel
 	switch {
 	case underAllowed(rel):
-		if !placeOK(rel, e.kind) {
+		if !placeOK(rel, e.kind, func(name string) bool { return name == unit }) {
 			return entry{}, refuse(UnpackPath, hdr.Name)
 		}
 	case e.kind == kDir && aboveAllowed(rel):
@@ -406,8 +399,8 @@ func (n *names) add(rel string, k kind) error {
 	return nil
 }
 
-// checkDestination looks at what is where the archive would put its files, and decides which are written and which are kept, which replace the module's own and which must not replace
-// anything, and which directories are made.
+// checkDestination looks at what is where the archive would put its files, and decides which replace the module's own and which must not replace anything, and which directories are
+// made (the allowed directory, and the ones above it, when the system has none of them).
 func checkDestination(plan *UnpackPlan, dst Destination, own []string) error {
 	// on a system with a merged /usr, /lib is /usr/lib: a file the module owns under the one name is the same file under the other
 	resolve := func(p string) string { return p }
@@ -421,17 +414,13 @@ func checkDestination(plan *UnpackPlan, dst Destination, own []string) error {
 	for _, p := range own {
 		owned[resolve(p)] = true
 	}
-	// the directories to make: every one that is not there, once, with the mode of the entry that names it, or 0755 when it is only on the way
-	made := map[string]int{}
-	wantDir := func(abs string, perm fs.FileMode, named bool) {
-		if i, ok := made[abs]; ok {
-			if named {
-				plan.dirs[i].perm = perm
-			}
-			return
+	// the directories to make: every one that is not there, once
+	made := map[string]bool{}
+	wantDir := func(abs string) {
+		if !made[abs] {
+			made[abs] = true
+			plan.dirs = append(plan.dirs, abs)
 		}
-		made[abs] = len(plan.dirs)
-		plan.dirs = append(plan.dirs, dirMake{abs: abs, perm: perm})
 	}
 	for i := range plan.entries {
 		e := &plan.entries[i]
@@ -444,19 +433,19 @@ func checkDestination(plan *UnpackPlan, dst Destination, own []string) error {
 		at := ""
 		for j, part := range strings.Split(path.Dir(e.rel), "/") {
 			at += "/" + part
-			if _, planned := made[at]; planned {
+			if made[at] {
 				gone = true
 				continue
 			}
 			if gone {
-				wantDir(at, 0o755, false)
+				wantDir(at)
 				continue
 			}
 			mode, err := dst.Lstat(at)
 			switch {
 			case errors.Is(err, fs.ErrNotExist):
 				gone = true
-				wantDir(at, 0o755, false)
+				wantDir(at)
 			case err != nil:
 				return fmt.Errorf("looking at %s: %w", at, err)
 			case mode&fs.ModeSymlink != 0 && j >= top:
@@ -472,41 +461,30 @@ func checkDestination(plan *UnpackPlan, dst Destination, own []string) error {
 			mode fs.FileMode
 			err  = error(fs.ErrNotExist)
 		)
-		if _, planned := made[abs]; !gone && !planned {
+		if !gone {
 			mode, err = dst.Lstat(abs)
 		}
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			if e.kind == kDir {
-				wantDir(abs, e.perm, true)
-			}
 		case err != nil:
 			return fmt.Errorf("looking at %s: %w", abs, err)
 		case mode&fs.ModeSymlink != 0 && e.kind == kLink && owned[resolve(abs)]:
 			e.replace = true // the module's own link, made by an install that is done again
 		case mode&fs.ModeSymlink != 0:
 			return refuse(UnpackPath, e.rel)
-		case e.kind == kDir && mode.IsDir():
-		case e.kind == kDir:
-			return refuse(FileExists, e.rel)
-		case strings.HasPrefix(e.rel, "etc/casaos/") && !strings.HasSuffix(e.rel, ".sample") && mode.IsRegular():
-			e.action = aKeep // a configuration that is there stays as it is, whoever wrote it
 		case owned[resolve(abs)] && mode.IsRegular():
 			e.replace = true
 		default:
 			return refuse(FileExists, e.rel)
 		}
 	}
-	if len(plan.dirs) > MaxDirs {
-		return refuse(UnpackLimits, "too many directories")
-	}
 	// parents first
-	slices.SortStableFunc(plan.dirs, func(a, b dirMake) int { return cmp.Compare(strings.Count(a.abs, "/"), strings.Count(b.abs, "/")) })
+	slices.SortStableFunc(plan.dirs, func(a, b string) int { return cmp.Compare(strings.Count(a, "/"), strings.Count(b, "/")) })
 	return nil
 }
 
 // write puts the checked entries on the disk: the directories, then the files and links, then the units; an entry that fails stops the unpack.
-func write(plan *UnpackPlan, src io.ReadSeeker, dst Destination, own []string, onPlanned func([]string) error) (Result, error) {
+func write(plan *UnpackPlan, src io.ReadSeeker, dst Destination, onPlanned func(files, dirs []string) error) (Result, error) {
 	res := Result{Manifest: plan.Manifest}
 	order := make([]entry, 0, len(plan.entries))
 	for _, pass := range []func(entry) bool{
@@ -514,45 +492,35 @@ func write(plan *UnpackPlan, src io.ReadSeeker, dst Destination, own []string, o
 		func(e entry) bool { return e.isUnit() },
 	} {
 		for _, e := range plan.entries {
-			if e.kind != kIgnored && e.kind != kDir && pass(e) {
+			if e.kind != kIgnored && pass(e) {
 				order = append(order, e)
 			}
 		}
 	}
-	// what the module owns when this is done, if it is: the files and links, and the configurations it owned that stay
-	var planned []string
-	for _, e := range order {
-		if abs := "/" + e.rel; e.action != aKeep || slices.Contains(own, abs) {
-			planned = append(planned, abs)
-		}
-	}
 	if onPlanned != nil {
-		if err := onPlanned(slices.Clone(planned)); err != nil {
+		planned := make([]string, len(order))
+		for i, e := range order {
+			planned[i] = "/" + e.rel
+		}
+		if err := onPlanned(planned, slices.Clone(plan.dirs)); err != nil {
 			return res, fmt.Errorf("recording the files: %w", err)
 		}
 	}
 	for _, d := range plan.dirs {
-		switch err := dst.Mkdir(d.abs, d.perm); {
+		switch err := dst.Mkdir(d, 0o755); {
 		case err == nil:
-			res.Dirs = slices.Insert(res.Dirs, 0, d.abs)
+			res.Dirs = slices.Insert(res.Dirs, 0, d)
 		case errors.Is(err, fs.ErrExist):
 			// somebody made it since the checking: it stays as it is, and is not ours to delete, if it is a directory
-			if mode, err := dst.Lstat(d.abs); err != nil || !mode.IsDir() {
-				return res, refuse(UnpackPath, strings.TrimPrefix(d.abs, "/"))
+			if mode, err := dst.Lstat(d); err != nil || !mode.IsDir() {
+				return res, refuse(UnpackPath, strings.TrimPrefix(d, "/"))
 			}
 		default:
-			return res, fmt.Errorf("making %s: %w", d.abs, err)
+			return res, fmt.Errorf("making %s: %w", d, err)
 		}
 	}
 	for _, e := range order {
 		abs := "/" + e.rel
-		if e.action == aKeep {
-			if slices.Contains(own, abs) {
-				res.Files = append(res.Files, abs)
-			}
-			res.Kept = append(res.Kept, abs)
-			continue
-		}
 		var err error
 		if e.kind == kLink {
 			err = dst.Symlink(e.target, abs, e.replace)

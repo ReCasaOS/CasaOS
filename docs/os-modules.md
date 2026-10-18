@@ -85,6 +85,22 @@ An entry carries `component` (the repository of the module, in the ReCasaOS orga
 
 The file has 1 MiB at most and 64 modules at most.
 
+## What an archive may write
+
+The archive of a module is checked against the sha256 of the catalogue, which proves it is the archive the catalogue names and not that what is in it is harmless. The unpack reads every entry as hostile data and writes three kinds of file, each directly in its directory, and nothing else:
+
+| Where | What |
+|---|---|
+| `/usr/bin/<name>` | a program: a file, or a link to a file beside it. |
+| `/usr/lib/systemd/system/` or `/lib/systemd/system/` | the unit of the manifest, exactly its `unit`, as a file. No other name: not another service, not a timer, not a template, not a drop-in directory (`<unit>.d/`) or a directory of wants. On a system with a merged `/usr` the two are one directory, and an archive that names the unit under both is refused. |
+| `/etc/casaos/<name>.sample` | the sample of the module's configuration: a file whose name ends in `.sample`. The configuration itself is the administrator's, and an archive that carries one is refused. |
+
+`module.json`, `LICENSE` and `NOTICE` at the root of the archive are read and not written to the box. `/var/lib/casaos` and `/usr/share/casaos` are not in the list at all: the core keeps its state there (alerts, telemetry, the choices of the automatic updates, the catalogue, the lists of the modules), and nothing a module has to ship goes in them.
+
+Every other path, a subdirectory of an allowed directory included, an entry that is not a file, a directory or a link, a link that points outside its own directory, a name with a character outside `A-Za-z0-9._-+@:`, is refused whole with `unpack_path` before anything is written. A file that is there and was not written by an earlier install of the same module is never overwritten (`file_exists`), including one that appears after the check: the file is put in place by a rename that does not replace. The modes are the archive's, without the setuid, setgid and sticky bits and without write for the group and the others.
+
+The install keeps two lists in `/var/lib/casaos/modules/`: `<name>.files`, the files and links it put down, one absolute path to a line, the unit last; and `<name>.dirs`, the directories it had to make because the system had none (the allowed directory and the ones above it, when the system lacks them). Both are written, whole, before the first directory is made and the first file put in place, so that a process that is killed half way leaves lists that name everything that may be there. A remove deletes exactly the files of the first and then the directories of the second that are empty, the deepest first; a rollback of an install that stopped deletes what the unpack says it wrote, and not what it was going to write.
+
 ## The plan of an install
 
 The plan asks the box, and changes nothing. Its checks, in this order, are `catalogue`, `os`, `arch`, `recasaos`, `already_installed`, `foreign_unit`, `busy`, `disk` and `apt`; `recasaos` compares the number of the DISTRIBUTION (the tag that the installer writes to `/var/lib/casaos/fork-release`, `v0.5.29`) with `min_recasaos`, and not the version of the core. A check that was not made because an earlier one had already failed says `not_checked` and is not the reason of the refusal. A plan is refused with the code of the first check that failed, except for these two checks, which say more:

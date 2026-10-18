@@ -33,12 +33,16 @@ func seekHook(data []byte, f func(n int, h *hooked)) *hooked {
 }
 
 func TestTheCoresOwnStateIsNotAPlaceAnArchiveMayWriteTo(t *testing.T) {
+	// everything the core keeps in /var/lib/casaos, /usr/share/casaos and /etc/casaos: no archive writes to any of it, whatever it puts there and under whatever spelling
 	for _, rel := range []string{
 		"etc/casaos/modules", "etc/casaos/modules/virt.json", "etc/casaos/modules/a/b/c", "etc/casaos/Modules/virt.json", "etc/casaos/MODULES",
 		"var/lib/casaos/modules", "var/lib/casaos/modules/virt.files", "var/lib/casaos/modules/tmp/archive", "var/lib/casaos/Modules/x.files",
 		"var/lib/casaos/os-upgrade", "var/lib/casaos/os-upgrade/busy", "var/lib/casaos/os-upgrade/x/y", "var/lib/casaos/OS-Upgrade/busy",
 		"usr/share/casaos/modules", "usr/share/casaos/modules/catalogue.json",
 		"etc/casaos/os-upgrade.beta", "etc/casaos/OS-Upgrade.beta", "etc/casaos/os-upgrade.beta/x",
+		"var/lib/casaos/alerts.json", "var/lib/casaos/telemetry.json", "var/lib/casaos/autoupdate.json", "var/lib/casaos/virt/state.db", "var/lib/casaos/virt", "var/lib/casaos/x.sample",
+		"usr/share/casaos/virt/index.html", "usr/share/casaos/x.sample", "usr/share/casaos/www/index.html",
+		"etc/casaos/gateway.ini", "etc/casaos/casaos.conf", "etc/casaos/x.conf", "etc/casaos/x",
 	} {
 		for what, ent := range map[string]tent{
 			"a file":      {name: sysroot + rel, body: "x"},
@@ -51,12 +55,8 @@ func TestTheCoresOwnStateIsNotAPlaceAnArchiveMayWriteTo(t *testing.T) {
 			t.Errorf("%s may be in the list of a module", rel)
 		}
 	}
-	// and what is next to it is a place like another
-	for _, rel := range []string{
-		"etc/casaos/modulesx/a", "etc/casaos/module/a", "etc/casaos/os-upgrade.beta.sample", "etc/casaos/os-upgrade.betax", "etc/casaos/os-upgrade", "etc/casaos/virt/modules/a",
-		"var/lib/casaos/os-upgradex/a", "var/lib/casaos/os-upgrad/a", "var/lib/casaos/modulesx", "var/lib/casaos/virt/os-upgrade/a", "var/lib/casaos/modules-x/a",
-		"usr/share/casaos/modulesx/a", "usr/share/casaos/virt/modules/a",
-	} {
+	// a sample is a place like another, whatever it is called: it is not read by the core
+	for _, rel := range []string{"etc/casaos/os-upgrade.beta.sample", "etc/casaos/modules.sample", "etc/casaos/gateway.ini.sample"} {
 		if _, err := unpack(t, newFS(), nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + rel, body: "x"}); err != nil {
 			t.Errorf("%s: %v", rel, err)
 		}
@@ -66,55 +66,85 @@ func TestTheCoresOwnStateIsNotAPlaceAnArchiveMayWriteTo(t *testing.T) {
 	}
 }
 
-func TestADirectoryOfUnitsHoldsNothingButUnitsDirectlyInIt(t *testing.T) {
+func TestADirectoryOfUnitsHoldsNothingButTheUnitOfTheModule(t *testing.T) {
 	for _, dir := range []string{"usr/lib/systemd/system", "lib/systemd/system"} {
 		for what, ent := range map[string]tent{
 			"a drop-in of a unit of the core":             {name: sysroot + dir + "/casaos-gateway.service.d/override.conf", body: "[Service]\n"},
 			"a unit wanted by a target":                   {name: sysroot + dir + "/multi-user.target.wants/x.service", body: "x"},
 			"a link in a directory of wants":              {name: sysroot + dir + "/multi-user.target.wants/x.service", typ: tar.TypeSymlink, link: "x.service"},
-			"a unit in a directory":                       {name: sysroot + dir + "/sub/x.service", body: "x"},
+			"a unit in a directory":                       {name: sysroot + dir + "/sub/" + testUnit, body: "x"},
 			"a directory of drop-ins":                     {name: sysroot + dir + "/x.service.d/", typ: tar.TypeDir},
 			"a directory of wants":                        {name: sysroot + dir + "/x.target.wants/", typ: tar.TypeDir},
 			"a directory":                                 {name: sysroot + dir + "/sub/", typ: tar.TypeDir},
 			"a link that is named like a drop-in":         {name: sysroot + dir + "/x.service.d", typ: tar.TypeSymlink, link: "y"},
 			"a link that is named like a directory wants": {name: sysroot + dir + "/x.target.wants", typ: tar.TypeSymlink, link: "y"},
 			"a link that is named like a requires":        {name: sysroot + dir + "/x.target.requires", typ: tar.TypeSymlink, link: "y"},
+			"another service":                             {name: sysroot + dir + "/x.service", body: "[Service]\n"},
+			"a unit of the core":                          {name: sysroot + dir + "/casaos-gateway.service", body: "[Service]\n"},
+			"a template of the unit":                      {name: sysroot + dir + "/casaos-virt-management@.service", body: "[Service]\n"},
+			"the unit and a suffix":                       {name: sysroot + dir + "/" + testUnit + "x", body: "[Service]\n"},
+			"the unit and a dot":                          {name: sysroot + dir + "/" + testUnit + ".", body: "[Service]\n"},
+			"a part of the unit":                          {name: sysroot + dir + "/casaos-virt-management", body: "[Service]\n"},
+			"the unit in capitals":                        {name: sysroot + dir + "/" + strings.ToUpper(testUnit), body: "[Service]\n"},
+			"a timer":                                     {name: sysroot + dir + "/x.timer", body: "[Timer]\n"},
+			"an alias of the unit":                        {name: sysroot + dir + "/alias.service", typ: tar.TypeSymlink, link: testUnit},
+			"the unit as a link":                          {name: sysroot + dir + "/" + testUnit, typ: tar.TypeSymlink, link: "other.service"},
+			"the unit as a directory":                     {name: sysroot + dir + "/" + testUnit + "/", typ: tar.TypeDir},
 		} {
 			refusedAndNothingWritten(t, dir+": "+what, "unpack_path", newFS(), nil, ent)
+			refusedAndNothingWritten(t, dir+": "+what+", merged", "unpack_path", newMergedFS(), nil, ent)
 		}
-		for what, ent := range map[string]tent{
-			"a unit":                 {name: sysroot + dir + "/x.service", body: "[Service]\n"},
-			"a template":             {name: sysroot + dir + "/x@.service", body: "[Service]\n"},
-			"a timer":                {name: sysroot + dir + "/x.timer", body: "[Timer]\n"},
-			"a link from unit to it": {name: sysroot + dir + "/alias.service", typ: tar.TypeSymlink, link: "x.service"},
-		} {
-			dst := newFS()
-			if _, err := unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, ent); err != nil {
-				t.Errorf("%s: %s: %v", dir, what, err)
+		// the unit itself is a place, in either directory, and nothing else of the name is
+		unit := tent{name: sysroot + dir + "/" + testUnit, body: "[Service]\n"}
+		for _, dst := range []*fakeFS{newFS(), newMergedFS()} {
+			if res, err := unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, unit); err != nil || len(res.Files) != 1 {
+				t.Errorf("%s: the unit: %v %v", dir, err, res.Files)
 			}
+		}
+		if !ValidFilePath("/"+dir+"/"+testUnit) || ValidFilePath("/"+dir+"/sub/"+testUnit) || ValidFilePath("/"+dir+"/x") || ValidFilePath("/"+dir+"/.service") || ValidFilePath("/"+dir+"/x.timer") {
+			t.Errorf("%s: the units of a list", dir)
+		}
+	}
+	// a module with no unit has none to put there: an archive that carries one is refused
+	for _, dir := range []string{"usr/lib/systemd/system", "lib/systemd/system"} {
+		dst := newFS()
+		_, err := Unpack(bytes.NewReader(tarOf(t, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/bin/fine", mode: 0o755, body: "fine"}, tent{name: sysroot + dir + "/" + testUnit, body: "x"})), dst, nil, Options{})
+		wantRefusedFor(t, dir+": no unit named", err, "unpack_path")
+		if len(dst.log) != 0 {
+			t.Errorf("%s: written %v", dir, dst.log)
 		}
 	}
 }
 
-func TestAPathIsAtMostMaxDepthNamesBelowTheAllowedDirectory(t *testing.T) {
-	for _, dir := range AllowedDirs {
-		if isUnitDir(dir) {
-			continue // (nothing but the units directly in it)
+func TestOnlyADirectChildOfAnAllowedDirectoryIsAPlace(t *testing.T) {
+	for _, dir := range []string{"usr/bin", "etc/casaos", "usr/lib/systemd/system", "lib/systemd/system"} {
+		name := "f"
+		switch dir {
+		case "etc/casaos":
+			name = "f.sample"
+		case "usr/lib/systemd/system", "lib/systemd/system":
+			name = testUnit
 		}
-		deep := func(n int) string { return dir + "/" + strings.Repeat("d/", n-1) + "f" }
 		for what, mk := range map[string]func(string) tent{
 			"a file":      func(p string) tent { return tent{name: sysroot + p, body: "x"} },
 			"a link":      func(p string) tent { return tent{name: sysroot + p, typ: tar.TypeSymlink, link: "x"} },
 			"a directory": func(p string) tent { return tent{name: sysroot + p + "/", typ: tar.TypeDir} },
 		} {
-			if _, err := unpack(t, newFS(), nil, tent{name: "module.json", body: "{}"}, mk(deep(MaxDepth))); err != nil {
-				t.Errorf("%s in %s, %d names deep: %v", what, dir, MaxDepth, err)
+			for _, deep := range []string{dir + "/d/" + name, dir + "/d/e/f/g/" + name, dir + "/" + strings.Repeat("d/", 200) + name} {
+				refusedAndNothingWritten(t, what+" "+deep[:min(len(deep), 60)], "unpack_path", newFS(), nil, mk(deep))
 			}
-			refusedAndNothingWritten(t, fmt.Sprintf("%s in %s, %d names deep", what, dir, MaxDepth+1), "unpack_path", newFS(), nil, mk(deep(MaxDepth+1)))
+			if what != "a directory" { // (the directory itself, listed in the archive, is only named: it is made, as needed, by the unpack)
+				refusedAndNothingWritten(t, what+" the directory itself, "+dir, "unpack_path", newFS(), nil, mk(dir))
+			}
 		}
-		if !ValidFilePath("/"+deep(MaxDepth)) || ValidFilePath("/"+deep(MaxDepth+1)) {
-			t.Errorf("%s: the depth of a path of a list", dir)
+		if ValidFilePath("/"+dir+"/d/"+name) || ValidFilePath("/"+dir) || ValidFilePath("/"+dir+"/") {
+			t.Errorf("%s: a path of a list", dir)
 		}
+		// the right name is not enough: a unit and a sample are files, and a directory is never a place
+		if dir != "usr/bin" {
+			refusedAndNothingWritten(t, "a link at the name in "+dir, "unpack_path", newFS(), nil, tent{name: sysroot + dir + "/" + name, typ: tar.TypeSymlink, link: "other"})
+		}
+		refusedAndNothingWritten(t, "a directory at the name in "+dir, "unpack_path", newFS(), nil, tent{name: sysroot + dir + "/" + name + "/", typ: tar.TypeDir})
 	}
 }
 
@@ -122,7 +152,7 @@ func TestEntriesOfDeepPathsOfOneLetterDirectoriesMakeNothing(t *testing.T) {
 	ents := []tent{{name: "module.json", body: "{}"}}
 	deep := strings.Repeat("a/", 500)
 	for i := 0; i < MaxEntries-1; i++ {
-		ents = append(ents, tent{name: fmt.Sprintf("%svar/lib/casaos/%sf%d", sysroot, deep, i)})
+		ents = append(ents, tent{name: fmt.Sprintf("%susr/bin/%sf%d", sysroot, deep, i)})
 	}
 	dst := newFS()
 	res, err := unpack(t, dst, nil, ents...)
@@ -132,81 +162,21 @@ func TestEntriesOfDeepPathsOfOneLetterDirectoriesMakeNothing(t *testing.T) {
 	}
 }
 
-func TestAnUnpackMakesAtMostMaxDirsDirectories(t *testing.T) {
-	files := func(n int) []tent { // n files, each in a directory of its own that is not there
-		ents := []tent{{name: "module.json", body: "{}"}}
-		for i := 0; i < n; i++ {
-			ents = append(ents, tent{name: fmt.Sprintf("%svar/lib/casaos/d%d/f", sysroot, i)})
-		}
-		return ents
-	}
-	dst := newFS()
-	res, err := unpack(t, dst, nil, files(MaxDirs)...)
-	if err != nil || len(res.Dirs) != MaxDirs {
-		t.Errorf("%d directories: %d, %v", MaxDirs, len(res.Dirs), err)
-	}
-	dst = newFS()
-	_, err = unpack(t, dst, nil, files(MaxDirs+1)...)
-	wantRefused(t, err, "unpack_limits")
-	if len(dst.log) != 0 {
-		t.Errorf("written %d", len(dst.log))
-	}
-	// the directories of a file count, all of them: files in chains of 7 new directories
-	chains := func(n int) []tent {
-		ents := []tent{{name: "module.json", body: "{}"}}
-		for i := 0; i < n; i++ {
-			ents = append(ents, tent{name: fmt.Sprintf("%svar/lib/casaos/c%d/b/c/d/e/f/g/f", sysroot, i)})
-		}
-		return ents
-	}
-	if res, err := unpack(t, newFS(), nil, chains(MaxDirs/7)...); err != nil || len(res.Dirs) != MaxDirs/7*7 {
-		t.Errorf("%d directories in chains: %d, %v", MaxDirs/7*7, len(res.Dirs), err)
-	}
-	_, err = unpack(t, newFS(), nil, chains(MaxDirs/7+1)...)
-	wantRefused(t, err, "unpack_limits")
-	// the directories that a directory entry names count too
-	named := func(n int) []tent {
-		ents := []tent{{name: "module.json", body: "{}"}}
-		for i := 0; i < n; i++ {
-			ents = append(ents, tent{name: fmt.Sprintf("%svar/lib/casaos/e%d/", sysroot, i), typ: tar.TypeDir})
-		}
-		return ents
-	}
-	if res, err := unpack(t, newFS(), nil, named(MaxDirs)...); err != nil || len(res.Dirs) != MaxDirs {
-		t.Errorf("%d named directories: %d, %v", MaxDirs, len(res.Dirs), err)
-	}
-	_, err = unpack(t, newFS(), nil, named(MaxDirs+1)...)
-	wantRefused(t, err, "unpack_limits")
-	// a directory is counted once however many entries are in it, and one that is there is not counted
-	many := []tent{{name: "module.json", body: "{}"}}
-	for i := 0; i < 1000; i++ {
-		many = append(many, tent{name: fmt.Sprintf("%svar/lib/casaos/a/b/c/f%d", sysroot, i)})
-	}
-	if res, err := unpack(t, newFS(), nil, many...); err != nil || len(res.Dirs) != 3 {
-		t.Errorf("1000 files in one directory: %d directories, %v", len(res.Dirs), err)
-	}
-	dst = newFS()
-	for i := 0; i < 300; i++ {
-		dst.nodes[fmt.Sprintf("/var/lib/casaos/d%d", i)] = &node{mode: fs.ModeDir | 0o755}
-	}
-	if res, err := unpack(t, dst, nil, files(300+MaxDirs)...); err != nil || len(res.Dirs) != MaxDirs {
-		t.Errorf("300 directories that are there and %d that are not: %d, %v", MaxDirs, len(res.Dirs), err)
-	}
-}
-
 func TestTheDirectoriesAnUnpackMadeAreGivenDeepestFirstAndOnlyThose(t *testing.T) {
+	// a system where the directory of the units is not there, nor the two above it: they are made, and given, the deepest first, with 0755
 	dst := newFS()
-	delete(dst.nodes, "/usr/share/casaos") // (the directory of the module's files is not there either)
-	res, err := unpack(t, dst, nil, tent{name: "module.json", body: "{}"},
-		tent{name: sysroot + "usr/share/casaos/virt/web/index.html", body: "x", mode: 0o700},
-		tent{name: sysroot + "var/lib/casaos/virt/data/", typ: tar.TypeDir, mode: 0o750},
-		tent{name: sysroot + "usr/bin/x", mode: 0o755, body: "x"})
+	for _, p := range []string{"/usr/lib/systemd/system", "/usr/lib/systemd", "/usr/lib", "/etc/casaos"} {
+		delete(dst.nodes, p)
+	}
+	res, err := unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/lib/systemd/system/" + testUnit, body: "x", mode: 0o700},
+		tent{name: sysroot + "etc/casaos/x.sample", body: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/usr/share/casaos", "/usr/share/casaos/virt", "/usr/share/casaos/virt/web", "/var/lib/casaos/virt", "/var/lib/casaos/virt/data"}
+	want := []string{"/usr/lib", "/usr/lib/systemd", "/usr/lib/systemd/system", "/etc/casaos"}
 	got := slices.Clone(res.Dirs)
 	slices.Sort(got)
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("directories = %v", res.Dirs)
 	}
@@ -215,7 +185,7 @@ func TestTheDirectoriesAnUnpackMadeAreGivenDeepestFirstAndOnlyThose(t *testing.T
 			t.Errorf("not the deepest first: %v", res.Dirs)
 		}
 	}
-	// exactly the ones that were made, each with its mode: 0755 on the way, the mode of the entry that names it
+	// exactly the ones that were made, each with 0755
 	var made []string
 	for _, op := range dst.log {
 		if p, ok := strings.CutPrefix(op, "mkdir "); ok {
@@ -226,36 +196,32 @@ func TestTheDirectoriesAnUnpackMadeAreGivenDeepestFirstAndOnlyThose(t *testing.T
 	if !slices.Equal(made, want) {
 		t.Errorf("made %v", made)
 	}
-	for p, mode := range map[string]fs.FileMode{"/usr/share/casaos": 0o755, "/usr/share/casaos/virt": 0o755, "/usr/share/casaos/virt/web": 0o755, "/var/lib/casaos/virt": 0o755, "/var/lib/casaos/virt/data": 0o750} {
-		if n := dst.nodes[p]; n == nil || n.mode != fs.ModeDir|mode {
-			t.Errorf("%s: %+v, want %v", p, n, mode)
+	for _, p := range want {
+		if n := dst.nodes[p]; n == nil || n.mode != fs.ModeDir|0o755 {
+			t.Errorf("%s: %+v", p, n)
 		}
 	}
-	if n := dst.nodes["/usr/share/casaos/virt/web/index.html"]; n == nil || n.mode != 0o700 {
-		t.Errorf("the file: %+v", n)
+	if n := dst.nodes["/usr/lib/systemd/system/"+testUnit]; n == nil || n.mode != 0o700 || !slices.Equal(res.Files, []string{"/etc/casaos/x.sample", "/usr/lib/systemd/system/" + testUnit}) {
+		t.Errorf("the files: %+v %v", n, res.Files)
 	}
 	// when the unpack stops half way the ones made so far are given
 	dst = newFS()
-	dst.failOn = "/usr/share/casaos/virt/index.html"
+	delete(dst.nodes, "/etc/casaos")
+	dst.failOn = "/etc/casaos/virt-management.conf.sample"
 	res, err = unpack(t, dst, nil, goodEntries()...)
-	if err == nil || len(res.Dirs) == 0 || !slices.Contains(res.Dirs, "/usr/share/casaos/virt") {
+	if err == nil || !slices.Equal(res.Dirs, []string{"/etc/casaos"}) {
 		t.Errorf("%v, directories %v", err, res.Dirs)
 	}
-	// a system where the directory of the units is not there, nor the two above it: they are made, and given, the deepest first
+	// directories that are there are not made, nor given
 	dst = newFS()
-	for _, p := range []string{"/usr/lib/systemd/system", "/usr/lib/systemd", "/usr/lib"} {
-		delete(dst.nodes, p)
-	}
-	res, err = unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/lib/systemd/system/x.service", body: "x"})
-	if err != nil || !slices.Equal(res.Dirs, []string{"/usr/lib/systemd/system", "/usr/lib/systemd", "/usr/lib"}) || !slices.Equal(res.Files, []string{"/usr/lib/systemd/system/x.service"}) {
-		t.Errorf("%v %+v", err, res)
-	}
-	if n := dst.nodes["/usr/lib/systemd"]; n == nil || n.mode != fs.ModeDir|0o755 {
-		t.Errorf("the directory above: %+v", n)
+	res, err = unpack(t, dst, nil, goodEntries()...)
+	if err != nil || len(res.Dirs) != 0 {
+		t.Errorf("%v, directories %v", err, res.Dirs)
 	}
 	// a refusal makes nothing
 	dst = newFS()
-	res, err = unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "var/lib/casaos/a/b/f"}, tent{name: sysroot + "usr/sbin/x"})
+	delete(dst.nodes, "/etc/casaos")
+	res, err = unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "etc/casaos/f.sample"}, tent{name: sysroot + "usr/sbin/x"})
 	wantRefused(t, err, "unpack_path")
 	if len(res.Dirs) != 0 || len(dst.log) != 0 {
 		t.Errorf("%v %v", res.Dirs, dst.log)
@@ -263,29 +229,36 @@ func TestTheDirectoriesAnUnpackMadeAreGivenDeepestFirstAndOnlyThose(t *testing.T
 }
 
 func TestADirectoryThatAppearsAfterTheCheckingIsNotOursToDelete(t *testing.T) {
-	ents := []tent{{name: "module.json", body: "{}"}, {name: sysroot + "var/lib/casaos/a/b/f", body: "x"}}
+	ents := []tent{{name: "module.json", body: "{}"}, {name: sysroot + "usr/lib/systemd/system/" + testUnit, body: "x"}}
+	system := func() *fakeFS {
+		dst := newFS()
+		for _, p := range []string{"/usr/lib/systemd/system", "/usr/lib/systemd"} {
+			delete(dst.nodes, p)
+		}
+		return dst
+	}
 	// somebody made one of the directories: the unpack goes on, and does not say it made it
-	dst := newFS()
+	dst := system()
 	dst.onMkdir = func(p string) {
-		if p == "/var/lib/casaos/a" {
+		if p == "/usr/lib/systemd" {
 			dst.nodes[p] = &node{mode: fs.ModeDir | 0o700}
 		}
 	}
 	res, err := unpack(t, dst, nil, ents...)
-	if err != nil || !slices.Equal(res.Dirs, []string{"/var/lib/casaos/a/b"}) || !slices.Equal(res.Files, []string{"/var/lib/casaos/a/b/f"}) {
+	if err != nil || !slices.Equal(res.Dirs, []string{"/usr/lib/systemd/system"}) || !slices.Equal(res.Files, []string{"/usr/lib/systemd/system/" + testUnit}) {
 		t.Errorf("%v %+v", err, res)
 	}
 	// ...but not if it is a link, or a file, now
 	for what, mk := range map[string]*node{"a link": {mode: fs.ModeSymlink | 0o777, target: "/etc"}, "a file": {mode: 0o644}} {
-		dst = newFS()
+		dst = system()
 		dst.onMkdir = func(p string) {
-			if p == "/var/lib/casaos/a" {
+			if p == "/usr/lib/systemd" {
 				dst.nodes[p] = mk
 			}
 		}
 		res, err = unpack(t, dst, nil, ents...)
 		wantRefusedFor(t, what, err, "unpack_path")
-		if len(res.Files) != 0 || dst.nodes["/var/lib/casaos/a/b"] != nil {
+		if len(res.Files) != 0 || dst.nodes["/usr/lib/systemd/system"] != nil {
 			t.Errorf("%s: %+v", what, res)
 		}
 	}
@@ -293,8 +266,8 @@ func TestADirectoryThatAppearsAfterTheCheckingIsNotOursToDelete(t *testing.T) {
 
 func TestAFileThatAppearsAfterTheLastCheckIsNotOverwrittenAndNotListed(t *testing.T) {
 	good := tarOf(t, goodEntries()...)
-	// the files are put down in this order: the program, the link to it, the sample of the configuration, the page; the unit is last
-	order := []string{"/usr/bin/casaos-virt-management", "/usr/bin/virt", "/etc/casaos/virt-management.conf.sample", "/usr/share/casaos/virt/index.html", "/usr/lib/systemd/system/casaos-virt-management.service"}
+	// the files are put down in this order: the program, the link to it, the sample of the configuration; the unit is last
+	order := []string{"/usr/bin/casaos-virt-management", "/usr/bin/virt", "/etc/casaos/virt-management.conf.sample", "/usr/lib/systemd/system/" + testUnit}
 	for _, c := range []struct {
 		name  string
 		at    int // the number of the file being copied, when the other file appears
@@ -304,8 +277,7 @@ func TestAFileThatAppearsAfterTheLastCheckIsNotOverwrittenAndNotListed(t *testin
 	}{
 		{"the first file", 1, order[0], nil, 0},
 		{"a file that is not the first", 2, order[2], nil, 2},
-		{"the page", 3, order[3], nil, 3},
-		{"the unit", 4, order[4], nil, 4},
+		{"the unit", 3, order[3], nil, 3},
 		{"a file that the module listed and that was not there when it looked", 2, order[2], []string{order[2]}, 2},
 	} {
 		dst := newFS()
@@ -313,7 +285,7 @@ func TestAFileThatAppearsAfterTheLastCheckIsNotOverwrittenAndNotListed(t *testin
 			if n == c.at {
 				dst.put(c.plant, 0o644, "foreign")
 			}
-		}), dst, c.own, nil)
+		}), dst, c.own, testOpts)
 		wantRefusedFor(t, c.name, err, "file_exists")
 		if n := dst.nodes[c.plant]; n == nil || string(n.data) != "foreign" || n.mode != 0o644 {
 			t.Errorf("%s: what is at %s is %+v", c.name, c.plant, n)
@@ -324,9 +296,6 @@ func TestAFileThatAppearsAfterTheLastCheckIsNotOverwrittenAndNotListed(t *testin
 		if slices.Contains(res.Files, c.plant) {
 			t.Errorf("%s: the foreign file is listed as the module's", c.name)
 		}
-		if !slices.Contains(res.Dirs, "/usr/share/casaos/virt") {
-			t.Errorf("%s: directories = %v", c.name, res.Dirs)
-		}
 	}
 	// a link that appears is in the way too
 	dst := newFS()
@@ -334,7 +303,7 @@ func TestAFileThatAppearsAfterTheLastCheckIsNotOverwrittenAndNotListed(t *testin
 		if n == 1 {
 			dst.nodes["/usr/bin/virt"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"}
 		}
-	}), dst, nil, nil)
+	}), dst, nil, testOpts)
 	wantRefused(t, err, "file_exists")
 	if n := dst.nodes["/usr/bin/virt"]; n == nil || n.target != "/etc/passwd" || !slices.Equal(res.Files, order[:1]) {
 		t.Errorf("link %+v, files %v", n, res.Files)
@@ -342,8 +311,8 @@ func TestAFileThatAppearsAfterTheLastCheckIsNotOverwrittenAndNotListed(t *testin
 	// a file of the module's own that is there is replaced all the same, and that is the only kind
 	dst = newFS()
 	dst.put(order[0], 0o755, "old")
-	res, err = Unpack(bytes.NewReader(good), dst, []string{order[0]}, nil)
-	if err != nil || len(res.Files) != 5 || string(dst.nodes[order[0]].data) == "old" {
+	res, err = Unpack(bytes.NewReader(good), dst, []string{order[0]}, testOpts)
+	if err != nil || len(res.Files) != 4 || string(dst.nodes[order[0]].data) == "old" {
 		t.Errorf("an own file: %v %v", err, res.Files)
 	}
 }
@@ -355,8 +324,8 @@ func TestAFileWhoseBytesChangeAfterTheCheckingIsNotPutInPlace(t *testing.T) {
 		at, before         int
 	}{
 		{"the program", "\x7fELF", "/usr/bin/casaos-virt-management", 1, 0},
-		{"the page", "<html>", "/usr/share/casaos/virt/index.html", 3, 3},
-		{"the unit", "[Service]", "/usr/lib/systemd/system/casaos-virt-management.service", 4, 4},
+		{"the sample", "[libvirt]", "/etc/casaos/virt-management.conf.sample", 2, 2},
+		{"the unit", "[Service]", "/usr/lib/systemd/system/" + testUnit, 3, 3},
 	} {
 		changed := slices.Clone(good)
 		at := bytes.Index(changed, []byte(c.marker))
@@ -369,14 +338,14 @@ func TestAFileWhoseBytesChangeAfterTheCheckingIsNotPutInPlace(t *testing.T) {
 			if n == c.at {
 				h.r = bytes.NewReader(changed)
 			}
-		}), dst, nil, nil)
+		}), dst, nil, testOpts)
 		wantRefusedFor(t, c.name, err, "unpack_corrupt")
 		if dst.nodes[c.path] != nil || !slices.Contains(dst.log, "abort "+c.path) || slices.Contains(res.Files, c.path) || len(res.Files) != c.before {
 			t.Errorf("%s: log %v, files %v", c.name, dst.log, res.Files)
 		}
 	}
 	// the whole of the sum is compared: bytes of the same size whose sum starts as the sum of the real ones are not the real ones
-	page := []byte("<html></html>")
+	page := []byte("[libvirt]\nURI = qemu:///system\n")
 	var forged []byte
 	for a := 0; a < 256 && forged == nil; a++ {
 		for b := 0; b < 256; b++ {
@@ -394,14 +363,14 @@ func TestAFileWhoseBytesChangeAfterTheCheckingIsNotPutInPlace(t *testing.T) {
 	}
 	dst := newFS()
 	_, err := Unpack(seekHook(good, func(n int, h *hooked) {
-		if n == 3 {
+		if n == 2 {
 			h.r = bytes.NewReader(forgedArchive)
 		}
-	}), dst, nil, nil)
+	}), dst, nil, testOpts)
 	wantRefused(t, err, "unpack_corrupt")
 	// the same bytes every time is what is written
 	dst = newFS()
-	if _, err := Unpack(seekHook(good, func(int, *hooked) {}), dst, nil, nil); err != nil {
+	if _, err := Unpack(seekHook(good, func(int, *hooked) {}), dst, nil, testOpts); err != nil {
 		t.Errorf("%v", err)
 	}
 }
@@ -419,7 +388,7 @@ func TestAnArchiveThatEndsWhereAnEntryEndsHasNoEndAndIsRefused(t *testing.T) {
 		"a marker of a block, a byte": append(good[:len(good)-512:len(good)-512], 1),
 	} {
 		dst := newFS()
-		res, err := Unpack(bytes.NewReader(raw), dst, nil, nil)
+		res, err := Unpack(bytes.NewReader(raw), dst, nil, testOpts)
 		wantRefusedFor(t, name, err, "unpack_corrupt")
 		if len(dst.log) != 0 || len(res.Files) != 0 {
 			t.Errorf("%s: written %v", name, dst.log)
@@ -433,38 +402,36 @@ func TestAnArchiveThatEndsWhereAnEntryEndsHasNoEndAndIsRefused(t *testing.T) {
 		"bytes after an end":     append(slices.Clone(good), []byte("whatever comes after the end")...),
 		"a long file at the end": tarOf(t, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/bin/big", body: strings.Repeat("b", 1500)}),
 	} {
-		if _, err := Unpack(bytes.NewReader(raw), newFS(), nil, nil); err != nil {
+		if _, err := Unpack(bytes.NewReader(raw), newFS(), nil, testOpts); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 }
 
 func TestAnArchiveWithBothSpellingsOfALibDirectoryWritesNothing(t *testing.T) {
+	const lib, usr = sysroot + "lib/systemd/system/" + testUnit, sysroot + "usr/lib/systemd/system/" + testUnit
 	for name, ents := range map[string][]tent{
-		"a file twice":                    {{name: sysroot + "lib/systemd/system/a.service", body: "1"}, {name: sysroot + "usr/lib/systemd/system/a.service", body: "2"}},
-		"a file twice, the other":         {{name: sysroot + "usr/lib/systemd/system/a.service", body: "2"}, {name: sysroot + "lib/systemd/system/a.service", body: "1"}},
-		"a file and a link":               {{name: sysroot + "lib/systemd/system/a.service", body: "1"}, {name: sysroot + "usr/lib/systemd/system/a.service", typ: tar.TypeSymlink, link: "b.service"}},
-		"a link and a file":               {{name: sysroot + "lib/systemd/system/a.service", typ: tar.TypeSymlink, link: "b.service"}, {name: sysroot + "usr/lib/systemd/system/a.service", body: "2"}},
-		"a file between others":           {{name: sysroot + "usr/lib/systemd/system/b.service", body: "b"}, {name: sysroot + "lib/systemd/system/a.service", body: "1"}, {name: sysroot + "usr/bin/p", body: "p"}, {name: sysroot + "usr/lib/systemd/system/a.service", body: "2"}},
-		"a name that differs in the case": {{name: sysroot + "lib/systemd/system/a.service", body: "1"}, {name: sysroot + "usr/lib/systemd/system/A.service", body: "2"}},
+		"a file twice":            {{name: lib, body: "1"}, {name: usr, body: "2"}},
+		"a file twice, the other": {{name: usr, body: "2"}, {name: lib, body: "1"}},
+		"a file between others":   {{name: sysroot + "usr/bin/q", body: "q"}, {name: lib, body: "1"}, {name: sysroot + "usr/bin/p", body: "p"}, {name: usr, body: "2"}},
 	} {
 		refusedAndNothingWritten(t, name, "unpack_path", newFS(), nil, ents...)
 		refusedAndNothingWritten(t, name+", merged", "unpack_path", newMergedFS(), nil, ents...)
 	}
-	// two units, one under each name, are two files; and the directories above them, named in both spellings, are no clash
+	// the directories above them, named in both spellings, are no clash
 	ents := []tent{
 		{name: "module.json", body: "{}"},
 		{name: sysroot + "lib/", typ: tar.TypeDir}, {name: sysroot + "lib/systemd/", typ: tar.TypeDir}, {name: sysroot + "usr/", typ: tar.TypeDir}, {name: sysroot + "usr/lib/", typ: tar.TypeDir},
 		{name: sysroot + "usr/lib/systemd/", typ: tar.TypeDir},
-		{name: sysroot + "lib/systemd/system/a.service", body: "1"}, {name: sysroot + "usr/lib/systemd/system/b.service", body: "2"},
+		{name: lib, body: "1"},
 	}
-	if res, err := unpack(t, newFS(), nil, ents...); err != nil || len(res.Files) != 2 {
+	if res, err := unpack(t, newFS(), nil, ents...); err != nil || len(res.Files) != 1 {
 		t.Errorf("%v %v", err, res.Files)
 	}
 }
 
 func TestOnASystemWithAMergedUsrTheTwoNamesOfALibFileAreTheOneFile(t *testing.T) {
-	const lib, usr = "/lib/systemd/system/a.service", "/usr/lib/systemd/system/a.service"
+	const lib, usr = "/lib/systemd/system/" + testUnit, "/usr/lib/systemd/system/" + testUnit
 	for _, c := range []struct{ name, listed, written string }{
 		{"listed with lib, now written with usr/lib", lib, usr},
 		{"listed with usr/lib, now written with lib", usr, lib},
@@ -488,23 +455,10 @@ func TestOnASystemWithAMergedUsrTheTwoNamesOfALibFileAreTheOneFile(t *testing.T)
 		_, err = unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + strings.TrimPrefix(c.written, "/"), body: "new"})
 		wantRefusedFor(t, c.name+", nothing listed", err, "file_exists")
 	}
-	// a link of the unit directory is the same
-	dst := newMergedFS()
-	dst.nodes[usr] = &node{mode: fs.ModeSymlink | 0o777, target: "old.service"}
-	res, err := unpack(t, dst, []string{lib}, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/lib/systemd/system/a.service", typ: tar.TypeSymlink, link: "b.service"})
-	if err != nil || dst.nodes[usr].target != "b.service" || !slices.Equal(res.Files, []string{usr}) {
-		t.Errorf("a link: %v %v", err, res.Files)
-	}
-	dst = newMergedFS()
-	dst.nodes[usr] = &node{mode: fs.ModeSymlink | 0o777, target: "old.service"}
-	res, err = unpack(t, dst, []string{usr}, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "lib/systemd/system/a.service", typ: tar.TypeSymlink, link: "b.service"})
-	if err != nil || dst.nodes[usr].target != "b.service" || !slices.Equal(res.Files, []string{lib}) {
-		t.Errorf("a link, the other way: %v %v", err, res.Files)
-	}
 	// a system whose /lib is a directory of its own has two directories: what the module owns under the one is not what is under the other
-	dst = newFS()
+	dst := newFS()
 	dst.put(usr, 0o644, "theirs")
-	_, err = unpack(t, dst, []string{lib}, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/lib/systemd/system/a.service", body: "new"})
+	_, err := unpack(t, dst, []string{lib}, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/lib/systemd/system/" + testUnit, body: "new"})
 	wantRefused(t, err, "file_exists")
 	if string(dst.nodes[usr].data) != "theirs" || len(dst.log) != 0 {
 		t.Errorf("written %v", dst.log)
@@ -525,7 +479,7 @@ func TestOnASystemWithAMergedUsrTheTwoNamesOfALibFileAreTheOneFile(t *testing.T)
 }
 
 func TestAnythingAboveTheAllowedDirectoryIsTheSystemsOwnEvenALink(t *testing.T) {
-	for _, above := range []string{"/usr/share", "/usr/lib/systemd", "/var/lib"} {
+	for _, above := range []string{"/usr", "/usr/lib", "/usr/lib/systemd", "/etc"} {
 		dst := newFS()
 		dst.nodes[above] = &node{mode: fs.ModeSymlink | 0o777, target: "elsewhere"}
 		if _, err := unpack(t, dst, nil, goodEntries()...); err != nil {
@@ -573,18 +527,14 @@ func TestTheModulesOwnLinkIsReplacedByALinkAndNothingElseIs(t *testing.T) {
 
 func TestADirectoryOnTheWayIsMadeWorldReadableWhateverTheModeOfWhatIsInIt(t *testing.T) {
 	dst := newFS()
-	_, err := unpack(t, dst, nil, tent{name: "module.json", body: "{}"},
-		tent{name: sysroot + "var/lib/casaos/a/b/", typ: tar.TypeDir, mode: 0o700},
-		tent{name: sysroot + "var/lib/casaos/c/d/f", mode: 0o600, body: "x"},
-		tent{name: sysroot + "var/lib/casaos/e/f/", typ: tar.TypeDir, mode: 0o700}, tent{name: sysroot + "var/lib/casaos/e/", typ: tar.TypeDir, mode: 0o750})
+	delete(dst.nodes, "/etc/casaos")
+	_, err := unpack(t, dst, nil, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "etc/", typ: tar.TypeDir, mode: 0o700}, tent{name: sysroot + "etc/casaos/", typ: tar.TypeDir, mode: 0o700},
+		tent{name: sysroot + "etc/casaos/c.sample", mode: 0o600, body: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for p, mode := range map[string]fs.FileMode{
-		"/var/lib/casaos/a": 0o755, "/var/lib/casaos/a/b": 0o700, "/var/lib/casaos/c": 0o755, "/var/lib/casaos/c/d": 0o755,
-		"/var/lib/casaos/e": 0o750, "/var/lib/casaos/e/f": 0o700, // (a directory that is named after what is in it has the mode it is given)
-	} {
-		if n := dst.nodes[p]; n == nil || n.mode != fs.ModeDir|mode {
+	for p, mode := range map[string]fs.FileMode{"/etc/casaos": fs.ModeDir | 0o755, "/etc/casaos/c.sample": 0o600} {
+		if n := dst.nodes[p]; n == nil || n.mode != mode {
 			t.Errorf("%s: %+v, want %v", p, n, mode)
 		}
 	}
@@ -592,51 +542,49 @@ func TestADirectoryOnTheWayIsMadeWorldReadableWhateverTheModeOfWhatIsInIt(t *tes
 
 func TestTheFilesThatMayBeWrittenAreGivenBeforeAnythingIsWritten(t *testing.T) {
 	dst := newFS()
+	delete(dst.nodes, "/etc/casaos")
 	var calls [][]string
+	var dirs [][]string
 	var seen []int
-	res, err := Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, func(paths []string) error {
-		calls = append(calls, slices.Clone(paths))
+	res, err := Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func(files, ds []string) error {
+		calls = append(calls, slices.Clone(files))
+		dirs = append(dirs, slices.Clone(ds))
 		seen = append(seen, len(dst.log), len(dst.nodes))
 		return nil
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 1 || !slices.Equal(calls[0], res.Files) {
 		t.Errorf("planned %v, written %v", calls, res.Files)
 	}
-	if seen[0] != 0 || seen[1] != len(newFS().nodes) {
-		t.Errorf("something was there already: %v", seen)
+	if !slices.Equal(dirs[0], []string{"/etc/casaos"}) || !slices.Equal(res.Dirs, []string{"/etc/casaos"}) {
+		t.Errorf("directories planned %v, made %v", dirs, res.Dirs)
+	}
+	if seen[0] != 0 || seen[1] != len(newFS().nodes)-1 {
+		t.Errorf("something was written already: %v", seen)
 	}
 	// the unit is the last of them
-	if last := calls[0][len(calls[0])-1]; last != "/usr/lib/systemd/system/casaos-virt-management.service" {
+	if last := calls[0][len(calls[0])-1]; last != "/usr/lib/systemd/system/"+testUnit {
 		t.Errorf("last = %s", last)
 	}
-	// the list can be kept as it is
+	// the list can be kept as it is, and so can the directories
 	if raw, err := FormatFiles(calls[0]); err != nil {
 		t.Errorf("%v", err)
 	} else if back, err := ParseFiles(raw); err != nil || !slices.Equal(back, calls[0]) {
 		t.Errorf("%v %v", back, err)
 	}
-	// a configuration that is there stays, and is named only when it was the module's
-	ents := []tent{
-		{name: "module.json", body: "{}"},
-		{name: sysroot + "etc/casaos/mine.conf", body: "1"}, {name: sysroot + "etc/casaos/theirs.conf", body: "1"}, {name: sysroot + "usr/bin/p", mode: 0o755, body: "p"},
-	}
-	dst = newFS()
-	dst.put("/etc/casaos/mine.conf", 0o600, "edited")
-	dst.put("/etc/casaos/theirs.conf", 0o600, "edited")
-	calls = nil
-	res, err = Unpack(bytes.NewReader(tarOf(t, ents...)), dst, []string{"/etc/casaos/mine.conf"}, func(paths []string) error { calls = append(calls, paths); return nil })
-	if err != nil || len(calls) != 1 || !slices.Equal(calls[0], []string{"/etc/casaos/mine.conf", "/usr/bin/p"}) || !slices.Equal(res.Files, calls[0]) {
-		t.Errorf("%v: planned %v, written %v", err, calls, res.Files)
+	if raw, err := FormatDirs(dirs[0]); err != nil {
+		t.Errorf("%v", err)
+	} else if back, err := ParseDirs(raw); err != nil || !slices.Equal(back, dirs[0]) {
+		t.Errorf("%v %v", back, err)
 	}
 	// a stop half way leaves a list that has what was not written too, and that is all of what was
 	dst = newFS()
-	dst.failOn = "/usr/share/casaos/virt/index.html"
+	dst.failOn = "/etc/casaos/virt-management.conf.sample"
 	calls = nil
-	res, err = Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, func(paths []string) error { calls = append(calls, paths); return nil })
-	if err == nil || len(calls) != 1 || len(calls[0]) != 5 || len(res.Files) >= 5 {
+	res, err = Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func(files, _ []string) error { calls = append(calls, files); return nil }})
+	if err == nil || len(calls) != 1 || len(calls[0]) != 4 || len(res.Files) >= 4 {
 		t.Fatalf("%v planned %v written %v", err, calls, res.Files)
 	}
 	for _, p := range res.Files {
@@ -644,12 +592,17 @@ func TestTheFilesThatMayBeWrittenAreGivenBeforeAnythingIsWritten(t *testing.T) {
 			t.Errorf("%s was written and not planned", p)
 		}
 	}
+	// what is planned does not name the files of the module that stay: nothing is kept any more
+	if slices.Contains(calls[0], "/etc/casaos/virt-management.conf") {
+		t.Errorf("planned %v", calls[0])
+	}
 }
 
 func TestIfTheFilesCannotBeRecordedNothingIsWritten(t *testing.T) {
 	boom := errors.New("no room for the list")
 	dst := newFS()
-	res, err := Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, func([]string) error { return boom })
+	delete(dst.nodes, "/etc/casaos")
+	res, err := Unpack(bytes.NewReader(tarOf(t, goodEntries()...)), dst, nil, Options{Unit: testUnit, OnPlanned: func([]string, []string) error { return boom }})
 	var r *Refused
 	if !errors.Is(err, boom) || errors.As(err, &r) {
 		t.Errorf("error = %v", err)
@@ -659,26 +612,26 @@ func TestIfTheFilesCannotBeRecordedNothingIsWritten(t *testing.T) {
 	}
 	// an archive that is refused is not recorded
 	called := false
-	_, err = Unpack(bytes.NewReader(tarOf(t, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/sbin/x"})), newFS(), nil, func([]string) error { called = true; return nil })
+	_, err = Unpack(bytes.NewReader(tarOf(t, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/sbin/x"})), newFS(), nil, Options{Unit: testUnit, OnPlanned: func([]string, []string) error { called = true; return nil }})
 	wantRefused(t, err, "unpack_path")
 	if called {
 		t.Error("recorded an archive that is refused")
 	}
 	// and nor is one that only gets validated
-	if _, err := ValidateArchive(bytes.NewReader(tarOf(t, goodEntries()...)), newFS(), nil); err != nil {
-		t.Errorf("%v", err)
+	if _, err := ValidateArchive(bytes.NewReader(tarOf(t, goodEntries()...)), newFS(), nil, Options{Unit: testUnit, OnPlanned: func([]string, []string) error { called = true; return nil }}); err != nil || called {
+		t.Errorf("%v %v", err, called)
 	}
 }
 
-func TestAConfigurationThatIsNotAFileIsInTheWayAndIsNotKept(t *testing.T) {
+func TestASampleThatIsNotAFileIsInTheWayEvenWhenTheModuleListedIt(t *testing.T) {
 	for what, n := range map[string]*node{
 		"a directory": {mode: fs.ModeDir | 0o755},
 		"a fifo":      {mode: fs.ModeNamedPipe | 0o600},
 		"a device":    {mode: fs.ModeDevice | fs.ModeCharDevice | 0o600},
 	} {
 		dst := newFS()
-		dst.nodes["/etc/casaos/virt.conf"] = n
-		_, err := unpack(t, dst, []string{"/etc/casaos/virt.conf"}, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "etc/casaos/virt.conf", body: "x"})
+		dst.nodes["/etc/casaos/virt.conf.sample"] = n
+		_, err := unpack(t, dst, []string{"/etc/casaos/virt.conf.sample"}, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "etc/casaos/virt.conf.sample", body: "x"})
 		wantRefusedFor(t, what, err, "file_exists")
 		if len(dst.log) != 0 {
 			t.Errorf("%s: written %v", what, dst.log)
