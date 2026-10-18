@@ -67,3 +67,8 @@ func (p aptProbe) ReadFile(ctx context.Context, path string) ([]byte, error) {
 }
 
 func isNotDir(err error) bool { return errors.Is(err, syscall.ENOTDIR) }
+
+// isNotEmpty says that a directory was not deleted because something is in it (145 is what Windows says, which the tests of the portable host meet).
+func isNotEmpty(err error) bool {
+	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) || errors.Is(err, syscall.Errno(145))
+}

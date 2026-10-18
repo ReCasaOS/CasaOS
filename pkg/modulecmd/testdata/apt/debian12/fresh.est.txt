@@ -8,4 +8,5 @@ The following NEW packages will be installed:
 0 upgraded, 2 newly installed, 0 to remove and 0 not upgraded.
 Need to get 0 B/1416 B of archives.
 After this operation, 307 kB of additional disk space will be used.
-E: Trivial Only specified but this is not a trivial operation.
+'file:/tmp/modrepo/./casaos-mod-b_1.0_all.deb' casaos-mod-b_1.0_all.deb 700 MD5Sum:54f612505fc4387361bc7dce2fd0bf20
+'file:/tmp/modrepo/./casaos-mod-a_1.0_all.deb' casaos-mod-a_1.0_all.deb 716 MD5Sum:8560c67f7dcb873046d99b7cff3119aa

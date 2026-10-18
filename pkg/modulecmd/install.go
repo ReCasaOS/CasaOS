@@ -110,7 +110,10 @@ type install struct {
 	// steps done, for the last line and for what the rollback has to undo
 	packagesDone bool
 	unpackBegun  bool
-	manifest     []byte
+	// written is what the unpack put down, set as soon as it returns, and what a rollback deletes: the files and directories of this run and of the earlier install of the module that
+	// was killed, if there was one. It is nil until the lists of that earlier install have been read.
+	written  *written
+	manifest []byte
 }
 
 type stepFailure struct {
@@ -244,7 +247,7 @@ func (in *install) failed(step string, f *stepFailure) int {
 		// what the rollback does is not stopped by the signal that interrupted the run
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(in.ctx), rollbackTime)
 		defer cancel()
-		if bad, _ := in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, false); bad > 0 {
+		if bad, _ := in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, false, in.written); bad > 0 {
 			in.say("rollback incomplete: %d things could not be undone; casaos module remove %s finishes it", bad, in.entry.Name)
 		} else {
 			in.say("rolled back")
@@ -361,15 +364,23 @@ func (in *install) stepUnpack() *stepFailure {
 	if err := makeDirs(in.env.Roots.state(), 0o755); err != nil {
 		return in.fail(CodeUnpackFailed, err)
 	}
-	jr, own, err := openJournal(in.env.Roots.files(in.entry.Name))
+	// what an earlier install of the module that did not finish left: its files may be replaced, and are removed with the rest
+	ownFiles, err := readFilesList(in.env.Roots.files(in.entry.Name))
 	if err != nil {
 		return in.fail(CodeFilesUnreadable, err)
 	}
-	dest := journalDest{Destination: in.env.Host.NewDest(in.env.Roots.Prefix), j: jr}
-	res, err := osmodule.Unpack(tarFile, dest, own)
-	if cerr := jr.close(); err == nil && cerr != nil {
-		err = cerr
+	ownDirs, err := readDirsList(in.env.Roots.dirs(in.entry.Name))
+	if err != nil {
+		return in.fail(CodeFilesUnreadable, err)
 	}
+	res, err := osmodule.Unpack(tarFile, in.env.Host.NewDest(in.env.Roots.Prefix), ownFiles, osmodule.Options{
+		Unit: in.entry.Manifest.Unit,
+		// the lists are on the disk before the first directory is made and the first file is put in place: a kill from here on leaves a list that names everything that may be there
+		OnPlanned: func(files, dirs []string) error {
+			return in.recordPlanned(union(ownFiles, files), union(ownDirs, dirs))
+		},
+	})
+	in.written = &written{files: union(ownFiles, res.Files), dirs: union(res.Dirs, ownDirs)}
 	if err != nil {
 		var refused *osmodule.Refused
 		if errors.As(err, &refused) {
@@ -377,11 +388,53 @@ func (in *install) stepUnpack() *stepFailure {
 		}
 		return in.fail(CodeUnpackFailed, err)
 	}
-	for _, p := range res.Kept {
-		in.say("kept: %s", printable(p, 200))
+	// the list of the directories is now exactly the ones that were made
+	if err := in.recordDirs(in.written.dirs); err != nil {
+		return in.fail(CodeUnpackFailed, err)
 	}
 	in.manifest = res.Manifest
 	return nil
+}
+
+// union is the paths of a, then those of b that are not in a.
+func union(a, b []string) []string {
+	out := slices.Clone(a)
+	for _, p := range b {
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// recordPlanned writes the list of the files and the list of the directories, whole, before the unpack changes anything.
+func (in *install) recordPlanned(files, dirs []string) error {
+	raw, err := osmodule.FormatFiles(files)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(in.env.Roots.files(in.entry.Name), raw, 0o644); err != nil {
+		return err
+	}
+	if err := in.recordDirs(dirs); err != nil {
+		return err
+	}
+	syncDir(in.env.Roots.state())
+	return nil
+}
+
+// recordDirs writes the list of the directories, or takes it away when there are none.
+func (in *install) recordDirs(dirs []string) error {
+	path := in.env.Roots.dirs(in.entry.Name)
+	if len(dirs) == 0 {
+		_, err := removeEntry(path)
+		return err
+	}
+	raw, err := osmodule.FormatDirs(dirs)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(path, raw, 0o644)
 }
 
 func (in *install) stepUnits() *stepFailure {

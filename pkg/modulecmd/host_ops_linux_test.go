@@ -178,15 +178,15 @@ func TestTheUnpackWritesExactModesWhateverTheUmaskIs(t *testing.T) {
 	ents = append(ents,
 		tent{name: "build/sysroot/usr/bin/setuid", mode: 0o4755, body: "x"},
 		tent{name: "build/sysroot/usr/bin/groupwrite", mode: 0o666, body: "x"},
-		tent{name: "build/sysroot/usr/share/casaos/virt/deep/er/file", mode: 0o755, body: "x"},
+		tent{name: "build/sysroot/usr/bin/private", mode: 0o700, body: "x"},
 	)
 	f.setEntries(ents)
 	if code := f.install("--yes"); code != ExitOK {
 		t.Fatalf("exit %d\n%s", code, f.out)
 	}
 	for p, want := range map[string]fs.FileMode{
-		"/usr/bin/casaos-virt-management": 0o755, "/usr/bin/setuid": 0o755, "/usr/bin/groupwrite": 0o644, "/etc/casaos/virt-management.conf.sample": 0o644,
-		"/usr/lib/systemd/system/" + testUnit: 0o644, "/usr/share/casaos/virt/deep/er/file": 0o755,
+		"/usr/bin/casaos-virt-management": 0o755, "/usr/bin/setuid": 0o755, "/usr/bin/groupwrite": 0o644, "/usr/bin/private": 0o700, "/etc/casaos/virt-management.conf.sample": 0o644,
+		"/usr/lib/systemd/system/" + testUnit: 0o644,
 	} {
 		info, err := os.Lstat(f.path(p))
 		if err != nil || info.Mode() != want {
@@ -194,7 +194,7 @@ func TestTheUnpackWritesExactModesWhateverTheUmaskIs(t *testing.T) {
 		}
 	}
 	// the directories that were made are 0755 too
-	for _, p := range []string{"/usr/share/casaos/virt", "/usr/share/casaos/virt/deep", "/usr/share/casaos/virt/deep/er"} {
+	for _, p := range madeDirs {
 		info, err := os.Lstat(f.path(p))
 		if err != nil || info.Mode().Perm() != 0o755 || !info.IsDir() {
 			t.Errorf("%s: %v %v", p, info.Mode(), err)
@@ -206,8 +206,10 @@ func TestTheUnpackWritesExactModesWhateverTheUmaskIs(t *testing.T) {
 			t.Errorf("%s: %v %v, want %v", p, info.Mode(), err, want)
 		}
 	}
-	if info, err := os.Lstat(f.path("/var/lib/casaos/modules/virt.files")); err != nil || info.Mode().Perm() != 0o644 {
-		t.Errorf("the list: %v %v", info, err)
+	for _, p := range []string{"/var/lib/casaos/modules/virt.files", "/var/lib/casaos/modules/virt.dirs"} {
+		if info, err := os.Lstat(f.path(p)); err != nil || info.Mode().Perm() != 0o644 {
+			t.Errorf("%s: %v %v", p, info, err)
+		}
 	}
 	if info, err := os.Lstat(f.env.Roots.tmp()); err != nil || info.Mode().Perm() != 0o700 {
 		t.Errorf("the area of the download: %v %v", info, err)
@@ -222,7 +224,7 @@ func TestTheUnpackNeverWritesThroughALinkAndLeavesNoTemporaryFile(t *testing.T) 
 	if err := os.MkdirAll(f.path("/usr/bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(victim, f.path("/usr/bin/.casaos-virt-management.casaos-tmp")); err != nil {
+	if err := os.Symlink(victim, tempName(f.path("/usr/bin/casaos-virt-management"))); err != nil {
 		t.Fatal(err)
 	}
 	if code := f.install("--yes"); code != ExitOK {
@@ -236,7 +238,7 @@ func TestTheUnpackNeverWritesThroughALinkAndLeavesNoTemporaryFile(t *testing.T) 
 	}
 	// no temporary file is left anywhere under the root
 	_ = filepath.WalkDir(f.root, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && strings.HasSuffix(p, ".casaos-tmp") {
+		if err == nil && strings.HasPrefix(d.Name(), ".cos-") {
 			t.Errorf("left: %s", p)
 		}
 		return nil

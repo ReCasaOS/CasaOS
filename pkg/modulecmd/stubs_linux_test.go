@@ -43,7 +43,7 @@ if [ -n "$APT_CONFIG" ] && [ -r "$APT_CONFIG" ]; then cat "$APT_CONFIG" > "$stat
 for a in "$@"; do
   case "$a" in
   -s) if [ -e "$state/block-sim" ]; then : > "$state/reached-sim"; sleep 30; fi; cat "$state/sim.txt"; exit 0 ;;
-  APT::Get::Trivial-Only=true) cat "$state/est.txt"; exit 100 ;;
+  --print-uris) cat "$state/est.txt"; exit 0 ;;
   esac
 done
 if [ -e "$state/fail-apt" ]; then printf '%s\n' "E: Sub-process /usr/bin/dpkg returned an error code (1)"; exit 100; fi

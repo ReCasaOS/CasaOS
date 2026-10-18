@@ -145,7 +145,9 @@ func TestARemoveFinishesAnInstallThatWasKilled(t *testing.T) {
 				}
 			}
 			if name == "a temporary file left" {
-				f.writeFile("/usr/bin/.casaos-virt-management.casaos-tmp", "half")
+				if err := os.WriteFile(tempName(f.path("/usr/bin/casaos-virt-management")), []byte("half"), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if code := f.remove("--yes"); code != ExitOK {
 				t.Fatalf("exit %d:\n%s", code, f.out)
@@ -158,19 +160,19 @@ func TestARemoveFinishesAnInstallThatWasKilled(t *testing.T) {
 func TestARemoveNeverDeletesAFileAnotherModulesListOwns(t *testing.T) {
 	f := installed(t)
 	// another module that lists a file of this one, and has files of its own
-	f.writeFile("/var/lib/casaos/modules/other.files", "/usr/share/casaos/virt/readme.txt\n/usr/bin/other\n")
+	f.writeFile("/var/lib/casaos/modules/other.files", "/etc/casaos/virt-management.conf.sample\n/usr/bin/other\n")
 	f.writeFile("/usr/bin/other", "the other module's")
 	f.writeFile("/etc/casaos/modules/other.json", "{}")
 	if code := f.remove("--yes"); code != ExitOK {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
-	if !f.exists("/usr/share/casaos/virt/readme.txt") {
+	if !f.exists("/etc/casaos/virt-management.conf.sample") {
 		t.Error("a file the list of another module owns was deleted")
 	}
 	if !f.exists("/usr/bin/other") || !f.exists("/var/lib/casaos/modules/other.files") || !f.exists("/etc/casaos/modules/other.json") {
 		t.Error("something of the other module was deleted")
 	}
-	if !strings.Contains(f.out.String(), "kept, it is the list of other too: /usr/share/casaos/virt/readme.txt") {
+	if !strings.Contains(f.out.String(), "kept, it is the list of other too: /etc/casaos/virt-management.conf.sample") {
 		t.Errorf("not said:\n%s", f.out)
 	}
 	for _, p := range []string{"/usr/bin/casaos-virt-management", "/usr/lib/systemd/system/" + testUnit, "/etc/casaos/modules/virt.json", "/var/lib/casaos/modules/virt.files"} {
@@ -183,7 +185,7 @@ func TestARemoveNeverDeletesAFileAnotherModulesListOwns(t *testing.T) {
 func TestARemoveThatCannotFinishLeavesWhatIsNeededToFinishIt(t *testing.T) {
 	t.Run("a file is a directory now", func(t *testing.T) {
 		f := installed(t)
-		p := f.path("/usr/share/casaos/virt/readme.txt")
+		p := f.path("/etc/casaos/virt-management.conf.sample")
 		if err := os.Remove(p); err != nil {
 			t.Fatal(err)
 		}
@@ -244,6 +246,8 @@ func TestARemoveDeletesOnlyWhatAValidListNames(t *testing.T) {
 		// the state of the core and of the assistant is nobody's to delete
 		"/usr/bin/casaos-virt-management\n/var/lib/casaos/modules/virt.files\n", "/usr/bin/casaos-virt-management\n/etc/casaos/modules/other.json\n",
 		"/usr/bin/casaos-virt-management\n/var/lib/casaos/os-upgrade/busy\n", "/usr/bin/casaos-virt-management\n/etc/casaos/os-upgrade.beta\n",
+		"/usr/bin/casaos-virt-management\n/var/lib/casaos/alerts.json\n", "/usr/bin/casaos-virt-management\n/usr/share/casaos/modules/catalogue.json\n",
+		"/usr/bin/casaos-virt-management\n/etc/casaos/gateway.ini\n", "/usr/bin/casaos-virt-management\n/usr/lib/systemd/system/casaos-gateway.service\n/usr/lib/systemd/system/x.timer\n",
 	} {
 		f := installed(t)
 		f.writeFile("/var/lib/casaos/modules/virt.files", bad)
@@ -272,5 +276,79 @@ func TestARemoveWithoutAListDeletesNoFile(t *testing.T) {
 	}
 	if !strings.Contains(f.out.String(), "there is no list of the files of virt: no file is deleted") {
 		t.Errorf("not said:\n%s", f.out)
+	}
+}
+
+// the directories the install made are taken away with it, the deepest first, and only those that are empty and only those
+func TestARemoveDeletesTheDirectoriesTheInstallMadeAndNoOther(t *testing.T) {
+	// the directories of the box before the install stay (usr/bin, etc/casaos), those the install made go
+	f := installed(t)
+	for _, d := range madeDirs {
+		if !f.exists(d) {
+			t.Fatalf("%s was not made", d)
+		}
+	}
+	if code := f.remove("--yes"); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	for _, d := range madeDirs {
+		if f.exists(d) {
+			t.Errorf("the directory %s is left", d)
+		}
+	}
+	for _, d := range []string{"/usr/bin", "/etc/casaos", "/usr", "/etc"} {
+		if !f.exists(d) {
+			t.Errorf("the directory %s was removed", d)
+		}
+	}
+	if f.exists("/var/lib/casaos/modules/virt.dirs") {
+		t.Error("the list of the directories is left")
+	}
+
+	// a directory that holds something of somebody else stays, and so do the ones above it; the remove is done
+	f = installed(t)
+	f.writeFile("/usr/lib/systemd/system/another.service", "another")
+	if code := f.remove("--yes"); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	for _, d := range madeDirs {
+		if !f.exists(d) {
+			t.Errorf("the directory %s that holds a file was removed", d)
+		}
+	}
+	if !f.exists("/usr/lib/systemd/system/another.service") || f.exists("/var/lib/casaos/modules/virt.dirs") || f.exists("/var/lib/casaos/modules/virt.files") {
+		t.Error("the file of somebody else was deleted, or the lists are left")
+	}
+
+	// what is at the place of a directory and is not one is not deleted
+	f = installed(t)
+	for _, p := range []string{"/usr/lib/systemd/system/" + testUnit, "/usr/lib/systemd/system", "/usr/lib/systemd", "/usr/lib"} {
+		if err := os.Remove(f.path(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.writeFile("/usr/lib", "a file where a directory of the install was")
+	if code := f.remove("--yes"); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if f.read("/usr/lib") != "a file where a directory of the install was" {
+		t.Error("a file was deleted for a directory")
+	}
+
+	// a list of directories that names what no install makes is no list: nothing is deleted
+	f = installed(t)
+	f.writeFile("/var/lib/casaos/modules/virt.dirs", "/usr/share\n")
+	before := f.treeWithoutBookkeeping()
+	if code := f.remove("--yes"); code != ExitFailed {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	sameTree(t, before, f.treeWithoutBookkeeping())
+	for _, d := range []string{"/usr/share"} {
+		if !f.exists(d) {
+			t.Errorf("%s was removed", d)
+		}
+	}
+	if !f.runner.isEnabled(testUnit) {
+		t.Error("the unit was stopped though the list could not be read")
 	}
 }

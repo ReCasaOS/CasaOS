@@ -33,9 +33,7 @@ func TestTheRealAptOfAChrootIsUnderstood(t *testing.T) {
 	real := newSandbox(Roots{})
 	env := Env{Roots: Roots{}, Runner: newRunner(Roots{}), Sandbox: func() osplan.Sandbox { rec.Sandbox = real(); return rec }, Host: newHost(), EUID: os.Geteuid, Arch: "amd64"}.withDefaults()
 	bx := &box{ctx: context.Background(), env: &env}
-	pkgs := map[string][]string{
-		"fresh": {"casaos-mod-a"}, "upgrade": {"casaos-mod-a"}, "held": {"casaos-mod-a"}, "held-named": {"casaos-mod-b"}, "removal": {"casaos-mod-d"}, "missing": {"casaos-mod-zzz"}, "nothing": {"casaos-mod-a"},
-	}[scenario]
+	pkgs := scenarioPackages[scenario]
 	if pkgs == nil {
 		t.Fatalf("no such scenario: %s", scenario)
 	}

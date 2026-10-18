@@ -116,7 +116,6 @@ func moduleEntries(manifest string) []tent {
 		{name: "build/sysroot/", typ: tar.TypeDir, mode: 0o755},
 		{name: "build/sysroot/usr/bin/casaos-virt-management", mode: 0o755, body: "#!/bin/sh\nexit 0\n"},
 		{name: "build/sysroot/etc/casaos/virt-management.conf.sample", body: "[libvirt]\nURI = test:///default\n"},
-		{name: "build/sysroot/usr/share/casaos/virt/readme.txt", body: "virt\n"},
 		{name: "build/sysroot/usr/lib/systemd/system/" + testUnit, body: "[Unit]\nDescription=virt\n[Service]\nExecStart=/usr/bin/casaos-virt-management\n[Install]\nWantedBy=multi-user.target\n"},
 	}
 }
@@ -521,6 +520,7 @@ type fakeSandbox struct {
 	argvs    [][]string
 	removed  int
 	written  []string
+	content  map[string]string // what each file written says
 }
 
 const (
@@ -529,24 +529,28 @@ const (
 		"0 upgraded, 4 newly installed, 0 to remove and 0 not upgraded.\nInst libfdt1 (1.6.1-4+b1 Debian:12.15/oldstable [amd64])\nInst libvirt0 (9.0.0-4 Debian:12.15/oldstable [amd64])\n" +
 		"Inst libvirt-clients (9.0.0-4 Debian:12.15/oldstable [amd64])\nInst qemu-utils (1:7.2+dfsg-7+deb12u16 Debian:12.15/oldstable [amd64])\nConf libfdt1 (1.6.1-4+b1 Debian:12.15/oldstable [amd64])\n"
 	aptEst = aptProgress + "The following additional packages will be installed:\n  libfdt1 libvirt0\nThe following NEW packages will be installed:\n  libfdt1 libvirt-clients libvirt0 qemu-utils\n" +
-		"0 upgraded, 4 newly installed, 0 to remove and 0 not upgraded.\nNeed to get 5,120 kB/44.3 MB of archives.\nAfter this operation, 130 MB of additional disk space will be used.\n" +
-		"E: Trivial Only specified but this is not a trivial operation.\n"
+		"0 upgraded, 4 newly installed, 0 to remove and 0 not upgraded.\nNeed to get 44.3 MB of archives.\nAfter this operation, 130 MB of additional disk space will be used.\n" +
+		"'http://deb.debian.org/debian/pool/main/libf/libfdt/libfdt1_1.6.1-4+b1_amd64.deb' libfdt1_1.6.1-4+b1_amd64.deb 21520 SHA256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
 	aptHeld = aptProgress + "The following held packages will be changed:\n  qemu-utils\nThe following NEW packages will be installed:\n  libvirt-clients qemu-utils\n" +
 		"0 upgraded, 2 newly installed, 0 to remove and 0 not upgraded.\nE: Held packages were changed and -y was used without --allow-change-held-packages.\n"
 )
 
 func newFakeSandbox() *fakeSandbox {
-	return &fakeSandbox{dir: "/var/tmp/casaos-os-plan.fake1", sim: osplan.Output{Text: aptSim}, est: osplan.Output{Text: aptEst, ExitCode: 100}}
+	return &fakeSandbox{dir: "/var/tmp/casaos-os-plan.fake1", sim: osplan.Output{Text: aptSim}, est: osplan.Output{Text: aptEst}}
 }
 
 func (s *fakeSandbox) MakeDir() (string, func(), error) {
 	return s.dir, func() { s.removed++ }, nil
 }
-func (s *fakeSandbox) WriteFile(p string, _ []byte, _ fs.FileMode) error {
+func (s *fakeSandbox) WriteFile(p string, content []byte, _ fs.FileMode) error {
 	if !osplan.InsideSandbox(s.dir, p) {
 		return errors.New("outside the sandbox")
 	}
 	s.written = append(s.written, p)
+	if s.content == nil {
+		s.content = map[string]string{}
+	}
+	s.content[p] = string(content)
 	return nil
 }
 func (s *fakeSandbox) Run(_ context.Context, argv []string) (osplan.Output, error) {

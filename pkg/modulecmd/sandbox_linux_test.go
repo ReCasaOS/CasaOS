@@ -124,6 +124,9 @@ func TestTheSandboxRunsTheTwoCommandsOfAModuleAndNothingNear(t *testing.T) {
 		append(simArgv(t, dir, []string{"libvirt-clients"}), "pkg;reboot"),
 		simArgv(t, "/var/tmp/casaos-os-plan.other", []string{"libvirt-clients"}),
 		osplan.UpdateArgv(dir), osplan.DistUpgradeArgv(dir),
+		// the estimate that installs a package of one name (Trivial-Only does not stop it), and the planner log that is not turned off
+		append([]string{"apt-get", "-o", "Dir::Cache=" + dir + "/cache", "-o", "Debug::NoLocking=true", "-o", "Dir::Log::Planner=", "-o", "APT::Get::Trivial-Only=true", "install", "--no-install-recommends"}, "libvirt-clients"),
+		append([]string{"apt-get", "-o", "Dir::Cache=" + dir + "/cache", "-o", "Debug::NoLocking=true", "--print-uris", "install", "--no-install-recommends"}, "libvirt-clients"),
 	} {
 		if _, err := sb.Run(context.Background(), bad); !errors.Is(err, osreadiness.ErrNotAllowed) {
 			t.Errorf("%q: %v", bad, err)
@@ -137,8 +140,22 @@ func TestTheSandboxRunsTheTwoCommandsOfAModuleAndNothingNear(t *testing.T) {
 		t.Fatalf("the simulation: %v %d %q", err, sim.ExitCode, sim.Text)
 	}
 	est, err := sb.Run(context.Background(), estArgv(t, dir, testPackages))
-	if err != nil || est.ExitCode != 100 || est.Text != aptEst {
+	if err != nil || est.ExitCode != 0 || est.Text != aptEst {
 		t.Fatalf("the estimate: %v %d %q", err, est.ExitCode, est.Text)
+	}
+	// the two commands are the two that were allowed, each with the log of the planner turned off, and neither is an install
+	log, _ := os.ReadFile(stubFile(root, "apt-get.log"))
+	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], " -s install ") || !strings.Contains(lines[1], " --print-uris install ") {
+		t.Errorf("the commands: %q", lines)
+	}
+	for _, l := range lines {
+		if !strings.Contains(l, "-o Dir::Log::Planner= ") || strings.Contains(l, "Trivial-Only") {
+			t.Errorf("a command with the log of the planner on, or the wrong estimate: %s", l)
+		}
+	}
+	if exists(stubFile(root, "apt-installed")) {
+		t.Error("a package was installed by the plan")
 	}
 	// run in English, in the directory, with the environment of the sandbox and nothing of the process
 	raw, _ := os.ReadFile(stubFile(root, "apt-get.env"))

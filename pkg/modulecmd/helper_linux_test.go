@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -114,11 +115,17 @@ func TestHelperProcess(t *testing.T) {
 
 // helperInstall runs `casaos module install` as the core's main does (Run, with the signals), in a root that the test made, and stops it where the test asks:
 //
-//	MODULECMD_AT    the step ("packages"... "route") or "unpack-mid" (after two files of the unpack)
+//	MODULECMD_AT    the step ("packages"... "route"), "unpack-planned" (the lists are written and the directories made, no file is in place), "unpack-first" (the first file of the unpack
+//	                is in place) or "unpack-mid" (two files of it are)
+//	MODULECMD_UMASK the umask of the process, in octal
 //	MODULECMD_MODE  "kill": SIGKILL to itself there; "block": say it has got there (<root>/stub/reached-<at>) and wait for the signal that ends the run
 func helperInstall() int {
 	root := os.Getenv("MODULECMD_ROOT")
 	at, mode := os.Getenv("MODULECMD_AT"), os.Getenv("MODULECMD_MODE")
+	if u := os.Getenv("MODULECMD_UMASK"); u != "" {
+		n, _ := strconv.ParseUint(u, 8, 32)
+		syscall.Umask(int(n))
+	}
 	env := realEnv(root, os.Getenv, os.Stdout)
 	reach := func() {
 		switch mode {
@@ -144,9 +151,10 @@ func helperInstall() int {
 			reach()
 		}
 	}
-	if at == "unpack-mid" {
+	if strings.HasPrefix(at, "unpack-") {
+		after := map[string]int{"unpack-planned": 0, "unpack-first": 1, "unpack-mid": 2}[at]
 		env.Host = &hostOverride{Host: newHost(), free: env.Host.FreeBytes, wrapDest: func(d osmodule.Destination) osmodule.Destination {
-			return &reachingDest{Destination: d, after: 2, reach: reach}
+			return &reachingDest{Destination: d, after: after, reach: reach}
 		}}
 	}
 	args := []string{"install", testName, "--yes"}
@@ -163,12 +171,12 @@ type reachingDest struct {
 	reach        func()
 }
 
-func (d *reachingDest) NewFile(p string, perm os.FileMode) (osmodule.File, error) {
+func (d *reachingDest) NewFile(p string, perm os.FileMode, replace bool) (osmodule.File, error) {
 	if d.files++; d.files > d.after {
 		d.reach()
 		return nil, os.ErrDeadlineExceeded // (a run that was told to stop does not go on writing)
 	}
-	return d.Destination.NewFile(p, perm)
+	return d.Destination.NewFile(p, perm, replace)
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

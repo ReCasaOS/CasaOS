@@ -45,8 +45,10 @@ var wantFiles = []string{
 	"/etc/casaos/virt-management.conf.sample",
 	"/usr/bin/casaos-virt-management",
 	"/usr/lib/systemd/system/" + testUnit,
-	"/usr/share/casaos/virt/readme.txt",
 }
+
+// madeDirs are the directories the install makes on the box of the tests, which has no /usr/lib/systemd/system: the deepest first, as the unpack gives them.
+var madeDirs = []string{"/usr/lib/systemd/system", "/usr/lib/systemd", "/usr/lib"}
 
 func TestAnInstallDoesTheStepsInOrderAndLeavesTheModuleOnTheBox(t *testing.T) {
 	f := newFixture(t)
@@ -70,13 +72,17 @@ func TestAnInstallDoesTheStepsInOrderAndLeavesTheModuleOnTheBox(t *testing.T) {
 		}
 	}
 	for p := range after {
-		if _, was := before[p]; !was && !slices.Contains(wantFiles, p) && p != "/etc/casaos/modules/virt.json" && p != "/var/lib/casaos/modules/virt.files" && p != "/var/lib/casaos/modules/virt.version" {
+		if _, was := before[p]; !was && !slices.Contains(wantFiles, p) && p != "/etc/casaos/modules/virt.json" && p != "/var/lib/casaos/modules/virt.files" && p != "/var/lib/casaos/modules/virt.dirs" && p != "/var/lib/casaos/modules/virt.version" {
 			t.Errorf("a file the module does not own appeared: %s", p)
 		}
 	}
 	list, err := osmodule.ParseFiles([]byte(f.read("/var/lib/casaos/modules/virt.files")))
 	if err != nil || !slices.Equal(sorted(list), wantFiles) {
 		t.Errorf("the list of files: %v, %v", list, err)
+	}
+	dirs, err := osmodule.ParseDirs([]byte(f.read("/var/lib/casaos/modules/virt.dirs")))
+	if err != nil || !slices.Equal(sorted(dirs), sorted(madeDirs)) {
+		t.Errorf("the list of directories: %v, %v", dirs, err)
 	}
 	if m := f.read("/etc/casaos/modules/virt.json"); m != manifestJSON(t, testManifest()) {
 		t.Errorf("the manifest: %s", m)
@@ -308,7 +314,7 @@ func (f *fixture) failsAt(step, code, kept string, before map[string]string) {
 	if entries, _ := os.ReadDir(f.env.Roots.tmp()); len(entries) != 0 {
 		t.Errorf("the area of the download is not empty: %v", entries)
 	}
-	for _, p := range []string{"/var/lib/casaos/modules/virt.files", "/var/lib/casaos/modules/virt.version", "/etc/casaos/modules/virt.json"} {
+	for _, p := range append([]string{"/var/lib/casaos/modules/virt.files", "/var/lib/casaos/modules/virt.dirs", "/var/lib/casaos/modules/virt.version", "/etc/casaos/modules/virt.json"}, madeDirs...) {
 		if f.exists(p) {
 			t.Errorf("%s is left", p)
 		}
@@ -349,6 +355,15 @@ func TestAFailureAtEachStepIsRolledBackAndKeepsThePackages(t *testing.T) {
 		{"the archive has a module.json that is no manifest", StepManifest, CodeManifestInvalid, keptAll, func(f *fixture) { f.setEntries(badManifest) }},
 		{"the archive has another manifest", StepManifest, CodeManifestMismatch, keptAll, func(f *fixture) { f.setEntries(moduleEntries(manifestJSON(f.t, otherUnit))) }},
 		{"a file of the module is in the way", StepUnpack, osmodule.FileExists, keptAll, func(f *fixture) { f.writeFile("/usr/bin/casaos-virt-management", "someone else's") }},
+		{"the archive names a state file of the core", StepUnpack, osmodule.UnpackPath, keptAll, func(f *fixture) {
+			f.setEntries(append(moduleEntries(manifestJSON(f.t, testManifest())), tent{name: "build/sysroot/var/lib/casaos/alerts.json", body: "{}"}))
+		}},
+		{"the archive names a configuration, not a sample", StepUnpack, osmodule.UnpackPath, keptAll, func(f *fixture) {
+			f.setEntries(append(moduleEntries(manifestJSON(f.t, testManifest())), tent{name: "build/sysroot/etc/casaos/virt-management.conf", body: "[libvirt]\n"}))
+		}},
+		{"the archive names another unit", StepUnpack, osmodule.UnpackPath, keptAll, func(f *fixture) {
+			f.setEntries(append(moduleEntries(manifestJSON(f.t, testManifest())), tent{name: "build/sysroot/usr/lib/systemd/system/casaos-gateway.service", body: "[Service]\n"}))
+		}},
 		{"a file cannot be written", StepUnpack, CodeUnpackFailed, keptAll, func(f *fixture) { f.host.wrapDest = failingDest(3) }},
 		{"systemd cannot read its units", StepUnits, CodeUnitsFailed, keptAll, func(f *fixture) { f.runner.fail["systemctl daemon-reload"] = 1 }},
 		{"the manifest cannot be written", StepManifest, CodeManifestWrite, keptAll, func(f *fixture) {
@@ -421,11 +436,11 @@ type countingDest struct {
 	failAt, files int
 }
 
-func (d *countingDest) NewFile(p string, perm os.FileMode) (osmodule.File, error) {
+func (d *countingDest) NewFile(p string, perm os.FileMode, replace bool) (osmodule.File, error) {
 	if d.files++; d.files == d.failAt {
 		return nil, fmt.Errorf("no space left on device")
 	}
-	return d.Destination.NewFile(p, perm)
+	return d.Destination.NewFile(p, perm, replace)
 }
 
 // ---- interruptions --------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -480,10 +495,8 @@ func TestAStaleAreaOfTheDownloadIsEmptiedByTheNextRun(t *testing.T) {
 	}
 }
 
-// an install that is refused leaves the area of the download as empty as it found it, and a kept file of a configuration is kept
-func TestAConfigurationThatIsThereIsKept(t *testing.T) {
+func TestAConfigurationThatIsThereIsNeverTouchedByTheInstallNorByItsRollback(t *testing.T) {
 	f := newFixture(t)
-	f.setEntries(append(moduleEntries(manifestJSON(t, testManifest())), tent{name: "build/sysroot/etc/casaos/virt-management.conf", body: "[libvirt]\nURI = qemu:///system\n"}))
 	f.writeFile("/etc/casaos/virt-management.conf", "[libvirt]\nURI = test:///default\n")
 	if code := f.install("--yes"); code != ExitOK {
 		t.Fatalf("exit %d:\n%s", code, f.out)
@@ -491,19 +504,130 @@ func TestAConfigurationThatIsThereIsKept(t *testing.T) {
 	if got := f.read("/etc/casaos/virt-management.conf"); got != "[libvirt]\nURI = test:///default\n" {
 		t.Errorf("the configuration was replaced: %q", got)
 	}
-	if !slices.Contains(f.lines(), "kept: /etc/casaos/virt-management.conf") {
-		t.Errorf("the output does not say it:\n%s", f.out)
+	if !f.exists("/etc/casaos/virt-management.conf.sample") || strings.Contains(f.read("/var/lib/casaos/modules/virt.files"), "virt-management.conf\n") {
+		t.Error("the sample is not there, or the configuration is the module's")
 	}
 	// a rollback of an install does not delete a configuration that was there
 	f = newFixture(t)
-	f.setEntries(append(moduleEntries(manifestJSON(t, testManifest())), tent{name: "build/sysroot/etc/casaos/virt-management.conf", body: "new"}))
 	f.writeFile("/etc/casaos/virt-management.conf", "mine")
 	f.runner.fail["systemctl enable --now"] = 1
 	if code := f.install("--yes"); code != ExitFailed {
 		t.Fatalf("exit %d", code)
 	}
-	if f.read("/etc/casaos/virt-management.conf") != "mine" {
-		t.Error("the rollback deleted a configuration that was there")
+	if f.read("/etc/casaos/virt-management.conf") != "mine" || f.exists("/etc/casaos/virt-management.conf.sample") {
+		t.Error("the rollback deleted a configuration that was there, or left the sample")
+	}
+	// and a remove does not either
+	f = installed(t)
+	f.writeFile("/etc/casaos/virt-management.conf", "mine")
+	if code := f.remove("--yes"); code != ExitOK {
+		t.Fatalf("remove: %d\n%s", code, f.out)
+	}
+	if f.read("/etc/casaos/virt-management.conf") != "mine" || f.exists("/etc/casaos/virt-management.conf.sample") {
+		t.Error("the remove deleted a configuration that was there, or left the sample")
+	}
+}
+
+// What the install lists is on the disk before the first directory is made and the first file is in place, and is everything the install may have put down: the files, the unit last, and
+// the directories it makes.
+func TestTheListsAreOnTheDiskBeforeAnythingIsMadeOrInPlace(t *testing.T) {
+	f := newFixture(t)
+	checks := 0
+	check := func(what string) {
+		checks++
+		files, err := osmodule.ParseFiles([]byte(f.read("/var/lib/casaos/modules/virt.files")))
+		want := []string{"/usr/bin/casaos-virt-management", "/etc/casaos/virt-management.conf.sample", "/usr/lib/systemd/system/" + testUnit}
+		if err != nil || !slices.Equal(files, want) {
+			t.Errorf("%s: the files: %v, %v", what, files, err)
+		}
+		dirs, err := osmodule.ParseDirs([]byte(f.read("/var/lib/casaos/modules/virt.dirs")))
+		if err != nil || !slices.Equal(sorted(dirs), sorted(madeDirs)) {
+			t.Errorf("%s: the directories: %v, %v", what, dirs, err)
+		}
+	}
+	firstDir, firstFile := true, true
+	f.host.wrapDest = func(d osmodule.Destination) osmodule.Destination {
+		return &hookedDest{Destination: d,
+			onDir: func(string) {
+				if firstDir {
+					firstDir = false
+					check("before the first directory")
+					if f.exists("/usr/lib") {
+						t.Error("a directory was made already")
+					}
+				}
+			},
+			onFile: func() {
+				if firstFile {
+					firstFile = false
+					check("before the first file")
+					if f.exists("/usr/bin/casaos-virt-management") {
+						t.Error("a file was in place already")
+					}
+				}
+			}}
+	}
+	if code := f.install("--yes"); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if checks != 2 {
+		t.Fatalf("looked %d times", checks)
+	}
+}
+
+// hookedDest calls onDir when a directory is to be made and onFile when a file is asked for.
+type hookedDest struct {
+	osmodule.Destination
+	onDir  func(p string)
+	onFile func()
+}
+
+func (d *hookedDest) Mkdir(p string, perm os.FileMode) error {
+	if d.onDir != nil {
+		d.onDir(p)
+	}
+	return d.Destination.Mkdir(p, perm)
+}
+
+func (d *hookedDest) NewFile(p string, perm os.FileMode, replace bool) (osmodule.File, error) {
+	if d.onFile != nil {
+		d.onFile()
+	}
+	return d.Destination.NewFile(p, perm, replace)
+}
+
+// A file that appears after the unpack looked, at the place of one of the module's, is not written over and is not deleted by the rollback: the rollback deletes what the unpack wrote, and
+// not what it was going to write.
+func TestAFileThatAppearsAtAPlaceOfTheModuleAfterTheCheckingSurvivesTheRollback(t *testing.T) {
+	f := newFixture(t)
+	n := 0
+	f.host.wrapDest = func(d osmodule.Destination) osmodule.Destination {
+		return &hookedDest{Destination: d, onFile: func() {
+			if n++; n == 3 { // the unit is the third and last
+				f.writeFile("/usr/lib/systemd/system/"+testUnit, "someone else's unit")
+			}
+		}}
+	}
+	if code := f.install("--yes"); code != ExitFailed {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if !slices.Contains(f.lines(), "failed at step unpack: "+osmodule.FileExists) {
+		t.Errorf("not refused at the unpack:\n%s", f.out)
+	}
+	if got := f.read("/usr/lib/systemd/system/" + testUnit); got != "someone else's unit" {
+		t.Errorf("the file of somebody else is now %q", got)
+	}
+	for _, p := range []string{"/usr/bin/casaos-virt-management", "/etc/casaos/virt-management.conf.sample", "/var/lib/casaos/modules/virt.files", "/var/lib/casaos/modules/virt.dirs"} {
+		if f.exists(p) {
+			t.Errorf("%s is left", p)
+		}
+	}
+	// the directories that were made are gone, but for the one that holds the file of somebody else
+	if !f.exists("/usr/lib/systemd/system") {
+		t.Error("the directory of the file of somebody else was removed")
+	}
+	if f.runner.isEnabled(testUnit) {
+		t.Error("the unit is enabled")
 	}
 }
 

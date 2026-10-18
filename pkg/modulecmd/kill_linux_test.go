@@ -3,6 +3,7 @@ package modulecmd
 import (
 	"bytes"
 	"context"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,14 +87,14 @@ func waitFor(t *testing.T, path string) {
 	t.Fatalf("%s did not come", path)
 }
 
-var killPoints = append(slices.Clone(allSteps), "unpack-mid")
+var killPoints = append(slices.Clone(allSteps), "unpack-planned", "unpack-first", "unpack-mid")
 
 // a process that is killed with the one signal nobody can catch, at each step, leaves a box that remove makes as it was, and that an install can then be made on
 func TestAKillAtEachStepLeavesAStateThatRemoveCleans(t *testing.T) {
 	for _, at := range killPoints {
 		t.Run(at, func(t *testing.T) {
 			b := newRealBox(t)
-			before := b.state()
+			before, dirsBefore := b.state(), b.dirs()
 			cmd := helperCmd(t, "install", b.helperEnv(at, "kill")...)
 			cmd.Stdout, cmd.Stderr = nil, nil
 			err := cmd.Run()
@@ -103,7 +104,7 @@ func TestAKillAtEachStepLeavesAStateThatRemoveCleans(t *testing.T) {
 			}
 			// the box is a half state: whatever of it there is, remove takes away; with nothing to take away it says so
 			wasThere := false
-			for _, p := range []string{"/var/lib/casaos/modules/virt.files", "/var/lib/casaos/modules/virt.version", "/etc/casaos/modules/virt.json"} {
+			for _, p := range []string{"/var/lib/casaos/modules/virt.files", "/var/lib/casaos/modules/virt.dirs", "/var/lib/casaos/modules/virt.version", "/etc/casaos/modules/virt.json"} {
 				wasThere = wasThere || b.exists(p)
 			}
 			wasThere = wasThere || b.runnerEnabled()
@@ -115,10 +116,11 @@ func TestAKillAtEachStepLeavesAStateThatRemoveCleans(t *testing.T) {
 				t.Fatalf("remove of nothing: exit %d\n%s", code, out)
 			}
 			sameTree(t, before, b.state())
+			sameDirs(t, dirsBefore, b.dirs())
 			if b.runnerEnabled() {
 				t.Error("the unit is still enabled")
 			}
-			for _, p := range []string{"/var/lib/casaos/modules/virt.files", "/var/lib/casaos/modules/virt.version", "/etc/casaos/modules/virt.json"} {
+			for _, p := range []string{"/var/lib/casaos/modules/virt.files", "/var/lib/casaos/modules/virt.dirs", "/var/lib/casaos/modules/virt.version", "/etc/casaos/modules/virt.json"} {
 				if b.exists(p) {
 					t.Errorf("%s is left", p)
 				}
@@ -156,7 +158,7 @@ func TestASigtermAtEachStepIsARollback(t *testing.T) {
 	for _, at := range killPoints {
 		t.Run(at, func(t *testing.T) {
 			b := newRealBox(t)
-			before := b.state()
+			before, dirsBefore := b.state(), b.dirs()
 			cmd := helperCmd(t, "install", b.helperEnv(at, "block")...)
 			var out bytes.Buffer
 			cmd.Stdout = &out
@@ -179,7 +181,7 @@ func TestASigtermAtEachStepIsARollback(t *testing.T) {
 				t.Fatalf("exit %d:\n%s", cmd.ProcessState.ExitCode(), out.String())
 			}
 			step := at
-			if at == "unpack-mid" {
+			if strings.HasPrefix(at, "unpack-") {
 				step = StepUnpack
 			}
 			if !strings.Contains(out.String(), "failed at step "+step+": "+CodeInterrupted+"\n") {
@@ -193,6 +195,7 @@ func TestASigtermAtEachStepIsARollback(t *testing.T) {
 				t.Errorf("the last line:\n%s", out.String())
 			}
 			sameTree(t, before, b.state())
+			sameDirs(t, dirsBefore, b.dirs())
 			if b.runnerEnabled() {
 				t.Error("the unit is enabled")
 			}
@@ -280,5 +283,43 @@ func TestARealInstallRunsTheCommandsWithAnEnvironmentOfTheirOwn(t *testing.T) {
 		if strings.HasPrefix(l, "| ") && strings.Contains(l, stepMarker) {
 			continue
 		}
+	}
+}
+
+// dirs are the directories of the box, but for the ones the assistant keeps for itself (its state, its log, its manifests) and the tests' own.
+func (b *realBox) dirs() []string {
+	b.t.Helper()
+	var out []string
+	err := filepath.WalkDir(b.root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel := b.fixture.env.Roots.Slash(p)
+		if !d.IsDir() || p == b.root {
+			return nil
+		}
+		// (the directories above the state, the log and the manifests are the assistant's too, since it makes them for its own)
+		if slices.Contains([]string{"/var", "/var/lib", "/var/lib/casaos", "/var/log"}, rel) {
+			return nil
+		}
+		for _, own := range []string{"/stub", "/dl", "/var/log/casaos", "/var/lib/casaos/modules", "/etc/casaos/modules"} {
+			if rel == own || strings.HasPrefix(rel, own+"/") {
+				return nil
+			}
+		}
+		out = append(out, rel)
+		return nil
+	})
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func sameDirs(t *testing.T, before, after []string) {
+	t.Helper()
+	if !slices.Equal(before, after) {
+		t.Errorf("the directories are not as they were:\n before %q\n after  %q", before, after)
 	}
 }

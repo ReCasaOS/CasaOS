@@ -10,6 +10,8 @@ import (
 func TestAnArchiveThatHoldsTheStateOfTheCoreOrOfTheAssistantWritesNone(t *testing.T) {
 	for _, p := range []string{
 		"var/lib/casaos/modules/other.files", "etc/casaos/modules/other.json", "var/lib/casaos/modules/virt.version", "var/lib/casaos/os-upgrade/busy", "etc/casaos/os-upgrade.beta",
+		"var/lib/casaos/alerts.json", "var/lib/casaos/telemetry.json", "var/lib/casaos/autoupdate.json", "usr/share/casaos/modules/catalogue.json", "usr/share/casaos/web/index.html",
+		"etc/casaos/gateway.ini", "etc/casaos/modules.sample.d/x", "usr/bin/sub/x", "usr/lib/systemd/system/casaos-gateway.service.d/override.conf",
 	} {
 		t.Run(p, func(t *testing.T) {
 			f := newFixture(t)
@@ -22,7 +24,7 @@ func TestAnArchiveThatHoldsTheStateOfTheCoreOrOfTheAssistantWritesNone(t *testin
 				t.Errorf("not refused at the unpack:\n%s", f.out)
 			}
 			sameTree(t, before, f.treeWithoutBookkeeping())
-			if f.exists("/" + p) {
+			if _, was := before["/"+p]; !was && f.exists("/"+p) {
 				t.Errorf("/%s was written", p)
 			}
 		})

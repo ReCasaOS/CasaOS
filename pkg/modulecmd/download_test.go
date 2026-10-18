@@ -57,6 +57,8 @@ func TestTheDownloadFollowsAnArchiveToTheHostsOfGitHubAndNowhereElse(t *testing.
 		switch r.URL.Path {
 		case "/archive":
 			http.Redirect(w, r, "https://objects.githubusercontent.com/blob", http.StatusFound)
+		case "/assets":
+			http.Redirect(w, r, "https://release-assets.githubusercontent.com/blob", http.StatusFound)
 		case "/blob":
 			_, _ = io.WriteString(w, "the archive")
 		case "/back":
@@ -67,6 +69,12 @@ func TestTheDownloadFollowsAnArchiveToTheHostsOfGitHubAndNowhereElse(t *testing.
 			http.Redirect(w, r, "https://github.com.evil.example/blob", http.StatusFound)
 		case "/suffix":
 			http.Redirect(w, r, "https://evilgithub.com/blob", http.StatusFound)
+		case "/assets-lookalike":
+			http.Redirect(w, r, "https://release-assets.githubusercontent.com.evil.example/blob", http.StatusFound)
+		case "/assets-suffix":
+			http.Redirect(w, r, "https://evil-release-assets.githubusercontent.com/blob", http.StatusFound)
+		case "/assets-parent":
+			http.Redirect(w, r, "https://assets.githubusercontent.com/blob", http.StatusFound)
 		case "/http":
 			http.Redirect(w, r, "http://objects.githubusercontent.com/blob", http.StatusFound)
 		case "/port":
@@ -91,13 +99,16 @@ func TestTheDownloadFollowsAnArchiveToTheHostsOfGitHubAndNowhereElse(t *testing.
 	if body, err := get(t, srv, 1<<10, "https://github.com/archive"); err != nil || string(body) != "the archive" {
 		t.Errorf("the good redirect: %q, %v", body, err)
 	}
+	if body, err := get(t, srv, 1<<10, "https://github.com/assets"); err != nil || string(body) != "the archive" {
+		t.Errorf("the host of the assets of a release: %q, %v", body, err)
+	}
 	if body, err := get(t, srv, 1<<10, "https://github.com/back"); err != nil || string(body) != "the archive" {
 		t.Errorf("from github to github: %q, %v", body, err)
 	}
 	if body, err := get(t, srv, 1<<10, "https://OBJECTS.githubusercontent.com/blob"); err != nil || string(body) != "the archive" {
 		t.Errorf("the host in capitals: %q, %v", body, err)
 	}
-	for _, path := range []string{"evil", "lookalike", "suffix", "http", "port", "user", "ip", "dot", "other-scheme", "loop"} {
+	for _, path := range []string{"evil", "lookalike", "suffix", "assets-lookalike", "assets-suffix", "assets-parent", "http", "port", "user", "ip", "dot", "other-scheme", "loop"} {
 		seen = nil
 		body, err := get(t, srv, 1<<10, "https://github.com/"+path)
 		if err == nil || !permanent(err) || len(body) != 0 {
@@ -114,18 +125,20 @@ func TestTheDownloadFollowsAnArchiveToTheHostsOfGitHubAndNowhereElse(t *testing.
 	}
 }
 
-func TestTheDownloadTakesOnlyHTTPSFromTheTwoHosts(t *testing.T) {
+func TestTheDownloadTakesOnlyHTTPSFromTheThreeHosts(t *testing.T) {
 	srv := testServer(t, func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "x") })
 	for _, bad := range []string{
 		"http://github.com/a", "ftp://github.com/a", "file:///etc/passwd", "https://evil.example/a", "https://github.com.evil.example/a", "https://evilgithub.com/a", "https://github.com@evil.example/a",
 		"https://user@github.com/a", "https://github.com:8443/a", "https://github.com:80/a", "https://github.com./a", "https://[::1]/a", "https://127.0.0.1/a", "//github.com/a", "github.com/a", "", "https:///a",
 		"https://objects.githubusercontent.com.evil.example/a", "https://githubusercontent.com/a", "https://raw.githubusercontent.com/a",
+		"https://release-assets.githubusercontent.com.evil.example/a", "https://evil-release-assets.githubusercontent.com/a", "https://assets.githubusercontent.com/a", "https://release-assets.githubusercontent.com:8443/a",
+		"http://release-assets.githubusercontent.com/a", "https://release-assets.githubusercontent.com./a",
 	} {
 		if body, err := get(t, srv, 1<<10, bad); err == nil || !permanent(err) || len(body) != 0 {
 			t.Errorf("%q: %q, %v", bad, body, err)
 		}
 	}
-	for _, good := range []string{"https://github.com/a", "https://objects.githubusercontent.com/a", "https://github.com:443/a", "https://GitHub.com/a"} {
+	for _, good := range []string{"https://github.com/a", "https://objects.githubusercontent.com/a", "https://github.com:443/a", "https://GitHub.com/a", "https://release-assets.githubusercontent.com/a", "https://RELEASE-ASSETS.githubusercontent.com/a"} {
 		if _, err := get(t, srv, 1<<10, good); err != nil {
 			t.Errorf("%q: %v", good, err)
 		}

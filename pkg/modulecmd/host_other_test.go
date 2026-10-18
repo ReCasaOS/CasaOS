@@ -49,22 +49,31 @@ func (d portableDest) Lstat(p string) (fs.FileMode, error) {
 	}
 	return info.Mode(), nil
 }
-func (d portableDest) MkdirAll(p string, perm fs.FileMode) error {
-	return os.MkdirAll(d.roots.Path(p), 0o755)
+func (d portableDest) Mkdir(p string, perm fs.FileMode) error {
+	return os.Mkdir(d.roots.Path(p), 0o755)
 }
-func (d portableDest) Symlink(target, p string) error { return os.Symlink(target, d.roots.Path(p)) }
-func (d portableDest) NewFile(p string, perm fs.FileMode) (osmodule.File, error) {
+func (d portableDest) Symlink(target, p string, replace bool) error {
+	real := d.roots.Path(p)
+	if replace {
+		if err := os.Remove(real); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return os.Symlink(target, real) // (it fails with fs.ErrExist when anything is there)
+}
+func (d portableDest) NewFile(p string, perm fs.FileMode, replace bool) (osmodule.File, error) {
 	real := d.roots.Path(p)
 	f, err := os.OpenFile(tempName(real), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	return &portableFile{f: f, tmp: tempName(real), real: real}, nil
+	return &portableFile{f: f, tmp: tempName(real), real: real, replace: replace}, nil
 }
 
 type portableFile struct {
 	f         *os.File
 	tmp, real string
+	replace   bool
 }
 
 func (w *portableFile) Write(b []byte) (int, error) { return w.f.Write(b) }
@@ -72,7 +81,11 @@ func (w *portableFile) Commit() error {
 	if err := w.f.Close(); err != nil {
 		return err
 	}
-	if err := os.Remove(w.real); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if !w.replace {
+		if _, err := os.Lstat(w.real); err == nil {
+			return fs.ErrExist
+		}
+	} else if err := os.Remove(w.real); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return os.Rename(w.tmp, w.real)

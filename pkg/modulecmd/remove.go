@@ -76,11 +76,16 @@ func removeEntry(real string) (removed bool, err error) {
 	return true, nil
 }
 
-// teardown undoes an install, whatever state it is in: the units are stopped and disabled, the files of the list that are still there (and are no other module's) are deleted, then the
-// manifest, the version and the list, then systemd reads its units again. It returns what it could not do, with the step it was in. Nothing that is the module's is forgotten until
-// all of it is gone: a list, a manifest or a version stays while a file does, and a run again finishes the work. markers puts the phases in the log as steps (remove does, the rollback
-// of an install does not).
-func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers bool) (bad int, phase string) {
+// written is what an install put down, as the unpack says it: the files and links, and the directories it made (the deepest first).
+type written struct{ files, dirs []string }
+
+// teardown undoes an install, whatever state it is in: the units are stopped and disabled, the files that are still there (and are no other module's) are deleted, then the directories the
+// install made, if they are empty, then the manifest, the version and the lists, then systemd reads its units again. What it deletes is what only says, when it is given (the rollback of an
+// install that stopped: what the unpack wrote, and not what it was going to write, which may name a file that is somebody else's and made it stop), and otherwise the lists of the module
+// on the disk (a remove: the lists name everything the install may have put down, and a kill leaves nothing else). It returns what it could not do, with the step it was in. Nothing that is
+// the module's is forgotten until all of it is gone: a list, a manifest or a version stays while a file does, and a run again finishes the work. markers puts the phases in the log as
+// steps (remove does, the rollback of an install does not).
+func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers bool, only *written) (bad int, phase string) {
 	step := func(s string) {
 		if markers {
 			j.marker(s, "begin")
@@ -98,17 +103,22 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 		}
 	}
 	roots := j.env.Roots
-	list, err := readFilesList(roots.files(name))
-	if err != nil {
-		j.say("the list of the files of %s cannot be read", name)
-		return 1, StepStop
-	}
-	if i := slices.IndexFunc(list, protected); i >= 0 {
-		j.say("the list of the files of %s names a path that is the core's own: nothing is deleted", name)
-		return 1, StepStop
-	}
-	if list == nil && markers {
-		j.say("there is no list of the files of %s: no file is deleted", name)
+	var list, dirs []string
+	if only != nil {
+		list, dirs = only.files, only.dirs
+	} else {
+		var err error
+		if list, err = readFilesList(roots.files(name)); err != nil {
+			j.say("the list of the files of %s cannot be read", name)
+			return 1, StepStop
+		}
+		if dirs, err = readDirsList(roots.dirs(name)); err != nil {
+			j.say("the list of the directories of %s cannot be read", name)
+			return 1, StepStop
+		}
+		if list == nil && markers {
+			j.say("there is no list of the files of %s: no file is deleted", name)
+		}
 	}
 	// stop
 	step(StepStop)
@@ -155,6 +165,13 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 			}
 		}
 	}
+	// the directories the install made, the deepest first, those that are empty: one that holds anything is somebody's, and stays
+	for _, d := range sortedDeepestFirst(dirs) {
+		if err := removeEmptyDir(roots.Path(d)); err != nil {
+			j.say("not removed: %s (%s)", printable(d, 200), printable(err.Error(), 100))
+			failed++
+		}
+	}
 	end(StepFiles, failed)
 	if failed > 0 {
 		return failed, StepFiles
@@ -162,7 +179,7 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 	// manifest
 	step(StepManifest2)
 	gone := 0
-	for _, p := range []string{roots.manifest(name), roots.version(name), roots.files(name), tempName(roots.manifest(name)), tempName(roots.version(name)), tempName(roots.files(name))} {
+	for _, p := range []string{roots.manifest(name), roots.version(name), roots.files(name), roots.dirs(name), tempName(roots.manifest(name)), tempName(roots.version(name)), tempName(roots.files(name)), tempName(roots.dirs(name))} {
 		if _, err := removeEntry(p); err != nil {
 			j.say("not removed: %s", printable(err.Error(), 100))
 			gone++
@@ -179,6 +196,31 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 	}
 	end(StepReload, 0)
 	return 0, ""
+}
+
+// sortedDeepestFirst is the paths, the ones with the most parts first.
+func sortedDeepestFirst(paths []string) []string {
+	out := slices.Clone(paths)
+	slices.SortStableFunc(out, func(a, b string) int { return strings.Count(b, "/") - strings.Count(a, "/") })
+	return out
+}
+
+// removeEmptyDir deletes a directory that is empty. Gone already is done, and so is a directory that holds something, which is not the install's to empty; what is there and is not a
+// directory (a file or a link, which the delete of a file would take away) is left alone.
+func removeEmptyDir(real string) error {
+	info, err := os.Lstat(real)
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
+		return nil
+	case err != nil:
+		return err
+	case !info.IsDir():
+		return nil
+	}
+	if err := os.Remove(real); err != nil && !errors.Is(err, fs.ErrNotExist) && !isNotEmpty(err) {
+		return err
+	}
+	return nil
 }
 
 // leftovers are what a module leaves on the box that no remove touches, and the commands to take it away by hand, which are printed and never run.
@@ -231,7 +273,7 @@ func runRemove(ctx context.Context, env Env, c command) int {
 
 	roots := env.Roots
 	present := false
-	for _, p := range []string{roots.manifest(c.name), roots.files(c.name), roots.version(c.name)} {
+	for _, p := range []string{roots.manifest(c.name), roots.files(c.name), roots.dirs(c.name), roots.version(c.name)} {
 		if _, err := os.Lstat(p); err == nil || !(errors.Is(err, fs.ErrNotExist) || isNotDir(err)) {
 			present = true
 		}
@@ -262,7 +304,7 @@ func runRemove(ctx context.Context, env Env, c command) int {
 			return j.refuse(CodeDeclined)
 		}
 	}
-	bad, phase := j.teardown(ctx, c.name, manifest.Unit, true)
+	bad, phase := j.teardown(ctx, c.name, manifest.Unit, true, nil)
 	if bad > 0 {
 		j.say("failed at step %s: %s", phase, CodeRemoveIncomplete)
 		j.result("failed", phase, CodeRemoveIncomplete)

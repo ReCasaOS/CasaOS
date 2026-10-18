@@ -18,12 +18,13 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 )
 
-// The download of the archive of a module: over https from github.com, which sends the file on from objects.githubusercontent.com, and from nowhere else; at most 200 MiB; the bytes are
+// The download of the archive of a module: over https from github.com, which sends the file on from objects.githubusercontent.com or release-assets.githubusercontent.com (where it keeps the
+// assets of a release now), and from nowhere else; at most 200 MiB; the bytes are
 // checked against the sha256 of the catalogue afterwards (that is the proof that it is the archive, this is only a fence around what is fetched).
 
 var (
 	// downloadHosts are the hosts a request may go to, the first and every one it is sent on to.
-	downloadHosts = []string{"github.com", "objects.githubusercontent.com"}
+	downloadHosts = []string{"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}
 	// maxRedirects is the most a request is sent on.
 	maxRedirects = 5
 	// downloadTries is how often an archive is fetched before the install gives up, and the waits between.

@@ -60,6 +60,7 @@ func (r Roots) lock() string                { return r.Path(pathState + "/.lock"
 func (r Roots) logs() string                { return r.Path(pathLogs) }
 func (r Roots) manifest(name string) string { return r.Path(pathManifests + "/" + name + ".json") }
 func (r Roots) files(name string) string    { return r.Path(pathState + "/" + name + ".files") }
+func (r Roots) dirs(name string) string     { return r.Path(pathState + "/" + name + ".dirs") }
 func (r Roots) version(name string) string  { return r.Path(pathState + "/" + name + ".version") }
 func (r Roots) logFile(name string) string  { return r.Path(pathLogs + "/module-" + name + ".log") }
 

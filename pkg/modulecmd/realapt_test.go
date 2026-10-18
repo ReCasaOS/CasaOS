@@ -51,9 +51,13 @@ func checkScenario(t *testing.T, scenario string, res osmodule.AptResult) {
 
 var scenarios = []string{"fresh", "upgrade", "held", "held-named", "removal", "missing", "nothing"}
 
+// the packages that each scenario asks about
+var scenarioPackages = map[string][]string{
+	"fresh": {"casaos-mod-a"}, "upgrade": {"casaos-mod-a"}, "held": {"casaos-mod-a"}, "held-named": {"casaos-mod-b"}, "removal": {"casaos-mod-d"}, "missing": {"casaos-mod-zzz"}, "nothing": {"casaos-mod-a"},
+}
+
 // the outputs of the real apt, as the chroots of Debian 11 (apt 2.2.4) and Debian 12 (apt 2.6.1) gave them, read as the plan reads them
 func TestTheRealOutputsOfAptAreUnderstood(t *testing.T) {
-	const dir = "/var/tmp/casaos-os-plan.fake1"
 	for _, chroot := range []string{"debian11", "debian12"} {
 		for _, scenario := range scenarios {
 			t.Run(chroot+"/"+scenario, func(t *testing.T) {
@@ -72,7 +76,7 @@ func TestTheRealOutputsOfAptAreUnderstood(t *testing.T) {
 					}
 					return osplan.Output{Text: strings.ReplaceAll(string(text), "\r\n", "\n"), ExitCode: code}
 				}
-				checkScenario(t, scenario, heldFromSolver(osplan.ParseModuleSimulation(read("sim"), read("est"), dir)))
+				checkScenario(t, scenario, heldFromSolver(osplan.ParseModuleSimulation(read("sim"), read("est"), scenarioPackages[scenario])))
 			})
 		}
 	}

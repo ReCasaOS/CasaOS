@@ -19,10 +19,12 @@ import (
 // refusingDest is the file system of a host that cannot unpack: every operation says so, and nothing is written.
 type refusingDest struct{}
 
-func (refusingDest) Lstat(string) (fs.FileMode, error)                  { return 0, ErrUnsupported }
-func (refusingDest) MkdirAll(string, fs.FileMode) error                 { return ErrUnsupported }
-func (refusingDest) NewFile(string, fs.FileMode) (osmodule.File, error) { return nil, ErrUnsupported }
-func (refusingDest) Symlink(string, string) error                       { return ErrUnsupported }
+func (refusingDest) Lstat(string) (fs.FileMode, error) { return 0, ErrUnsupported }
+func (refusingDest) Mkdir(string, fs.FileMode) error   { return ErrUnsupported }
+func (refusingDest) NewFile(string, fs.FileMode, bool) (osmodule.File, error) {
+	return nil, ErrUnsupported
+}
+func (refusingDest) Symlink(string, string, bool) error { return ErrUnsupported }
 
 // maintenanceUnits are the transient units that change the packages of the box or its ReCasaOS release; the units of the modules are not among them, since an install runs in one.
 var maintenanceUnits = []string{"casaos-update.service", "casaos-package-update.service", "casaos-docker-update.service", "casaos-os-upgrade.service"}
@@ -150,8 +152,13 @@ func (b *box) FilesLists() (map[string][]string, error) {
 	return lists, nil
 }
 
-// readFilesList reads the list of the files of a module: nil, nil when there is none.
-func readFilesList(path string) ([]string, error) {
+// readFilesList reads the list of the files of a module: nil, nil when there is none. A list that is there and has nothing in it is not a list of no files but a list that was cut short.
+func readFilesList(path string) ([]string, error) { return readList(path, osmodule.ParseFiles) }
+
+// readDirsList reads the list of the directories that the install of a module made, in the same way.
+func readDirsList(path string) ([]string, error) { return readList(path, osmodule.ParseDirs) }
+
+func readList(path string, parse func([]byte) ([]string, error)) ([]string, error) {
 	raw, err := readRegular(path, osmodule.MaxFilesBytes)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -159,10 +166,7 @@ func readFilesList(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) == 0 {
-		return nil, nil // (an empty list is no files)
-	}
-	return osmodule.ParseFiles(raw)
+	return parse(raw)
 }
 
 // unitKey is a way to tell that two spellings of the path of a unit are one file: the directory with its links followed (/lib is /usr/lib on a system with a merged /usr), and the name.
@@ -308,7 +312,7 @@ func (b *box) SimulateApt(packages []string) osmodule.AptResult {
 	if err != nil {
 		return failed("apt did not answer")
 	}
-	return heldFromSolver(osplan.ParseModuleSimulation(sim, est, dir))
+	return heldFromSolver(osplan.ParseModuleSimulation(sim, est, packages))
 }
 
 // heldFromSolver takes the failure of a simulation that apt could not solve because of a held package for what it is. A held package that a dependency needs changed is not one that apt
