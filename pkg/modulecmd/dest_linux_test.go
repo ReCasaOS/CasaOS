@@ -269,3 +269,44 @@ func TestTheTemporaryNameThatIsALinkIsNotWrittenThrough(t *testing.T) {
 		t.Errorf("%q", raw)
 	}
 }
+
+// A file is synced before the rename that publishes it: a power cut after the rename finds the content, not an empty file
+func TestAFileOfTheUnpackIsSyncedBeforeItIsPublished(t *testing.T) {
+	d, _ := newDest(t)
+	var events []string
+	oldSync, oldRename := syncFile, renameNoReplace
+	t.Cleanup(func() { syncFile, renameNoReplace = oldSync, oldRename })
+	syncFile = func(f *os.File) error { events = append(events, "sync"); return f.Sync() }
+	renameNoReplace = func(o, n string) error { events = append(events, "rename"); return oldRename(o, n) }
+	if err := writeThrough(t, d, "/usr/bin/x", 0o755, false, "content"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(events, " ") != "sync rename" {
+		t.Errorf("events: %v", events)
+	}
+}
+
+// The temporary name of the unpack is made with O_EXCL: what is put at it in the instant after it was cleared (a hard link to a file that is not the module's) is an error, and is not written
+func TestTheTemporaryNameOfTheUnpackIsMadeNewAndNotWrittenThrough(t *testing.T) {
+	d, root := newDest(t)
+	victimFile := filepath.Join(root, "victim")
+	if err := os.WriteFile(victimFile, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldHook := afterClear
+	t.Cleanup(func() { afterClear = oldHook })
+	afterClear = func(p string) {
+		if err := os.Link(victimFile, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeThrough(t, d, "/usr/bin/x", 0o755, false, "content"); err == nil {
+		t.Fatal("written through what was put at the name")
+	}
+	if raw, _ := os.ReadFile(victimFile); string(raw) != "keep me" {
+		t.Errorf("the file that was linked: %q", raw)
+	}
+	if exists(filepath.Join(root, "usr/bin/x")) {
+		t.Error("the file took its place")
+	}
+}

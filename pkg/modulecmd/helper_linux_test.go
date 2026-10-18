@@ -136,6 +136,10 @@ func helperInstall() int {
 			time.Sleep(time.Minute)
 		case "panic":
 			panic("a panic of the test")
+		case "selfterm":
+			// the signal that ends the run comes here, and the run goes on
+			_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+			time.Sleep(300 * time.Millisecond)
 		case "waitfile":
 			// go on when the test makes <root>/stub/go: it has closed what reads our output by then
 			for range 600 {

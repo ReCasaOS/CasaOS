@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -186,11 +188,20 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 		}
 	}
 	failed := 0
+	// the directories that lost an entry, to be made durable once the entries are gone
+	touched := map[string]bool{}
+	unlink := func(real string) error {
+		removed, err := removeEntry(real)
+		if removed {
+			touched[filepath.Dir(real)] = true
+		}
+		return err
+	}
 	for _, e := range list.Entries {
 		p := e.Path
 		real := roots.Path(p)
 		// (the temporary name an unpack writes under is the module's whatever the file is)
-		if _, err := removeEntry(tempName(real)); err != nil {
+		if err := unlink(tempName(real)); err != nil {
 			j.say("not removed: %s (%s)", printable(p, 200), printable(err.Error(), 100))
 			failed++
 		}
@@ -210,7 +221,7 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 			// not what the install put there, or not what it was to put: somebody else's, or the half of a write that was never done
 			j.say("left: %s (changed)", printable(p, 200))
 		case h == holdsOurs:
-			if _, err := removeEntry(real); err != nil {
+			if err := unlink(real); err != nil {
 				j.say("not removed: %s (%s)", printable(p, 200), printable(err.Error(), 100))
 				failed++
 			}
@@ -218,10 +229,14 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 	}
 	// the directories the install made, the deepest first, those that are empty: one that holds anything is somebody's, and stays
 	for _, d := range sortedDeepestFirst(dirs) {
+		touched[filepath.Dir(roots.Path(d))] = true
 		if err := removeEmptyDir(roots.Path(d)); err != nil {
 			j.say("not removed: %s (%s)", printable(d, 200), printable(err.Error(), 100))
 			failed++
 		}
+	}
+	for _, dir := range slices.Sorted(maps.Keys(touched)) {
+		syncDir(dir)
 	}
 	end(StepFiles, failed)
 	if failed > 0 {
@@ -236,6 +251,8 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 			gone++
 		}
 	}
+	syncDir(roots.manifests())
+	syncDir(roots.state())
 	end(StepManifest2, gone)
 	if gone > 0 {
 		return gone, StepManifest2, CodeRemoveIncomplete
@@ -254,6 +271,7 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 				reload++
 			}
 		}
+		syncDir(roots.state())
 	}
 	end(StepReload, reload)
 	if reload > 0 {

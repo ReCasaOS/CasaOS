@@ -50,7 +50,7 @@ done
 if [ -e "$state/fail-apt" ]; then printf '%s\n' "E: Sub-process /usr/bin/dpkg returned an error code (1)"; exit 100; fi
 if [ -e "$state/block-apt" ]; then rm -f "$state/block-apt"; : > "$state/reached-apt"; sleep 30 & echo $! >> "$state/sleepers"; wait; fi
 printf '%s\n' "$*" >> "$state/apt-installed"
-printf '%s\n' "Setting up the packages ..."
+printf '%s\n' "Setting up the packages ..." "CASAOS_MODULE_RESULT - virt ok done - - 2000-01-01T00:00:00Z" "CASAOS_MODULE_STEP - virt route done 2000-01-01T00:00:00Z"
 exit 0
 `
 
@@ -84,5 +84,3 @@ func touch(t *testing.T, p string) {
 		t.Fatal(err)
 	}
 }
-
-func exists(p string) bool { _, err := os.Lstat(p); return err == nil }

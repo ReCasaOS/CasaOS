@@ -5,10 +5,10 @@ import (
 	"context"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -239,9 +239,15 @@ func TestASigtermEndsTheCommandThatIsRunning(t *testing.T) {
 			if b.runnerEnabled() {
 				t.Error("the unit is enabled")
 			}
-			// no sleeper of the stubs is left running
-			if left, _ := exec.Command("pgrep", "-f", b.root+"/usr/bin/").Output(); strings.TrimSpace(string(left)) != "" && false {
-				t.Errorf("processes left: %s", left)
+			// no sleeper of the stubs is left running: each wrote its number down, and none of them is a process now
+			sleepers, err := os.ReadFile(stubFile(b.root, "sleepers"))
+			if err != nil || len(strings.Fields(string(sleepers))) == 0 {
+				t.Fatalf("the stub did not say who sleeps: %v", err)
+			}
+			for _, pid := range strings.Fields(string(sleepers)) {
+				if alive(atoi(pid)) {
+					t.Errorf("the process %s of the stub is left running", pid)
+				}
 			}
 		})
 	}
@@ -280,11 +286,40 @@ func TestARealInstallRunsTheCommandsWithAnEnvironmentOfTheirOwn(t *testing.T) {
 	if !strings.Contains(string(log), "| Setting up the packages ...\n") || !strings.Contains(string(log), stepMarker+" "+strings.Repeat("ab", 16)+" virt route done ") {
 		t.Errorf("the log:\n%s", log)
 	}
+	// what the apt stub says that looks like a marker or a result is behind "| ", and the only lines of the log that start like a marker are the assistant's own, in the one grammar
+	results := 0
 	for _, l := range strings.Split(string(log), "\n") {
-		if strings.HasPrefix(l, "| ") && strings.Contains(l, stepMarker) {
-			continue
+		switch {
+		case strings.HasPrefix(l, "| "):
+		case strings.HasPrefix(l, stepMarker):
+			if !strings.HasPrefix(l, stepMarker+" "+strings.Repeat("ab", 16)+" virt ") || !stepRe.MatchString(l) {
+				t.Errorf("a marker that is not the assistant's: %q", l)
+			}
+		case strings.HasPrefix(l, resultMarker):
+			results++
+			if !strings.Contains(l, strings.Repeat("ab", 16)) {
+				t.Errorf("a result that is not the assistant's: %q", l)
+			}
 		}
 	}
+	if results != 1 {
+		t.Errorf("%d results in the log:\n%s", results, log)
+	}
+	if !strings.Contains(string(log), "| "+resultMarker+" - virt ok done - - 2000-01-01T00:00:00Z\n") || !strings.Contains(string(log), "| "+stepMarker+" - virt route done 2000-01-01T00:00:00Z\n") {
+		t.Errorf("the stub's own lines that look like markers are not in the log, behind \"| \":\n%s", log)
+	}
+}
+
+// alive says whether a process is running (a zombie is not)
+func alive(pid int) bool {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	// the state is the first field after the name, which is in brackets
+	rest := raw[bytes.LastIndexByte(raw, ')')+1:]
+	fields := strings.Fields(string(rest))
+	return len(fields) > 0 && fields[0] != "Z" && fields[0] != "X"
 }
 
 // dirs are the directories of the box, but for the ones the assistant keeps for itself (its state, its log, its manifests) and the tests' own.
@@ -340,7 +375,7 @@ func TestARunKilledInTheMiddleOfItsRollbackHasNoResult(t *testing.T) {
 	}
 	log, _ := os.ReadFile(b.path("/var/log/casaos/module-virt.log"))
 	for name, text := range map[string]string{"the output": out.String(), "the log": string(log)} {
-		if strings.Contains(text, resultMarker) {
+		if regexp.MustCompile(`(?m)^` + resultMarker).MatchString(text) { // (the stub prints a line that looks like one, behind "| ")
 			t.Errorf("%s has a result:\n%s", name, text)
 		}
 		for _, want := range []string{" virt start failed ", " virt rollback_stop done ", " virt rollback_files begin "} {

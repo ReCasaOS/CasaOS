@@ -573,3 +573,6 @@ func (s *fakeSandbox) Run(_ context.Context, argv []string) (osplan.Output, erro
 	}
 	return s.est, nil
 }
+
+// exists says whether anything is at the path (a link too).
+func exists(p string) bool { _, err := os.Lstat(p); return err == nil }
