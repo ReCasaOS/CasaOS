@@ -116,31 +116,28 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 	}
 	roots := j.env.Roots
 	var (
-		list     osmodule.FilesList
-		dirs     []string
-		listPath []string
+		list       osmodule.FilesList
+		dirs       []string
+		unreadable []string
 	)
 	if only != nil {
 		list, dirs = osmodule.FilesList{Entries: only.files, Verified: true}, only.dirs
 	} else {
 		var err error
 		if list, err = readFilesEntries(roots.files(name)); err != nil {
-			j.say("the list of the files of %s cannot be read", name)
-			return 1, StepStop, CodeFilesUnreadable
+			unreadable = append(unreadable, roots.files(name))
 		}
 		if dirs, err = readDirsList(roots.dirs(name)); err != nil {
-			j.say("the list of the directories of %s cannot be read", name)
-			return 1, StepStop, CodeFilesUnreadable
+			unreadable = append(unreadable, roots.dirs(name))
 		}
-		if list.Entries == nil {
+		if list.Entries == nil && len(unreadable) == 0 {
 			j.say("there is no list of the files of %s: no file is deleted", name)
 		}
 	}
-	listPath = list.Paths()
-	// stop
+	// stop: the unit of the module is stopped whatever the lists are, since the manifest names it
 	step(StepStop)
 	stuck := 0
-	for _, unit := range unitNames(manifestUnit, listPath) {
+	for _, unit := range unitNames(manifestUnit, list.Paths()) {
 		if !j.stopUnit(ctx, unit) {
 			stuck++
 		}
@@ -161,6 +158,16 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit, prefix string, o
 	defer cancel()
 	// files
 	step(StepFiles)
+	if len(unreadable) > 0 {
+		// A list that cannot be read (cut short, or naming what an install never writes) is not trusted, so nothing is deleted by it, and a run again would read it again: it is for the owner to
+		// look at and to delete.
+		for _, p := range unreadable {
+			j.say("the list %s cannot be read: nothing was deleted by it", printable(roots.Slash(p), 200))
+			j.say("look at it, and delete %s by hand; then run casaos module remove %s again", printable(roots.Slash(p), 200), name)
+		}
+		end(StepFiles, len(unreadable))
+		return len(unreadable), StepFiles, CodeFilesUnreadable
+	}
 	others, err := (&box{ctx: ctx, env: &j.env}).FilesLists()
 	if err != nil {
 		j.say("the lists of the files of the other modules cannot be read")
@@ -369,6 +376,8 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 			j.say("stop the unit, then run casaos module remove %s again", c.name)
 		case CodeUnitsFailed:
 			j.say("run systemctl daemon-reload, then casaos module remove %s again", c.name)
+		case CodeFilesUnreadable:
+			// (said above, with the name of the list)
 		default:
 			j.say("run casaos module remove %s again to finish", c.name)
 		}

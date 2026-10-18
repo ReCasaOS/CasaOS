@@ -103,6 +103,18 @@ func (j *job) refuse(code string) int {
 	return ExitRefused
 }
 
+// unreadableLists are the lists of the files and of the directories of the module that are there and cannot be read.
+func (j *job) unreadableLists(name string) (bad []string) {
+	roots := j.env.Roots
+	if _, err := readFilesEntries(roots.files(name)); err != nil {
+		bad = append(bad, roots.files(name))
+	}
+	if _, err := readDirsList(roots.dirs(name)); err != nil {
+		bad = append(bad, roots.dirs(name))
+	}
+	return bad
+}
+
 // refuseEarly refuses a run that has not got the lock: it says so on the standard output and touches no log, which is the log of the run that has the lock.
 func refuseEarly(env Env, name, code string) int { return newJob(env, name).refuse(code) }
 
@@ -172,6 +184,13 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 	// whatever an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
 	if err := emptyDir(env.Roots.tmp()); err != nil {
 		return j.refuse(CodeTmpUnusable)
+	}
+	// a list of an earlier install that cannot be read is a state for its owner to look at: the module cannot be told from it, and nothing is changed
+	if bad := j.unreadableLists(c.name); len(bad) > 0 {
+		for _, p := range bad {
+			j.say("the list %s cannot be read: look at it, and delete it by hand, and install again", printable(env.Roots.Slash(p), 200))
+		}
+		return j.refuse(CodeFilesUnreadable)
 	}
 	defer func() { _ = emptyDir(env.Roots.tmp()) }()
 

@@ -237,6 +237,8 @@ func TestTheOutputOfEveryExitPathIsInTheOneGrammar(t *testing.T) {
 			_ = os.MkdirAll(tempName(f.path("/etc/casaos/virt-management.conf.sample"))+"/in", 0o755)
 			return bg
 		}, ExitFailed},
+		{"a remove, the list cannot be read", true, func(f *fixture) context.Context { f.writeFile(filesList, ""); return bg }, ExitFailed},
+		{"an install, the list cannot be read", false, func(f *fixture) context.Context { f.writeFile(dirsList, ""); return bg }, ExitRefused},
 		{"a remove, systemd cannot read its units", true, func(f *fixture) context.Context { f.runner.fail["systemctl daemon-reload"] = 1; return bg }, ExitFailed},
 		{"a remove that is interrupted", true, func(f *fixture) context.Context { return cancelAt(f, StepStop) }, ExitFailed},
 		{"a panic in a remove", true, func(f *fixture) context.Context {

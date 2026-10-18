@@ -347,7 +347,7 @@ func TestARemoveDeletesTheDirectoriesTheInstallMadeAndNoOther(t *testing.T) {
 			t.Errorf("%s was removed", d)
 		}
 	}
-	if !f.runner.isEnabled(testUnit) {
-		t.Error("the unit was stopped though the list could not be read")
+	if f.runner.isEnabled(testUnit) {
+		t.Error("the unit was not stopped though the list could not be read: the manifest names it")
 	}
 }
