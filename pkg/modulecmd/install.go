@@ -382,6 +382,10 @@ func (in *install) stepUnpack() *stepFailure {
 	})
 	in.written = &written{files: union(ownFiles, res.Files), dirs: union(res.Dirs, ownDirs)}
 	if err != nil {
+		// the lists name what the unpack was going to write, which may include the file that made it stop, and somebody else's: from here they name what was written, for a remove that has
+		// to finish what the rollback could not
+		_ = in.recordFiles(in.written.files)
+		_ = in.recordDirs(in.written.dirs)
 		var refused *osmodule.Refused
 		if errors.As(err, &refused) {
 			return in.fail(refused.Code, err)
@@ -409,11 +413,7 @@ func union(a, b []string) []string {
 
 // recordPlanned writes the list of the files and the list of the directories, whole, before the unpack changes anything.
 func (in *install) recordPlanned(files, dirs []string) error {
-	raw, err := osmodule.FormatFiles(files)
-	if err != nil {
-		return err
-	}
-	if err := writeFileAtomic(in.env.Roots.files(in.entry.Name), raw, 0o644); err != nil {
+	if err := in.recordFiles(files); err != nil {
 		return err
 	}
 	if err := in.recordDirs(dirs); err != nil {
@@ -421,6 +421,20 @@ func (in *install) recordPlanned(files, dirs []string) error {
 	}
 	syncDir(in.env.Roots.state())
 	return nil
+}
+
+// recordFiles writes the list of the files, or takes it away when there are none.
+func (in *install) recordFiles(files []string) error {
+	path := in.env.Roots.files(in.entry.Name)
+	if len(files) == 0 {
+		_, err := removeEntry(path)
+		return err
+	}
+	raw, err := osmodule.FormatFiles(files)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(path, raw, 0o644)
 }
 
 // recordDirs writes the list of the directories, or takes it away when there are none.
