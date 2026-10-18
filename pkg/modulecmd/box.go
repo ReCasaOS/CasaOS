@@ -14,6 +14,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
+	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 )
 
 // refusingDest is the file system of a host that cannot unpack: every operation says so, and nothing is written.
@@ -26,8 +27,12 @@ func (refusingDest) NewFile(string, fs.FileMode, bool) (osmodule.File, error) {
 }
 func (refusingDest) Symlink(string, string, bool) error { return ErrUnsupported }
 
-// maintenanceUnits are the transient units that change the packages of the box or its ReCasaOS release; the units of the modules are not among them, since an install runs in one.
-var maintenanceUnits = []string{"casaos-update.service", "casaos-package-update.service", "casaos-docker-update.service", "casaos-os-upgrade.service"}
+// casaosUnits are the transient units that change the packages of the box or its ReCasaOS release; the units of the modules are not among them, since an install runs in one.
+var casaosUnits = []string{"casaos-update.service", "casaos-package-update.service", "casaos-docker-update.service", "casaos-os-upgrade.service"}
+
+// maintenanceUnits are all the units whose being active says that a package manager is at work: those, and the two that the readiness report of the upgrade of the operating system asks
+// about (the timers of apt that update and upgrade by themselves).
+func maintenanceUnits() []string { return append(slices.Clone(casaosUnits), osreadiness.BusyUnits()...) }
 
 // readRegular reads a file that is a regular file and not a link, at most max bytes (more is an error).
 func readRegular(path string, max int64) ([]byte, error) {
@@ -258,7 +263,7 @@ func sortedKeys(m map[string][]string) []string {
 }
 
 func (b *box) PackageManagerBusy() (bool, error) {
-	for _, unit := range maintenanceUnits {
+	for _, unit := range maintenanceUnits() {
 		out, err := b.env.Runner.Run(b.ctx, Cmd{Argv: []string{"systemctl", "show", unit, "--property=ActiveState", "--value"}, Timeout: 10 * time.Second})
 		if err != nil || out.ExitCode != 0 {
 			continue // (systemd that does not answer is not a package manager at work)
