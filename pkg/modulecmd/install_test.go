@@ -653,3 +653,61 @@ func TestAFileThatAppearsAtAPlaceOfTheModuleAfterTheCheckingSurvivesTheRollback(
 }
 
 var _ = tar.TypeDir
+
+// An install that ends apt-get while it works says that dpkg may need `dpkg --configure -a`, in its last lines; one that was ended before apt-get started, or at another step, does not
+func TestAnInstallEndedWhileAptWorksSaysDpkgMayNeedConfiguring(t *testing.T) {
+	const hint = "dpkg --configure -a is probably needed"
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.runner.onRun = func(_ context.Context, argv []string) {
+		if argv[0] == "apt-get" && argv[1] == "install" {
+			cancel()
+		}
+	}
+	if code := f.main(ctx, "install", testName, "--yes"); code != ExitFailed || !strings.Contains(f.out.String(), hint) {
+		t.Fatalf("interrupted while apt works: %d\n%s", code, f.out)
+	}
+	lines := f.lines()
+	hintAt, keptAt := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, hint) {
+			hintAt = i
+		}
+		if strings.HasPrefix(l, "kept_packages:") {
+			keptAt = i
+		}
+	}
+	if hintAt < 0 || keptAt < hintAt {
+		t.Errorf("the hint is not among the last lines (%d, %d):\n%s", hintAt, keptAt, f.out)
+	}
+	// before apt-get started
+	f = newFixture(t)
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	f.env.StepHook = func(_ context.Context, step, phase string) {
+		if step == StepPackages && phase == "begin" {
+			cancel()
+		}
+	}
+	if code := f.main(ctx, "install", testName, "--yes"); code != ExitFailed || strings.Contains(f.out.String(), hint) {
+		t.Errorf("interrupted before apt-get: %d\n%s", code, f.out)
+	}
+	// apt-get that fails on its own, and an interruption at a later step
+	f = newFixture(t)
+	f.runner.fail["apt-get install"] = 100
+	if code := f.install("--yes"); code != ExitFailed || strings.Contains(f.out.String(), hint) {
+		t.Errorf("apt-get that fails: %d\n%s", code, f.out)
+	}
+	f = newFixture(t)
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	f.env.StepHook = func(_ context.Context, step, phase string) {
+		if step == StepUnits && phase == "begin" {
+			cancel()
+		}
+	}
+	if code := f.main(ctx, "install", testName, "--yes"); code != ExitFailed || strings.Contains(f.out.String(), hint) {
+		t.Errorf("interrupted at the units: %d\n%s", code, f.out)
+	}
+}

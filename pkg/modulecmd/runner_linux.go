@@ -67,14 +67,21 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// groupGone says whether no process is left in the process group.
+func groupGone(pgid int) bool { return errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) }
+
 // runProcess runs exe as c says. It ends with the status of the command, as an Output, or with an error when the command could not be run or was ended by the context.
+//
+// When the context ends, the whole group is asked to stop (SIGTERM) and is given the grace to leave: the leader may go at once and leave dpkg, its child, to finish what it is doing, and
+// dpkg killed in the middle of it is a package manager left interrupted. At the end of the grace what is still there is killed, and so is whatever a command that ended on its own left
+// behind (apt's methods). With no grace (0) the group is killed at once.
 func runProcess(ctx context.Context, exe string, c Cmd, grace time.Duration) (Output, error) {
 	if c.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, exe, c.Argv[1:]...)
+	cmd := exec.Command(exe, c.Argv[1:]...)
 	cmd.Args[0] = c.Argv[0]
 	cmd.Env = c.Env
 	if cmd.Env == nil {
@@ -85,23 +92,7 @@ func runProcess(ctx context.Context, exe string, c Cmd, grace time.Duration) (Ou
 		cmd.Dir = "/"
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var killer *time.Timer
-	cmd.Cancel = func() error {
-		pid := cmd.Process.Pid
-		sig := syscall.SIGTERM
-		if grace == 0 {
-			sig = syscall.SIGKILL
-		} else {
-			killer = time.AfterFunc(grace, func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
-		}
-		if err := syscall.Kill(-pid, sig); err != nil {
-			if errors.Is(err, syscall.ESRCH) {
-				return os.ErrProcessDone
-			}
-			return err
-		}
-		return nil
-	}
+	// once the leader has gone, a child that keeps the output open is waited for two seconds; the group is waited for below, on its own
 	cmd.WaitDelay = 2 * time.Second
 	var kept *boundedBuffer
 	if c.Stdout != nil {
@@ -110,13 +101,30 @@ func runProcess(ctx context.Context, exe string, c Cmd, grace time.Duration) (Ou
 		kept = &boundedBuffer{max: osplan.MaxOutputBytes}
 		cmd.Stdout, cmd.Stderr = kept, kept
 	}
-	err := cmd.Run()
-	if killer != nil {
-		killer.Stop()
-	}
-	// whatever is left of the group is ended with the command: apt's methods are in it
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	err := cmd.Start()
+	if err == nil {
+		pid := cmd.Process.Pid
+		waited := make(chan error, 1)
+		go func() { waited <- cmd.Wait() }()
+		select {
+		case err = <-waited:
+		case <-ctx.Done():
+			asked := time.Now()
+			sig := syscall.SIGTERM
+			if grace == 0 {
+				sig = syscall.SIGKILL
+			}
+			_ = syscall.Kill(-pid, sig)
+			killer := time.AfterFunc(grace, func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+			err = <-waited
+			// ponytail: polling every 50 ms; a zombie that nobody reaps keeps the group "there" for the whole grace
+			for time.Since(asked) < grace && !groupGone(pid) {
+				time.Sleep(50 * time.Millisecond)
+			}
+			killer.Stop()
+		}
+		// whatever is left of the group is ended with the command: apt's methods are in it
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
 	}
 	var out Output
 	if kept != nil {

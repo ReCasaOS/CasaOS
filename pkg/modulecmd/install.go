@@ -109,7 +109,9 @@ type install struct {
 	packages []string
 	// steps done, for the last line and for what the rollback has to undo
 	packagesDone bool
-	unpackBegun  bool
+	// aptStarted is set when apt-get has been started: a run that ends it leaves dpkg in the state it was in
+	aptStarted  bool
+	unpackBegun bool
 	// written is what the unpack put down, set as soon as it returns, and what a rollback deletes: the files and directories of this run and of the earlier install of the module that
 	// was killed, if there was one. It is nil until the lists of that earlier install have been read.
 	written  *written
@@ -253,6 +255,9 @@ func (in *install) failed(step string, f *stepFailure) int {
 			in.say("rolled back")
 		}
 	}
+	if in.aptStarted && step == StepPackages && (f.code == CodeInterrupted || errors.Is(f.err, context.DeadlineExceeded)) {
+		in.say("apt-get was ended while it worked: dpkg --configure -a is probably needed")
+	}
 	in.say("kept_packages: %s", in.keptPackages())
 	return ExitFailed
 }
@@ -278,6 +283,7 @@ func (in *install) stepPackages() *stepFailure {
 		return in.fail(CodePackagesFailed, err)
 	}
 	tail := &tailWriter{Writer: in.toolWriter()}
+	in.aptStarted = true
 	out, err := in.env.Runner.Run(in.ctx, Cmd{Argv: argv, Env: childEnv(in.env), Stdout: tail, Timeout: aptTimeout})
 	switch {
 	case err != nil:
