@@ -56,6 +56,9 @@ var scenarioPackages = map[string][]string{
 	"fresh": {"casaos-mod-a"}, "upgrade": {"casaos-mod-a"}, "held": {"casaos-mod-a"}, "held-named": {"casaos-mod-b"}, "removal": {"casaos-mod-d"}, "missing": {"casaos-mod-zzz"}, "nothing": {"casaos-mod-a"},
 }
 
+// the packages that the box has held in each scenario
+var scenarioHeld = map[string][]string{"held": {"casaos-mod-b"}, "held-named": {"casaos-mod-b"}}
+
 // the outputs of the real apt, as the chroots of Debian 11 (apt 2.2.4) and Debian 12 (apt 2.6.1) gave them, read as the plan reads them
 func TestTheRealOutputsOfAptAreUnderstood(t *testing.T) {
 	for _, chroot := range []string{"debian11", "debian12"} {
@@ -76,7 +79,7 @@ func TestTheRealOutputsOfAptAreUnderstood(t *testing.T) {
 					}
 					return osplan.Output{Text: strings.ReplaceAll(string(text), "\r\n", "\n"), ExitCode: code}
 				}
-				checkScenario(t, scenario, heldFromSolver(osplan.ParseModuleSimulation(read("sim"), read("est"), scenarioPackages[scenario])))
+				checkScenario(t, scenario, heldFromSolver(osplan.ParseModuleSimulation(read("sim"), read("est"), scenarioPackages[scenario]), read("sim").Text, scenarioHeld[scenario]))
 			})
 		}
 	}
@@ -92,6 +95,7 @@ func TestAHeldDependencyRefusesThePlan(t *testing.T) {
 		return strings.ReplaceAll(string(text), "\r\n", "\n")
 	}
 	f := newFixture(t)
+	f.writeFile("/var/lib/dpkg/status", "Package: casaos-mod-b\nStatus: hold ok installed\n")
 	f.sandbox.sim = osplan.Output{Text: read("held.sim.txt"), ExitCode: 100}
 	f.sandbox.est = osplan.Output{Text: read("held.est.txt"), ExitCode: 100}
 	before := f.treeWithoutBookkeeping()

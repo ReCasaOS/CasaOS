@@ -166,6 +166,33 @@ func unmetDependencies(text string) []string {
 	return out
 }
 
+// unmetStop are the words apt says its reasons with in that block, which are not names ("but 1.0 is to be installed or", "but it is not going to be installed").
+var unmetStop = map[string]bool{"but": true, "is": true, "to": true, "be": true, "installed": true, "or": true, "not": true, "installable": true, "it": true, "going": true}
+
+// UnmetNames are the names that the block of unmet dependencies of a simulation that apt could not solve has in it, in the order they come and each once: the package that cannot be
+// installed, what it needs, what it conflicts with (the version of an architecture is the name: "libc6:i386" is "libc6"). Whether one of them is a package that is held is not something
+// apt says in words: it says "you have held broken packages" for a dependency that is not installable at all as well, and the box is asked which of these names are held.
+func UnmetNames(text string) []string {
+	var out []string
+	in := false
+	for _, l := range splitOutput(text) {
+		switch {
+		case l == unmetHeader:
+			in = true
+		case in && strings.HasPrefix(l, " "):
+			for _, w := range strings.FieldsFunc(l, func(r rune) bool { return r == ' ' || r == '\t' || r == '(' || r == ')' || r == ',' || r == '|' }) {
+				w, _, _ = strings.Cut(strings.TrimSuffix(w, ":"), ":")
+				if packageName.MatchString(w) && strings.ContainsAny(w, "abcdefghijklmnopqrstuvwxyz") && !unmetStop[w] && !slices.Contains(out, w) {
+					out = append(out, w)
+				}
+			}
+		default:
+			in = false
+		}
+	}
+	return out
+}
+
 // ParseModuleSimulation reads the outputs of ModuleSimArgv (sim) and ModuleEstimateArgv (estimate) for the packages that were asked about, as what the plan of a module needs of apt: the
 // packages to install and to upgrade, those it would remove or downgrade or finds held, and the sizes. It reads the simulation with ParseSolver, which it shares with the plan of the
 // upgrade, and the sizes with ParseURIEstimate: anything that is not understood is a Failure of the result, never a partial answer. The sizes are Known only if the estimate is the same

@@ -20,7 +20,8 @@ import (
 //
 //	CASAOS_MODULECMD_REAL_BOX="debian:12 fakedep" <this test binary> -test.run TestARealDebianBoxIsPlannedThroughMain
 //
-// The first word is the system the box is (the one the module accepts), the others the packages the module asks for. It is run as root, and as a user that is not.
+// The first word is the system the box is (the one the module accepts), the others the packages the module asks for. It is run as root, and as a user that is not. With
+// CASAOS_MODULECMD_REAL_REFUSED=<code> the plan is expected to be refused with that code (and to have changed nothing), and not to be a plan that passes.
 func TestARealDebianBoxIsPlannedThroughMain(t *testing.T) {
 	spec := strings.Fields(os.Getenv("CASAOS_MODULECMD_REAL_BOX"))
 	if len(spec) < 2 {
@@ -99,8 +100,10 @@ func TestARealDebianBoxIsPlannedThroughMain(t *testing.T) {
 		t.Fatalf("%v\n%s", err, &stdout)
 	}
 	t.Logf("%s", &stdout)
+	wantRefused := os.Getenv("CASAOS_MODULECMD_REAL_REFUSED")
 	for _, c := range plan.Checks {
 		switch {
+		case wantRefused != "":
 		case c.Code == osmodule.CheckBusy && os.Geteuid() != 0:
 			if c.OK || c.Detail == "" || !strings.HasPrefix(c.Detail, osmodule.DetailNotChecked) {
 				t.Errorf("the check of the package manager, as a user that is not root: %+v", c)
@@ -109,10 +112,14 @@ func TestARealDebianBoxIsPlannedThroughMain(t *testing.T) {
 			t.Errorf("the check %s fails: %q", c.Code, c.Detail)
 		}
 	}
-	if plan.Refused != nil {
+	switch {
+	case wantRefused != "":
+		if plan.Refused == nil || *plan.Refused != wantRefused {
+			t.Errorf("the plan is refused with %v, not %s", plan.Refused, wantRefused)
+		}
+	case plan.Refused != nil:
 		t.Errorf("the plan is refused: %s", *plan.Refused)
-	}
-	if plan.PlanID == "" || !plan.Packages.Known {
+	case plan.PlanID == "" || !plan.Packages.Known:
 		t.Errorf("no plan id or no sizes: %+v", plan)
 	}
 	if after := digest(); len(after) != len(before) {

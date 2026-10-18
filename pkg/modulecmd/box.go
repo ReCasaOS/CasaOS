@@ -1,6 +1,7 @@
 package modulecmd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -32,7 +33,9 @@ var casaosUnits = []string{"casaos-update.service", "casaos-package-update.servi
 
 // maintenanceUnits are all the units whose being active says that a package manager is at work: those, and the two that the readiness report of the upgrade of the operating system asks
 // about (the timers of apt that update and upgrade by themselves).
-func maintenanceUnits() []string { return append(slices.Clone(casaosUnits), osreadiness.BusyUnits()...) }
+func maintenanceUnits() []string {
+	return append(slices.Clone(casaosUnits), osreadiness.BusyUnits()...)
+}
 
 // readRegular reads a file that is a regular file and not a link, at most max bytes (more is an error).
 func readRegular(path string, max int64) ([]byte, error) {
@@ -353,14 +356,76 @@ func (b *box) SimulateApt(packages []string) osmodule.AptResult {
 	if err != nil {
 		return failed("apt did not answer")
 	}
-	return heldFromSolver(osplan.ParseModuleSimulation(sim, est, packages))
+	res := osplan.ParseModuleSimulation(sim, est, packages)
+	if res.Failure != osmodule.RefusedAptFailed || !strings.Contains(res.Detail, heldBroken) {
+		return res
+	}
+	held, _ := b.heldPackages() // (what is held cannot be told: the failure stays what it is, with the lines that apt could not meet)
+	return heldFromSolver(res, sim.Text, held)
 }
 
-// heldFromSolver takes the failure of a simulation that apt could not solve because of a held package for what it is. A held package that a dependency needs changed is not one that apt
-// says "will be changed": asked to install, apt says it cannot correct the problems because of the held ones.
-func heldFromSolver(res osmodule.AptResult) osmodule.AptResult {
-	if res.Failure == osmodule.RefusedAptFailed && strings.Contains(res.Detail, "you have held broken packages") {
+// heldBroken is the end of what apt says when it cannot make the changes, whether a package is held or a dependency is not there at all.
+const heldBroken = "you have held broken packages"
+
+// heldFromSolver takes the failure of a simulation that apt could not solve for a held package when one is: apt says "you have held broken packages" for a dependency that is not
+// installable as well, so the failure is a held package's only if a package that the box has held (held) is named in the block of unmet dependencies of the simulation (simText). A held
+// package that a dependency needs changed is not one that apt says "will be changed": asked to install, apt says it cannot correct the problems because of the held ones.
+func heldFromSolver(res osmodule.AptResult, simText string, held []string) osmodule.AptResult {
+	if res.Failure != osmodule.RefusedAptFailed || !strings.Contains(res.Detail, heldBroken) {
+		return res
+	}
+	if slices.ContainsFunc(osplan.UnmetNames(simText), func(name string) bool { return slices.Contains(held, name) }) {
 		res.Failure = osmodule.RefusedHeld
 	}
 	return res
+}
+
+// maxDpkgStatusBytes is the most of the status file of dpkg that is read (the file of a box with thousands of packages has some megabytes).
+const maxDpkgStatusBytes = 128 << 20
+
+// heldPackages are the packages that dpkg holds (apt-mark hold): the stanzas of /var/lib/dpkg/status whose Status says hold. The file is read and nothing is asked of apt, which would
+// build its cache and write it. A file that is missing, is not a regular file, is too large or has a line that is too long is an error: what is held is not known.
+func (b *box) heldPackages() ([]string, error) { return b.heldPackagesWithin(maxDpkgStatusBytes) }
+
+func (b *box) heldPackagesWithin(most int64) ([]string, error) {
+	f, err := os.Open(b.env.Roots.Path(pathDpkgStatus))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > most {
+		return nil, errors.New("the status file of dpkg is not a regular file or is too large")
+	}
+	var held []string
+	var name string
+	var isHeld bool
+	end := func() {
+		if isHeld && name != "" {
+			held = append(held, name)
+		}
+		name, isHeld = "", false
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		switch {
+		case line == "":
+			end()
+		case strings.HasPrefix(line, "Package: "):
+			name = strings.TrimSpace(line[len("Package: "):])
+		case strings.HasPrefix(line, "Status: "):
+			want, _, _ := strings.Cut(strings.TrimSpace(line[len("Status: "):]), " ")
+			isHeld = want == "hold"
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	end()
+	return held, nil
 }

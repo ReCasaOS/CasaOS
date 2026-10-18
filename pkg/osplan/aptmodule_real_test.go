@@ -102,6 +102,47 @@ func TestTheRealOutputOfAptForEachCaseOfAModuleIsReadAsWhatHappens(t *testing.T)
 	}
 }
 
+// the names in the block of unmet dependencies are the ones that can be held: what the real apt says, and not the words it says them with
+func TestTheNamesInTheBlockOfUnmetDependenciesAreNamesAndNothingElse(t *testing.T) {
+	for _, label := range []string{"d11", "d12"} {
+		for name, want := range map[string][]string{
+			"unmet-held":    {"rvm-needs", "rvm-lib"},
+			"unmet-missing": {"rvm-bad", "rvm-nothere"},
+			"trivial":       nil,
+			"nothing":       nil,
+		} {
+			sim, _ := realModuleCase(t, label, name)
+			if got := UnmetNames(sim.Text); !slices.Equal(got, want) {
+				t.Errorf("%s %s: %q, want %q", label, name, got, want)
+			}
+		}
+	}
+}
+
+func TestTheNamesInTheBlockOfUnmetDependenciesAreReadFromTheBlockOnly(t *testing.T) {
+	text := progressLines + `Some packages could not be installed.
+
+The following packages have unmet dependencies:
+ pkg-a : Depends: libfoo1 (>= 2.0) but 1.5 is to be installed or
+                  libfoo2 but it is not going to be installed
+         Breaks: libc6:i386 (< 2.36) but 2.31 is to be installed
+ pkg-b : PreDepends: other-1.2 but it is not installable
+ Pkg-C : Depends: UPPER
+E: Unable to correct problems, you have held broken packages.
+ libvirt0 is on a line that follows the end of the block.
+libvirt0 and held are words of another line.
+`
+	want := []string{"pkg-a", "libfoo1", "libfoo2", "libc6", "pkg-b", "other-1.2"}
+	if got := UnmetNames(text); !slices.Equal(got, want) {
+		t.Errorf("%q, want %q", got, want)
+	}
+	for _, none := range []string{"", progressLines, "The following packages have unmet dependencies:\n", "pkg-a : Depends: x\n", "The following NEW packages will be installed:\n  pkg-a\n"} {
+		if got := UnmetNames(none); len(got) != 0 {
+			t.Errorf("%q: %q", none, got)
+		}
+	}
+}
+
 // solverOf is what ParseSolver reads of a simulation of an install, once the lists that an upgrade does not print are taken out.
 func solverOf(t *testing.T, sim Output) *SolverRun {
 	t.Helper()

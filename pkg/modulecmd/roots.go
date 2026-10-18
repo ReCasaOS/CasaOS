@@ -17,6 +17,7 @@ const (
 	pathGateway      = "/etc/casaos/gateway.ini"
 	pathOSBusy       = "/var/lib/casaos/os-upgrade/busy"
 	pathAptConfD     = "/etc/apt/apt.conf.d"
+	pathDpkgStatus   = "/var/lib/dpkg/status"
 )
 
 // dpkgLocks are the files that apt and dpkg lock while they work.
