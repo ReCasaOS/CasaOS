@@ -20,6 +20,7 @@ import (
 	commonfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
+	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 )
 
 const (
@@ -126,6 +127,14 @@ type systemPackageUpdater struct {
 	// unitSilentSince is when systemd was first seen not answering about the unit of an upgrade of the operating system, in the run of unanswered questions that is going on
 	// (unix nanoseconds); 0 when it answered the last time.
 	unitSilentSince atomic.Int64
+
+	// moduleMu makes the starts of the jobs of the modules take turns: one is started at a time, and the one after it sees it.
+	moduleMu sync.Mutex
+	// moduleEnv is the world the module assistant is run in, in the core's process; nil means the box's own.
+	moduleEnv func() modulecmd.Env
+	// modulePlanSlot lets one plan of a module be made at a time; it is made on first use.
+	modulePlanOnce sync.Once
+	modulePlanSlot chan struct{}
 }
 
 // untranslatedCommand runs a package tool with its output in English. apt translates its

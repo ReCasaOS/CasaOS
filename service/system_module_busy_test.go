@@ -1,0 +1,155 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"path"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
+)
+
+// moduleSystemd is what systemd says to `systemctl show <name or pattern> --property=ActiveState --value`: the state of a unit by name, and for a pattern the state of every unit that
+// matches, one to a line, and nothing for a pattern that matches none. state maps the units that systemd has loaded to their ActiveState; a unit it does not have is inactive.
+func moduleSystemd(state map[string]string) func(context.Context, string, ...string) ([]byte, error) {
+	return func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "systemctl" || len(args) < 2 || args[0] != "show" {
+			return nil, nil
+		}
+		if !strings.ContainsAny(args[1], "*?[") {
+			if s, ok := state[args[1]]; ok {
+				return []byte(s + "\n"), nil
+			}
+			return []byte("inactive\n"), nil
+		}
+		var out strings.Builder
+		// (in the order of the names: a systemd says its units in an order, and a test must not depend on a map's)
+		units := make([]string, 0, len(state))
+		for unit := range state {
+			units = append(units, unit)
+		}
+		sort.Strings(units)
+		for _, unit := range units {
+			s := state[unit]
+			if ok, _ := path.Match(args[1], unit); ok {
+				out.WriteString(s + "\n\n")
+			}
+		}
+		return []byte(out.String()), nil
+	}
+}
+
+func TestTheUnitsOfTheModulesAreAmongTheUnitsThatChangeTheBox(t *testing.T) {
+	found := false
+	for _, unit := range systemMaintenanceUnits {
+		found = found || unit == "casaos-module-*.service"
+	}
+	if !found {
+		t.Fatalf("the units of the modules are not among %v", systemMaintenanceUnits)
+	}
+	// and the name of the unit of a job is one that the pattern matches
+	if ok, _ := path.Match("casaos-module-*.service", systemModuleUnit("virt")); !ok {
+		t.Errorf("the unit %q is not matched by the pattern", systemModuleUnit("virt"))
+	}
+}
+
+func TestAModuleJobKeepsEveryOtherChangeOfTheBoxAway(t *testing.T) {
+	ctx := context.Background()
+	for name, state := range map[string]map[string]string{
+		"a unit that runs":                  {"casaos-module-virt.service": "active"},
+		"a unit that starts":                {"casaos-module-virt.service": "activating"},
+		"a unit that stops":                 {"casaos-module-virt.service": "deactivating"},
+		"two, one of them idle":             {"casaos-module-a.service": "inactive", "casaos-module-b.service": "active"},
+		"a unit of a module of a long name": {"casaos-module-" + strings.Repeat("a", 32) + ".service": "active"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			updater := newTestSystemPackageUpdater(t)
+			updater.command = moduleSystemd(state)
+			updater.dpkgLockState = func() (bool, error) { return false, nil }
+			reason, busy := updater.maintenanceBusy(ctx, "")
+			if !busy || !strings.Contains(reason, "module") {
+				t.Errorf("maintenanceBusy() = %q, %v", reason, busy)
+			}
+			system := &systemService{packageUpdates: updater}
+			if !system.MaintenanceBusy() {
+				t.Error("the automatic updates are not kept away")
+			}
+			if err := system.UpdateSystemVersion("v0.0.0-test"); !errors.Is(err, ErrSystemMaintenanceBusy) {
+				t.Errorf("UpdateSystemVersion() = %v", err)
+			}
+			var started bool
+			updater.start = func(string, string, ...string) ([]byte, error) { started = true; return nil, nil }
+			if _, err := updater.startUpdate(); !errors.Is(err, ErrSystemMaintenanceBusy) || started {
+				t.Errorf("startUpdate() = %v, started = %v", err, started)
+			}
+			// the report of whether the machine could be upgraded, and so the start of the upgrade, see it
+			probe := osReadinessProbe{updater: updater, command: func(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
+				out, err := updater.command(ctx, name, args...)
+				return out, false, err
+			}}
+			var _ osreadiness.Probe = probe
+			if _, busy, err := probe.MaintenanceBusy(ctx); !busy || err != nil {
+				t.Errorf("the readiness report: busy = %v, err = %v", busy, err)
+			}
+		})
+	}
+}
+
+func TestWhatIsNotAModuleJobDoesNotKeepTheBoxAway(t *testing.T) {
+	ctx := context.Background()
+	for name, state := range map[string]map[string]string{
+		"nothing":                  {},
+		"an idle unit":             {"casaos-module-virt.service": "inactive"},
+		"a failed unit":            {"casaos-module-virt.service": "failed"},
+		"a unit of another family": {"casaos-modules-virt.service": "active", "casaos-module.service": "active", "casaos-virt.service": "active", "my-casaos-module-x.service": "active"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			updater := newTestSystemPackageUpdater(t)
+			updater.command = moduleSystemd(state)
+			updater.dpkgLockState = func() (bool, error) { return false, nil }
+			if reason, busy := updater.maintenanceBusy(ctx, ""); busy {
+				t.Errorf("maintenanceBusy() = %q", reason)
+			}
+		})
+	}
+	// systemd that does not answer is not a reason to refuse, as for every unit
+	updater := newTestSystemPackageUpdater(t)
+	updater.command = func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("no bus") }
+	if _, busy := updater.maintenanceBusy(ctx, ""); busy {
+		t.Error("a systemd that is silent counted as busy")
+	}
+}
+
+// The upgrade of the operating system, the update of Docker and the update of packages do not start while a job of a module runs.
+func TestTheStartsOfTheOtherChangesWaitForAJobOfAModule(t *testing.T) {
+	// the upgrade
+	box := newUpgradeBox(t)
+	box.stubStart()
+	_, plan := box.aMachineThatCanStart()
+	box.updater.command = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "systemctl" && len(args) > 1 && args[0] == "show" && args[1] == systemModuleUnits {
+			return []byte("active\n"), nil
+		}
+		return box.command(ctx, name, args...)
+	}
+	_, err := box.StartSystemOSUpgrade(box.aGoodRequest(plan))
+	if refusal := refusalOf(t, err); refusal.Code != OSUpgradeBusy {
+		t.Errorf("the upgrade: %+v", refusal)
+	}
+	box.assertNothingChanged(nil)
+
+	// the update of Docker
+	updater := newTestSystemPackageUpdater(t)
+	updater.command = moduleSystemd(map[string]string{"casaos-module-virt.service": "active"})
+	updater.dpkgLockState = func() (bool, error) { return false, nil }
+	updater.dpkgLocked = func() bool { return false }
+	var started bool
+	updater.start = func(string, string, ...string) ([]byte, error) { started = true; return nil, nil }
+	_, err = updater.startDockerUpdate(strings.Repeat("a", 64), false)
+	var refusal *DockerUpdateRefusal
+	if !errors.As(err, &refusal) || refusal.Code != DockerRefusalMaintenance || started {
+		t.Errorf("the update of Docker: %v, started = %v", err, started)
+	}
+}
