@@ -416,11 +416,13 @@ func TestAStartWaitsForTheStartsBeforeItNoLongerThanItsRequest(t *testing.T) {
 	over, cancelOver := context.WithCancel(context.Background())
 	cancelOver()
 	before := b.tree()
-	if _, err := b.system.StartSystemModuleInstall(over, "virt", plan.PlanID); moduleRefusalOf(t, err).Code != ModuleBusy {
-		t.Errorf("a request that is over: %v", err)
-	}
-	if _, err := b.system.StartSystemModuleRemove(over, "virt"); moduleRefusalOf(t, err).Code != ModuleBusy {
-		t.Errorf("a request that is over: %v", err)
+	for i := 0; i < 20; i++ { // (a turn that is free and a request that is over are both ready: the choice must not be left to chance)
+		if _, err := b.system.StartSystemModuleInstall(over, "virt", plan.PlanID); moduleRefusalOf(t, err).Code != ModuleBusy {
+			t.Fatalf("a request that is over: %v", err)
+		}
+		if _, err := b.system.StartSystemModuleRemove(over, "virt"); moduleRefusalOf(t, err).Code != ModuleBusy {
+			t.Fatalf("a request that is over: %v", err)
+		}
 	}
 	if len(b.startedUnits()) != 0 {
 		t.Error("a unit was started")
@@ -551,5 +553,21 @@ func TestAnEmptyLogIsAJobThatIsStartingAndKeepsAnotherAway(t *testing.T) {
 				t.Errorf("a log that nothing is writing keeps a start away: %v", err)
 			}
 		})
+	}
+}
+
+// A box that is busy is told so at the first look: the plan, which takes the time of apt, is not made for a start that is refused anyway.
+func TestABusyBoxIsToldSoBeforeThePlanIsMade(t *testing.T) {
+	b := newModuleBox(t)
+	plan := b.planned("virt")
+	var calls atomic.Int64
+	b.env.Runner = hookRunner{inner: b.env.Runner, calls: &calls, fn: func() {}}
+	b.setUnit(systemPackageUpdateUnit, "active")
+	_, err := b.system.StartSystemModuleInstall(context.Background(), "virt", plan.PlanID)
+	if refusal := moduleRefusalOf(t, err); refusal.Code != ModuleBusy {
+		t.Fatalf("refused with %+v", refusal)
+	}
+	if calls.Load() != 0 {
+		t.Errorf("the plan asked the assistant's runner %d times for a start that the first look refused", calls.Load())
 	}
 }

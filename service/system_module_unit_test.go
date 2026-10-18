@@ -150,8 +150,8 @@ func TestTheUnitIsGivenTheseThreePropertiesAndNoOther(t *testing.T) {
 	if got := int(systemModuleStopTimeout / time.Second); got != 420 {
 		t.Errorf("TimeoutStopSec is %d, the tests and the doc say 420", got)
 	}
-	if modulecmd.StopWithin < 5*time.Minute+20*time.Second {
-		t.Errorf("the assistant is given only %v to stop: its rollback has 5 minutes and a command is given 20 seconds to leave", modulecmd.StopWithin)
+	if modulecmd.StopWithin < 5*time.Minute+40*time.Second {
+		t.Errorf("the assistant is given only %v to stop: its rollback has 5 minutes, and the command that it is in and the one that ends the rollback are given 20 seconds each to leave", modulecmd.StopWithin)
 	}
 }
 
