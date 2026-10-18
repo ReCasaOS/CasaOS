@@ -6,9 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
-
-	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 )
 
 // Run is `casaos module ...` as the core's main runs it: args are what follows "module". It ends a run on SIGTERM and SIGINT the way a failure ends it (the step it is in fails with
@@ -64,13 +63,25 @@ func emit(env Env, v any, err error) int {
 	return ExitOK
 }
 
+// distributionVersion is the release of the distribution that is installed, as the installer wrote it to /var/lib/casaos/fork-release, and "" when the file is not there, is not a regular
+// file, is longer than a release is or is blank: a release that is not known is not made up (version.CurrentVersion() falls back to the release this binary was built for, which says a
+// box that has no marker is one that has just been installed with the release of the binary, and an assistant that installs a module on a box must not guess). What is in the file is not
+// judged here: the plan takes a release that it cannot read for an unknown one.
+func distributionVersion(roots Roots) string {
+	raw, err := readRegular(roots.Path(pathForkRelease), 64)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 // Production is the Env of a box: the real file system, commands, network and clock.
 func Production() Env {
 	env := Env{
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 		Getenv: os.Getenv, EUID: os.Geteuid,
-		// the release of the distribution (the one min_recasaos is a number of), not the version of this component
-		Arch: runtime.GOARCH, Version: version.CurrentVersion(),
+		// the release of the distribution (the one min_recasaos is a number of), not the version of this component, and not the release that this binary was built for either
+		Arch: runtime.GOARCH, Version: distributionVersion(Roots{}),
 		Download: NewHTTPDownloader(),
 		Clock:    realClock{},
 		Host:     newHost(),

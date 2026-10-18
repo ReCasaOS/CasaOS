@@ -18,6 +18,7 @@ const (
 	pathOSBusy       = "/var/lib/casaos/os-upgrade/busy"
 	pathAptConfD     = "/etc/apt/apt.conf.d"
 	pathDpkgStatus   = "/var/lib/dpkg/status"
+	pathForkRelease  = "/var/lib/casaos/fork-release"
 )
 
 // dpkgLocks are the files that apt and dpkg lock while they work.

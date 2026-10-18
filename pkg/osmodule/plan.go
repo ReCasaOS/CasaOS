@@ -181,8 +181,17 @@ func SystemChecks(e Entry, s System) []Check {
 	return []Check{
 		{Code: CheckOS, OK: osOK, Detail: detail(osOK, "unsupported "+s.OSID+":"+s.OSVersion)},
 		{Code: CheckArch, OK: assetOK, Detail: detail(assetOK, "no archive for "+s.Arch)},
-		{Code: CheckReCasaOS, OK: versionOK, Detail: detail(versionOK, "have "+s.ReCasaOS+" need "+e.Manifest.MinReCasaOS)},
+		{Code: CheckReCasaOS, OK: versionOK, Detail: detail(versionOK, releaseWords(s.ReCasaOS, haveOK, e.Manifest.MinReCasaOS))},
 	}
+}
+
+// releaseWords is what the check of the release says when it fails: the release that the box has and the one that is needed, or "unknown" for a box whose release is not known (the marker
+// of the installer is not there, or does not hold a release): that is not a release that is too old.
+func releaseWords(have string, haveOK bool, need string) string {
+	if !haveOK {
+		return "unknown"
+	}
+	return "have " + have + " need " + need
 }
 
 // PackagesFor are the packages a module needs on an architecture: the common ones and the architecture's, sorted, none twice.

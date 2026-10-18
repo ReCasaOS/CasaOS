@@ -105,6 +105,14 @@ func TestTheWordsOfTheChecksOfTheSystem(t *testing.T) {
 			t.Errorf("%s: %+v", ch.Code, ch)
 		}
 	}
+	// a release that the box does not know, or that is not one, is not a release that is too old: it is unknown
+	for _, release := range []string{"", "latest", "0.5", "0.5.x", "v0.5.23; id", "0.5.23.1", " "} {
+		for _, ch := range SystemChecks(e, System{OSID: "debian", OSVersion: "12", Arch: "amd64", ReCasaOS: release}) {
+			if ch.Code == CheckReCasaOS && (ch.OK || ch.Detail != "unknown") {
+				t.Errorf("release %q: %+v", release, ch)
+			}
+		}
+	}
 	// ...and in a plan
 	box := newBox()
 	box.osVersion, box.version = "11", "0.5.22"

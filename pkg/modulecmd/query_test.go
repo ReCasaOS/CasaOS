@@ -14,7 +14,6 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
-	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 )
 
 func (f *fixture) json(args ...string) map[string]any {
@@ -498,11 +497,15 @@ func TestTheBoxSaysBusyWhenAnythingAtAllIsUnclear(t *testing.T) {
 // the release that min_recasaos is a number of is the distribution's, which the installer writes in /var/lib/casaos/fork-release, and not the version of the core
 func TestProductionAsksTheReleaseOfTheDistribution(t *testing.T) {
 	env := Production()
-	if env.Version != version.CurrentVersion() {
-		t.Errorf("version %q, the distribution's is %q", env.Version, version.CurrentVersion())
+	if env.Version != distributionVersion(Roots{}) {
+		t.Errorf("version %q, the distribution's is %q", env.Version, distributionVersion(Roots{}))
 	}
 	if env.Version == common.VERSION {
 		t.Errorf("the version of the core: %q", env.Version)
+	}
+	// ...and not the release this binary was built for when the box has no marker (version.CurrentVersion() says that one)
+	if _, err := os.Stat(common.FORK_RELEASE_FILE); err != nil && env.Version != "" {
+		t.Errorf("a box with no marker has the release %q", env.Version)
 	}
 	if env.Roots.Prefix != "" || env.Getenv == nil || env.EUID == nil || env.Download == nil || env.Clock == nil || env.Host == nil || env.Terminal == nil {
 		t.Errorf("not wired: %+v", env)
