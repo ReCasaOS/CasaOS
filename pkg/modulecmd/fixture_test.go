@@ -378,6 +378,10 @@ type fakeRunner struct {
 	said map[string]string
 	// errs maps the start of a command to the error the runner gives for it: a command that could not be run
 	errs map[string]error
+	// audits are the answers of the next `dpkg --audit` commands, one for each; when they are used the answer is an empty one (a clean dpkg)
+	audits []string
+	// last is the last command that was run for each command line (its environment, its Finish)
+	last map[string]Cmd
 }
 
 func newFakeRunner() *fakeRunner {
@@ -390,6 +394,10 @@ func (r *fakeRunner) Run(ctx context.Context, c Cmd) (Output, error) {
 	}
 	r.mu.Lock()
 	r.calls = append(r.calls, slices.Clone(c.Argv))
+	if r.last == nil {
+		r.last = map[string]Cmd{}
+	}
+	r.last[strings.Join(c.Argv, " ")] = c
 	onRun := r.onRun
 	r.mu.Unlock()
 	if onRun != nil {
@@ -413,6 +421,11 @@ func (r *fakeRunner) Run(ctx context.Context, c Cmd) (Output, error) {
 			}
 			return Output{ExitCode: code, Text: r.said[prefix]}, nil
 		}
+	}
+	if cmd == "dpkg --audit" && len(r.audits) > 0 {
+		text := r.audits[0]
+		r.audits = r.audits[1:]
+		return Output{Text: text}, nil
 	}
 	say := func(text string) (Output, error) {
 		if c.Stdout != nil {

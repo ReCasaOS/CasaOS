@@ -36,6 +36,10 @@ type Cmd struct {
 	Dir     string
 	Stdout  io.Writer
 	Timeout time.Duration
+	// Finish, when set, is how long a command that is asked to stop (its context ends) is first given to finish what it is doing and leave on its own: it is sent SIGINT, and nothing else
+	// until the time is up or the command has left. apt-get answers SIGINT by finishing the dpkg run it is in (SIGTERM kills apt-get, and dpkg, whose status pipe it was, dies on SIGPIPE
+	// between two packages). What is still there when the time is up is stopped as for any command (SIGTERM, the grace, SIGKILL).
+	Finish time.Duration
 }
 
 // A Runner runs commands (apt-get, systemctl). A command that ran and ended with a status is an Output, whatever the status is; one that could not be run, or that was ended by its

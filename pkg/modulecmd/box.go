@@ -325,6 +325,15 @@ func (b *box) OSUpgradeBusy() (bool, error) {
 	return true, err
 }
 
+// DpkgAudit asks dpkg --audit, which reads and writes nothing.
+func (b *box) DpkgAudit() ([]string, error) {
+	names, err := dpkgAudit(b.ctx, *b.env)
+	if errors.Is(err, osreadiness.ErrToolMissing) {
+		return nil, osmodule.ErrDpkgMissing
+	}
+	return names, err
+}
+
 func (b *box) FreeBytes(path string) (int64, error) {
 	return b.env.Host.FreeBytes(b.env.Roots.Path(path))
 }

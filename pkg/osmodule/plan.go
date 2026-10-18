@@ -25,6 +25,7 @@ const (
 	CheckInstalled   = "already_installed"
 	CheckForeignUnit = "foreign_unit"
 	CheckBusy        = "busy"
+	CheckDpkgState   = "dpkg_state"
 	CheckDisk        = "disk"
 	CheckApt         = "apt"
 )
@@ -55,6 +56,9 @@ const DetailNeedsRoot = DetailNotChecked + ": needs root, the install checks it 
 // ErrNeedsRoot is what a Box answers when it cannot tell whether a package manager holds the machine because the user is not root (and not for another reason): the plan does not take it for
 // a machine that is busy, nor for one that is not.
 var ErrNeedsRoot = errors.New("needs root")
+
+// ErrDpkgMissing is what a Box answers when there is no dpkg to ask: the check of the state of dpkg was not made.
+var ErrDpkgMissing = errors.New("dpkg is not there")
 
 // maxAptDetail is the most characters of what apt says when it could not make an answer, as the apt check shows it: more than the other checks, because it is where the lines that name
 // what could not be met are (the others say a name or a number).
@@ -111,6 +115,9 @@ type Box interface {
 	// read so that a flag that cannot be read is an error).
 	PackageManagerBusy() (bool, error)
 	OSUpgradeBusy() (bool, error)
+	// DpkgAudit is the packages that dpkg says it has not finished (dpkg --audit: unpacked and not configured, half installed, ...), none for a dpkg that is in a state it can go on from.
+	// It reads and takes no lock. ErrDpkgMissing when there is no dpkg to ask; any other error when it gave no answer.
+	DpkgAudit() ([]string, error)
 	// FreeBytes is the room on the file system that holds a path (the nearest directory that exists).
 	FreeBytes(path string) (int64, error)
 	// AptGetExists says whether apt-get is there.
@@ -229,7 +236,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 	entry, found := cat.Find(name)
 	if !found {
 		r.Checks = []Check{{Code: CheckCatalogue, Detail: "not_in_catalogue"}}
-		for _, code := range []string{CheckOS, CheckArch, CheckReCasaOS, CheckInstalled, CheckForeignUnit, CheckBusy, CheckDisk, CheckApt} {
+		for _, code := range []string{CheckOS, CheckArch, CheckReCasaOS, CheckInstalled, CheckForeignUnit, CheckBusy, CheckDpkgState, CheckDisk, CheckApt} {
 			r.Checks = append(r.Checks, notChecked(code))
 		}
 		r.Refused = CheckCatalogue
@@ -243,7 +250,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 	r.Archive.URL = asset.URL
 
 	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
-	checks = append(checks, installedCheck(box, entry), foreignUnitCheck(box, entry), busyCheck(box))
+	checks = append(checks, installedCheck(box, entry), foreignUnitCheck(box, entry), busyCheck(box), dpkgCheck(box))
 	standing := !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK && !c.skipped })
 
 	packages := PackagesFor(entry.Manifest, arch)
@@ -398,6 +405,22 @@ func busyCheck(box Box) Check {
 		return Check{Code: CheckBusy, Detail: DetailNeedsRoot, skipped: true}
 	}
 	return Check{Code: CheckBusy, OK: true}
+}
+
+// dpkgCheck says what dpkg --audit finds. A dpkg that lists packages it has not finished (it was interrupted) is not ok and says which ones, but is not the reason of a refusal: the install
+// finishes them itself (dpkg --configure -a) before it asks apt for anything, and a refusal here would keep the dashboard from ever starting that install. A dpkg that cannot be asked is a
+// refusal (dpkg_state), and a box without dpkg a check that was not made (the check of the system has already refused it).
+func dpkgCheck(box Box) Check {
+	names, err := box.DpkgAudit()
+	switch {
+	case errors.Is(err, ErrDpkgMissing):
+		return Check{Code: CheckDpkgState, Detail: DetailNotChecked + ": dpkg is not there", skipped: true}
+	case err != nil:
+		return Check{Code: CheckDpkgState, Detail: "unreadable"}
+	case len(names) > 0:
+		return Check{Code: CheckDpkgState, Detail: "interrupted: " + clipTo(strings.Join(names, " "), maxAptDetail), skipped: true}
+	}
+	return Check{Code: CheckDpkgState, OK: true}
 }
 
 // diskCheck is ok when both file systems have room for what the install writes there. Anything the plan cannot tell (the sizes of apt, the room of a path) is not ok: it is not room.
