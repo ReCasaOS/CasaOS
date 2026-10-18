@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
@@ -50,11 +51,21 @@ func TestARemoveSyncsTheDirectoriesAfterItHasDeletedFromThem(t *testing.T) {
 		f.env.Roots.state():               {f.path(filesList), f.path(dirsList), f.path("/var/lib/casaos/modules/virt.version")},
 	}
 	synced := map[string]bool{}
+	state := f.env.Roots.state()
+	var stateSyncs []string // what the state directory had in it each time it was synced
 	s.check = func(dir string) {
+		if dir == state {
+			// (synced once after the manifest and the version are gone, and again after the lists are: the first time the lists are still there)
+			switch {
+			case !exists(f.path("/var/lib/casaos/modules/virt.version")) && exists(f.path(filesList)):
+				stateSyncs = append(stateSyncs, "version gone")
+			case !exists(f.path(filesList)) && !exists(f.path(dirsList)):
+				stateSyncs = append(stateSyncs, "lists gone")
+			}
+		}
 		for _, p := range gone[dir] {
 			if exists(p) {
-				// (the state directory is synced once after the manifest and again after the lists: the first time the lists are still there)
-				if dir != f.env.Roots.state() {
+				if dir != state {
 					t.Errorf("%s is synced while %s is still there", dir, p)
 				}
 				return
@@ -69,6 +80,9 @@ func TestARemoveSyncsTheDirectoriesAfterItHasDeletedFromThem(t *testing.T) {
 		if !synced[dir] {
 			t.Errorf("%s was not synced after what was in it was deleted (%v)", dir, s.events)
 		}
+	}
+	if strings.Join(stateSyncs, ", ") != "version gone, lists gone" {
+		t.Errorf("the state was synced: %v", stateSyncs)
 	}
 }
 

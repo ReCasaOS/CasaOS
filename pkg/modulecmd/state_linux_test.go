@@ -173,10 +173,12 @@ func TestADirectoryThatIsNotSafeIsNotUsed(t *testing.T) {
 		"the area of the download is a link":               {tmp, link},
 		"the area of the download can be written by all":   {tmp, mode(0o777)},
 		"the area of the download is written by its group": {tmp, mode(0o775)},
+		"the area of the download is written by others":    {tmp, mode(0o757)},
 		"the area of the download is another user's":       {tmp, another},
 		"the state is a link":                              {state, link},
 		"the state can be written by all":                  {state, mode(0o777)},
 		"the state is written by its group":                {state, mode(0o775)},
+		"the state is written by others":                   {state, mode(0o757)},
 		"the state is another user's":                      {state, another},
 	} {
 		for _, verb := range []string{"install", "remove"} {

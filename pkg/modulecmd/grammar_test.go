@@ -109,8 +109,8 @@ func checkGrammar(t *testing.T, f *fixture, exit int, remove, early bool, logBef
 				t.Errorf("%s failed and the result says %s:\n%s", name, step, out)
 			}
 		}
-		if undo == "rollback_incomplete" && !strings.Contains(out, "rollback incomplete") {
-			t.Errorf("an incomplete rollback that is not said:\n%s", out)
+		if (undo == "rollback_incomplete") != strings.Contains(out, "rollback incomplete") {
+			t.Errorf("the result says %q and the sentences do not agree:\n%s", undo, out)
 		}
 	case ExitOK:
 		if step != "done" || code != "-" || undo != "-" || ended["done"] != "done" {

@@ -99,7 +99,7 @@ func TestTheRunnerEndsWhatACommandLeftRunningWhenItEndedOnItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pid := atoi(strings.TrimSpace(string(raw))); alive(pid) {
+	if pid := atoi(strings.TrimSpace(string(raw))); stillAlive(pid) {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 		t.Errorf("the process %d that the command left is running", pid)
 	}

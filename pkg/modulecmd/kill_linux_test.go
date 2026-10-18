@@ -245,7 +245,7 @@ func TestASigtermEndsTheCommandThatIsRunning(t *testing.T) {
 				t.Fatalf("the stub did not say who sleeps: %v", err)
 			}
 			for _, pid := range strings.Fields(string(sleepers)) {
-				if alive(atoi(pid)) {
+				if stillAlive(atoi(pid)) {
 					t.Errorf("the process %s of the stub is left running", pid)
 				}
 			}
@@ -308,6 +308,17 @@ func TestARealInstallRunsTheCommandsWithAnEnvironmentOfTheirOwn(t *testing.T) {
 	if !strings.Contains(string(log), "| "+resultMarker+" - virt ok done - - 2000-01-01T00:00:00Z\n") || !strings.Contains(string(log), "| "+stepMarker+" - virt route done 2000-01-01T00:00:00Z\n") {
 		t.Errorf("the stub's own lines that look like markers are not in the log, behind \"| \":\n%s", log)
 	}
+}
+
+// stillAlive says whether a process is running two seconds after it was told to end: a signal takes a moment to be delivered, and a zombie that nobody has waited for yet is gone
+func stillAlive(pid int) bool {
+	for range 40 {
+		if !alive(pid) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return true
 }
 
 // alive says whether a process is running (a zombie is not)

@@ -705,6 +705,12 @@ func TestAnInstallEndedWhileAptWorksSaysDpkgMayNeedConfiguring(t *testing.T) {
 	if code := f.main(ctx, "install", testName, "--yes"); code != ExitFailed || strings.Contains(f.out.String(), hint) {
 		t.Errorf("interrupted before apt-get: %d\n%s", code, f.out)
 	}
+	// apt-get that was ended by its own timeout
+	f = newFixture(t)
+	f.runner.errs["apt-get install"] = context.DeadlineExceeded
+	if code := f.install("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), hint) {
+		t.Errorf("apt-get that timed out: %d\n%s", code, f.out)
+	}
 	// apt-get that fails on its own, and an interruption at a later step
 	f = newFixture(t)
 	f.runner.fail["apt-get install"] = 100

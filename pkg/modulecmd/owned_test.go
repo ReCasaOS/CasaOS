@@ -273,3 +273,21 @@ func TestAFileBeingReplacedIsInTheListWithBothContents(t *testing.T) {
 		t.Errorf("the list at the end: %+v", e)
 	}
 }
+
+// A directory where a file was is somebody's: a remove leaves it, and says so, and is not stopped by it
+func TestADirectoryWhereAFileWasIsLeftByARemove(t *testing.T) {
+	f := installed(t)
+	p := f.path("/usr/bin/casaos-virt-management")
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(p+"/precious", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code := f.remove("--yes"); code != ExitOK {
+		t.Fatalf("exit %d\n%s", code, f.out)
+	}
+	if !exists(p+"/precious") || !strings.Contains(f.out.String(), "left: /usr/bin/casaos-virt-management (changed)\n") {
+		t.Errorf("the directory was deleted, or it is not said:\n%s", f.out)
+	}
+}

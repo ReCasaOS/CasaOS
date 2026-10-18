@@ -80,6 +80,11 @@ func TestAListOfTheEarlierFormatIsUnverified(t *testing.T) {
 func TestAListThatRecordsTheContentsIsStrict(t *testing.T) {
 	const h = FilesHeader + "\n"
 	good := "f " + sumA + " /usr/bin/a\n"
+	// a first line alone is a list that was cut short, and is said so
+	var cut *Invalid
+	if _, err := ParseFilesList([]byte(h)); !errors.As(err, &cut) || cut.Reason != ReasonMissing {
+		t.Errorf("a first line alone: %v", err)
+	}
 	for name, raw := range map[string]string{
 		"nothing after the first line":    h,
 		"a first line only, no new line":  FilesHeader,
