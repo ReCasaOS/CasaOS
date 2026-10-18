@@ -232,7 +232,7 @@ func TestTheNameOfTheMachineIsWrittenOnceInR0AndNowhereElse(t *testing.T) {
 
 func TestTheTextOfTheRefreshRestartsNothingAndTracesNothingAndReadsNoTerminalAndRunsOnlyKnownCommands(t *testing.T) {
 	banned := []string{"reboot", "shutdown", "poweroff", "halt", "telinit", "init", "kexec"}
-	known := map[string]string{"trap": "the class of a stop", "osu_exit": "a function of the prologue", "sync": "the marker of the point of no return", "no_removals": "a function of R2"}
+	known := map[string]string{"trap": "the class of a stop", "osu_exit": "a function of the prologue", "sync": "the marker of the point of no return", "no_removals": "a function of R2", "tee": "R2 shows what the download prints and keeps it (coreutils)"}
 	for k, v := range knownCommandWords {
 		known[k] = v
 	}

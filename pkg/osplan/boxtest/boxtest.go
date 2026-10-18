@@ -115,7 +115,7 @@ case "$*" in
     n=$(cat "$FAKE/sim.n" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$FAKE/sim.n"
     if [ -f "$FAKE/sim-fails-$n" ]; then echo "E: Unable to correct problems, you have held broken packages."; exit 100; fi
     if [ -f "$FAKE/sim$n.txt" ]; then cat "$FAKE/sim$n.txt"; else cat "$FAKE/sim.txt"; fi ;;
-  *--download-only*) if [ -f "$FAKE/download-fails" ]; then exit 100; fi ;;
+  *--download-only*) if [ -f "$FAKE/download-says.txt" ]; then cat "$FAKE/download-says.txt"; fi; if [ -f "$FAKE/download-fails" ]; then exit 100; fi ;;
   *"-s -f install"*)
     if [ -f "$FAKE/fixsim-fails" ]; then echo "E: Unmet dependencies."; exit 100; fi
     if [ -f "$FAKE/fixsim.txt" ]; then cat "$FAKE/fixsim.txt"; else cat "$FAKE/sim.txt"; fi ;;

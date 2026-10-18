@@ -2,6 +2,7 @@ package osrun
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -84,11 +85,21 @@ func HintOf(detailLine string) string {
 			}
 		}
 	}
+	if securityGapLine.MatchString(detailLine) {
+		return HintSecurityArchiveGap
+	}
 	return ""
 }
 
+// securityGapLine is the line of R2 for a 404 of the security mirror of Debian 11: security.debian.org, or deb.debian.org and its aliases (cdn-fastly.deb.debian.org...).
+var securityGapLine = regexp.MustCompile(`^STOP: the download did not go through: (security\.debian\.org|([A-Za-z0-9-]+\.)*deb\.debian\.org) answered 404 Not Found`)
+
 // HintReleaseInfoChange is the hint for a repository whose release information changed.
 const HintReleaseInfoChange = "releaseinfo_change"
+
+// HintSecurityArchiveGap is the hint for a refresh whose download got 404 from security.debian.org: the security mirror of Debian 11 lists files that now live on archive.debian.org,
+// and a line of the sources that the refresh did not recognise still points at it.
+const HintSecurityArchiveGap = "security_archive_gap"
 
 // ActionsFor is the buttons that are valid for a state now, in the order of ActionNames. The server decides, and the page
 // shows exactly these; whether the feature is switched on does not change them. A button that the state alone cannot

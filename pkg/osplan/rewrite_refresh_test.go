@@ -106,8 +106,9 @@ func TestARefreshAddsNoFirmwareAndKeepsBackports(t *testing.T) {
 		"deb http://security.debian.org bullseye/updates main\n" +
 		"deb-src [arch=amd64 signed-by=/usr/share/keyrings/k.gpg] http://deb.debian.org/debian bullseye-updates main non-free # the sources\n"
 	out := mustRewriteRefresh(t, file("sources.list", in))
-	if got := treeOf(out)["sources.list"]; got != in {
-		t.Errorf("the lines are not kept as they are:\n%s\nwant\n%s", got, in)
+	moved := strings.NewReplacer("http://security.debian.org/debian-security bullseye-security", "http://archive.debian.org/debian-security bullseye-security", "http://security.debian.org bullseye/updates", "http://archive.debian.org/debian-security bullseye-security").Replace(in)
+	if got := treeOf(out)["sources.list"]; got != moved {
+		t.Errorf("the lines are not kept as they are, but for the security ones:\n%s\nwant\n%s", got, moved)
 	}
 	if strings.Contains(treeOf(out)["sources.list"], "non-free-firmware") || out.FirmwareAdded != 0 || out.DroppedBackports != 0 {
 		t.Errorf("firmware %d, dropped %d", out.FirmwareAdded, out.DroppedBackports)
@@ -291,7 +292,7 @@ func TestPropertiesOfTheRefreshRewriteOverRandomSources(t *testing.T) {
 				continue
 			}
 			outRepos++
-			if line != strings.TrimRight(inLines[i], " \t") {
+			if orig := strings.TrimRight(inLines[i], " \t"); line != orig && !movedToTheArchive(orig, line) {
 				t.Fatalf("seed %d: a line that was kept is not as it was: %q, was %q", seed, line, inLines[i])
 			}
 			if strings.Contains(strings.SplitN(line, "#", 2)[0], "bookworm") {
@@ -303,6 +304,150 @@ func TestPropertiesOfTheRefreshRewriteOverRandomSources(t *testing.T) {
 		}
 		if outRepos != keptByHand || pausedLines != len(out.Paused) {
 			t.Fatalf("seed %d: %d kept, %d expected, %d paused comments, %d paused\n%s\n--\n%s", seed, outRepos, keptByHand, pausedLines, len(out.Paused), text, tree)
+		}
+	}
+}
+
+// movedToTheArchive says whether after is before with its security address and suite replaced by the archive's: what follows the suite (components, comment) is the same.
+func movedToTheArchive(before, after string) bool {
+	rest := func(s string, suites ...string) ([]string, bool) {
+		f := strings.Fields(s)
+		for i, w := range f {
+			if slices.Contains(suites, w) {
+				return f[i+1:], true
+			}
+		}
+		return nil, false
+	}
+	if !strings.Contains(after, " http"+securityArchiveHost+" bullseye-security") && !strings.Contains(after, " https"+securityArchiveHost+" bullseye-security") {
+		return false
+	}
+	want, ok := rest(after, "bullseye-security")
+	got, ok2 := rest(before, "bullseye-security", "bullseye/updates")
+	return ok && ok2 && slices.Equal(got, want)
+}
+
+// The security archive of Debian 11: its index on security.debian.org (and on deb.debian.org/debian-security) still lists packages whose files were moved to
+// archive.debian.org/debian-security, so a download from them stops with 404 (seen on a real box, and again with apt 2.2.4 in a root of Debian 11.11: chroot-d11-refresh-security-404-download).
+// The refresh writes the line it gives apt (the owner's own file is never changed) with the archive's address, as the archive serves the same Release file with the same key
+// and no Valid-Until (testdata/real/archive-bullseye-security-inrelease-head.txt, chroot-d11-refresh-archive-update, chroot-d11-refresh-archive-download).
+func TestARefreshReadsTheSecurityArchiveOfBullseyeFromTheArchive(t *testing.T) {
+	const arch = "http://archive.debian.org/debian-security bullseye-security"
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{"http with the path", "deb http://security.debian.org/debian-security bullseye-security main\n", "deb " + arch + " main\n"},
+		{"https keeps https", "deb https://security.debian.org/debian-security bullseye-security main\n", "deb https://archive.debian.org/debian-security bullseye-security main\n"},
+		{"an alias of the mirror", "deb http://cdn-fastly.deb.debian.org/debian-security bullseye-security main\n", "deb " + arch + " main\n"},
+		{"an alias of the mirror, https", "deb https://cdn-aws.deb.debian.org/debian-security/ bullseye-security main\n", "deb https://archive.debian.org/debian-security bullseye-security main\n"},
+		{"a name that ends like the mirror", "deb http://evil-deb.debian.org/debian-security bullseye-security main\n", "deb http://evil-deb.debian.org/debian-security bullseye-security main\n"},
+		{"a slash at the end", "deb http://security.debian.org/debian-security/ bullseye-security main\n", "deb " + arch + " main\n"},
+		{"without the path", "deb http://security.debian.org bullseye-security main\n", "deb " + arch + " main\n"},
+		{"without the path and a slash", "deb http://security.debian.org/ bullseye-security main\n", "deb " + arch + " main\n"},
+		{"the old form of the suite", "deb http://security.debian.org bullseye/updates main contrib\n", "deb " + arch + " main contrib\n"},
+		{"the old form with the path", "deb http://security.debian.org/debian-security bullseye/updates main\n", "deb " + arch + " main\n"},
+		{"deb-src", "deb-src http://security.debian.org/debian-security bullseye-security main\n", "deb-src " + arch + " main\n"},
+		{"the components are kept", "deb http://security.debian.org/debian-security bullseye-security main contrib non-free\n", "deb " + arch + " main contrib non-free\n"},
+		{"the options and the comment are kept", "deb [arch=amd64 signed-by=/usr/share/keyrings/k.gpg] http://security.debian.org/debian-security bullseye-security main # sec\n", "deb [arch=amd64 signed-by=/usr/share/keyrings/k.gpg] " + arch + " main # sec\n"},
+		{"the host in capitals", "deb http://SECURITY.Debian.org/debian-security bullseye-security main\n", "deb " + arch + " main\n"},
+		{"the mirror's path of the same archive", "deb http://deb.debian.org/debian-security bullseye-security main\n", "deb " + arch + " main\n"},
+		// kept as they are
+		{"already the archive", "deb http://archive.debian.org/debian-security bullseye-security main\n", "deb http://archive.debian.org/debian-security bullseye-security main\n"},
+		{"already the archive, https", "deb https://archive.debian.org/debian-security bullseye-security main\n", "deb https://archive.debian.org/debian-security bullseye-security main\n"},
+		{"the release itself", "deb http://deb.debian.org/debian bullseye main\n", "deb http://deb.debian.org/debian bullseye main\n"},
+		{"the updates of the release", "deb http://deb.debian.org/debian bullseye-updates main\n", "deb http://deb.debian.org/debian bullseye-updates main\n"},
+		{"the release on the security host", "deb http://security.debian.org/debian-security bullseye main\n", "deb http://security.debian.org/debian-security bullseye main\n"},
+		{"a path that is not the archive's", "deb http://security.debian.org/other bullseye-security main\n", "deb http://security.debian.org/other bullseye-security main\n"},
+		{"the mirror without the path", "deb http://deb.debian.org bullseye-security main\n", "deb http://deb.debian.org bullseye-security main\n"},
+		{"a port", "deb http://security.debian.org:8080/debian-security bullseye-security main\n", "deb http://security.debian.org:8080/debian-security bullseye-security main\n"},
+		{"a user", "deb http://u:p@security.debian.org/debian-security bullseye-security main\n", "deb http://u:p@security.debian.org/debian-security bullseye-security main\n"},
+		{"a mirror of the owner's", "deb http://mirror.example.org/debian-security bullseye-security main\n", "deb http://mirror.example.org/debian-security bullseye-security main\n"},
+		{"a mirror of the owner's that looks like the host", "deb http://security.debian.org.example.org/debian-security bullseye-security main\n", "deb http://security.debian.org.example.org/debian-security bullseye-security main\n"},
+		{"a backports line", "deb http://security.debian.org/debian-security bullseye-backports main\n", "deb http://security.debian.org/debian-security bullseye-backports main\n"},
+	} {
+		d := &fakeDecider{mirrors: []string{"mirror.example.org", "security.debian.org.example.org"}}
+		out, f := rewriteRefresh(t, d, file("sources.list", tc.in))
+		if f != nil {
+			t.Errorf("%s: refused: %v", tc.name, f)
+			continue
+		}
+		if got := treeOf(out)["sources.list"]; got != tc.want {
+			t.Errorf("%s: the tree is\n%q\nwant\n%q", tc.name, got, tc.want)
+		}
+		moved := tc.in != tc.want
+		var why []string
+		for _, fc := range out.Files {
+			for _, lc := range fc.Lines {
+				why = append(why, lc.Why)
+			}
+		}
+		if moved && !slices.Equal(why, []string{WhySecurityArchive}) || !moved && len(why) != 0 {
+			t.Errorf("%s: what the rewrite says it did: %q", tc.name, why)
+		}
+		// what the rewrite writes is read by the strict parser and is its own fixed point
+		again, f := rewriteRefresh(t, d, file("sources.list", treeOf(out)["sources.list"]))
+		if f != nil || treeOf(again)["sources.list"] != tc.want {
+			t.Errorf("%s: the second rewrite gives %v, %v", tc.name, again, f)
+		}
+	}
+}
+
+func TestARefreshSaysWhichLinesItMovedToTheArchiveAndLeavesTheFilesOfTheOwnerAlone(t *testing.T) {
+	in := "deb http://deb.debian.org/debian bullseye main\n# the security updates\ndeb http://security.debian.org/debian-security bullseye-security main\ndeb-src http://security.debian.org bullseye/updates main\n"
+	f := file("sources.list", in)
+	out := mustRewriteRefresh(t, f)
+	if len(out.Files) != 1 || out.Files[0].Action != ActionRewritten || len(out.Files[0].Lines) != 2 {
+		t.Fatalf("files = %+v", out.Files)
+	}
+	l := out.Files[0].Lines
+	if l[0].N != 3 || l[1].N != 4 || l[0].Why != WhySecurityArchive || !strings.HasSuffix(l[0].After, "archive.debian.org/debian-security bullseye-security main") || l[1].Before != "deb-src http://security.debian.org bullseye/updates main" {
+		t.Errorf("lines = %+v", l)
+	}
+	if out.SecurityArchive != 2 {
+		t.Errorf("SecurityArchive = %d", out.SecurityArchive)
+	}
+	if string(f.Content) != in || out.HashCurrent == out.HashGenerated {
+		t.Errorf("the file read was changed, or the hashes of the sources and of the tree are the same")
+	}
+	// a file of sources.list.d that is the distribution's is moved in the file it is in
+	out = mustRewriteRefresh(t, file("sources.list", "deb http://deb.debian.org/debian bullseye main\n"), file("security.list", "deb http://security.debian.org/debian-security bullseye-security main\n"))
+	if got := treeOf(out)["parts/security.list"]; got != "deb http://archive.debian.org/debian-security bullseye-security main\n" || out.SecurityArchive != 1 {
+		t.Errorf("parts/security.list = %q (%d)", got, out.SecurityArchive)
+	}
+	// the hop does not move them: its lines are of the next release, and bookworm-security is served by security.debian.org
+	hop := mustRewrite(t, file("sources.list", in))
+	if strings.Contains(treeOf(hop)["sources.list"], "archive.debian.org") || hop.SecurityArchive != 0 || !strings.Contains(treeOf(hop)["sources.list"], "http://security.debian.org/debian-security bookworm-security main") {
+		t.Errorf("the hop's tree: %q", treeOf(hop)["sources.list"])
+	}
+}
+
+// What apt 2.2.4 and the archive said in a root of Debian 11.11 (testdata/real): the archive's Release file has no Valid-Until and apt takes it without an option, the files that
+// the mirror answered 404 for are all served by the archive, and the refresh adds no option about the validity of the Release files.
+func TestTheArchiveOfTheSecurityUpdatesNeedsNoOptionAboutValidity(t *testing.T) {
+	if strings.Contains(strings.ToLower(realFile(t, "archive-bullseye-security-inrelease-head.txt")), "valid-until") {
+		t.Error("the Release file of the archive has a Valid-Until: apt would refuse it once it is past")
+	}
+	if rc := strings.TrimSpace(realFile(t, "chroot-d11-refresh-archive-update.rc")); rc != "0" || strings.Contains(realFile(t, "chroot-d11-refresh-archive-update.txt"), "Err:") {
+		t.Errorf("apt-get update on the archive: status %q", rc)
+	}
+	if rc := strings.TrimSpace(realFile(t, "chroot-d11-refresh-archive-download.rc")); rc != "0" {
+		t.Errorf("the download from the archive: status %q", rc)
+	}
+	probe := strings.Fields(realFile(t, "archive-bullseye-security-uris-probe.txt"))
+	if len(probe) != 60 {
+		t.Fatalf("the probe holds %d words", len(probe))
+	}
+	for i := 0; i < len(probe); i += 2 {
+		if probe[i] != "200" {
+			t.Errorf("%s answered %s on the archive", probe[i+1], probe[i])
+		}
+	}
+	if rc := strings.TrimSpace(realFile(t, "chroot-d11-refresh-security-404-download.rc")); rc != "100" {
+		t.Errorf("the download from the mirror: status %q", rc)
+	}
+	for _, blk := range everyAutoBlock(refreshOf(t, false)) {
+		if strings.Contains(blk.Text, "Check-Valid-Until") {
+			t.Errorf("block %s sets Check-Valid-Until", blk.ID)
 		}
 	}
 }

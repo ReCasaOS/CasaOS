@@ -63,7 +63,7 @@ type TreeFile struct {
 
 // A LineChange is one line of a file that the rewrite changed, as it is shown: Before and After are text, bounded, with
 // the user and the query of a URL replaced by ***. Why is what was done, in a fixed vocabulary, comma-separated:
-// suite, host, firmware (a line that was rewritten), dropped (a backports or proposed-updates line, commented), paused (a
+// suite, host, firmware (a line that was rewritten), security_archive (a line of a refresh moved to archive.debian.org), dropped (a backports or proposed-updates line, commented), paused (a
 // line that is not the distribution's, commented, or in a file that is put aside).
 type LineChange struct {
 	N      int    `json:"n"`
@@ -105,6 +105,8 @@ type Rewritten struct {
 	DroppedBackports int
 	// FirmwareAdded is how many lines got the component non-free-firmware.
 	FirmwareAdded int
+	// SecurityArchive is how many lines of a refresh were moved to the security archive of Debian 11 (WhySecurityArchive).
+	SecurityArchive int
 	// HashCurrent is the hash of the files as they are (their names and bytes, sorted), and HashGenerated that of the tree.
 	HashCurrent, HashGenerated string
 }
@@ -354,6 +356,31 @@ func moveHost(uri string) (string, bool) {
 	return out, true
 }
 
+// WhySecurityArchive is the Why of a line of a refresh that was moved to the security archive of Debian 11.
+const WhySecurityArchive = "security_archive"
+
+// securityArchiveURI is where the files of the security updates of Debian 11 are: security.debian.org and deb.debian.org/debian-security still list them, and answer 404 for
+// most (measured with apt 2.2.4 on 2026-10-18; the archive serves the same Release file, signed by the same key, with no Valid-Until).
+const securityArchiveHost = "://archive.debian.org/debian-security"
+
+// securityMirror says whether an address is one that still lists the security updates of Debian 11 and no longer serves them: security.debian.org (with or without the path
+// debian-security), and the path debian-security of deb.debian.org and of its aliases (cdn-fastly.deb.debian.org...). It gives the scheme of the address: the archive is served on both. An address with a user or a port is the owner's own arrangement and is not one.
+func securityMirror(uri string) (scheme string, ok bool) {
+	u, err := url.Parse(uri)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Port() != "" || u.RawQuery != "" {
+		return "", false
+	}
+	path := strings.TrimRight(u.Path, "/")
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case host == "security.debian.org":
+		return u.Scheme, path == "" || path == "/debian-security"
+	case host == "deb.debian.org" || strings.HasSuffix(host, ".deb.debian.org"):
+		return u.Scheme, path == "/debian-security"
+	}
+	return "", false
+}
+
 // rewriteDistro is a line of the distribution's own archive for the target: its text, why, and the problem that stops it.
 func (h HopSpec) rewriteDistro(l *srcLine) (text, why string, dropped bool, p *lineProblem) {
 	if osreadiness.IsSuiteAlias(l.suite) {
@@ -376,7 +403,21 @@ func (h HopSpec) rewriteDistro(l *srcLine) (text, why string, dropped bool, p *l
 		return "", "", false, &lineProblem{CodeSourcesFormat, "suite"}
 	}
 	if h.Refresh {
-		// the machine keeps this line as it has it: its release, its host, its components and its backports are the ones that are brought up to date (why is "": nothing changed)
+		// the machine keeps this line as it has it: its release, its host, its components and its backports are the ones that are brought up to date (why is "": nothing changed),
+		// but for the security archive of a release that is out of support, whose files are on the archive and no longer on the mirrors that still list them
+		if scheme, ok := securityMirror(l.uri); ok && h.From == "bullseye" && (suffix == "-security" || suffix == "/updates") {
+			parts := []string{l.typ}
+			if l.opts != "" {
+				parts = append(parts, l.opts)
+			}
+			parts = append(parts, scheme+securityArchiveHost, h.From+"-security")
+			parts = append(parts, l.comps...)
+			text = strings.Join(parts, " ")
+			if l.comment != "" {
+				text += " " + l.comment
+			}
+			return text, WhySecurityArchive, false, nil
+		}
 		return l.text, "", false, nil
 	}
 	suite := h.To + suffix
@@ -582,6 +623,9 @@ func RewriteSources(ctx context.Context, hop HopSpec, files []osreadiness.Source
 					distroKept++
 					if strings.Contains(why, "firmware") {
 						out.FirmwareAdded++
+					}
+					if why == WhySecurityArchive {
+						out.SecurityArchive++
 					}
 				}
 				if why == "" {

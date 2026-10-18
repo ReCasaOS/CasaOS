@@ -1,0 +1,104 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be upgraded:
+  ca-certificates dpkg e2fsprogs gpgv libc-bin libc6 libcom-err2 libext2fs2
+  libgnutls30 libgssapi-krb5-2 libk5crypto3 libkrb5-3 libkrb5support0 liblzma5
+  libpam-modules libpam-modules-bin libpam-runtime libpam0g libsepol1 libss2
+  libssl1.1 libsystemd0 libtasn1-6 libudev1 login logsave openssl passwd
+  perl-base tzdata
+30 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Need to get 18.0 MB of archives.
+After this operation, 84.0 kB of additional disk space will be used.
+Err:1 http://security.debian.org/debian-security bullseye-security/main amd64 dpkg amd64 1.20.14
+  404  Not Found [IP: 151.101.130.132 80]
+Err:2 http://security.debian.org/debian-security bullseye-security/main amd64 login amd64 1:4.8.1-1+deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+Err:3 http://security.debian.org/debian-security bullseye-security/main amd64 perl-base amd64 5.32.1-4+deb11u5
+  404  Not Found [IP: 151.101.130.132 80]
+Err:4 http://security.debian.org/debian-security bullseye-security/main amd64 libc6 amd64 2.31-13+deb11u14
+  404  Not Found [IP: 151.101.130.132 80]
+Err:5 http://security.debian.org/debian-security bullseye-security/main amd64 libc-bin amd64 2.31-13+deb11u14
+  404  Not Found [IP: 151.101.130.132 80]
+Err:6 http://security.debian.org/debian-security bullseye-security/main amd64 libpam0g amd64 1.4.0-9+deb11u2
+  404  Not Found [IP: 151.101.130.132 80]
+Err:7 http://security.debian.org/debian-security bullseye-security/main amd64 libpam-modules-bin amd64 1.4.0-9+deb11u2
+  404  Not Found [IP: 151.101.130.132 80]
+Err:8 http://security.debian.org/debian-security bullseye-security/main amd64 libpam-modules amd64 1.4.0-9+deb11u2
+  404  Not Found [IP: 151.101.130.132 80]
+Err:9 http://security.debian.org/debian-security bullseye-security/main amd64 libsystemd0 amd64 247.3-7+deb11u8
+  404  Not Found [IP: 151.101.130.132 80]
+Err:10 http://security.debian.org/debian-security bullseye-security/main amd64 logsave amd64 1.46.2-2+deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+Err:11 http://security.debian.org/debian-security bullseye-security/main amd64 libext2fs2 amd64 1.46.2-2+deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+Err:12 http://security.debian.org/debian-security bullseye-security/main amd64 e2fsprogs amd64 1.46.2-2+deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+Err:13 http://security.debian.org/debian-security bullseye-security/main amd64 libpam-runtime all 1.4.0-9+deb11u2
+  404  Not Found [IP: 151.101.130.132 80]
+Err:14 http://security.debian.org/debian-security bullseye-security/main amd64 passwd amd64 1:4.8.1-1+deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+Err:15 http://security.debian.org/debian-security bullseye-security/main amd64 gpgv amd64 2.2.27-2+deb11u3
+  404  Not Found [IP: 151.101.130.132 80]
+Err:16 http://security.debian.org/debian-security bullseye-security/main amd64 libcom-err2 amd64 1.46.2-2+deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+Err:17 http://security.debian.org/debian-security bullseye-security/main amd64 libtasn1-6 amd64 4.16.0-2+deb11u2
+  404  Not Found [IP: 151.101.130.132 80]
+Err:18 http://security.debian.org/debian-security bullseye-security/main amd64 libgnutls30 amd64 3.7.1-5+deb11u10
+  404  Not Found [IP: 151.101.130.132 80]
+Err:19 http://security.debian.org/debian-security bullseye-security/main amd64 libk5crypto3 amd64 1.18.3-6+deb11u8
+  404  Not Found [IP: 151.101.130.132 80]
+Err:20 http://security.debian.org/debian-security bullseye-security/main amd64 libkrb5support0 amd64 1.18.3-6+deb11u8
+  404  Not Found [IP: 151.101.130.132 80]
+Err:21 http://security.debian.org/debian-security bullseye-security/main amd64 libkrb5-3 amd64 1.18.3-6+deb11u8
+  404  Not Found [IP: 151.101.130.132 80]
+Err:22 http://security.debian.org/debian-security bullseye-security/main amd64 libgssapi-krb5-2 amd64 1.18.3-6+deb11u8
+  404  Not Found [IP: 151.101.130.132 80]
+Err:23 http://security.debian.org/debian-security bullseye-security/main amd64 libssl1.1 amd64 1.1.1w-0+deb11u8
+  404  Not Found [IP: 151.101.130.132 80]
+Err:24 http://security.debian.org/debian-security bullseye-security/main amd64 liblzma5 amd64 5.2.5-2.1~deb11u2
+  404  Not Found [IP: 151.101.130.132 80]
+Err:25 http://security.debian.org/debian-security bullseye-security/main amd64 libsepol1 amd64 3.1-1+deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+Err:26 http://security.debian.org/debian-security bullseye-security/main amd64 libudev1 amd64 247.3-7+deb11u8
+  404  Not Found [IP: 151.101.130.132 80]
+Err:27 http://security.debian.org/debian-security bullseye-security/main amd64 tzdata all 2026b-0+deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+Err:28 http://security.debian.org/debian-security bullseye-security/main amd64 openssl amd64 1.1.1w-0+deb11u8
+  404  Not Found [IP: 151.101.130.132 80]
+Err:29 http://security.debian.org/debian-security bullseye-security/main amd64 ca-certificates all 20250419~deb12u1~deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+Err:30 http://security.debian.org/debian-security bullseye-security/main amd64 libss2 amd64 1.46.2-2+deb11u1
+  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/d/dpkg/dpkg_1.20.14_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/s/shadow/login_4.8.1-1%2bdeb11u1_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/p/perl/perl-base_5.32.1-4%2bdeb11u5_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/g/glibc/libc6_2.31-13%2bdeb11u14_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/g/glibc/libc-bin_2.31-13%2bdeb11u14_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/p/pam/libpam0g_1.4.0-9%2bdeb11u2_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/p/pam/libpam-modules-bin_1.4.0-9%2bdeb11u2_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/p/pam/libpam-modules_1.4.0-9%2bdeb11u2_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/s/systemd/libsystemd0_247.3-7%2bdeb11u8_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/e/e2fsprogs/logsave_1.46.2-2%2bdeb11u1_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/e/e2fsprogs/libext2fs2_1.46.2-2%2bdeb11u1_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/e/e2fsprogs/e2fsprogs_1.46.2-2%2bdeb11u1_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/p/pam/libpam-runtime_1.4.0-9%2bdeb11u2_all.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/s/shadow/passwd_4.8.1-1%2bdeb11u1_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/g/gnupg2/gpgv_2.2.27-2%2bdeb11u3_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/e/e2fsprogs/libcom-err2_1.46.2-2%2bdeb11u1_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/libt/libtasn1-6/libtasn1-6_4.16.0-2%2bdeb11u2_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/g/gnutls28/libgnutls30_3.7.1-5%2bdeb11u10_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/k/krb5/libk5crypto3_1.18.3-6%2bdeb11u8_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/k/krb5/libkrb5support0_1.18.3-6%2bdeb11u8_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/k/krb5/libkrb5-3_1.18.3-6%2bdeb11u8_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/k/krb5/libgssapi-krb5-2_1.18.3-6%2bdeb11u8_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/o/openssl/libssl1.1_1.1.1w-0%2bdeb11u8_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/x/xz-utils/liblzma5_5.2.5-2.1%7edeb11u2_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/libs/libsepol/libsepol1_3.1-1%2bdeb11u1_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/s/systemd/libudev1_247.3-7%2bdeb11u8_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/t/tzdata/tzdata_2026b-0%2bdeb11u1_all.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/o/openssl/openssl_1.1.1w-0%2bdeb11u8_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/c/ca-certificates/ca-certificates_20250419%7edeb12u1%7edeb11u1_all.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/e/e2fsprogs/libss2_1.46.2-2%2bdeb11u1_amd64.deb  404  Not Found [IP: 151.101.130.132 80]
+E: Some files failed to download

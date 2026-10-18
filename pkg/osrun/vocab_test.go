@@ -167,6 +167,13 @@ func TestTheHintForAnUpdateThatAptRefused(t *testing.T) {
 		"E: Repository 'http://x bookworm InRelease' changed its 'Colour' value from 'a' to 'b'":                                        "",
 		"E: Repository 'http://x bookworm InRelease' changed its 'Suite'":                                                               "",
 		"": "",
+		"STOP: the download did not go through: security.debian.org answered 404 Not Found for packages of Debian 11, whose files were moved":   HintSecurityArchiveGap,
+		"STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above).":        "",
+		"STOP: the download did not go through: cdn-fastly.deb.debian.org answered 404 Not Found for packages of Debian 11":               HintSecurityArchiveGap,
+		"STOP: the download did not go through: deb.debian.org answered 404 Not Found for packages of Debian 11":                           HintSecurityArchiveGap,
+		"STOP: the download did not go through: mirror.example.org answered 404 Not Found for packages of Debian 11":                       "",
+		"STOP: the download did not go through: evil-deb.debian.org answered 404 Not Found for packages of Debian 11":                      "",
+		"E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/o/openssl/o.deb  404  Not Found [IP: 1.2.3.4 80]": "",
 	} {
 		if got := HintOf(line); got != want {
 			t.Errorf("%q: %q, want %q", line, got, want)

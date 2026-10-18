@@ -231,7 +231,15 @@ aptq -s dist-upgrade -o APT::Get::Always-Include-Phased-Updates=true > "$BK/resi
 if grep -q '^The following packages will be DOWNGRADED:' "$BK/resim.txt" || grep -Eq ' [0-9]+ downgraded, ' "$BK/resim.txt"; then AUTOCLASS=plan; echo "STOP: apt would downgrade packages (a pin over 1000, a package on hold, a package from outside Debian): see $BK/resim.txt. $help"; exit 1; fi
 guard_removals "$BK/resim.txt"
 no_removals "$BK/resim.txt"
-aptq --download-only dist-upgrade -o APT::Get::Always-Include-Phased-Updates=true || { AUTOCLASS=network; echo "STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above). Nothing has been installed or removed yet."; exit 1; }
+rm -f "$BK/download.rc"
+{ aptq --download-only dist-upgrade -o APT::Get::Always-Include-Phased-Updates=true || echo "$?" > "$BK/download.rc"; } 2>&1 | tee "$BK/download.txt"
+if [ -e "$BK/download.rc" ]; then
+  sechost="$(grep -E '^E: Failed to fetch https?://(security\.debian\.org|([A-Za-z0-9-]+\.)*deb\.debian\.org)/debian-security/[^ ]+ +404 +Not Found' "$BK/download.txt" | awk -F/ 'NR == 1 { print $3 }')"
+  if [ -n "$sechost" ]; then
+    { AUTOCLASS=network; echo "STOP: the download did not go through: $sechost answered 404 Not Found for packages of Debian 11, whose files were moved to archive.debian.org/debian-security (the refresh moves the lines it knows to the archive, and a line of the sources that it did not recognise still points at $sechost). Nothing has been installed or removed yet."; exit 1; }
+  fi
+  { AUTOCLASS=network; echo "STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above). Nothing has been installed or removed yet."; exit 1; }
+fi
 : > "$BK/begun-rupgrade"
 sync
 if ! aptq dist-upgrade -o APT::Get::Always-Include-Phased-Updates=true; then

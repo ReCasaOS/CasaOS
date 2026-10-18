@@ -1,0 +1,14 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Origin: Debian
+Label: Debian-Security
+Suite: oldoldstable-security
+Version: 11
+Codename: bullseye-security
+Date: Sat, 12 Sep 2026 09:27:08 UTC
+Acquire-By-Hash: yes
+Architectures: amd64 arm64 armhf i386
+Components: updates/main updates/contrib updates/non-free
+Description: Debian 11 - Security Updates
+SHA256:
