@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -167,4 +168,20 @@ func (t *tailWriter) Write(p []byte) (int, error) {
 		t.tail = t.tail[len(t.tail)-tailBytes:]
 	}
 	return t.Writer.Write(p)
+}
+
+// panicked writes a panic and its stack in the log (behind "| ", like the output of a command), for whoever looks for what went wrong.
+func (j *job) panicked(r any) {
+	_, _ = fmt.Fprintf(j.toolWriter(), "panic: %v\n%s", r, debug.Stack())
+}
+
+// recoverRun, deferred, turns a panic of a run into a failure: the sentence, the result line and the exit status 3, which is the status of a run that failed (the status that Go gives a
+// panic, 2, says that nothing was changed).
+func (j *job) recoverRun(code *int) {
+	if r := recover(); r != nil {
+		j.panicked(r)
+		j.say("failed: %s", CodeInternal)
+		j.result("failed", "-", CodeInternal)
+		*code = ExitFailed
+	}
 }

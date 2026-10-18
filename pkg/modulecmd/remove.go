@@ -282,7 +282,7 @@ func (j *job) sayLeftovers(name string, packages []string) {
 }
 
 // runRemove takes the module c.name off the box. A module is there to remove when it has a manifest, a list of files or a version: a half-installed one is removed too.
-func runRemove(ctx context.Context, env Env, c command) int {
+func runRemove(ctx context.Context, env Env, c command) (code int) {
 	env = env.withDefaults()
 	say := func(code string) int { fmt.Fprintf(env.Stdout, "refused: %s\n", code); return ExitRefused }
 	if env.EUID() != 0 {
@@ -304,6 +304,7 @@ func runRemove(ctx context.Context, env Env, c command) int {
 		return say(CodeLogUnwritable)
 	}
 	defer j.close()
+	defer j.recoverRun(&code)
 	// what an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
 	_ = emptyDir(env.Roots.tmp())
 
@@ -340,11 +341,11 @@ func runRemove(ctx context.Context, env Env, c command) int {
 			return j.refuse(CodeDeclined)
 		}
 	}
-	bad, phase, code := j.teardown(ctx, c.name, manifest.Unit, true, nil)
+	bad, phase, why := j.teardown(ctx, c.name, manifest.Unit, true, nil)
 	if bad > 0 {
-		j.say("failed at step %s: %s", phase, code)
-		j.result("failed", phase, code)
-		switch code {
+		j.say("failed at step %s: %s", phase, why)
+		j.result("failed", phase, why)
+		switch why {
 		case CodeUnitNotStopped:
 			j.say("stop the unit, then run casaos module remove %s again", c.name)
 		case CodeUnitsFailed:

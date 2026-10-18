@@ -119,6 +119,8 @@ func TestHelperProcess(t *testing.T) {
 //	                is in place) or "unpack-mid" (two files of it are)
 //	MODULECMD_UMASK the umask of the process, in octal
 //	MODULECMD_MODE  "kill": SIGKILL to itself there; "block": say it has got there (<root>/stub/reached-<at>) and wait for the signal that ends the run
+//	                "panic": panic there; "waitfile": wait there for <root>/stub/go to be made
+//	MODULECMD_VERB  "remove" to run a remove in place of the install
 func helperInstall() int {
 	root := os.Getenv("MODULECMD_ROOT")
 	at, mode := os.Getenv("MODULECMD_AT"), os.Getenv("MODULECMD_MODE")
@@ -132,6 +134,16 @@ func helperInstall() int {
 		case "kill":
 			_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
 			time.Sleep(time.Minute)
+		case "panic":
+			panic("a panic of the test")
+		case "waitfile":
+			// go on when the test makes <root>/stub/go: it has closed what reads our output by then
+			for range 600 {
+				if _, err := os.Stat(filepath.Join(root, "stub", "go")); err == nil {
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
 		case "block":
 			_ = os.WriteFile(filepath.Join(root, "stub", "reached-"+at), nil, 0o644)
 			helperCtx.Lock()

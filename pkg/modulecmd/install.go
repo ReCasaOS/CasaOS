@@ -54,6 +54,7 @@ const (
 	CodeUnitNotStopped     = "unit_not_stopped"
 	CodeRemoveIncomplete   = "remove_incomplete"
 	CodeTmpUnusable        = "tmp_unusable"
+	CodeInternal           = "internal_error"
 	aptTimeout             = 30 * time.Minute
 	systemctlTimeout       = 2 * time.Minute
 	routeWait              = 60 * time.Second
@@ -134,7 +135,7 @@ func (in *install) fail(code string, err error) *stepFailure {
 }
 
 // runInstall installs the module c.name: the plan again, then the steps. It returns the exit code.
-func runInstall(ctx context.Context, env Env, c command) int {
+func runInstall(ctx context.Context, env Env, c command) (code int) {
 	env = env.withDefaults()
 	say := func(code string) int { fmt.Fprintf(env.Stdout, "refused: %s\n", code); return ExitRefused }
 	if env.EUID() != 0 {
@@ -156,6 +157,8 @@ func runInstall(ctx context.Context, env Env, c command) int {
 		return say(CodeLogUnwritable)
 	}
 	defer j.close()
+	// (a panic before the steps is a failure too: nothing has been changed that needs a rollback)
+	defer j.recoverRun(&code)
 	// whatever an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
 	if err := emptyDir(env.Roots.tmp()); err != nil {
 		return j.refuse(CodeTmpUnusable)
@@ -223,7 +226,7 @@ func (in *install) steps() int {
 		if err := in.ctx.Err(); err != nil {
 			f = &stepFailure{CodeInterrupted, err}
 		} else {
-			f = s.do()
+			f = in.guarded(s.do)
 		}
 		if f != nil {
 			in.marker(s.name, "failed")
@@ -241,15 +244,37 @@ func (in *install) steps() int {
 	return ExitOK
 }
 
+// guarded runs a step. A panic in it is a failure of the step like any other (and so a rollback and an exit status of 3); the stack is in the log.
+func (in *install) guarded(do func() *stepFailure) (f *stepFailure) {
+	defer func() {
+		if r := recover(); r != nil {
+			in.panicked(r)
+			f = &stepFailure{CodeInternal, fmt.Errorf("panic: %s", printable(fmt.Sprint(r), 200))}
+		}
+	}()
+	return do()
+}
+
+// rollback undoes what the unpack and the steps after it did. What it does is not stopped by the signal that interrupted the run; a panic in it is a rollback that could not be finished.
+func (in *install) rollback() (bad int) {
+	defer func() {
+		if r := recover(); r != nil {
+			in.panicked(r)
+			bad = 1
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(in.ctx), rollbackTime)
+	defer cancel()
+	bad, _, _ = in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, false, in.written)
+	return bad
+}
+
 // failed rolls back what the steps after the packages did, and says what was kept.
 func (in *install) failed(step string, f *stepFailure) int {
 	in.say("failed at step %s: %s", step, f.code)
 	in.result("failed", step, f.code)
 	if in.unpackBegun {
-		// what the rollback does is not stopped by the signal that interrupted the run
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(in.ctx), rollbackTime)
-		defer cancel()
-		if bad, _, _ := in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, false, in.written); bad > 0 {
+		if bad := in.rollback(); bad > 0 {
 			in.say("rollback incomplete: %d things could not be undone; casaos module remove %s finishes it", bad, in.entry.Name)
 		} else {
 			in.say("rolled back")
