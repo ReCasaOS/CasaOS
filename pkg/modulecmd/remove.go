@@ -80,9 +80,10 @@ func removeEntry(real string) (removed bool, err error) {
 type written struct{ files, dirs []string }
 
 // teardown undoes an install, whatever state it is in: the units are stopped and disabled, the files that are still there (and are no other module's) are deleted, then the directories the
-// install made, if they are empty, then the manifest, the version and the lists, then systemd reads its units again. What it deletes is what only says, when it is given (the rollback of an
+// install made, if they are empty, then the manifest, the version and the lists, then systemd reads its units again. What it deletes is what only holds, when it is given (the rollback of an
 // install that stopped: what the unpack wrote, and not what it was going to write, which may name a file that is somebody else's and made it stop), and otherwise the lists of the module
-// on the disk (a remove: the lists name everything the install may have put down, and a kill leaves nothing else). It returns what it could not do, with the step it was in. Nothing that is
+// on the disk (a remove: the lists name everything the install may have put down, and a kill leaves nothing else; a directory that somebody else made in the instant between the checking and
+// the making is in them, and is deleted if it is empty). It returns what it could not do, with the step it was in. Nothing that is
 // the module's is forgotten until all of it is gone: a list, a manifest or a version stays while a file does, and a run again finishes the work. markers puts the phases in the log as
 // steps (remove does, the rollback of an install does not).
 func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers bool, only *written) (bad int, phase string) {
