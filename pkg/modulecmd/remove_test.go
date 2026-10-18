@@ -221,20 +221,21 @@ func TestARemoveThatCannotFinishLeavesWhatIsNeededToFinishIt(t *testing.T) {
 			t.Fatalf("exit %d:\n%s", code, f.out)
 		}
 		sameTree(t, before, f.treeWithoutBookkeeping()) // (nothing of the module was deleted while it runs)
-		if !slices.Contains(f.lines(), "failed at step stop: "+CodeRemoveIncomplete) {
+		if !slices.Contains(f.lines(), "failed at step stop: "+CodeUnitNotStopped) {
 			t.Errorf("not said:\n%s", f.out)
 		}
 	})
 	t.Run("a list that cannot be read", func(t *testing.T) {
 		f := installed(t)
 		f.writeFile("/var/lib/casaos/modules/virt.files", "/etc/passwd\n")
+		f.writeFile("/etc/passwd", "root\n")
 		before := f.treeWithoutBookkeeping()
 		if code := f.remove("--yes"); code != ExitFailed {
 			t.Fatalf("exit %d:\n%s", code, f.out)
 		}
 		sameTree(t, before, f.treeWithoutBookkeeping())
-		if !f.exists("/etc/passwd") && false {
-			t.Error("unreachable")
+		if !f.exists("/etc/passwd") {
+			t.Error("a file outside the allowed places was deleted")
 		}
 	})
 }

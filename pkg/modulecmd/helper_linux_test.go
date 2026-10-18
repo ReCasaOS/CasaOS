@@ -161,6 +161,9 @@ func helperInstall() int {
 	if id := os.Getenv("MODULECMD_PLAN_ID"); id != "" {
 		args = append(args, "--plan-id", id)
 	}
+	if os.Getenv("MODULECMD_VERB") == "remove" {
+		args = []string{"remove", testName, "--yes"}
+	}
 	return Run(args, env)
 }
 

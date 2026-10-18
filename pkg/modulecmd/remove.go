@@ -41,21 +41,33 @@ func unitNames(manifestUnit string, list []string) []string {
 	return out
 }
 
-// stopUnit stops and disables a unit. A unit systemd does not know is already stopped; one that is still running after the attempt is not, and is the reason the files stay.
-func (j *job) stopUnit(ctx context.Context, unit string) bool {
-	out, err := j.sh(ctx, systemctlTimeout, "systemctl", "disable", "--now", unit)
-	if err == nil && out.ExitCode == 0 {
+// unitIsStopped asks systemd, and only the two words that say a unit is not running count as stopped: "inactive" (which is also what a unit that systemd does not know says) and "failed".
+// An error, no answer, any other word (activating, deactivating, reloading, active, anything) is a unit that is not known to be stopped, and the files stay. It is asked on a context of its
+// own, bounded: a run that was told to stop must still be able to find out, since the answer is what decides whether anything is deleted.
+func (j *job) unitIsStopped(ctx context.Context, unit string) bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), systemctlTimeout)
+	defer cancel()
+	out, err := j.env.Runner.Run(ctx, Cmd{Argv: []string{"systemctl", "is-active", unit}, Env: childEnv(j.env), Timeout: systemctlTimeout})
+	if err != nil {
+		return false
+	}
+	switch strings.TrimSpace(out.Text) {
+	case "inactive", "failed":
 		return true
 	}
-	state, err := j.env.Runner.Run(ctx, Cmd{Argv: []string{"systemctl", "is-active", unit}, Env: childEnv(j.env), Timeout: systemctlTimeout})
-	if err == nil {
-		switch strings.TrimSpace(state.Text) {
-		case "active", "activating", "deactivating", "reloading":
-			j.say("the unit %s is still running", printable(unit, 80))
-			return false
-		}
+	return false
+}
+
+// stopUnit stops and disables a unit, and then asks whether it is stopped: what `systemctl disable --now` said (or that the run was ended while it ran) does not decide that.
+func (j *job) stopUnit(ctx context.Context, unit string) bool {
+	out, err := j.sh(ctx, systemctlTimeout, "systemctl", "disable", "--now", unit)
+	if !j.unitIsStopped(ctx, unit) {
+		j.say("the unit %s is not known to be stopped", printable(unit, 80))
+		return false
 	}
-	j.say("the unit %s could not be disabled; it is not running", printable(unit, 80))
+	if err != nil || out.ExitCode != 0 {
+		j.say("the unit %s could not be disabled; it is not running", printable(unit, 80))
+	}
 	return true
 }
 
@@ -86,7 +98,7 @@ type written struct{ files, dirs []string }
 // the making is in them, and is deleted if it is empty). It returns what it could not do, with the step it was in. Nothing that is
 // the module's is forgotten until all of it is gone: a list, a manifest or a version stays while a file does, and a run again finishes the work. markers puts the phases in the log as
 // steps (remove does, the rollback of an install does not).
-func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers bool, only *written) (bad int, phase string) {
+func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers bool, only *written) (bad int, phase, code string) {
 	step := func(s string) {
 		if markers {
 			j.marker(s, "begin")
@@ -111,11 +123,11 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 		var err error
 		if list, err = readFilesList(roots.files(name)); err != nil {
 			j.say("the list of the files of %s cannot be read", name)
-			return 1, StepStop
+			return 1, StepStop, CodeFilesUnreadable
 		}
 		if dirs, err = readDirsList(roots.dirs(name)); err != nil {
 			j.say("the list of the directories of %s cannot be read", name)
-			return 1, StepStop
+			return 1, StepStop, CodeFilesUnreadable
 		}
 		if list == nil && markers {
 			j.say("there is no list of the files of %s: no file is deleted", name)
@@ -129,17 +141,27 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 			stuck++
 		}
 	}
-	end(StepStop, stuck)
-	if stuck > 0 {
-		return stuck, StepStop
+	bad, code = stuck, CodeUnitNotStopped
+	if bad == 0 && ctx.Err() != nil {
+		// told to stop, and nothing is deleted yet: the run stops here, and a run again goes on
+		bad, code = 1, CodeInterrupted
 	}
+	end(StepStop, bad)
+	if bad > 0 {
+		j.say("nothing was deleted")
+		return bad, StepStop, code
+	}
+	// What follows is done whole, whatever the run is told: the unit is stopped, and a module that has lost its program and not its unit, or its files and not its manifest, is worse than
+	// either end. It is a few unlinks and one systemctl, bounded.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTime)
+	defer cancel()
 	// files
 	step(StepFiles)
 	others, err := (&box{ctx: ctx, env: &j.env}).FilesLists()
 	if err != nil {
 		j.say("the lists of the files of the other modules cannot be read")
 		end(StepFiles, 1)
-		return 1, StepFiles
+		return 1, StepFiles, CodeRemoveIncomplete
 	}
 	owner := map[string]string{}
 	for _, other := range sortedKeys(others) {
@@ -175,12 +197,12 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 	}
 	end(StepFiles, failed)
 	if failed > 0 {
-		return failed, StepFiles
+		return failed, StepFiles, CodeRemoveIncomplete
 	}
-	// manifest
+	// manifest: the lists stay until systemd has read its units again, so that a run again can do it again
 	step(StepManifest2)
 	gone := 0
-	for _, p := range []string{roots.manifest(name), roots.version(name), roots.files(name), roots.dirs(name), tempName(roots.manifest(name)), tempName(roots.version(name)), tempName(roots.files(name)), tempName(roots.dirs(name))} {
+	for _, p := range []string{roots.manifest(name), roots.version(name), tempName(roots.manifest(name)), tempName(roots.version(name)), tempName(roots.files(name)), tempName(roots.dirs(name))} {
 		if _, err := removeEntry(p); err != nil {
 			j.say("not removed: %s", printable(err.Error(), 100))
 			gone++
@@ -188,15 +210,28 @@ func (j *job) teardown(ctx context.Context, name, manifestUnit string, markers b
 	}
 	end(StepManifest2, gone)
 	if gone > 0 {
-		return gone, StepManifest2
+		return gone, StepManifest2, CodeRemoveIncomplete
 	}
 	// reload
 	step(StepReload)
+	reload := 0
 	if out, err := j.sh(ctx, systemctlTimeout, "systemctl", "daemon-reload"); err != nil || out.ExitCode != 0 {
-		j.say("systemctl daemon-reload failed; systemd reads its units again at its next reload")
+		j.say("systemctl daemon-reload failed")
+		reload++
 	}
-	end(StepReload, 0)
-	return 0, ""
+	if reload == 0 {
+		for _, p := range []string{roots.files(name), roots.dirs(name)} {
+			if _, err := removeEntry(p); err != nil {
+				j.say("not removed: %s", printable(err.Error(), 100))
+				reload++
+			}
+		}
+	}
+	end(StepReload, reload)
+	if reload > 0 {
+		return reload, StepReload, CodeUnitsFailed
+	}
+	return 0, "", ""
 }
 
 // sortedDeepestFirst is the paths, the ones with the most parts first.
@@ -305,11 +340,18 @@ func runRemove(ctx context.Context, env Env, c command) int {
 			return j.refuse(CodeDeclined)
 		}
 	}
-	bad, phase := j.teardown(ctx, c.name, manifest.Unit, true, nil)
+	bad, phase, code := j.teardown(ctx, c.name, manifest.Unit, true, nil)
 	if bad > 0 {
-		j.say("failed at step %s: %s", phase, CodeRemoveIncomplete)
-		j.result("failed", phase, CodeRemoveIncomplete)
-		j.say("run casaos module remove %s again to finish", c.name)
+		j.say("failed at step %s: %s", phase, code)
+		j.result("failed", phase, code)
+		switch code {
+		case CodeUnitNotStopped:
+			j.say("stop the unit, then run casaos module remove %s again", c.name)
+		case CodeUnitsFailed:
+			j.say("run systemctl daemon-reload, then casaos module remove %s again", c.name)
+		default:
+			j.say("run casaos module remove %s again to finish", c.name)
+		}
 		return ExitFailed
 	}
 	j.marker(StepDone, "done")

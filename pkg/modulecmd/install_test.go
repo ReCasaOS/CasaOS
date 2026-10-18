@@ -365,7 +365,6 @@ func TestAFailureAtEachStepIsRolledBackAndKeepsThePackages(t *testing.T) {
 			f.setEntries(append(moduleEntries(manifestJSON(f.t, testManifest())), tent{name: "build/sysroot/usr/lib/systemd/system/casaos-gateway.service", body: "[Service]\n"}))
 		}},
 		{"a file cannot be written", StepUnpack, CodeUnpackFailed, keptAll, func(f *fixture) { f.host.wrapDest = failingDest(3) }},
-		{"systemd cannot read its units", StepUnits, CodeUnitsFailed, keptAll, func(f *fixture) { f.runner.fail["systemctl daemon-reload"] = 1 }},
 		{"the manifest cannot be written", StepManifest, CodeManifestWrite, keptAll, func(f *fixture) {
 			f.env.StepHook = func(_ context.Context, step, phase string) {
 				if step == StepUnits && phase == "done" {
@@ -385,6 +384,28 @@ func TestAFailureAtEachStepIsRolledBackAndKeepsThePackages(t *testing.T) {
 			f.failsAt(c.step, c.code, c.kept, before)
 		})
 	}
+}
+
+// systemd that cannot read its units cannot be told, by the rollback either, that the units are gone: the rollback is incomplete and says so, the lists stay, and a remove finishes it
+func TestARollbackThatCannotMakeSystemdReadItsUnitsIsIncompleteAndRemoveFinishesIt(t *testing.T) {
+	f := newFixture(t)
+	f.runner.fail["systemctl daemon-reload"] = 1
+	before := f.treeWithoutBookkeeping()
+	if code := f.install("--yes"); code != ExitFailed {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	out := f.out.String()
+	if !strings.Contains(out, "failed at step "+StepUnits+": "+CodeUnitsFailed+"\n") || !strings.Contains(out, "rollback incomplete") {
+		t.Errorf("not said:\n%s", out)
+	}
+	if !f.exists(filesList) || f.exists("/usr/bin/casaos-virt-management") {
+		t.Error("the lists must stay and the files must go")
+	}
+	delete(f.runner.fail, "systemctl daemon-reload")
+	if code := f.remove("--yes"); code != ExitOK {
+		t.Fatalf("remove: %d\n%s", code, f.out)
+	}
+	sameTree(t, before, f.treeWithoutBookkeeping())
 }
 
 func TestTheDownloadIsTriedThreeTimesAndWaitsBetween(t *testing.T) {

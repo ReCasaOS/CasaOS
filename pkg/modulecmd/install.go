@@ -247,7 +247,7 @@ func (in *install) failed(step string, f *stepFailure) int {
 		// what the rollback does is not stopped by the signal that interrupted the run
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(in.ctx), rollbackTime)
 		defer cancel()
-		if bad, _ := in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, false, in.written); bad > 0 {
+		if bad, _, _ := in.teardown(ctx, in.entry.Name, in.entry.Manifest.Unit, false, in.written); bad > 0 {
 			in.say("rollback incomplete: %d things could not be undone; casaos module remove %s finishes it", bad, in.entry.Name)
 		} else {
 			in.say("rolled back")
