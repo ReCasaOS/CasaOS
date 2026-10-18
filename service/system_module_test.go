@@ -42,9 +42,14 @@ func (b *moduleBox) planned(name string) osmodule.PlanResult {
 	return plan
 }
 
-// queuedLine is the first line of a log that was written by the core at a time of the box.
+// queuedLine is the first line of the log of an install that was written by the core at a time of the box.
 func (b *moduleBox) queuedLine(name, nonce string, d time.Duration) string {
-	return "CASAOS_MODULE_QUEUED " + nonce + " " + name + " " + b.stamp(d)
+	return b.queuedLineOf(name, nonce, modulecmd.KindInstall, d)
+}
+
+// queuedLineOf is the first line of the log of a job of a kind.
+func (b *moduleBox) queuedLineOf(name, nonce, kind string, d time.Duration) string {
+	return "CASAOS_MODULE_QUEUED " + nonce + " " + name + " " + kind + " " + b.stamp(d)
 }
 
 // ---- the start --------------------------------------------------------------------------------------------------------------
@@ -81,7 +86,7 @@ func TestAnInstallStartsTheUnitOfTheModuleForThePlanThatWasRead(t *testing.T) {
 		t.Errorf("got  %q\nwant %q", started[0], want)
 	}
 	// the log is the record: its first line is the job's, and nothing else was written but the lock of the assistant and the folders
-	if got, want := b.read("/var/log/casaos/module-virt.log"), modulecmd.QueuedLine("virt", nonce, b.now()); got != want {
+	if got, want := b.read("/var/log/casaos/module-virt.log"), modulecmd.QueuedLine("virt", nonce, "install", b.now()); got != want {
 		t.Errorf("the log is %q, want %q", got, want)
 	}
 	for p, v := range b.tree() {
@@ -760,7 +765,7 @@ func TestAJobThatEndedLongAgoIsWhatItWas(t *testing.T) {
 			job := st.Job
 			job.LogTail = nil
 			want := tc.want
-			want.Name, want.StartedAt, want.EndedAt = "virt", started, time.Date(2026, 10, 18, 12, 0, 1, 0, time.UTC).Format(time.RFC3339)
+			want.Name, want.Kind, want.StartedAt, want.EndedAt = "virt", modulecmd.KindInstall, started, time.Date(2026, 10, 18, 12, 0, 1, 0, time.UTC).Format(time.RFC3339)
 			if !reflect.DeepEqual(job, want) {
 				t.Errorf("got  %+v\nwant %+v", job, want)
 			}

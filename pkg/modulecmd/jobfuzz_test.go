@@ -12,6 +12,24 @@ import (
 // An oracle that shares no code with the reducer: the whole lines that are the word of a job that ended, by their spelling. A job is over only if the log holds one of them.
 var resultOracle = regexp.MustCompile(`^CASAOS_MODULE_RESULT ` + jNonce + ` virt (ok done - -|refused - [a-z][a-z0-9_]{0,47} -|failed (-|[a-z][a-z_]{0,31}) [a-z][a-z0-9_]{0,47} (-|rolled_back|rollback_incomplete)) [0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|30)T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$`)
 
+// queuedOracle is the first line of a log that says what a job is, by its spelling: the nonce and the kind are its first and its last group.
+var queuedOracle = regexp.MustCompile(`^CASAOS_MODULE_QUEUED ([0-9a-f]{32}) virt (install|remove) [0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$`)
+
+// checkKind pins the kind of a job to the first line of its log: it is the kind that line says, if the line is the queued line of the job (of the nonce that was given, or of any when none
+// was), and none otherwise.
+func checkKind(t testing.TB, lines []string, nonce string, job Job) {
+	t.Helper()
+	want := ""
+	if len(lines) > 0 {
+		if m := queuedOracle.FindStringSubmatch(lines[0]); m != nil && (nonce == "" || m[1] == nonce) {
+			want = m[2]
+		}
+	}
+	if job.Kind != want {
+		t.Fatalf("kind %q, want %q (the log begins with %q)", job.Kind, want, lines[:min(len(lines), 2)])
+	}
+}
+
 // anyResult is a result line of any nonce, for the logs whose job is the first marker's.
 var anyResult = regexp.MustCompile(`^CASAOS_MODULE_RESULT [0-9a-f]{32} virt ok done - - [0-9T:Z-]+$`)
 
@@ -108,7 +126,8 @@ func mutate(rnd *rand.Rand, l string) string {
 
 func randomLog(rnd *rand.Rand) []string {
 	pool := []string{
-		jQueued(jNonce, 0), jQueued(jOther, 1), jQueued("-", 1),
+		jQueued(jNonce, 0), jQueued(jOther, 1), jQueued("-", 1), jQueuedAs(jNonce, KindRemove, 0), jQueuedAs(jOther, KindRemove, 1), jQueuedAs(jNonce, "upgrade", 0),
+		"CASAOS_MODULE_QUEUED " + jNonce + " virt " + jts(0), jQueuedAs(jNonce, KindInstall, 0) + " x", "| " + jQueuedAs(jNonce, KindRemove, 0),
 		jStep(jNonce, "packages", "begin", 2), jStep(jNonce, "packages", "done", 3), jStep(jNonce, "verify", "failed", 4), jStep(jNonce, "rollback_stop", "begin", 5),
 		jStep(jOther, "packages", "done", 6), jStep("-", "start", "begin", 6),
 		jResult(jNonce, "ok", "done", "-", "-", 10), jResult(jNonce, "refused", "-", "busy", "-", 11), jResult(jNonce, "failed", "route", "route_timeout", "rolled_back", 12),
@@ -136,8 +155,10 @@ func TestNoLogYieldsAnEndWithoutTheWordOfTheJob(t *testing.T) {
 		now := at(rnd.Intn(4000) - 500)
 		job := ReduceLines(jName, jNonce, lines, unit, now, time.Time{})
 		checkJob(t, lines, job)
+		checkKind(t, lines, jNonce, job)
 		// with no nonce given the first marker of the module with one is the job's: it may be another's, but never a success without a line that says so
 		adopted := ReduceLines(jName, "", lines, unit, now, time.Time{})
+		checkKind(t, lines, "", adopted)
 		if adopted.State == JobSucceeded {
 			var ok bool
 			for _, l := range lines {
@@ -177,6 +198,7 @@ func TestAFileIsReducedAsItsLinesAre(t *testing.T) {
 func FuzzReduceLines(f *testing.F) {
 	f.Add(logOf(jQueued(jNonce, 0), jStep(jNonce, "packages", "begin", 1), jResult(jNonce, "ok", "done", "-", "-", 2)))
 	f.Add(logOf(jQueued(jNonce, 0), "| "+jResult(jNonce, "ok", "done", "-", "-", 2)))
+	f.Add(logOf(jQueuedAs(jNonce, KindRemove, 0), jQueuedAs(jNonce, KindInstall, 1)))
 	f.Add(logOf(jResult(jNonce, "failed", "start", "start_failed", "rolled_back", 2), jResult(jNonce, "ok", "done", "-", "-", 3)))
 	f.Add("CASAOS_MODULE_RESULT " + jNonce + " virt ok done - - " + jts(1))
 	f.Add(strings.Repeat("\x00", 300))
@@ -185,6 +207,7 @@ func FuzzReduceLines(f *testing.F) {
 		for _, unit := range []UnitSight{UnitGone, UnitActive, UnitUnknown} {
 			job := ReduceLines(jName, jNonce, lines, unit, at(100), time.Time{})
 			checkJob(t, lines, job)
+			checkKind(t, lines, jNonce, job)
 		}
 	})
 }

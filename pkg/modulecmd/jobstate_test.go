@@ -19,8 +19,10 @@ var jT0 = time.Date(2026, time.October, 18, 12, 0, 0, 0, time.UTC)
 
 func jts(sec int) string { return jT0.Add(time.Duration(sec) * time.Second).Format(time.RFC3339) }
 
-func jQueued(nonce string, sec int) string {
-	return "CASAOS_MODULE_QUEUED " + nonce + " " + jName + " " + jts(sec)
+func jQueued(nonce string, sec int) string { return jQueuedAs(nonce, KindInstall, sec) }
+
+func jQueuedAs(nonce, kind string, sec int) string {
+	return "CASAOS_MODULE_QUEUED " + nonce + " " + jName + " " + kind + " " + jts(sec)
 }
 
 func jStep(nonce, step, phase string, sec int) string {
@@ -103,6 +105,7 @@ func TestTheJobIsReducedFromTheLogTheNonceAndTheUnit(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			got := reduce(c.nonce, c.lines, c.unit, c.now)
 			got.LogTail = nil
+			got.Kind = "" // (what the kind is has its own tests)
 			c.want.Name = jName
 			if !reflect.DeepEqual(got, c.want) {
 				t.Errorf("got  %+v\nwant %+v", got, c.want)
@@ -178,19 +181,39 @@ func TestWhatIsNotTheJobsWordNeverEndsTheJob(t *testing.T) {
 		"a step far too long":                jStep(jNonce, strings.Repeat("a", 33), "done", 5),
 		// the queued line is the core's first line, and is read as strictly as the others: it is a job's word only as it is written
 		"a queued line with a field too many":           jQueued(jNonce, 5) + " x",
-		"a queued line with a field before the time":    "CASAOS_MODULE_QUEUED " + jNonce + " virt x " + jts(5),
-		"a queued line with two fields before the time": "CASAOS_MODULE_QUEUED " + jNonce + " virt x y " + jts(5),
+		"a queued line with a kind and a field more":    "CASAOS_MODULE_QUEUED " + jNonce + " virt install x " + jts(5),
+		"a queued line with three fields before time":   "CASAOS_MODULE_QUEUED " + jNonce + " virt install x y " + jts(5),
+		"a queued line with no kind (the old grammar)":  "CASAOS_MODULE_QUEUED " + jNonce + " virt " + jts(5),
+		"a queued line with a kind that is not one":     jQueuedAs(jNonce, "upgrade", 5),
+		"a queued line with a kind in capitals":         jQueuedAs(jNonce, "INSTALL", 5),
+		"a queued line with a capital in the kind":      jQueuedAs(jNonce, "Remove", 5),
+		"a queued line with a kind that goes on":        jQueuedAs(jNonce, "installed", 5),
+		"a queued line with a kind that is cut":         jQueuedAs(jNonce, "instal", 5),
+		"a queued line with two kinds":                  jQueuedAs(jNonce, "install remove", 5),
+		"a queued line with the kind of a step":         jQueuedAs(jNonce, "packages", 5),
+		"a queued line with the kind of a result":       jQueuedAs(jNonce, "ok", 5),
+		"a queued line with a dash for a kind":          jQueuedAs(jNonce, "-", 5),
+		"a queued line with an empty kind":              jQueuedAs(jNonce, "", 5),
+		"a queued line with a NUL in the kind":          jQueuedAs(jNonce, "inst\x00all", 5),
+		"a queued line with a tab in the kind":          jQueuedAs(jNonce, "install\t", 5),
+		"a queued line with a return after the kind":    jQueuedAs(jNonce, "install\r", 5),
+		"a queued line with a kind and no time":         "CASAOS_MODULE_QUEUED " + jNonce + " virt install",
+		"a queued line with the time before the kind":   "CASAOS_MODULE_QUEUED " + jNonce + " virt " + jts(5) + " install",
+		"a queued line with the kind before the name":   "CASAOS_MODULE_QUEUED " + jNonce + " install virt " + jts(5),
+		"a queued line with the kind before the nonce":  "CASAOS_MODULE_QUEUED install " + jNonce + " virt " + jts(5),
 		"a queued line with the result's fields":        jQueued(jNonce, 5) + " ok done - -",
 		"a queued line of another module":               strings.Replace(jQueued(jNonce, 5), " virt ", " other ", 1),
 		"a queued line with a nonce in capitals":        jQueued(strings.ToUpper(jNonce), 5),
 		"a queued line with a short nonce":              jQueued(jNonce[:31], 5),
 		"a queued line with no nonce":                   strings.Replace(jQueued(jNonce, 5), jNonce, "", 1),
-		"a queued line with a time in a zone":           "CASAOS_MODULE_QUEUED " + jNonce + " virt " + strings.TrimSuffix(jts(5), "Z") + "+00:00",
-		"a queued line with a fraction of a second":     "CASAOS_MODULE_QUEUED " + jNonce + " virt " + strings.TrimSuffix(jts(5), "Z") + ".5Z",
+		"a queued line with a time in a zone":           "CASAOS_MODULE_QUEUED " + jNonce + " virt install " + strings.TrimSuffix(jts(5), "Z") + "+00:00",
+		"a queued line with a fraction of a second":     "CASAOS_MODULE_QUEUED " + jNonce + " virt install " + strings.TrimSuffix(jts(5), "Z") + ".5Z",
 		"a queued line with no time":                    "CASAOS_MODULE_QUEUED " + jNonce + " virt",
 		"a queued line in the output of a tool":         "| " + jQueued(jNonce, 5),
 		"a queued line with a tab":                      strings.Replace(jQueued(jNonce, 5), " virt ", "\tvirt ", 1),
 		"a queued line with two blanks":                 strings.Replace(jQueued(jNonce, 5), " virt ", "  virt ", 1),
+		"a queued line with two blanks before the kind": strings.Replace(jQueued(jNonce, 5), " install ", "  install ", 1),
+		"a queued line with a tab before the kind":      strings.Replace(jQueued(jNonce, 5), " install ", "\tinstall ", 1),
 		"a queued line that ends with a return":         jQueued(jNonce, 5) + "\r",
 		"a queued line, the name of the marker changed": strings.Replace(jQueued(jNonce, 5), "QUEUED", "QUEUEDX", 1),
 		"a queued line with the nonce of a run by hand": jQueued("-", 5),

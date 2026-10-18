@@ -379,8 +379,8 @@ func (u *systemPackageUpdater) launchChecked(support systemPackageSupport, env m
 }
 
 // queuedJob is the job as the first line of its log says it is: queued, and its unit on its way.
-func queuedJob(name, nonce string, queuedAt time.Time) modulecmd.Job {
-	return modulecmd.ReduceLines(name, nonce, []string{strings.TrimSuffix(modulecmd.QueuedLine(name, nonce, queuedAt), "\n")}, modulecmd.UnitActive, queuedAt, time.Time{})
+func queuedJob(name, nonce, kind string, queuedAt time.Time) modulecmd.Job {
+	return modulecmd.ReduceLines(name, nonce, []string{strings.TrimSuffix(modulecmd.QueuedLine(name, nonce, kind, queuedAt), "\n")}, modulecmd.UnitActive, queuedAt, time.Time{})
 }
 
 // statusAfterLaunch is what the assistant says of the module, for the answer of a start: no reason to keep the click waiting for it, and the module is named whatever comes of it.
@@ -413,7 +413,7 @@ func (u *systemPackageUpdater) launchModule(support systemPackageSupport, env mo
 		return failed("The job could not be prepared.", err)
 	}
 	queuedAt := u.now().UTC()
-	if err := modulecmd.Queue(env, name, nonce, queuedAt); err != nil {
+	if err := modulecmd.Queue(env, name, nonce, verb, queuedAt); err != nil {
 		if errors.Is(err, modulecmd.ErrLockHeld) {
 			return modulecmd.Job{}, busyModule("Another run of the module assistant is at work.", "the lock of the module assistant is held")
 		}
@@ -422,7 +422,7 @@ func (u *systemPackageUpdater) launchModule(support systemPackageSupport, env mo
 	output, err := u.start(support.systemdPath, systemModuleUnit(name), args...)
 	if err == nil {
 		// what the first line of the log says, without reading it back: the job is queued and its unit is on its way
-		return queuedJob(name, nonce, queuedAt), nil
+		return queuedJob(name, nonce, verb, queuedAt), nil
 	}
 	said := trimSystemPackageOutput(output)
 	err = fmt.Errorf("start the job: %s: %w", said, err)
@@ -430,16 +430,16 @@ func (u *systemPackageUpdater) launchModule(support systemPackageSupport, env mo
 	switch {
 	case exists:
 		logger.Warn("systemd-run reported an error and the unit of a job of a module is there: its own words will say how it goes", zap.String("module", name), zap.Error(err))
-		return u.jobAfterAnError(env, name, nonce, queuedAt), nil
+		return u.jobAfterAnError(env, name, nonce, verb, queuedAt), nil
 	case !answered:
 		logger.Warn("systemd-run reported an error and systemd does not say whether the unit of a job of a module is there: the job is waited for", zap.String("module", name), zap.Error(err))
-		return u.jobAfterAnError(env, name, nonce, queuedAt), nil
+		return u.jobAfterAnError(env, name, nonce, verb, queuedAt), nil
 	}
-	switch abandonErr := modulecmd.Abandon(env, name, nonce, queuedAt, u.now().UTC(), strings.Split(said, "\n")); {
+	switch abandonErr := modulecmd.Abandon(env, name, nonce, verb, queuedAt, u.now().UTC(), strings.Split(said, "\n")); {
 	case errors.Is(abandonErr, modulecmd.ErrLockHeld) || errors.Is(abandonErr, modulecmd.ErrLogChanged):
 		// the unit began between the answer of systemd and now: it holds the lock, or has written its own lines
 		logger.Warn("systemd-run reported an error and the unit of a job of a module began all the same", zap.String("module", name), zap.Error(err))
-		return u.jobAfterAnError(env, name, nonce, queuedAt), nil
+		return u.jobAfterAnError(env, name, nonce, verb, queuedAt), nil
 	case abandonErr != nil:
 		logger.Error("the log of a job that was not started could not be closed", zap.String("module", name), zap.Error(abandonErr))
 	}
@@ -447,9 +447,9 @@ func (u *systemPackageUpdater) launchModule(support systemPackageSupport, env mo
 }
 
 // jobAfterAnError is the job whose unit may be there although systemd-run said it was not: what its log says, which is the first line the core wrote when the unit has not yet begun.
-func (u *systemPackageUpdater) jobAfterAnError(env modulecmd.Env, name, nonce string, queuedAt time.Time) modulecmd.Job {
+func (u *systemPackageUpdater) jobAfterAnError(env modulecmd.Env, name, nonce, verb string, queuedAt time.Time) modulecmd.Job {
 	if job, err := modulecmd.ReadJob(env, name, u.moduleSight(name), u.now()); err == nil && job.State != modulecmd.JobIdle {
 		return job
 	}
-	return queuedJob(name, nonce, queuedAt)
+	return queuedJob(name, nonce, verb, queuedAt)
 }

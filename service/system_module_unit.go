@@ -24,10 +24,10 @@ const (
 	systemModuleStopTimeout = modulecmd.StopWithin + 80*time.Second
 )
 
-// the verbs of a job
+// the verbs of a job, which are also the kinds that the log of a job says it is (modulecmd.KindInstall and KindRemove)
 const (
-	moduleVerbInstall = "install"
-	moduleVerbRemove  = "remove"
+	moduleVerbInstall = modulecmd.KindInstall
+	moduleVerbRemove  = modulecmd.KindRemove
 )
 
 // modulePlanIDPattern is the id of a plan of an install: m1- and 32 lower case hex digits.

@@ -60,10 +60,13 @@ type fakeModuleSystem struct {
 	err   error
 	// ended is whether the context that the last start was given had ended
 	ended bool
+	// statusKind is the kind of the job that the status tells of
+	statusKind string
 }
 
-func (f *fakeModuleSystem) status() service.SystemModuleStatus {
-	return service.SystemModuleStatus{Job: modulecmd.Job{Name: "virt", State: modulecmd.JobRunning, LogTail: []string{}}, Status: modulecmd.StatusResult{Name: "virt"}}
+// status is the answer of the fake: a job of the kind that the call started (an install, for the status of a job that nobody asked for).
+func (f *fakeModuleSystem) status(kind string) service.SystemModuleStatus {
+	return service.SystemModuleStatus{Job: modulecmd.Job{Name: "virt", Kind: kind, State: modulecmd.JobRunning, LogTail: []string{}}, Status: modulecmd.StatusResult{Name: "virt"}}
 }
 
 func (f *fakeModuleSystem) ListSystemModules() (modulecmd.ListResult, error) {
@@ -78,17 +81,17 @@ func (f *fakeModuleSystem) PlanSystemModule(name string) (osmodule.PlanResult, e
 
 func (f *fakeModuleSystem) StartSystemModuleInstall(ctx context.Context, name, planID string) (service.SystemModuleStatus, error) {
 	f.calls, f.ended = append(f.calls, "install "+name+" "+planID), ctx.Err() != nil
-	return f.status(), f.err
+	return f.status(modulecmd.KindInstall), f.err
 }
 
 func (f *fakeModuleSystem) StartSystemModuleRemove(ctx context.Context, name string) (service.SystemModuleStatus, error) {
 	f.calls, f.ended = append(f.calls, "remove "+name), ctx.Err() != nil
-	return f.status(), f.err
+	return f.status(modulecmd.KindRemove), f.err
 }
 
 func (f *fakeModuleSystem) GetSystemModuleStatus(name string) (service.SystemModuleStatus, error) {
 	f.calls = append(f.calls, "status "+name)
-	return f.status(), f.err
+	return f.status(f.statusKind), f.err
 }
 
 func moduleCall(e http.Handler, method, target, body, authorization, remoteAddr string) *httptest.ResponseRecorder {
@@ -222,7 +225,7 @@ func TestTheAnswersOfTheModulesAreTheEnvelopeAndAreNotKept(t *testing.T) {
 	data := decodeAnswer(t, moduleCall(e, http.MethodGet, "/v1/sys/modules/virt/status", "", access, ""))["data"].(map[string]any)
 	job, _ := data["job"].(map[string]any)
 	status, _ := data["status"].(map[string]any)
-	for _, key := range []string{"name", "state", "step", "code", "undo", "kept_packages", "started_at", "ended_at", "log_tail"} {
+	for _, key := range []string{"name", "kind", "state", "step", "code", "undo", "kept_packages", "started_at", "ended_at", "log_tail"} {
 		if _, ok := job[key]; !ok {
 			t.Errorf("the job has no %s: %v", key, job)
 		}

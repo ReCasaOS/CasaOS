@@ -214,7 +214,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 	}
 	defer release()
 	j := newJob(env, c.name)
-	if err := j.openLog(); err != nil {
+	if err := j.openLog(KindInstall); err != nil {
 		return refuseEarly(env, c.name, CodeLogUnwritable)
 	}
 	defer j.close()

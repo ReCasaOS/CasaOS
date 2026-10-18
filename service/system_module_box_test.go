@@ -289,12 +289,27 @@ func (b *moduleBox) logPath(name string) string {
 	return b.env.Roots.Path("/var/log/casaos/module-" + name + ".log")
 }
 
-// unitSays is what the unit of a job writes: its log is replaced by these lines, as its start truncates the log the core wrote. The log is given the time of the box.
+// unitSays is what the unit of a job writes: its log is replaced by these lines, as its start truncates the log the core wrote, but for the first line when that is the line the core wrote
+// for this job (the assistant keeps it: the markers of a run do not say whether it is an install or a remove) and the lines are not themselves a log that begins with a queued line. The log
+// is given the time of the box.
 func (b *moduleBox) unitSays(name string, lines ...string) {
 	b.t.Helper()
 	p := b.logPath(name)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		b.t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(p); err == nil && len(lines) > 0 && !strings.HasPrefix(lines[0], "CASAOS_MODULE_QUEUED ") {
+		// (the nonce is the one the unit was given, and every marker it writes carries it)
+		first, _, found := strings.Cut(string(raw), "\n")
+		queued := strings.Fields(first)
+		if found && len(queued) > 1 && queued[0] == "CASAOS_MODULE_QUEUED" {
+			for _, l := range lines {
+				if said := strings.Fields(l); len(said) > 1 && strings.HasPrefix(said[0], "CASAOS_MODULE_") && said[1] == queued[1] {
+					lines = append([]string{first}, lines...)
+					break
+				}
+			}
+		}
 	}
 	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		b.t.Fatal(err)
@@ -342,7 +357,7 @@ func (b *moduleBox) result(nonce, name, kind, step, code, undo string, d time.Du
 func (b *moduleBox) nonceOfLog(name string) string {
 	b.t.Helper()
 	fields := strings.Fields(strings.SplitN(b.read("/var/log/casaos/module-"+name+".log"), "\n", 2)[0])
-	if len(fields) != 4 || fields[0] != "CASAOS_MODULE_QUEUED" {
+	if len(fields) != 5 || fields[0] != "CASAOS_MODULE_QUEUED" {
 		b.t.Fatalf("the first line of the log is %q", fields)
 	}
 	return fields[1]

@@ -14,7 +14,8 @@ import (
 // read; nothing is kept in memory, so that a restart of the core in the middle of a job changes nothing. A job is one run of install or remove, and the log holds one run.
 //
 // The core writes the first line of the log itself, before it starts the unit (QueuedLine): it carries the nonce of the job, so that the log is a job's from the moment it is
-// started, and the unit replaces the log with its own, whose lines carry the same nonce. A line counts as the job's word only if it is a whole line of exactly the shape of
+// started, and what the job is (KindInstall or KindRemove: the markers of a run are the same for both). The unit replaces the log with its own lines, which carry the same nonce, and keeps
+// that first line (see the log of the assistant, job.go). A line counts as the job's word only if it is a whole line of exactly the shape of
 // a marker, of the job's module, with the job's nonce, and does not begin with the "| " of the output of a tool; the nonce of the job is the one the core wrote, and when it is
 // not given (a core that was restarted) it is the first marker of the log that has one, a marker with the nonce "-" (a run by hand) never counting.
 //
@@ -27,6 +28,9 @@ import (
 //
 // A log with nothing in it is not the absence of a log: the unit empties the log when it starts and says its first marker when its plan is made, which takes up to a minute. It reads as
 // running while it was written lately (or the unit runs), and as interrupted when it was not and the unit is gone (a unit killed between the two).
+//
+// The kind of the job is the one that the first line of the log says, when that line is the queued line of the job; a log that does not begin with it (a job that was started by hand, with a
+// nonce) has none (""). The queued line is read as strictly as the other markers, and a kind that is not one makes it no marker at all. The job keeps its kind for as long as the log is there.
 //
 // The state carries the end of the log as text, without the marker lines: they carry the nonce, which is not for whoever reads a status.
 //
@@ -41,6 +45,15 @@ const (
 	JobInterrupted = "interrupted"
 	JobRefused     = "refused"
 )
+
+// The kinds of a job: what the core started, and said in the first line of the log. The words are those of the verbs of the assistant.
+const (
+	KindInstall = "install"
+	KindRemove  = "remove"
+)
+
+// ValidKind says whether kind is the kind of a job.
+func ValidKind(kind string) bool { return kind == KindInstall || kind == KindRemove }
 
 // The words of Job.Undo: the last field of the RESULT line of a job that failed. The empty word is a failure that had nothing to undo or a verb that does not undo.
 const (
@@ -64,7 +77,7 @@ const (
 	keptPrefix = "kept_packages: "
 	maxKept    = 40
 
-	// queuedMarker begins the first line of the log of a job that the core started: CASAOS_MODULE_QUEUED <nonce> <name> <time>.
+	// queuedMarker begins the first line of the log of a job that the core started: CASAOS_MODULE_QUEUED <nonce> <name> <install|remove> <time>.
 	queuedMarker = "CASAOS_MODULE_QUEUED"
 	// markerPrefix begins every marker line, whatever follows.
 	markerPrefix = "CASAOS_MODULE_"
@@ -84,7 +97,9 @@ const (
 
 // A Job is how the job of a module is going, or how it went.
 type Job struct {
-	Name  string `json:"name"`
+	Name string `json:"name"`
+	// Kind is what the job is: KindInstall or KindRemove, as the core said when it started the job; "" when the log does not say (a job that was not started by the core).
+	Kind  string `json:"kind"`
 	State string `json:"state"`
 	// Step is where the job is: the step of the last STEP line (the rollback's steps are those of a remove behind "rollback_"), and for a job that failed the step of the RESULT line,
 	// which is "" when it failed before its first step. "done" for a job that succeeded; "" for one that was refused or has not begun.
@@ -113,6 +128,7 @@ var (
 type marker struct {
 	kind        string // stepMarker, resultMarker or queuedMarker
 	nonce       string
+	jobKind     string // a QUEUED line: KindInstall or KindRemove
 	step, phase string // a STEP line; the RESULT line's step is in step too
 	verdict     string // a RESULT line: ok, refused or failed
 	code, undo  string
@@ -135,9 +151,9 @@ func parseMarker(line, name string) (marker, bool) {
 		if f[2] != name || !resultAgrees(m) {
 			return marker{}, false
 		}
-	case f[0] == queuedMarker && len(f) == 4:
-		m = marker{kind: queuedMarker, nonce: f[1]}
-		if f[2] != name {
+	case f[0] == queuedMarker && len(f) == 5:
+		m = marker{kind: queuedMarker, nonce: f[1], jobKind: f[3]}
+		if f[2] != name || !ValidKind(m.jobKind) {
 			return marker{}, false
 		}
 	default:
@@ -172,15 +188,17 @@ func resultAgrees(m marker) bool {
 	return false
 }
 
-// QueuedLine is the first line of the log of a job that the core is about to start. It carries the nonce, so that the log is the job's from now on.
-func QueuedLine(name, nonce string, at time.Time) string {
-	return queuedMarker + " " + nonce + " " + name + " " + at.UTC().Format(time.RFC3339) + "\n"
+// QueuedLine is the first line of the log of a job that the core is about to start. It carries the nonce, so that the log is the job's from now on, and the kind of the job (KindInstall or
+// KindRemove).
+func QueuedLine(name, nonce, kind string, at time.Time) string {
+	return queuedMarker + " " + nonce + " " + name + " " + kind + " " + at.UTC().Format(time.RFC3339) + "\n"
 }
 
 // A Reducer reads the log of a module line by line and says how the job it holds is going. The zero value is not usable; NewReducer makes one.
 type Reducer struct {
 	name, nonce string
-	fed         bool // a line, of any kind, was given
+	fed         int // how many lines, of any kind, were given
+	kind        string
 	first, last time.Time
 	step        string
 	result      *marker
@@ -197,7 +215,8 @@ func NewReducer(name, nonce string) *Reducer {
 // Feed gives the reducer the next line of the log, without its new line. whole says that the line ended with one and was read to its end: the last line of a log that is being written
 // does not, and a line that is cut is not whole either. Only a whole line can be a marker.
 func (r *Reducer) Feed(line string, whole bool) {
-	r.fed = true
+	firstLine := r.fed == 0
+	r.fed++
 	if len(line) > maxLine {
 		line, whole = line[:maxLine], false
 	}
@@ -235,6 +254,11 @@ func (r *Reducer) Feed(line string, whole bool) {
 		r.step = m.step
 	case resultMarker:
 		r.result = &m
+	case queuedMarker:
+		// the core wrote it as the first line of the log, and what says the kind is that line: one further down is nobody's we know of
+		if firstLine {
+			r.kind = m.jobKind
+		}
 	}
 }
 
@@ -281,12 +305,12 @@ func (r *Reducer) Job(unit UnitSight, now, logWritten time.Time) Job {
 		switch {
 		case unit == UnitActive:
 			job.State = JobRunning
-		case !r.fed && !logWritten.IsZero():
+		case r.fed == 0 && !logWritten.IsZero():
 			job.State = quietState(unit, now, logWritten)
 		}
 		return job
 	}
-	job.StartedAt, job.Step = stamp(r.first), r.step
+	job.Kind, job.StartedAt, job.Step = r.kind, stamp(r.first), r.step
 	for _, l := range r.tail {
 		if l = osplan.SanitizeLine(l); l != "" {
 			job.LogTail = append(job.LogTail, l)

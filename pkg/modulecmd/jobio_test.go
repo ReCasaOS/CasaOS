@@ -189,11 +189,11 @@ func TestTheCoreQueuesAJobByWritingTheFirstLineOfItsLog(t *testing.T) {
 	env := jobBox(t)
 	old := logOf(jQueued(jOther, 0), jStep(jOther, "packages", "begin", 1), jResult(jOther, "ok", "done", "-", "-", 2))
 	path := writeJobLog(t, env, old)
-	if err := Queue(env, jName, jNonce, at(100)); err != nil {
+	if err := Queue(env, jName, jNonce, KindInstall, at(100)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
-	if err != nil || string(got) != QueuedLine(jName, jNonce, at(100)) {
+	if err != nil || string(got) != QueuedLine(jName, jNonce, KindInstall, at(100)) {
 		t.Fatalf("the log holds %q, %v", got, err)
 	}
 	if info, _ := os.Stat(path); runtime.GOOS != "windows" && info.Mode().Perm() != 0o644 {
@@ -227,10 +227,10 @@ func TestTheCoreDoesNotTouchTheLogOfARunThatHoldsTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	if err := Queue(env, jName, jNonce, at(100)); !errors.Is(err, ErrLockHeld) {
+	if err := Queue(env, jName, jNonce, KindInstall, at(100)); !errors.Is(err, ErrLockHeld) {
 		t.Fatalf("Queue() = %v, want ErrLockHeld", err)
 	}
-	if err := Abandon(env, jName, jNonce, at(100), at(101), nil); !errors.Is(err, ErrLockHeld) {
+	if err := Abandon(env, jName, jNonce, KindInstall, at(100), at(101), nil); !errors.Is(err, ErrLockHeld) {
 		t.Fatalf("Abandon() = %v, want ErrLockHeld", err)
 	}
 	if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
@@ -241,10 +241,10 @@ func TestTheCoreDoesNotTouchTheLogOfARunThatHoldsTheLock(t *testing.T) {
 func TestTheCoreQueuesOnlyWhatItCanName(t *testing.T) {
 	env := jobBox(t)
 	for _, c := range []struct{ name, nonce string }{{"Virt", jNonce}, {"", jNonce}, {"../x", jNonce}, {jName, ""}, {jName, "-"}, {jName, strings.ToUpper(jNonce)}, {jName, jNonce[:31]}} {
-		if err := Queue(env, c.name, c.nonce, at(0)); err == nil {
+		if err := Queue(env, c.name, c.nonce, KindInstall, at(0)); err == nil {
 			t.Errorf("Queue(%q, %q) queued a job", c.name, c.nonce)
 		}
-		if err := Abandon(env, c.name, c.nonce, at(0), at(1), nil); err == nil {
+		if err := Abandon(env, c.name, c.nonce, KindInstall, at(0), at(1), nil); err == nil {
 			t.Errorf("Abandon(%q, %q) wrote a log", c.name, c.nonce)
 		}
 	}
@@ -255,11 +255,11 @@ func TestTheCoreQueuesOnlyWhatItCanName(t *testing.T) {
 
 func TestAJobThatCouldNotBeStartedIsAWholeRunInTheLog(t *testing.T) {
 	env := jobBox(t)
-	if err := Queue(env, jName, jNonce, at(100)); err != nil {
+	if err := Queue(env, jName, jNonce, KindInstall, at(100)); err != nil {
 		t.Fatal(err)
 	}
 	said := []string{"Failed to connect to bus: \x1b[31mno\x00 such file https://user:secret@h.example/x"}
-	if err := Abandon(env, jName, jNonce, at(100), at(102), said); err != nil {
+	if err := Abandon(env, jName, jNonce, KindInstall, at(100), at(102), said); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(env.Roots.logFile(jName))
@@ -281,8 +281,8 @@ func TestAJobThatCouldNotBeStartedIsAWholeRunInTheLog(t *testing.T) {
 }
 
 func TestTheQueuedLineIsTheGrammarOfTheMarkers(t *testing.T) {
-	line := QueuedLine(jName, jNonce, time.Date(2026, 10, 18, 14, 0, 0, 0, time.FixedZone("x", 7200)))
-	if line != "CASAOS_MODULE_QUEUED "+jNonce+" virt 2026-10-18T12:00:00Z\n" {
+	line := QueuedLine(jName, jNonce, KindInstall, time.Date(2026, 10, 18, 14, 0, 0, 0, time.FixedZone("x", 7200)))
+	if line != "CASAOS_MODULE_QUEUED "+jNonce+" virt install 2026-10-18T12:00:00Z\n" {
 		t.Errorf("%q", line)
 	}
 }
@@ -315,10 +315,10 @@ func (unsafeHost) SafeDir(string) error { return errors.New("writable by all") }
 func TestNothingIsWrittenInAFolderThatIsNotSafe(t *testing.T) {
 	env := jobBox(t)
 	env.Host = unsafeHost{env.Host}
-	if err := Queue(env, jName, jNonce, at(0)); err == nil || errors.Is(err, ErrLockHeld) {
+	if err := Queue(env, jName, jNonce, KindInstall, at(0)); err == nil || errors.Is(err, ErrLockHeld) {
 		t.Errorf("Queue() = %v", err)
 	}
-	if err := Abandon(env, jName, jNonce, at(0), at(1), nil); err == nil || errors.Is(err, ErrLockHeld) {
+	if err := Abandon(env, jName, jNonce, KindInstall, at(0), at(1), nil); err == nil || errors.Is(err, ErrLockHeld) {
 		t.Errorf("Abandon() = %v", err)
 	}
 	if _, err := os.Stat(env.Roots.logFile(jName)); err == nil {
@@ -395,7 +395,7 @@ func TestOnlyWhatWasThereWhenTheLogWasLookedAtIsRead(t *testing.T) {
 func TestAJobThatCouldNotBeStartedSaysThreeLinesOfWhatSystemdSaidAtMost(t *testing.T) {
 	env := jobBox(t)
 	said := []string{"one", "two", "three", "four", "five"}
-	if err := Abandon(env, jName, jNonce, at(0), at(1), said); err != nil {
+	if err := Abandon(env, jName, jNonce, KindInstall, at(0), at(1), said); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(env.Roots.logFile(jName))
@@ -410,7 +410,7 @@ func TestAJobThatCouldNotBeStartedSaysThreeLinesOfWhatSystemdSaidAtMost(t *testi
 // The core closes the log of a job whose unit it could not start only while the log is still the first line it wrote: a unit that did start replaces the log with its own lines, and what
 // it wrote is its word, not the core's.
 func TestAJobIsAbandonedOnlyWhileTheLogIsStillItsQueuedLine(t *testing.T) {
-	queued := QueuedLine(jName, jNonce, at(100))
+	queued := QueuedLine(jName, jNonce, KindInstall, at(100))
 	for name, tc := range map[string]struct {
 		log     *string // nil: no log at all
 		changed bool
@@ -420,8 +420,9 @@ func TestAJobIsAbandonedOnlyWhileTheLogIsStillItsQueuedLine(t *testing.T) {
 		"the lines of the unit that ran":           {strPtr(logOf(jStep(jNonce, "packages", "begin", 101), jStep(jNonce, "packages", "done", 102), jResult(jNonce, "ok", "done", "-", "-", 103))), true},
 		"the lines of the unit that is at it":      {strPtr(logOf(jStep(jNonce, "packages", "begin", 101))), true},
 		"a log that the unit emptied":              {strPtr(""), true},
-		"the queued line of another job":           {strPtr(QueuedLine(jName, jOther, at(100))), true},
-		"its queued line, written at another time": {strPtr(QueuedLine(jName, jNonce, at(99))), true},
+		"the queued line of another job":           {strPtr(QueuedLine(jName, jOther, KindInstall, at(100))), true},
+		"its queued line, written at another time": {strPtr(QueuedLine(jName, jNonce, KindInstall, at(99))), true},
+		"its queued line, of the other kind":       {strPtr(QueuedLine(jName, jNonce, KindRemove, at(100))), true},
 		"its queued line and a line more":          {strPtr(queued + "| apt\n"), true},
 		"its queued line without a new line":       {strPtr(strings.TrimSuffix(queued, "\n")), true},
 		"the lines of a run by hand":               {strPtr(logOf(jStep("-", "packages", "begin", 101))), true},
@@ -433,7 +434,7 @@ func TestAJobIsAbandonedOnlyWhileTheLogIsStillItsQueuedLine(t *testing.T) {
 			if tc.log != nil {
 				writeJobLog(t, env, *tc.log)
 			}
-			err := Abandon(env, jName, jNonce, at(100), at(105), []string{"Failed to connect to bus"})
+			err := Abandon(env, jName, jNonce, KindInstall, at(100), at(105), []string{"Failed to connect to bus"})
 			if tc.changed {
 				if !errors.Is(err, ErrLogChanged) {
 					t.Fatalf("Abandon() = %v, want ErrLogChanged", err)
@@ -458,10 +459,10 @@ func strPtr(s string) *string { return &s }
 // What the core says when it abandons a job is these lines, exactly: the queued line, the sentence, what systemd said as text, and the result.
 func TestTheLogOfAnAbandonedJobIsExactlyThis(t *testing.T) {
 	env := jobBox(t)
-	if err := Queue(env, jName, jNonce, at(100)); err != nil {
+	if err := Queue(env, jName, jNonce, KindInstall, at(100)); err != nil {
 		t.Fatal(err)
 	}
-	if err := Abandon(env, jName, jNonce, at(100), at(102), []string{"Failed to connect to bus: no such file", "second line"}); err != nil {
+	if err := Abandon(env, jName, jNonce, KindInstall, at(100), at(102), []string{"Failed to connect to bus: no such file", "second line"}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(env.Roots.logFile(jName))

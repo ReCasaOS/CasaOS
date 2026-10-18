@@ -19,7 +19,10 @@ import (
 //	CASAOS_MODULE_STEP <nonce|-> <name> <step> <begin|done|failed> <time>
 //	CASAOS_MODULE_RESULT <nonce|-> <name> <ok|refused|failed> <step|-> <code|-> <undo> <time>
 //
-// This is the whole grammar, and the only place it is written down. The nonce is the one the core passes in CASAOS_MODULE_NONCE, "-" when there is none. A step is a word of lower case
+// The core, when it starts a job, writes a first line of its own in the log before the program runs (Queue): CASAOS_MODULE_QUEUED <nonce> <name> <install|remove> <time>. The program does not write
+// it; when it opens the log it keeps it if it is the line of this very run (see openLog), and it is the only place that says whether the log is an install's or a remove's.
+//
+// This is the whole grammar of what the program says, and the only place it is written down. The nonce is the one the core passes in CASAOS_MODULE_NONCE, "-" when there is none. A step is a word of lower case
 // letters and underscores: for an install packages, download, verify, unpack, units, manifest, start, route and done; for a remove stop, files, manifest, reload and done; and the steps of
 // the rollback of an install, which are those of a remove behind "rollback_". Every "begin" of a step is followed by its "done" or its "failed", and a step that failed is never "done".
 //
@@ -54,14 +57,20 @@ func newJob(env Env, name string) *job {
 	return &job{env: env, name: name, nonce: nonce}
 }
 
-// openLog starts the log of this run: the log of an earlier run is replaced, so that a log is one run.
-func (j *job) openLog() error {
+// maxQueuedLine is how much of the log is looked at for the first line that the core wrote: that line is 116 bytes at the longest.
+const maxQueuedLine = 256
+
+// openLog starts the log of this run of the verb called kind (KindInstall or KindRemove): the log of an earlier run is replaced, so that a log is one run. The exception is the first line,
+// when it is the queued line of this very run (the module's, with the nonce this run was given, saying the kind that this run is, whole, as the core writes it): it stays where it is,
+// and the rest is cut away behind it. The markers of the run are the same for an install and a remove, and the queued line is the one place where the log says which of them it is; it is
+// kept and not written again, so that the log is never without it.
+func (j *job) openLog(kind string) error {
 	dir := j.env.Roots.logs()
 	if err := makeDirs(dir, 0o755); err != nil {
 		return err
 	}
 	// not through a link, not a fifo that waits for a reader, and only a regular file once it is open: what is checked is what is written
-	f, err := os.OpenFile(j.env.Roots.logFile(j.name), os.O_WRONLY|os.O_CREATE|noFollow|nonBlock, 0o644)
+	f, err := os.OpenFile(j.env.Roots.logFile(j.name), os.O_RDWR|os.O_CREATE|noFollow|nonBlock, 0o644)
 	if err != nil {
 		return err
 	}
@@ -69,12 +78,32 @@ func (j *job) openLog() error {
 		_ = f.Close()
 		return fmt.Errorf("%s is not a regular file", j.env.Roots.logFile(j.name))
 	}
-	if err := f.Truncate(0); err != nil {
+	keep := int64(j.queuedLength(f, kind))
+	if err := f.Truncate(keep); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Seek(keep, io.SeekStart); err != nil {
 		_ = f.Close()
 		return err
 	}
 	j.log = f
 	return f.Chmod(0o644)
+}
+
+// queuedLength is the length of the first line of the log f (with its new line) when that is the queued line of this run, and 0 when it is not, or when it cannot be read.
+func (j *job) queuedLength(f *os.File, kind string) int {
+	buf := make([]byte, maxQueuedLine)
+	n, _ := io.ReadFull(f, buf)
+	end := bytes.IndexByte(buf[:n], '\n')
+	if end < 0 {
+		return 0
+	}
+	m, ok := parseMarker(string(buf[:end]), j.name)
+	if !ok || m.kind != queuedMarker || m.nonce != j.nonce || m.jobKind != kind {
+		return 0
+	}
+	return end + 1
 }
 
 func (j *job) close() {
