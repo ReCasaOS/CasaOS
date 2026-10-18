@@ -361,23 +361,24 @@ const WhySecurityArchive = "security_archive"
 
 // securityArchiveURI is where the files of the security updates of Debian 11 are: security.debian.org and deb.debian.org/debian-security still list them, and answer 404 for
 // most (measured with apt 2.2.4 on 2026-10-18; the archive serves the same Release file, signed by the same key, with no Valid-Until).
-const securityArchiveURI = "http://archive.debian.org/debian-security"
+const securityArchiveHost = "://archive.debian.org/debian-security"
 
-// securityMirror says whether an address is one of the two that still list the security updates of Debian 11 and no longer serve them: security.debian.org (with or without the
-// path debian-security), and the path debian-security of deb.debian.org. An address with a user or a port is the owner's own arrangement and is not one.
-func securityMirror(uri string) bool {
+// securityMirror says whether an address is one that still lists the security updates of Debian 11 and no longer serves them: security.debian.org (with or without the path
+// debian-security), and the path debian-security of deb.debian.org and of its aliases (cdn-fastly.deb.debian.org...). It gives the scheme of the address: the archive is served on both. An address with a user or a port is the owner's own arrangement and is not one.
+func securityMirror(uri string) (scheme string, ok bool) {
 	u, err := url.Parse(uri)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Port() != "" || u.RawQuery != "" {
-		return false
+		return "", false
 	}
 	path := strings.TrimRight(u.Path, "/")
-	switch strings.ToLower(u.Hostname()) {
-	case "security.debian.org":
-		return path == "" || path == "/debian-security"
-	case "deb.debian.org":
-		return path == "/debian-security"
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case host == "security.debian.org":
+		return u.Scheme, path == "" || path == "/debian-security"
+	case host == "deb.debian.org" || strings.HasSuffix(host, ".deb.debian.org"):
+		return u.Scheme, path == "/debian-security"
 	}
-	return false
+	return "", false
 }
 
 // rewriteDistro is a line of the distribution's own archive for the target: its text, why, and the problem that stops it.
@@ -404,12 +405,12 @@ func (h HopSpec) rewriteDistro(l *srcLine) (text, why string, dropped bool, p *l
 	if h.Refresh {
 		// the machine keeps this line as it has it: its release, its host, its components and its backports are the ones that are brought up to date (why is "": nothing changed),
 		// but for the security archive of a release that is out of support, whose files are on the archive and no longer on the mirrors that still list them
-		if h.From == "bullseye" && (suffix == "-security" || suffix == "/updates") && securityMirror(l.uri) {
+		if scheme, ok := securityMirror(l.uri); ok && h.From == "bullseye" && (suffix == "-security" || suffix == "/updates") {
 			parts := []string{l.typ}
 			if l.opts != "" {
 				parts = append(parts, l.opts)
 			}
-			parts = append(parts, securityArchiveURI, h.From+"-security")
+			parts = append(parts, scheme+securityArchiveHost, h.From+"-security")
 			parts = append(parts, l.comps...)
 			text = strings.Join(parts, " ")
 			if l.comment != "" {

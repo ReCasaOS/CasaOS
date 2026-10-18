@@ -2,6 +2,7 @@ package osrun
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -84,11 +85,14 @@ func HintOf(detailLine string) string {
 			}
 		}
 	}
-	if strings.HasPrefix(detailLine, "STOP: the download did not go through: security.debian.org answered 404 Not Found") {
+	if securityGapLine.MatchString(detailLine) {
 		return HintSecurityArchiveGap
 	}
 	return ""
 }
+
+// securityGapLine is the line of R2 for a 404 of the security mirror of Debian 11: security.debian.org, or deb.debian.org and its aliases (cdn-fastly.deb.debian.org...).
+var securityGapLine = regexp.MustCompile(`^STOP: the download did not go through: (security\.debian\.org|([A-Za-z0-9-]+\.)*deb\.debian\.org) answered 404 Not Found`)
 
 // HintReleaseInfoChange is the hint for a repository whose release information changed.
 const HintReleaseInfoChange = "releaseinfo_change"

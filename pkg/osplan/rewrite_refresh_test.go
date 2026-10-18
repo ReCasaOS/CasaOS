@@ -319,7 +319,7 @@ func movedToTheArchive(before, after string) bool {
 		}
 		return nil, false
 	}
-	if !strings.Contains(after, " "+securityArchiveURI+" bullseye-security") {
+	if !strings.Contains(after, " http"+securityArchiveHost+" bullseye-security") && !strings.Contains(after, " https"+securityArchiveHost+" bullseye-security") {
 		return false
 	}
 	want, ok := rest(after, "bullseye-security")
@@ -337,7 +337,10 @@ func TestARefreshReadsTheSecurityArchiveOfBullseyeFromTheArchive(t *testing.T) {
 		name, in, want string
 	}{
 		{"http with the path", "deb http://security.debian.org/debian-security bullseye-security main\n", "deb " + arch + " main\n"},
-		{"https", "deb https://security.debian.org/debian-security bullseye-security main\n", "deb " + arch + " main\n"},
+		{"https keeps https", "deb https://security.debian.org/debian-security bullseye-security main\n", "deb https://archive.debian.org/debian-security bullseye-security main\n"},
+		{"an alias of the mirror", "deb http://cdn-fastly.deb.debian.org/debian-security bullseye-security main\n", "deb " + arch + " main\n"},
+		{"an alias of the mirror, https", "deb https://cdn-aws.deb.debian.org/debian-security/ bullseye-security main\n", "deb https://archive.debian.org/debian-security bullseye-security main\n"},
+		{"a name that ends like the mirror", "deb http://evil-deb.debian.org/debian-security bullseye-security main\n", "deb http://evil-deb.debian.org/debian-security bullseye-security main\n"},
 		{"a slash at the end", "deb http://security.debian.org/debian-security/ bullseye-security main\n", "deb " + arch + " main\n"},
 		{"without the path", "deb http://security.debian.org bullseye-security main\n", "deb " + arch + " main\n"},
 		{"without the path and a slash", "deb http://security.debian.org/ bullseye-security main\n", "deb " + arch + " main\n"},

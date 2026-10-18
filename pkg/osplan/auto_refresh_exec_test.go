@@ -483,7 +483,11 @@ func TestR2NamesTheSecurityHostWhenItAnswers404AndOnlyThen(t *testing.T) {
 		saying     string
 	}{
 		{"the real text of apt", real404, osrun.HintSecurityArchiveGap, "security.debian.org answered 404 Not Found"},
-		{"the mirror's path of the same archive", "E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/o/openssl/o_1_amd64.deb  404  Not Found [IP: 1.2.3.4 80]\nE: Some files failed to download\n", osrun.HintSecurityArchiveGap, "security.debian.org answered 404 Not Found"},
+		{"the mirror's path of the same archive", "E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/o/openssl/o_1_amd64.deb  404  Not Found [IP: 1.2.3.4 80]\nE: Some files failed to download\n", osrun.HintSecurityArchiveGap, "deb.debian.org answered 404 Not Found"},
+		{"an alias of the mirror", "E: Failed to fetch https://cdn-fastly.deb.debian.org/debian-security/pool/updates/main/o/o_1_amd64.deb  404  Not Found [IP: 1.2.3.4 443]\n", osrun.HintSecurityArchiveGap, "cdn-fastly.deb.debian.org answered 404 Not Found"},
+		{"a 404 that is not an E: line", "Err:1 http://security.debian.org/debian-security bullseye-security/main amd64 dpkg amd64 1\n  404  Not Found [IP: 1.2.3.4 80]\nW: Failed to fetch http://security.debian.org/debian-security/pool/o.deb  404  Not Found\n", "", "the network, or a lock held"},
+		{"a line that only quotes one", "N: the earlier try said E: Failed to fetch http://security.debian.org/debian-security/pool/o.deb  404  Not Found\n", "", "the network, or a lock held"},
+		{"the path of the release's own mirror", "E: Failed to fetch http://cdn-fastly.deb.debian.org/debian/pool/main/o/o_1_amd64.deb  404  Not Found\n", "", "the network, or a lock held"},
 		{"a 404 from the owner's mirror", "E: Failed to fetch http://mirror.example.org/debian/pool/main/o/o_1_amd64.deb  404  Not Found [IP: 1.2.3.4 80]\nE: Some files failed to download\n", "", "the network, or a lock held"},
 		{"the release's own mirror", "E: Failed to fetch http://deb.debian.org/debian/pool/main/o/o_1_amd64.deb  404  Not Found [IP: 1.2.3.4 80]\n", "", "the network, or a lock held"},
 		{"the security host does not answer", "E: Failed to fetch http://security.debian.org/debian-security/pool/updates/main/o/o_1_amd64.deb  Temporary failure resolving 'security.debian.org'\n", "", "the network, or a lock held"},
@@ -506,7 +510,10 @@ func TestR2NamesTheSecurityHostWhenItAnswers404AndOnlyThen(t *testing.T) {
 	// a download that goes through leaves no mark of a failure, and the block goes on
 	b := newRefreshBox(t, false)
 	b.write("fake/download-says.txt", realFile(t, "chroot-d11-refresh-archive-download.txt"))
-	if out, code := b.through("rupgrade"); code != 0 || b.exists("bk/download.rc") || !strings.Contains(out, "Block R2 done.") {
+	// a status left by an earlier try of the block is not this try's
+	b.through("rsources")
+	b.write("bk/download.rc", "100\n")
+	if out, code := b.run("rupgrade"); code != 0 || b.exists("bk/download.rc") || !strings.Contains(out, "Block R2 done.") {
 		t.Errorf("exit %d, %q", code, out)
 	}
 }
@@ -760,5 +767,38 @@ func TestBlockFStopsTheUnitsOfAptAndStartsNoneInARefreshAsInAHop(t *testing.T) {
 	}
 	if got := hop.read("fake/calls.log"); !strings.Contains(got, "systemctl stop apt-daily.timer") || strings.Contains(got, "systemctl start") {
 		t.Errorf("F of a hop: %q", got)
+	}
+}
+
+// The comment of a line of the owner's file is in the note of R1: the shell must print it as it is (dash's echo acts on a backslash, printf '%s' does not), in the output and in the
+// mark.
+func TestTheNoteOfR1PrintsTheCommentOfTheOwnersLineAsItIs(t *testing.T) {
+	comment := `# \033[31mred\c \n \ $(touch pwned) ` + "`touch pwned2`" + ` "q" 'x'`
+	own := "deb http://deb.debian.org/debian bullseye main\ndeb https://security.debian.org/debian-security bullseye-security main " + comment + "\n"
+	b := newRefreshBox(t, false)
+	b.write("etc-apt/sources.list", own)
+	files := []osreadiness.SourceFile{file("sources.list", own)}
+	for _, f := range d11Box(t) {
+		if f.InParts {
+			files = append(files, f)
+		}
+	}
+	rw, err := RewriteSources(context.Background(), bullseyeToBookworm.ForRefresh(), files, &fakeDecider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.in.Rewritten = rw
+	if b.ar, err = BuildRefresh(b.in); err != nil {
+		t.Fatal(err)
+	}
+	out, code := b.through("rsources")
+	if code != 0 || !strings.Contains(out, "Note: sources.list line 2: deb https://security.debian.org/debian-security bullseye-security main "+comment+" is read") || strings.ContainsRune(out, 0x1b) {
+		t.Fatalf("exit %d, %q", code, out)
+	}
+	if got := b.read("bk/security-archive"); !strings.Contains(got, comment+" is read") || strings.ContainsRune(got, 0x1b) || b.exists("pwned") || b.exists("pwned2") {
+		t.Errorf("the mark: %q", got)
+	}
+	if got := b.read("etc-apt/sources.list"); !strings.Contains(got, "deb https://archive.debian.org/debian-security bullseye-security main "+comment+"\n") {
+		t.Errorf("the https line did not keep its scheme: %q", got)
 	}
 }

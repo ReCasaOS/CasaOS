@@ -116,10 +116,11 @@ const refreshPhased = " -o APT::Get::Always-Include-Phased-Updates=true"
 
 // refreshSecurity404 is the line of apt that says a package of the security updates of Debian 11 was not found on the mirror that still lists it (apt 2.2.4: "E: Failed to fetch
 // <address>  404  Not Found [IP: ...]", measured in testdata/real/chroot-d11-refresh-security-404-download).
-const refreshSecurity404 = `^E: Failed to fetch https?://(security\.debian\.org|deb\.debian\.org/debian-security)/[^ ]+ +404 +Not Found`
+const refreshSecurity404 = `^E: Failed to fetch https?://(security\.debian\.org|([A-Za-z0-9-]+\.)*deb\.debian\.org)/debian-security/[^ ]+ +404 +Not Found`
 
-// SecurityArchiveGapWords begins the line of the stop of R2 for a 404 from security.debian.org; osrun.HintOf reads the hint SecurityArchiveGap from it, and the class is network.
-const SecurityArchiveGapWords = "the download did not go through: security.debian.org answered 404 Not Found for packages of Debian 11, whose files were moved to archive.debian.org/debian-security (the refresh moves the lines it knows to the archive, and a line of the sources that it did not recognise still points at security.debian.org)."
+// SecurityArchiveGapWords begins the line of the stop of R2 for a 404 from the security mirror; $sechost is the host that apt named (security.debian.org, deb.debian.org or one of its
+// aliases such as cdn-fastly.deb.debian.org). osrun.HintOf reads the hint SecurityArchiveGap from it, and the class is network.
+const SecurityArchiveGapWords = "the download did not go through: $sechost answered 404 Not Found for packages of Debian 11, whose files were moved to archive.debian.org/debian-security (the refresh moves the lines it knows to the archive, and a line of the sources that it did not recognise still points at $sechost)."
 
 // refreshKernels lists the kernel packages that dpkg has, as lines "<name> <version>", sorted: the kernels that were there before the refresh, and those that are there after it.
 const refreshKernels = `dpkg-query -W -f='${db:Status-Abbrev} ${Package} ${Version}\n' 'linux-image-*' 2> /dev/null | awk '$1 ~ /^.i/ { print $2, $3 }' | sort`
@@ -227,9 +228,11 @@ var refreshBlocks = []blockSpec{
 			b.WriteString("no_removals \"$BK/resim.txt\"\n")
 			// what apt prints is shown as it comes and kept, and its status is kept apart (a pipe would take tee's): a 404 from the security mirror is told from the others, because
 			// the owner can do something about it (the page reads the hint of the STOP line)
+			b.WriteString("rm -f \"$BK/download.rc\"\n")
 			b.WriteString("{ aptq --download-only dist-upgrade" + refreshPhased + " || echo \"$?\" > \"$BK/download.rc\"; } 2>&1 | tee \"$BK/download.txt\"\n")
 			b.WriteString("if [ -e \"$BK/download.rc\" ]; then\n")
-			b.WriteString("  if grep -Eq '" + refreshSecurity404 + "' \"$BK/download.txt\"; then\n")
+			b.WriteString("  sechost=\"$(grep -E '" + refreshSecurity404 + "' \"$BK/download.txt\" | awk -F/ 'NR == 1 { print $3 }')\"\n")
+			b.WriteString("  if [ -n \"$sechost\" ]; then\n")
 			b.WriteString("    " + stop(SecurityArchiveGapWords+" Nothing has been installed or removed yet.") + "\n")
 			b.WriteString("  fi\n")
 			b.WriteString("  " + stop("the download did not go through: the network, or a lock held by another package manager (see what apt printed above). Nothing has been installed or removed yet.") + "\n")
@@ -280,8 +283,9 @@ func securityArchiveNotes(files []FileChange) string {
 				continue
 			}
 			msg := fmt.Sprintf("%s line %d: %s is read for the refresh as %s (security.debian.org no longer serves the packages that its list names: the archive does). The file itself is not changed.", f.File, l.N, l.Before, l.After)
-			b.WriteString("echo " + shQ("Note: "+msg) + "\n")
-			b.WriteString("echo " + shQ(msg) + " >> \"$BK/security-archive\"\n")
+			// printf '%s', and not echo: dash's echo acts on a backslash, and the text holds the comment of the owner's line
+			b.WriteString("printf '%s\\n' " + shQ("Note: "+msg) + "\n")
+			b.WriteString("printf '%s\\n' " + shQ(msg) + " >> \"$BK/security-archive\"\n")
 		}
 	}
 	return b.String()
