@@ -12,6 +12,7 @@ const virtManifest = `{
   "schema": 1,
   "name": "virt",
   "title": "Virtual machines",
+  "description": "Create and run virtual machines with libvirt and QEMU.",
   "component": "CasaOS-VirtManagement",
   "unit": "casaos-virt-management.service",
   "gateway_route": "/v2/virt_management",
@@ -61,6 +62,9 @@ func TestTheManifestOfTheVirtualMachinesModuleIsTaken(t *testing.T) {
 	m, err := Parse("virt.json", []byte(virtManifest))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if m.Description != "Create and run virtual machines with libvirt and QEMU." {
+		t.Errorf("description = %q", m.Description)
 	}
 	if m.Name != "virt" || m.Unit != "casaos-virt-management.service" || m.OSUpgrade == nil || m.OSUpgrade.StopTimeoutSeconds != 300 ||
 		m.OSUpgrade.Maintenance.Resume != "/v2/virt_management/maintenance/resume" || len(m.Packages.Common) != 3 || m.Packages.ARM64[1] != "qemu-efi-aarch64" {

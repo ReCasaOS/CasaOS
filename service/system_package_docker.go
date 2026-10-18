@@ -59,8 +59,9 @@ const systemDockerUpdateUnit = "casaos-docker-update.service" // reserved for an
 
 // systemMaintenanceUnits are the transient units that change the box's packages or the
 // ReCasaOS release: at most one of them runs at a time, and none while a package manager
-// holds dpkg's lock.
-var systemMaintenanceUnits = []string{common.UPDATE_UNIT + ".service", systemPackageUpdateUnit, systemDockerUpdateUnit, systemOSUpgradeUnit}
+// holds dpkg's lock. The last is a pattern, the units of the jobs of the modules, which
+// install and remove packages and files: systemd matches it against the units it has.
+var systemMaintenanceUnits = []string{common.UPDATE_UNIT + ".service", systemPackageUpdateUnit, systemDockerUpdateUnit, systemOSUpgradeUnit, systemModuleUnits}
 
 // maintenanceBusy says whether the box is being changed by something else than the unit
 // named in except (the caller's own, which it checks in its own way): another of the units
@@ -85,9 +86,19 @@ func (u *systemPackageUpdater) maintenanceState(ctx context.Context, except stri
 		if err != nil {
 			continue
 		}
-		switch strings.TrimSpace(string(output)) {
-		case "active", "activating", "deactivating":
-			return fmt.Sprintf("%s is running", strings.TrimSuffix(unit, ".service")), true, nil
+		// a pattern is answered by the state of every unit that matches it, one to a line (and by nothing when none does)
+		states := []string{strings.TrimSpace(string(output))}
+		if unit == systemModuleUnits {
+			states = strings.Fields(string(output))
+		}
+		for _, state := range states {
+			switch state {
+			case "active", "activating", "deactivating":
+				if unit == systemModuleUnits {
+					return "a module is being installed or removed", true, nil
+				}
+				return fmt.Sprintf("%s is running", strings.TrimSuffix(unit, ".service")), true, nil
+			}
 		}
 	}
 	// an operating system upgrade that is open (its flag, read fail closed) keeps every caller away but its own

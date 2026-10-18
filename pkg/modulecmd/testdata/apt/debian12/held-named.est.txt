@@ -1,0 +1,11 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following held packages will be changed:
+  casaos-mod-b
+The following packages will be upgraded:
+  casaos-mod-b
+1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Need to get 0 B/700 B of archives.
+After this operation, 0 B of additional disk space will be used.
+'file:/tmp/modrepo/./casaos-mod-b_1.0_all.deb' casaos-mod-b_1.0_all.deb 700 MD5Sum:54f612505fc4387361bc7dce2fd0bf20

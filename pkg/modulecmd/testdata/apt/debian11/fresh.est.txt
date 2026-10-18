@@ -1,0 +1,12 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  casaos-mod-b
+The following NEW packages will be installed:
+  casaos-mod-a casaos-mod-b
+0 upgraded, 2 newly installed, 0 to remove and 0 not upgraded.
+Need to get 0 B/1416 B of archives.
+After this operation, 307 kB of additional disk space will be used.
+'file:/tmp/modrepo/./casaos-mod-b_1.0_all.deb' casaos-mod-b_1.0_all.deb 700 MD5Sum:f88d8abb6de85508df3aa2a37d78267c
+'file:/tmp/modrepo/./casaos-mod-a_1.0_all.deb' casaos-mod-a_1.0_all.deb 716 MD5Sum:f898ab071cc6d1b2d1a72d3ec6e18b17

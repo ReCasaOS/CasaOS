@@ -1,0 +1,11 @@
+Desired=Unknown/Install/Remove/Purge/Hold
+| Status=Not/Inst/Conf-files/Unpacked/halF-conf/Half-inst/trig-aWait/Trig-pend
+|/ Err?=(none)/Reinst-required (Status,Err: uppercase=bad)
+||/ Name           Version      Architecture Description
++++-==============-============-============-=================================
+ii  rvm-autodep    1.0          all          rvm-autodep test package
+ii  rvm-done       1.0          all          rvm-done test package
+ii  rvm-down       2.0          all          rvm-down test package
+hi  rvm-held       1.0          all          rvm-held test package
+hi  rvm-lib        1.0          all          rvm-lib test package
+ii  rvm-old        1.0          all          rvm-old test package

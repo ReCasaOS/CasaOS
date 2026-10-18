@@ -1,0 +1,9 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following packages will be DOWNGRADED:
+  rvm-down
+0 upgraded, 0 newly installed, 1 downgraded, 0 to remove and 2 not upgraded.
+Need to get 21.5 kB of archives.
+After this operation, 30.7 kB disk space will be freed.
+'http://127.0.0.1:8761/./rvm-down_1.0_all.deb' rvm-down_1.0_all.deb 21520 MD5Sum:f82270993d149e5e414d6ba488780732

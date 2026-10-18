@@ -23,6 +23,8 @@ import (
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
+	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
@@ -110,6 +112,13 @@ type SystemService interface {
 	// go of it less than ten minutes ago. SetOSUpgradeNotifier sets what tells the owner of what became of an upgrade.
 	OSUpgradeMuted() bool
 	SetOSUpgradeNotifier(notify func(key, sentence string))
+	// ListSystemModules is the modules of this release with what the box says of each; StartSystemModuleInstall and StartSystemModuleRemove start the unit that installs or removes one
+	// (an *ModuleRefusal says why not), PlanSystemModule says what installing it would do and GetSystemModuleStatus how the job of the module is going.
+	ListSystemModules() (modulecmd.ListResult, error)
+	PlanSystemModule(name string) (osmodule.PlanResult, error)
+	StartSystemModuleInstall(ctx context.Context, name, planID string) (SystemModuleStatus, error)
+	StartSystemModuleRemove(ctx context.Context, name string) (SystemModuleStatus, error)
+	GetSystemModuleStatus(name string) (SystemModuleStatus, error)
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()

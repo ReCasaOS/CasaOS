@@ -586,7 +586,21 @@ func parseSize(s string) (int64, bool) {
 // usual text of a box with nothing to upgrade), the packages that are kept back, or a warning, and none of them is an operation.
 // A status 0 with another summary, or with one of the lines that must not be there, is Known false.
 func ParseEstimate(out Output, simulated Summary, dir string) Estimates {
-	if out.Truncated || (out.ExitCode != 100 && out.ExitCode != 0) {
+	return readEstimate(out, simulated, dir, false)
+}
+
+// ParseURIEstimate reads the output of the sandbox's "apt-get --print-uris install ..." of the packages of a module, whose transaction is the one that the simulation next to it has the
+// summary of. That command installs nothing and downloads nothing: it says "Need to get ..." and "After this operation ...", prints the address of each archive and ends with status 0
+// (testdata/realmodule, apt 2.2.4 and 2.6.1), so a status 0 is its normal end, and a transaction that has work in it ends so; and a transaction with nothing to do ends so with its
+// summary of zeros and neither of the two lines, as the estimate of the upgrade does. The rest is as in ParseEstimate, the sizes only for the same transaction as the simulation's and
+// nothing for an output that is cut or not understood, with these differences: any E: line is a command that did not end as it should (this command has no end that is an error, and does
+// not look at the room of the cache), the lines that name the addresses are not read, and a package that dpkg left half done is not a thing to size.
+func ParseURIEstimate(out Output, simulated Summary) Estimates {
+	return readEstimate(out, simulated, "", true)
+}
+
+func readEstimate(out Output, simulated Summary, dir string, uris bool) Estimates {
+	if out.Truncated || (out.ExitCode != 100 && out.ExitCode != 0) || (uris && out.ExitCode != 0) {
 		return Estimates{}
 	}
 	lines, bad := outputLines(out.Text)
@@ -599,7 +613,7 @@ func ParseEstimate(out Output, simulated Summary, dir string) Estimates {
 	for _, l := range lines {
 		switch {
 		case strings.HasPrefix(l, "E:"):
-			if l != trivialOnlyError && l != lowRoomError(dir) {
+			if uris || (l != trivialOnlyError && l != lowRoomError(dir)) {
 				return Estimates{}
 			}
 			ends++
@@ -617,7 +631,7 @@ func ParseEstimate(out Output, simulated Summary, dir string) Estimates {
 			pending++
 		}
 	}
-	if out.ExitCode == 0 {
+	if out.ExitCode == 0 && !(uris && len(need)+len(after) > 0) {
 		if ends != 0 || len(need) != 0 || len(after) != 0 || pending != 0 || sums != 1 || sum != simulated ||
 			sum.Upgraded != 0 || sum.New != 0 || sum.Remove != 0 || sum.Downgraded != 0 {
 			return Estimates{}
@@ -625,7 +639,7 @@ func ParseEstimate(out Output, simulated Summary, dir string) Estimates {
 		download, extra := int64(0), int64(0)
 		return Estimates{Known: true, DownloadBytes: &download, ExtraBytes: &extra}
 	}
-	if ends != 1 || len(need) != 1 || len(after) != 1 || sums != 1 || sum != simulated {
+	if (!uris && ends != 1) || len(need) != 1 || len(after) != 1 || sums != 1 || sum != simulated || (uris && pending != 0) {
 		return Estimates{}
 	}
 	m := needLine.FindStringSubmatch(need[0])

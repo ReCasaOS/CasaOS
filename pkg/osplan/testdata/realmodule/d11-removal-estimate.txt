@@ -1,0 +1,11 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following packages will be REMOVED:
+  rvm-old
+The following NEW packages will be installed:
+  rvm-newer
+0 upgraded, 1 newly installed, 1 to remove and 3 not upgraded.
+Need to get 7020 B of archives.
+After this operation, 75.8 kB disk space will be freed.
+'http://127.0.0.1:8761/./rvm-newer_1.0_all.deb' rvm-newer_1.0_all.deb 7020 MD5Sum:20ec7a4c5830d9946528ea3e4e1c98b6

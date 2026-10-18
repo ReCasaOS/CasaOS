@@ -12,9 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Schema is the one version of the manifest that is read: a change of the format is a new number, so that it is never guessed at.
@@ -27,8 +30,10 @@ const MaxBytes = 64 << 10
 type Manifest struct {
 	Schema int `json:"schema"`
 	// Name is the short name of the module ("virt"): the name of its file, and what the core calls it.
-	Name  string `json:"name"`
-	Title string `json:"title"`
+	Name string `json:"name"`
+	// Title and Description are what the dashboard shows of the module, as text: printable characters and nothing else.
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
 	// Component is the name of the component that is released (the repository), Unit its systemd unit, GatewayRoute where the gateway reaches it.
 	Component    string   `json:"component"`
 	Unit         string   `json:"unit"`
@@ -88,21 +93,31 @@ func invalid(field, reason string) error { return &Invalid{Field: field, Reason:
 var (
 	nameRe      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	componentRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,63}$`)
-	unitRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,100}\.service$`)
-	routeRe     = regexp.MustCompile(`^/v[0-9]{1,2}/[a-z][a-z0-9_]{0,63}$`)
+	unitRe      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,63}\.service$`)
+	routeRe     = regexp.MustCompile(`^/v[0-9]{1,2}/[a-z][a-z0-9_]{0,39}$`)
 	callRe      = regexp.MustCompile(`^/[a-z0-9_.-]+(/[a-z0-9_.-]+){0,7}$`)
 	packageRe   = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{1,63}$`)
 	versionRe   = regexp.MustCompile(`^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$`)
 	osRe        = regexp.MustCompile(`^(debian|ubuntu):[0-9]{1,2}(\.[0-9]{2})?$`)
 )
 
+// reservedRoutes are the names, under any version, that the core and the services of the distribution answer on, which a module's route cannot be: the gateway sends a request to the
+// route it knows the longest, and a module on one of these would be sent the requests that are meant for them. Every group of routes that route/v1.go registers is here (a test reads the
+// router and says which is not), and the routes of the services that are not the core's own (the users, the storage and the apps).
+var reservedRoutes = []string{
+	"sys", "users", "usb", "disks", "storage", "cloud", "recover", "other", "zt", "samba", "file", "folder", "image", "notify", "gateway", "casaos", "app_management", "message_bus",
+	"local_storage", "port", "driver", "batch", "test", "health", "apps", "container",
+}
+
 // the bounds of the lists and of the wait
 const (
 	maxPackages     = 32
+	maxPackagesAll  = 40
 	maxOS           = 16
 	maxStopUnits    = 8
 	maxStopSeconds  = 3600
-	maxTitleRunes   = 64
+	maxTitleRunes   = 60
+	maxDescRunes    = 300
 	manifestSuffix  = ".json"
 	maxCallSegments = 8
 )
@@ -120,15 +135,7 @@ func Parse(file string, raw []byte) (Manifest, error) {
 	if len(raw) > MaxBytes {
 		return m, invalid("file", ReasonTooLarge)
 	}
-	if err := noRepeatedKey(raw); err != nil {
-		return m, invalid("file", ReasonUnreadable)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&m); err != nil {
-		return Manifest{}, invalid("file", ReasonUnreadable)
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+	if err := decodeStrict(raw, &m); err != nil {
 		return Manifest{}, invalid("file", ReasonUnreadable)
 	}
 	if err := validate(m, name); err != nil {
@@ -144,8 +151,11 @@ func validate(m Manifest, name string) error {
 	if m.Name != name {
 		return invalid("name", ReasonValue)
 	}
-	if n := len([]rune(m.Title)); n == 0 || n > maxTitleRunes || strings.ContainsFunc(m.Title, func(r rune) bool { return r < ' ' || r == 0x7f }) {
+	if n := utf8.RuneCountInString(m.Title); n > maxTitleRunes || !printable(m.Title) || !shows(m.Title) {
 		return invalid("title", ReasonValue)
+	}
+	if utf8.RuneCountInString(m.Description) > maxDescRunes || !printable(m.Description) {
+		return invalid("description", ReasonValue)
 	}
 	for _, c := range []struct {
 		field, value string
@@ -160,31 +170,42 @@ func validate(m Manifest, name string) error {
 			return invalid(c.field, ReasonValue)
 		}
 	}
+	if _, name, _ := strings.Cut(strings.TrimPrefix(m.GatewayRoute, "/"), "/"); slices.Contains(reservedRoutes, name) {
+		return invalid("gateway_route", ReasonValue)
+	}
+	if !ValidUnit(m.Unit) {
+		return invalid("unit", ReasonValue)
+	}
 	for _, c := range []struct {
 		field string
 		list  []string
 	}{{"packages.common", m.Packages.Common}, {"packages.amd64", m.Packages.AMD64}, {"packages.arm64", m.Packages.ARM64}} {
-		if err := list(c.field, c.list, packageRe, maxPackages); err != nil {
+		if err := listOf(c.field, c.list, ValidPackageName, maxPackages); err != nil {
 			return err
 		}
+	}
+	if len(m.Packages.Common)+len(m.Packages.AMD64)+len(m.Packages.ARM64) > maxPackagesAll {
+		return invalid("packages", ReasonTooMany)
 	}
 	if len(m.OS) == 0 {
 		return invalid("os", ReasonMissing)
 	}
-	if err := list("os", m.OS, osRe, maxOS); err != nil {
+	if err := listOf("os", m.OS, osRe.MatchString, maxOS); err != nil {
 		return err
 	}
 	if m.OSUpgrade != nil {
-		return validateOSUpgrade(*m.OSUpgrade, m.GatewayRoute)
+		return validateOSUpgrade(*m.OSUpgrade, m.GatewayRoute, m.Unit)
 	}
 	return nil
 }
 
-func validateOSUpgrade(u OSUpgrade, route string) error {
+// validateOSUpgrade checks the section of a manifest that says what the upgrade of the operating system does around the module: the units it stops are the module's own unit and no
+// other, so that a module cannot have the services of the system stopped for it.
+func validateOSUpgrade(u OSUpgrade, route, unit string) error {
 	if len(u.StopUnits) == 0 {
 		return invalid("os_upgrade.stop_units", ReasonMissing)
 	}
-	if err := list("os_upgrade.stop_units", u.StopUnits, unitRe, maxStopUnits); err != nil {
+	if err := listOf("os_upgrade.stop_units", u.StopUnits, func(s string) bool { return s == unit }, maxStopUnits); err != nil {
 		return err
 	}
 	if u.StopTimeoutSeconds < 1 || u.StopTimeoutSeconds > maxStopSeconds {
@@ -205,17 +226,120 @@ func validateOSUpgrade(u OSUpgrade, route string) error {
 	return nil
 }
 
-// list checks that every element matches and that there are no more than max, and none twice.
-func list(field string, values []string, re *regexp.Regexp, max int) error {
+// listOf checks that every element is valid and that there are no more than max, and none twice.
+func listOf(field string, values []string, valid func(string) bool, max int) error {
 	if len(values) > max {
 		return invalid(field, ReasonTooMany)
 	}
 	for i, v := range values {
-		if !re.MatchString(v) || slices.Index(values, v) != i {
+		if !valid(v) || slices.Index(values, v) != i {
 			return invalid(field, ReasonValue)
 		}
 	}
 	return nil
+}
+
+// reservedUnits are the units of the box that a module's unit cannot be: the transient units with which the core changes the box (the update of ReCasaOS, of the packages and of Docker,
+// the upgrade of the operating system and its measures), which the rest of the box waits for while they run; the services of the core and of the distribution; and the units of apt, which
+// the plan of an install counts as a package manager at work. The prefixes are the units of the jobs of the modules (casaos-module-<name>.service: a module of that unit would be stopped by
+// its own remove, and would keep the box busy), and the instances of the template that mounts a USB disk.
+var (
+	reservedUnits = []string{
+		"casaos-update.service", "casaos-package-update.service", "casaos-docker-update.service", "casaos-os-upgrade.service", "casaos-os-upgrade-measure.service",
+		"casaos.service", "casaos-gateway.service", "casaos-user-service.service", "casaos-message-bus.service", "casaos-local-storage.service", "casaos-app-management.service",
+		"rclone.service", "casaos-wsdd.service",
+		"apt-daily.service", "apt-daily-upgrade.service",
+	}
+	reservedUnitPrefixes = []string{"casaos-module-", "usb-mount@"}
+)
+
+// ValidUnit says whether a text is the unit of a module: a service by the pattern of the manifest that is none of the reserved ones.
+func ValidUnit(s string) bool {
+	return unitRe.MatchString(s) && !slices.Contains(reservedUnits, s) && !slices.ContainsFunc(reservedUnitPrefixes, func(p string) bool { return strings.HasPrefix(s, p) })
+}
+
+// ValidName says whether a text is the name of a module: the rule of the name in a manifest, which is also the rule of the name in a catalogue, of a unit's name and of the name in an address.
+func ValidName(s string) bool { return nameRe.MatchString(s) }
+
+// ValidPackageName says whether a name is one that may be handed to apt as a package: lower case letters, digits, "+", "." and "-", two to 64 characters, the first a letter or a digit.
+// A name that ends in "-" or "+" is refused although the pattern of Debian takes it, because the command line of apt reads that last character as an order ("pkg-" removes pkg), and so is
+// one that ends in ".deb", which apt reads as the path of a file.
+func ValidPackageName(s string) bool {
+	return packageRe.MatchString(s) && !strings.HasSuffix(s, "-") && !strings.HasSuffix(s, "+") && !strings.HasSuffix(s, ".deb")
+}
+
+// blanks are the characters that are printable and print as nothing: the blank of Braille, and the fillers of Hangul, which the letters of their script do not need and which a name
+// can be made of to look empty.
+const blanks = "\u2800\u115f\u1160\u3164\uffa0"
+
+// shows says whether a text has in it something that a person sees: a letter, a number, a punctuation mark or a symbol, and not one of blanks.
+func shows(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool {
+		return (unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsPunct(r) || unicode.IsSymbol(r)) && !strings.ContainsRune(blanks, r)
+	})
+}
+
+// printable says whether a text is made of printable characters only: letters, marks, numbers, punctuation, symbols and the space, and not the replacement character that stands for
+// bytes that were not text. A text goes to the dashboard as it is, and a control, a mark that turns the line round or a space that cannot be seen is no part of a title.
+func printable(s string) bool {
+	return !strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsPrint(r) || r == utf8.RuneError })
+}
+
+// decodeStrict decodes the JSON text raw into dst, a pointer to a struct, and refuses what another reader of the same text (jq in the installer, the dashboard) could read otherwise: bytes
+// that are not UTF-8 (the decoder of Go turns them into U+FFFD), a key that comes twice, a key that is a known one only because the decoder of Go folds the case (it takes "NAME" for
+// "name", and the long s for an s), a field that is not known; words after the value are an error of the decoder.
+func decodeStrict(raw []byte, dst any) error {
+	if !utf8.Valid(raw) {
+		return errors.New("not UTF-8")
+	}
+	if err := noRepeatedKey(raw); err != nil {
+		return err
+	}
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return err
+	}
+	if !exactKeys(tree, reflect.TypeOf(dst)) {
+		return errors.New("a key is not a field")
+	}
+	return json.Unmarshal(raw, dst)
+}
+
+// exactKeys says whether every key of every object of the tree (the generic reading of a document) is, letter for letter, the name that a field of the type t has in its json tag.
+func exactKeys(tree any, t reflect.Type) bool {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch v := tree.(type) {
+	case map[string]any:
+		if t.Kind() != reflect.Struct {
+			return true // (what the type does not take, the decoder says)
+		}
+		for key, child := range v {
+			field, ok := fieldTagged(t, key)
+			if !ok || !exactKeys(child, field.Type) {
+				return false
+			}
+		}
+	case []any:
+		if t.Kind() == reflect.Slice {
+			for _, child := range v {
+				if !exactKeys(child, t.Elem()) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func fieldTagged(t reflect.Type, key string) (reflect.StructField, bool) {
+	for i := range t.NumField() {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name == key {
+			return t.Field(i), true
+		}
+	}
+	return reflect.StructField{}, false
 }
 
 // noRepeatedKey walks the tokens of a JSON document and refuses a key that comes twice in one object: the decoder would take the last, and another reader of the same file (the installer's

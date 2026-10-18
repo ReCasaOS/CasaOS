@@ -162,7 +162,8 @@ var sandboxAptSettings = struct {
 	PerHost []string
 	// Top are the settings of Acquire::<setting> itself.
 	Top []string
-	// Other are whole names outside Acquire: what a simulation reads of what is installed with it.
+	// Other are whole names outside Acquire: what a simulation reads of what is installed with it (the recommends and the suggests), and of the release it installs from
+	// (Default-Release: a box that sets it to "stable" while it also lists testing is installed from stable, and a simulation without the setting would choose from both).
 	Other []string
 }{
 	PerMethod: map[string][]string{
@@ -172,7 +173,7 @@ var sandboxAptSettings = struct {
 	},
 	PerHost: []string{"Proxy"},
 	Top:     []string{"Retries", "Languages", "PDiffs", "By-Hash", "Check-Valid-Until", "ForceIPv4", "ForceIPv6", "Queue-Mode"},
-	Other:   []string{"APT::Install-Recommends", "APT::Install-Suggests"},
+	Other:   []string{"APT::Install-Recommends", "APT::Install-Suggests", "APT::Default-Release"},
 }
 
 // settingsOf are the settings kept of a download method (the name in any case), and whether the method is one of the table.

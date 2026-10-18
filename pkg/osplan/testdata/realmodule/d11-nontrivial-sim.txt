@@ -1,0 +1,12 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  rvm-dep
+The following NEW packages will be installed:
+  rvm-dep rvm-main
+0 upgraded, 2 newly installed, 0 to remove and 3 not upgraded.
+Inst rvm-dep (1.0 127.0.0.1 [all])
+Inst rvm-main (1.0 127.0.0.1 [all])
+Conf rvm-dep (1.0 127.0.0.1 [all])
+Conf rvm-main (1.0 127.0.0.1 [all])
