@@ -985,3 +985,74 @@ func TestTheLogOfAnUpdateKeepsTheQueuedLineOfTheCore(t *testing.T) {
 		t.Errorf("the kind: %q", job.Kind)
 	}
 }
+
+// ---- the swap and the rollback, where they meet the owner --------------------------------------------------------------------------------------------------------------------
+
+// An interruption in the middle of the swap stops it at the file it is at: the files after it are not written (the rollback has the one it wrote to put back).
+func TestAnInterruptionInTheMiddleOfTheSwapGoesNoFurther(t *testing.T) {
+	f := updatable(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	files := 0
+	f.host.wrapDest = func(d osmodule.Destination) osmodule.Destination {
+		return &hookedDest{Destination: d, onFile: func() {
+			// (the staging writes four files; the fifth is the first of the swap)
+			if files++; files == 5 {
+				cancel()
+			}
+		}}
+	}
+	before := f.treeWithoutBookkeeping()
+	if exit := f.main(ctx, "update", testName, "--yes"); exit != ExitFailed || !slices.Contains(f.lines(), "failed at step swap: "+CodeInterrupted) {
+		t.Fatalf("exit %d:\n%s", exit, f.out)
+	}
+	if files != 6 {
+		t.Errorf("%d files were written: four by the staging, one by the swap and one put back", files)
+	}
+	sameTree(t, before, f.treeWithoutBookkeeping())
+}
+
+// A copy in the backup that is not what was saved is never put back, and the recovery says so and keeps the backup.
+func TestACopyThatIsNotWhatWasSavedIsNotPutBack(t *testing.T) {
+	f := updatable(t)
+	f.killed("swap-2")
+	f.writeFile("/var/lib/casaos/modules/tmp/backup-virt/copies/0", "a copy that was changed")
+	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), "not put back: "+progPath) ||
+		!strings.Contains(f.out.String(), " virt failed recover_restore "+CodeRecoveryIncomplete+" rollback_incomplete ") {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if f.read(progPath) != wantAfter[progPath] {
+		t.Errorf("the program is %q", f.read(progPath))
+	}
+	if !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") {
+		t.Error("the backup was not kept")
+	}
+	checkGrammar(t, f, ExitFailed, false, false, "")
+}
+
+// What somebody put at a path of the module while the update ran is theirs: the rollback leaves it, and says so, and a path of the old version that is neither the old file nor the new one makes
+// the rollback incomplete.
+func TestARollbackLeavesWhatSomebodyPutAtAPathOfTheModule(t *testing.T) {
+	f := updatable(t)
+	f.gw.never = true
+	f.env.StepHook = func(_ context.Context, step, phase string) {
+		if step == "rollback_restore" && phase == "begin" {
+			f.writeFile(toolPath, "somebody's tool")
+			f.writeFile(progPath, "somebody's program")
+		}
+	}
+	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed route route_timeout rollback_incomplete ") {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	out := f.out.String()
+	if !strings.Contains(out, "left: "+toolPath+" (changed)\n") || !strings.Contains(out, "left: "+progPath+" (it is neither the old file nor the new one)\n") {
+		t.Errorf("not said:\n%s", out)
+	}
+	if f.read(toolPath) != "somebody's tool" || f.read(progPath) != "somebody's program" {
+		t.Error("what was put there was replaced or deleted")
+	}
+	if !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") {
+		t.Error("the backup was not kept")
+	}
+	checkGrammar(t, f, ExitFailed, false, false, "")
+}

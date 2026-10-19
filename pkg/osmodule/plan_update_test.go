@@ -61,7 +61,7 @@ func newUpdBox(t *testing.T) *updBox {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &updBox{fakeBox: b, st: InstalledState{Present: true, Manifest: m, Tag: "v0.1.0", TagOK: true, Files: FilesVerified, Bytes: 5 * mb, BytesOK: true}}
+	return &updBox{fakeBox: b, st: InstalledState{Present: true, Manifest: m, Tag: "v0.1.0", Files: FilesVerified, Bytes: 5 * mb, BytesOK: true}}
 }
 
 // newer is the catalogue with the module at v0.1.1 and the changes asked for.
@@ -171,7 +171,7 @@ func TestAnUpdatePlanIsRefusedWithTheCodeOfTheFirstCheckThatFails(t *testing.T) 
 		{"an installed v0.1.10 against v0.1.9", func(t *testing.T) Catalogue {
 			return virtCatalogue(t, func(s string) string { return strings.ReplaceAll(s, "v0.1.0", "v0.1.9") })
 		}, func(b *updBox) { b.st.Tag = "v0.1.10" }, "downgrade", "downgrade", "newer", []string{"newer"}},
-		{"an installed version that cannot be read", bumped, func(b *updBox) { b.st.Tag, b.st.TagOK = "", false }, "version_unknown", "version_unknown", "newer", []string{"newer"}},
+		{"an installed version that cannot be read", bumped, func(b *updBox) { b.st.Tag = "" }, "version_unknown", "version_unknown", "newer", []string{"newer"}},
 		{"an installed version that is not a tag", bumped, func(b *updBox) { b.st.Tag = "latest" }, "version_unknown", "version_unknown", "newer", []string{"newer"}},
 		{"debian 11", bumped, func(b *updBox) { b.osVersion = "11" }, "os", "", "os", []string{"os"}},
 		{"an old ReCasaOS", bumped, func(b *updBox) { b.version = "0.5.22" }, "recasaos", "", "recasaos", []string{"recasaos"}},

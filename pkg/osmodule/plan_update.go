@@ -49,9 +49,8 @@ type InstalledState struct {
 	// Present: a manifest that reads is there. Broken: a manifest is there and does not pass. Unreadable: the folder of the manifests could not be read.
 	Present, Broken, Unreadable bool
 	Manifest                    Manifest
-	// Tag is the version the installer recorded; TagOK says it is a tag.
-	Tag   string
-	TagOK bool
+	// Tag is the version the installer recorded, "" when it cannot be read or is not a tag.
+	Tag string
 	// Files is one of the Files* states. Bytes is the size of the regular files the list records (what a backup of them takes), and BytesOK says it could be told.
 	Files   string
 	Bytes   int64
@@ -150,7 +149,7 @@ func UpdateChecks(st InstalledState, e Entry) (installed, newer Check) {
 	newer = Check{Code: CheckNewer}
 	c, ok := CompareTags(st.Tag, e.Tag)
 	switch {
-	case !st.TagOK || !ok:
+	case !ok:
 		newer.Detail, newer.refusal = "version_unknown", RefusedVersionUnknown
 	case c == 0:
 		newer.Detail, newer.refusal = "up_to_date", RefusedUpToDate

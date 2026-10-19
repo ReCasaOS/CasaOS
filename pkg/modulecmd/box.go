@@ -489,7 +489,7 @@ func (b *box) Installed(name string) osmodule.InstalledState {
 		return st
 	}
 	if v := installedVersion(*b.env, name); v != nil {
-		st.Tag, st.TagOK = *v, true
+		st.Tag = *v
 	}
 	list, err := readFilesEntries(b.env.Roots.files(name))
 	switch {

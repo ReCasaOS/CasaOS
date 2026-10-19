@@ -849,6 +849,8 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState,
 				bad++
 			}
 			touched[filepath.Dir(real)] = true
+		case h == holdsOther:
+			j.say("left: %s (changed)", printable(n.Path, 200))
 		}
 	}
 	// the lists, the manifest and the version, as they were
@@ -896,23 +898,19 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState,
 // true with the exit code when the run is over: the recovery could not be finished, and the result line says so.
 func (j *job) recoverUpdate(ctx context.Context) (code int, stop bool) {
 	dir := j.env.Roots.backup(j.name)
-	info, err := os.Lstat(dir)
-	switch {
-	case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) || isNotDir(err) {
 		return 0, false
-	case err != nil || !info.IsDir():
-		j.say("%s is not a folder that can be looked at: look at it, and delete it by hand", printable(j.env.Roots.Slash(dir), 200))
-		j.result("failed", "-", CodeRecoveryIncomplete, undoIncomplete)
-		return ExitFailed, true
 	}
 	j.say("an update of %s was ended before it was over: the files of the old version are put back from %s", j.name, printable(j.env.Roots.Slash(dir), 200))
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTime)
 	defer cancel()
 	bad, step := j.restoreBackup(rctx, j.name, "recover_")
 	if bad > 0 {
-		j.say("recovery incomplete: %d things could not be put back; the backup is kept in %s", bad, printable(j.env.Roots.Slash(dir), 200))
+		j.say("rollback incomplete: %d things could not be put back; the backup is kept in %s", bad, printable(j.env.Roots.Slash(dir), 200))
 		if step == "" {
 			step = "-"
+		} else {
+			j.say("failed at step %s: %s", step, CodeRecoveryIncomplete)
 		}
 		j.result("failed", step, CodeRecoveryIncomplete, undoIncomplete)
 		return ExitFailed, true
