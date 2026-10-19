@@ -61,6 +61,7 @@ const (
 	CodeInternal           = "internal_error"
 	undoDone               = "rolled_back"
 	undoIncomplete         = "rollback_incomplete"
+	undoLeft               = UndoRolledBackWithLeft
 	aptTimeout             = 30 * time.Minute
 	systemctlTimeout       = 2 * time.Minute
 	routeWait              = 60 * time.Second

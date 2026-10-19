@@ -1075,7 +1075,7 @@ func TestARollbackLeavesWhatSomebodyPutAtAPathOfTheModule(t *testing.T) {
 			f.writeFile(progPath, "somebody's program")
 		}
 	}
-	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed route route_timeout rolled_back ") {
+	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed route route_timeout rolled_back_with_left ") {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
 	out := f.out.String()

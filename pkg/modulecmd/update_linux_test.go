@@ -248,7 +248,7 @@ func TestALinkTheAdministratorPointedElsewhereIsNotReplaced(t *testing.T) {
 			}
 		}
 	}
-	if code := f.update("--yes"); code != ExitFailed || !slices.Contains(f.lines(), "failed at step swap: "+osmodule.FileExists) || !strings.Contains(f.out.String(), " rolled_back ") {
+	if code := f.update("--yes"); code != ExitFailed || !slices.Contains(f.lines(), "failed at step swap: "+osmodule.FileExists) || !strings.Contains(f.out.String(), " rolled_back_with_left ") {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
 	if target, err := os.Readlink(f.path(aliasPath)); err != nil || target != "casaos-elsewhere" {

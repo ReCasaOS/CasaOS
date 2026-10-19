@@ -62,6 +62,8 @@ func ValidKind(kind string) bool {
 const (
 	UndoRolledBack = "rolled_back"
 	UndoIncomplete = "rollback_incomplete"
+	// UndoRolledBackWithLeft is a rollback that put back everything but the files that were left as somebody else had left them: the old version is not whole, and the sentences before the RESULT line say which files.
+	UndoRolledBackWithLeft = "rolled_back_with_left"
 )
 
 const (
@@ -179,7 +181,7 @@ func parseMarker(line, name string) (marker, bool) {
 func resultAgrees(m marker) bool {
 	stepOK := m.step == "-" || stepWordRe.MatchString(m.step)
 	codeOK := codeWordRe.MatchString(m.code)
-	undoOK := m.undo == "-" || m.undo == UndoRolledBack || m.undo == UndoIncomplete
+	undoOK := m.undo == "-" || m.undo == UndoRolledBack || m.undo == UndoRolledBackWithLeft || m.undo == UndoIncomplete
 	switch m.verdict {
 	case "ok":
 		return m.step == "done" && m.code == "-" && m.undo == "-"

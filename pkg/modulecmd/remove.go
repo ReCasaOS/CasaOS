@@ -401,6 +401,19 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 		j.result("failed", phase, why, "-")
 		return ExitFailed
 	}
+	if j.keptBackup != "" {
+		// (the lists were the old version's, and the swap of the update that was ended put down what they do not know)
+		j.marker(StepLeftovers, "begin")
+		if left := j.removeNewVersionLeftovers(c.name); left > 0 {
+			j.marker(StepLeftovers, "failed")
+			j.say("failed at step %s: %s", StepLeftovers, CodeRemoveIncomplete)
+			j.say("%d paths of the new version are left on the box, named above", left)
+			j.say("the backup in %s was not touched", j.keptBackup)
+			j.result("failed", StepLeftovers, CodeRemoveIncomplete, "-")
+			return ExitFailed
+		}
+		j.marker(StepLeftovers, "done")
+	}
 	j.marker(StepDone, "done")
 	j.result("ok", StepDone, "-", "-")
 	j.say("removed: %s", c.name)

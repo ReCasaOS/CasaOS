@@ -35,6 +35,7 @@ const (
 	CodeBackupFailed       = "backup_failed"
 	CodeSwapFailed         = "swap_failed"
 	CodeRecoveryIncomplete = "recovery_incomplete"
+	CodeBackupNotDropped   = "backup_not_dropped"
 )
 
 // What the folder of a backup holds. COMPLETE is written last: a folder without it is a backup that was not finished, when nothing of the box had been changed yet.
@@ -214,7 +215,12 @@ func (u *update) steps() int {
 			u.packagesDone = true
 		}
 	}
-	u.dropBackup()
+	if err := u.dropBackup(); err != nil {
+		// the update is made, and the folder still says it is complete: the next run would revert it
+		u.say("updated: %s %s -> %s is installed, but the backup folder %s could not be dropped, and the next casaos module install, update or remove will put the old version back over it unless the folder is deleted by hand", u.entry.Name, u.oldTag, u.entry.Tag, printable(u.env.Roots.Slash(u.env.Roots.backup(u.entry.Name)), 200))
+		u.result("failed", "-", CodeBackupNotDropped, "-")
+		return ExitFailed
+	}
 	u.marker(StepDone, "done")
 	u.say("updated: %s %s -> %s", u.entry.Name, u.oldTag, u.entry.Tag)
 	u.result("ok", StepDone, "-", "-")
@@ -229,6 +235,9 @@ func (u *update) failed(step string, f *stepFailure) int {
 		if bad := u.rollback(); bad > 0 {
 			u.say("rollback incomplete: %d things could not be put back; the files of the old version are kept in %s, and the next casaos module update or remove %s puts them back", bad, printable(u.env.Roots.Slash(u.env.Roots.backup(u.entry.Name)), 200), u.entry.Name)
 			undo = undoIncomplete
+		} else if len(u.left) > 0 {
+			u.say("rolled back, but these files were left as they are, and the old version is not whole: %s", printable(strings.Join(u.left, " "), 600))
+			undo = undoLeft
 		} else {
 			u.say("rolled back")
 		}
@@ -260,11 +269,16 @@ func (u *update) rollback() (bad int) {
 }
 
 // dropBackup takes the backup folder away, once the update has ended or when nothing of the box was changed.
-func (u *update) dropBackup() {
+func (u *update) dropBackup() error {
 	dir := u.env.Roots.backup(u.entry.Name)
 	if err := removeBackup(dir); err != nil {
 		u.say("not removed: %s (%s)", printable(u.env.Roots.Slash(dir), 200), printable(err.Error(), 100))
+		var nd *notDroppedError
+		if errors.As(err, &nd) {
+			return err
+		}
 	}
+	return nil
 }
 
 // ---- the steps ---------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -712,6 +726,9 @@ var errBackupUnfinished = errors.New("the backup was not finished")
 // readBackup reads the folder of a backup. A folder without COMPLETE is errBackupUnfinished (an update that was ended while it copied, when nothing of the box had been changed); any
 // other error is a backup that cannot be trusted, and is kept.
 func readBackup(name, dir string) (b backupState, err error) {
+	if _, err := os.Lstat(filepath.Join(dir, backupDropped)); err == nil {
+		return b, errBackupUnfinished // (marked as dropped: COMPLETE could not be taken away)
+	}
 	switch info, err := os.Lstat(filepath.Join(dir, backupComplete)); {
 	case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
 		return b, errBackupUnfinished
@@ -912,6 +929,7 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState)
 			bad++
 		case h == holdsOther:
 			j.say("left: %s (it is neither the old file nor the new one: it stays as it was left)", printable(a.Path, 200))
+			j.left = append(j.left, a.Path)
 		case h == holdsNothing:
 			// (what is put back is looked at first: a copy that is not what was saved changes nothing)
 			if !a.Link {
@@ -936,6 +954,7 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState)
 			removes = append(removes, n)
 		case h == holdsOther:
 			j.say("left: %s (changed)", printable(n.Path, 200))
+			j.left = append(j.left, n.Path)
 		}
 	}
 	// the temporary names that an interrupted write leaves are the module's, whichever version they were for
@@ -1073,6 +1092,10 @@ func (j *job) recoverUpdate(ctx context.Context, verb string) (code int, stop bo
 		}
 		j.result("failed", step, CodeRecoveryIncomplete, undoIncomplete)
 		return ExitFailed, true
+	}
+	if len(j.left) > 0 {
+		j.say("recovered, but these files were left as they are, and the old version is not whole: %s", printable(strings.Join(j.left, " "), 600))
+		return 0, false
 	}
 	j.say("recovered: %s is as it was before the update", j.name)
 	return 0, false

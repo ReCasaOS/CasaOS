@@ -113,7 +113,7 @@ func TestAFileTheAdministratorEditedWhileTheUpdateRanDoesNotKeepTheRollbackFromB
 	}
 	before := f.treeWithoutBookkeeping()
 	delete(before, samplePath)
-	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed swap file_exists rolled_back ") {
+	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed swap file_exists rolled_back_with_left ") {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
 	out := f.out.String()

@@ -51,6 +51,8 @@ type job struct {
 	openStep string
 	// keptBackup is where a backup that a remove could not put back is, said again at the end of the remove
 	keptBackup string
+	// left are the paths a restore left as they were found: not the old file and not the new one
+	left []string
 }
 
 func newJob(env Env, name string) *job {
