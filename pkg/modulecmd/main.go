@@ -46,6 +46,9 @@ func Main(ctx context.Context, args []string, env Env) (code int) {
 		res, err := List(ctx, env)
 		return emit(env, res, err)
 	case "plan":
+		if c.update {
+			return emit(env, PlanUpdateOf(ctx, env, c.name), nil)
+		}
 		return emit(env, PlanOf(ctx, env, c.name), nil)
 	case "status":
 		if c.name == "" {
@@ -56,6 +59,8 @@ func Main(ctx context.Context, args []string, env Env) (code int) {
 		return emit(env, res, err)
 	case "install":
 		return runInstall(ctx, env, c)
+	case "update":
+		return runUpdate(ctx, env, c)
 	default: // remove
 		return runRemove(ctx, env, c)
 	}

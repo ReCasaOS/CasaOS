@@ -83,6 +83,15 @@ func (s *systemService) StartSystemModuleInstall(ctx context.Context, name, plan
 	return s.systemPackageUpdater().startModuleInstall(ctx, name, planID)
 }
 
+// PlanSystemModuleUpdate and StartSystemModuleUpdate are PlanSystemModule and StartSystemModuleInstall for the update of a module that is installed to the tag the catalogue names.
+func (s *systemService) PlanSystemModuleUpdate(name string) (osmodule.PlanResult, error) {
+	return s.systemPackageUpdater().planModuleMode(name, moduleVerbUpdate)
+}
+
+func (s *systemService) StartSystemModuleUpdate(ctx context.Context, name, planID string) (SystemModuleStatus, error) {
+	return s.systemPackageUpdater().startModulePlanned(ctx, moduleVerbUpdate, name, planID)
+}
+
 func (s *systemService) StartSystemModuleRemove(ctx context.Context, name string) (SystemModuleStatus, error) {
 	return s.systemPackageUpdater().startModuleRemove(ctx, name)
 }
@@ -127,13 +136,18 @@ func (t *turnstile) enter(ctx context.Context) (leave func(), ok bool) {
 }
 
 // makePlan is the plan of installing the module called name, made now, within ctx. A plan that apt was ended in for the time it has is a plan_timeout, not a plan that says apt gave no answer.
-func (u *systemPackageUpdater) makePlan(ctx context.Context, name string) (osmodule.PlanResult, error) {
+func (u *systemPackageUpdater) makePlan(ctx context.Context, name, verb string) (osmodule.PlanResult, error) {
 	release, ok := u.modulePlan.enter(ctx)
 	if !ok {
 		return osmodule.PlanResult{}, refuseModule(ModulePlanTimeout, "the plan could not be made in the time it has", nil)
 	}
 	defer release()
-	plan := modulecmd.PlanOf(ctx, u.moduleWorld(), name)
+	var plan osmodule.PlanResult
+	if verb == moduleVerbUpdate {
+		plan = modulecmd.PlanUpdateOf(ctx, u.moduleWorld(), name)
+	} else {
+		plan = modulecmd.PlanOf(ctx, u.moduleWorld(), name)
+	}
 	if ctx.Err() != nil {
 		return osmodule.PlanResult{}, refuseModule(ModulePlanTimeout, "the plan could not be made in the time it has", nil)
 	}
@@ -143,12 +157,17 @@ func (u *systemPackageUpdater) makePlan(ctx context.Context, name string) (osmod
 // planModule is the plan of installing the module called name: what the box says of it, with the checks in their order and the packages apt would install. It changes nothing; a plan that
 // is refused is still a plan (its refused says why), and it is the start that refuses.
 func (u *systemPackageUpdater) planModule(name string) (osmodule.PlanResult, error) {
+	return u.planModuleMode(name, moduleVerbInstall)
+}
+
+// planModuleMode is planModule for an install (moduleVerbInstall) or for the update of an installed module (moduleVerbUpdate).
+func (u *systemPackageUpdater) planModuleMode(name, verb string) (osmodule.PlanResult, error) {
 	if !osmodule.ValidName(name) {
 		return osmodule.PlanResult{}, badModuleRequest("name")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), systemModulePlanTimeout)
 	defer cancel()
-	return u.makePlan(ctx, name)
+	return u.makePlan(ctx, name, verb)
 }
 
 // moduleSight is what systemd says of the unit of the job of a module, as the reducer takes it.
@@ -258,6 +277,11 @@ func (u *systemPackageUpdater) moduleTurn(ctx context.Context) (leave func(), er
 // nothing else is at work, the plan the box makes now is the one that was read, and it is not refused. It writes the first line of the log and returns as soon as systemd has the unit; an
 // *ModuleRefusal says why nothing was started. reqCtx is the request's: the start waits for the starts before it no longer than that.
 func (u *systemPackageUpdater) startModuleInstall(reqCtx context.Context, name, planID string) (SystemModuleStatus, error) {
+	return u.startModulePlanned(reqCtx, moduleVerbInstall, name, planID)
+}
+
+// startModulePlanned is startModuleInstall for an install or for an update (verb): the unit runs the verb of the plan that the user read.
+func (u *systemPackageUpdater) startModulePlanned(reqCtx context.Context, verb, name, planID string) (SystemModuleStatus, error) {
 	switch {
 	case !osmodule.ValidName(name):
 		return SystemModuleStatus{}, badModuleRequest("name")
@@ -286,18 +310,18 @@ func (u *systemPackageUpdater) startModuleInstall(reqCtx context.Context, name, 
 	}
 	// the plan has its own time, and is not counted in the start's
 	planCtx, cancelPlan := context.WithTimeout(context.Background(), systemModulePlanTimeout)
-	plan, err := u.makePlan(planCtx, name)
+	plan, err := u.makePlan(planCtx, name, verb)
 	cancelPlan()
 	if err != nil {
 		return SystemModuleStatus{}, err
 	}
 	switch {
 	case plan.Refused != "":
-		return SystemModuleStatus{}, refusalOfPlan(plan)
+		return SystemModuleStatus{}, refusalOfPlan(plan, verb)
 	case plan.PlanID != planID:
 		return SystemModuleStatus{}, refuseModule(ModulePlanChanged, "The plan is no longer the one that was read: read the new plan and confirm again.", nil)
 	}
-	job, err := u.launchChecked(support, env, moduleVerbInstall, name, planID, nil)
+	job, err := u.launchChecked(support, env, verb, name, planID, nil)
 	if err != nil {
 		return SystemModuleStatus{}, err
 	}
@@ -305,8 +329,8 @@ func (u *systemPackageUpdater) startModuleInstall(reqCtx context.Context, name, 
 }
 
 // refusalOfPlan is the refusal of a start whose plan is refused: the code of the plan, and its checks. A plan that is refused because the box is busy says what with, as every busy does.
-func refusalOfPlan(plan osmodule.PlanResult) *ModuleRefusal {
-	refusal := refuseModule(string(plan.Refused), "The module cannot be installed: "+string(plan.Refused)+".", map[string]any{"checks": plan.Checks})
+func refusalOfPlan(plan osmodule.PlanResult, verb string) *ModuleRefusal {
+	refusal := refuseModule(string(plan.Refused), "The module cannot be "+map[string]string{moduleVerbInstall: "installed", moduleVerbUpdate: "updated"}[verb]+": "+string(plan.Refused)+".", map[string]any{"checks": plan.Checks})
 	if plan.Refused == osmodule.CheckBusy {
 		reason := "the plan found something else at work"
 		for _, c := range plan.Checks {

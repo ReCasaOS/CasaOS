@@ -21,9 +21,9 @@ type realBox struct {
 	env map[string]string
 }
 
-func newRealBox(t *testing.T) *realBox {
+func newRealBox(t *testing.T, opts ...fixtureOpt) *realBox {
 	t.Helper()
-	f := newFixture(t)
+	f := newFixture(t, opts...)
 	writeStubs(t, f.root)
 	dl := filepath.Join(f.root, "dl")
 	if err := os.MkdirAll(dl, 0o755); err != nil {

@@ -35,10 +35,14 @@ func moduleOptions(dir string) []string {
 func ModuleStatesFile(dir string) string { return dir + "/extended_states" }
 
 // moduleHead is the command up to the packages: the verb and its options, all fixed.
-func moduleHead(dir string, estimate bool) []string {
+func moduleHead(dir string, estimate, noUpgrade bool) []string {
 	tail := []string{"-s", "install", "--no-install-recommends"}
 	if estimate {
 		tail = []string{"--print-uris", "install", "--no-install-recommends"}
+	}
+	if noUpgrade {
+		// (an update installs what is missing and upgrades nothing, and its plan is the simulation of that)
+		tail = append(tail, "--no-upgrade")
 	}
 	return slices.Concat([]string{"apt-get"}, moduleOptions(dir), tail)
 }
@@ -57,25 +61,34 @@ func packagesOK(packages []string) bool {
 	return true
 }
 
-func moduleArgv(dir string, estimate bool, packages []string) ([]string, error) {
+func moduleArgv(dir string, estimate, noUpgrade bool, packages []string) ([]string, error) {
 	if !ValidSandboxDir(dir) {
 		return nil, failf(CodeInternal, nil, "not a sandbox directory")
 	}
 	if !packagesOK(packages) {
 		return nil, failf(CodeInternal, nil, "a list of packages that apt is not asked about")
 	}
-	return slices.Concat(moduleHead(dir, estimate), packages), nil
+	return slices.Concat(moduleHead(dir, estimate, noUpgrade), packages), nil
 }
 
 // ModuleSimArgv is "apt-get -s install --no-install-recommends" of the packages, in the sandbox directory dir.
 func ModuleSimArgv(dir string, packages []string) ([]string, error) {
-	return moduleArgv(dir, false, packages)
+	return moduleArgv(dir, false, false, packages)
+}
+
+// ModuleSimArgvNoUpgrade and ModuleEstimateArgvNoUpgrade are the same commands for the update of a module, which upgrades no package that is installed.
+func ModuleSimArgvNoUpgrade(dir string, packages []string) ([]string, error) {
+	return moduleArgv(dir, false, true, packages)
+}
+
+func ModuleEstimateArgvNoUpgrade(dir string, packages []string) ([]string, error) {
+	return moduleArgv(dir, true, true, packages)
 }
 
 // ModuleEstimateArgv is the same transaction with --print-uris: apt says what it downloads and what it uses, prints the addresses of the archives and ends, installing nothing and fetching
 // nothing. It is how the sizes are read (ParseURIEstimate).
 func ModuleEstimateArgv(dir string, packages []string) ([]string, error) {
-	return moduleArgv(dir, true, packages)
+	return moduleArgv(dir, true, false, packages)
 }
 
 // AllowedModuleArgv says whether argv is one of the two commands of a module for the sandbox directory dir, and nothing else: the head is pinned word for word, and every word after it is a
@@ -85,9 +98,11 @@ func AllowedModuleArgv(argv []string, dir string) bool {
 		return false
 	}
 	for _, estimate := range []bool{false, true} {
-		head := moduleHead(dir, estimate)
-		if len(argv) > len(head) && slices.Equal(argv[:len(head)], head) {
-			return packagesOK(argv[len(head):])
+		for _, noUpgrade := range []bool{false, true} {
+			head := moduleHead(dir, estimate, noUpgrade)
+			if len(argv) > len(head) && slices.Equal(argv[:len(head)], head) && packagesOK(argv[len(head):]) {
+				return true
+			}
 		}
 	}
 	return false

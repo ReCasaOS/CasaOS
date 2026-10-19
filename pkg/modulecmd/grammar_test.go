@@ -59,6 +59,12 @@ func checkGrammar(t *testing.T, f *fixture, exit int, remove, early bool, logBef
 	for _, s := range steps {
 		name, phase, _ := strings.Cut(s, " ")
 		switch {
+		case strings.HasSuffix(s, " skipped"):
+			// (a step that was not made is one marker, with no begin)
+			if open != "" {
+				t.Errorf("%s while %s is open:\n%s", s, open, out)
+			}
+			ended[name] = phase
 		case s == "done done":
 			// (the end of a run is one marker, with no begin)
 			if open != "" {
@@ -93,7 +99,7 @@ func checkGrammar(t *testing.T, f *fixture, exit int, remove, early bool, logBef
 		switch {
 		case remove && undo != "-":
 			t.Errorf("a remove has nothing to roll back: %q", undo)
-		case !remove && undo != "rolled_back" && undo != "rollback_incomplete":
+		case !remove && code != "backup_not_dropped" && undo != "rolled_back" && undo != "rolled_back_with_left" && undo != "rollback_incomplete":
 			t.Errorf("an install that failed says %q about its rollback", undo)
 		}
 		if step != "-" {
@@ -105,11 +111,11 @@ func checkGrammar(t *testing.T, f *fixture, exit int, remove, early bool, logBef
 			}
 		}
 		for name, phase := range ended {
-			if phase == "failed" && name != step && !strings.HasPrefix(name, "rollback_") {
+			if phase == "failed" && name != step && !strings.HasPrefix(name, "rollback_") && !strings.HasPrefix(name, "recover_") {
 				t.Errorf("%s failed and the result says %s:\n%s", name, step, out)
 			}
 		}
-		if (undo == "rollback_incomplete") != strings.Contains(out, "rollback incomplete") {
+		if !remove && (undo == "rollback_incomplete") != strings.Contains(out, "rollback incomplete") {
 			t.Errorf("the result says %q and the sentences do not agree:\n%s", undo, out)
 		}
 	case ExitOK:

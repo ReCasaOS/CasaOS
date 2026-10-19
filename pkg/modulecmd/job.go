@@ -12,23 +12,25 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 )
 
-// The output of install and remove: lines on the standard output and in the log of the module (/var/log/casaos/module-<name>.log), the same lines in both (a run that is refused before it
+// The output of install, update and remove: lines on the standard output and in the log of the module (/var/log/casaos/module-<name>.log), the same lines in both (a run that is refused before it
 // has the lock, and so before it may touch the log, says its lines on the standard output only). A line the program says about itself is a marker, a result or a sentence; what the
 // commands it runs print goes in the log only, and every line of it starts with "| ", so that nothing a package prints can look like a marker.
 //
-//	CASAOS_MODULE_STEP <nonce|-> <name> <step> <begin|done|failed> <time>
+//	CASAOS_MODULE_STEP <nonce|-> <name> <step> <begin|done|failed|skipped> <time>
 //	CASAOS_MODULE_RESULT <nonce|-> <name> <ok|refused|failed> <step|-> <code|-> <undo> <time>
 //
-// The core, when it starts a job, writes a first line of its own in the log before the program runs (Queue): CASAOS_MODULE_QUEUED <nonce> <name> <install|remove> <time>. The program does not write
-// it; when it opens the log it keeps it if it is the line of this very run (see openLog), and it is the only place that says whether the log is an install's or a remove's.
+// The core, when it starts a job, writes a first line of its own in the log before the program runs (Queue): CASAOS_MODULE_QUEUED <nonce> <name> <install|remove|update> <time>. The program does not write
+// it; when it opens the log it keeps it if it is the line of this very run (see openLog), and it is the only place that says whether the log is an install's, a remove's or an update's.
 //
 // This is the whole grammar of what the program says, and the only place it is written down. The nonce is the one the core passes in CASAOS_MODULE_NONCE, "-" when there is none. A step is a word of lower case
-// letters and underscores: for an install packages, download, verify, unpack, units, manifest, start, route and done; for a remove stop, files, manifest, reload and done; and the steps of
-// the rollback of an install, which are those of a remove behind "rollback_". Every "begin" of a step is followed by its "done" or its "failed", and a step that failed is never "done".
+// letters and underscores: for an install packages, download, verify, unpack, units, manifest, start, route and done; for a remove stop, files, manifest, reload and done; for an update
+// packages, download, verify, unpack, backup, stop, swap, units, start, route and done (the rollback of an update, and the recovery of one that was ended, are the steps restore, units and start
+// behind "rollback_" and "recover_"); and the steps of
+// the rollback of an install, which are those of a remove behind "rollback_". Every "begin" of a step is followed by its "done" or its "failed", and a step that failed is never "done". A step that a run does not make (the start and the route of an update of a module that was not running) is one marker, "skipped", with no begin.
 //
 // A run says its outcome in exactly one RESULT line, and every run that ends says it: a run that is refused (exit 2, nothing changed) has no STEP line and its RESULT line is its last; a
 // run that failed (exit 3) has the failed STEP line before the sentences that say what was undone and what was kept, and its RESULT line is its last, said once the rollback is over, so that
-// a run that is ended in the middle of it has none (and is, for whoever reads the log, a run that was interrupted); undo is "rolled_back" or "rollback_incomplete" for an install that
+// a run that is ended in the middle of it has none (and is, for whoever reads the log, a run that was interrupted); undo is "rolled_back" or "rollback_incomplete" for an install or an update that
 // failed, and "-" for the rest. A run that succeeded (exit 0) may say sentences after its RESULT line (what is left on the box, for a remove).
 
 const (
@@ -47,6 +49,10 @@ type job struct {
 	tool  int64 // the bytes of the output of the commands written so far
 	// openStep is the step that has begun and has not ended: a panic ends it, as a failed one
 	openStep string
+	// keptBackup is where a backup that a remove could not put back is, said again at the end of the remove
+	keptBackup string
+	// left are the paths a restore left as they were found: not the old file and not the new one
+	left []string
 }
 
 func newJob(env Env, name string) *job {

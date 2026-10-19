@@ -368,8 +368,11 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	defer j.close()
 	defer j.recoverRun(&code, func() string { return "-" })
 	// what an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
-	if err := emptyDir(env.Host, env.Roots.tmp()); errors.Is(err, errUnsafe) {
+	if err := emptyTmp(env.Host, env.Roots.tmp()); errors.Is(err, errUnsafe) {
 		return j.refuse(CodeStateUnsafe)
+	}
+	if code, stop := j.recoverUpdate(ctx, KindRemove); stop {
+		return code
 	}
 	if why := removeRefusal(ctx, env, c.name); why != "" {
 		return j.refuse(why)
@@ -398,23 +401,33 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 		j.result("failed", phase, why, "-")
 		return ExitFailed
 	}
+	if j.keptBackup != "" {
+		// (the lists were the old version's, and the swap of the update that was ended put down what they do not know)
+		j.marker(StepLeftovers, "begin")
+		if left := j.removeNewVersionLeftovers(c.name); left > 0 {
+			j.marker(StepLeftovers, "failed")
+			j.say("failed at step %s: %s", StepLeftovers, CodeRemoveIncomplete)
+			j.say("%d paths of the new version are left on the box, named above", left)
+			j.say("the backup in %s was not touched", j.keptBackup)
+			j.result("failed", StepLeftovers, CodeRemoveIncomplete, "-")
+			return ExitFailed
+		}
+		j.marker(StepLeftovers, "done")
+	}
 	j.marker(StepDone, "done")
 	j.result("ok", StepDone, "-", "-")
 	j.say("removed: %s", c.name)
 	j.sayLeftovers(c.name, osmodule.PackagesFor(manifest, env.Arch))
+	if j.keptBackup != "" {
+		j.say("the backup in %s was not touched: it is the one copy of the files of the old version, and is deleted by hand", j.keptBackup)
+	}
 	return ExitOK
 }
 
 // removeRefusal is the code a remove is refused with: there is nothing of the module to remove, or a package manager or the upgrade of the system is at work.
 func removeRefusal(ctx context.Context, env Env, name string) string {
 	roots := env.Roots
-	present := false
-	for _, p := range []string{roots.manifest(name), roots.files(name), roots.dirs(name), roots.version(name)} {
-		if _, err := os.Lstat(p); err == nil || !(errors.Is(err, fs.ErrNotExist) || isNotDir(err)) {
-			present = true
-		}
-	}
-	if !present {
+	if !modulePresent(roots, name) {
 		return CodeNotInstalled
 	}
 	bx := &box{ctx: ctx, env: &env}

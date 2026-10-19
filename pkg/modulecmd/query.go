@@ -77,6 +77,12 @@ func PlanOf(ctx context.Context, env Env, name string) osmodule.PlanResult {
 	return osmodule.Plan(loadCatalogue(env).cat, name, &box{ctx: ctx, env: &env})
 }
 
+// PlanUpdateOf is the plan of updating the installed module called name to the tag of the catalogue: the same, and nothing written.
+func PlanUpdateOf(ctx context.Context, env Env, name string) osmodule.PlanResult {
+	env = env.withDefaults()
+	return osmodule.PlanUpdate(loadCatalogue(env).cat, name, &box{ctx: ctx, env: &env})
+}
+
 // ---- list --------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 // A ListResult is the answer of list.
@@ -103,6 +109,15 @@ type ListModule struct {
 	Installed   *Installed `json:"installed"`
 	System      SystemInfo `json:"system"`
 	Broken      string     `json:"broken,omitempty"`
+	// Update is there for a module that is installed, that the catalogue has and whose installed version can be read; Available says the catalogue's tag is strictly later.
+	Update *UpdateInfo `json:"update,omitempty"`
+}
+
+// UpdateInfo says whether the catalogue has a later version of an installed module.
+type UpdateInfo struct {
+	Available bool   `json:"available"`
+	Installed string `json:"installed"`
+	Latest    string `json:"latest"`
 }
 
 // Installed is what the box has of a module: its version, null when the box does not know it.
@@ -131,6 +146,17 @@ func installedVersion(env Env, name string) *string {
 	return &v
 }
 
+// updateInfo is what list says of the update of a module: nothing when the installed version cannot be read, and available only when the catalogue's tag is strictly later (compared as
+// numbers: v0.1.10 is later than v0.1.9).
+func updateInfo(installed *string, latest string) *UpdateInfo {
+	if installed == nil {
+		return nil
+	}
+	// (both are tags: the installed one was read as one, and the catalogue is not taken whole when one of its tags is not)
+	c, _ := osmodule.CompareTags(*installed, latest)
+	return &UpdateInfo{Available: c < 0, Installed: *installed, Latest: latest}
+}
+
 // List is the catalogue of this release joined with what is installed.
 func List(ctx context.Context, env Env) (ListResult, error) {
 	env = env.withDefaults()
@@ -154,6 +180,7 @@ func List(ctx context.Context, env Env) (ListResult, error) {
 		m.System.Supported = len(m.System.Reasons) == 0
 		if _, ok := installed[e.Name]; ok {
 			m.Installed = &Installed{Version: installedVersion(env, e.Name)}
+			m.Update = updateInfo(m.Installed.Version, e.Tag)
 		} else if slices.Contains(broken, e.Name) {
 			m.Broken = "manifest_invalid"
 		}

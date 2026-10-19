@@ -21,6 +21,12 @@ func TestTheCommandLineIsTheUsageAndNothingElse(t *testing.T) {
 		"remove virt":                        {verb: "remove", name: "virt"},
 		"remove virt --yes":                  {verb: "remove", name: "virt", yes: true},
 		"install a-b-9":                      {verb: "install", name: "a-b-9"},
+		"update virt":                        {verb: "update", name: "virt"},
+		"update virt --yes":                  {verb: "update", name: "virt", yes: true},
+		"update virt --yes --plan-id " + id:  {verb: "update", name: "virt", yes: true, planID: id},
+		"update --plan-id " + id + " virt":   {verb: "update", name: "virt", planID: id},
+		"plan virt --update":                 {verb: "plan", name: "virt", update: true},
+		"plan --update virt":                 {verb: "plan", name: "virt", update: true},
 	}
 	for line, want := range ok {
 		got, err := parseArgs(strings.Fields(line))
@@ -34,6 +40,8 @@ func TestTheCommandLineIsTheUsageAndNothingElse(t *testing.T) {
 		"install virt --plan-id=" + id, "install virt -y", "install virt --Yes", "install virt --force", "install virt --", "install -- virt",
 		"remove", "remove virt --plan-id " + id, "remove virt other", "remove virt --yes --yes",
 		"install Virt", "install 1virt", "install -virt", "install virt_x", "install " + strings.Repeat("a", 33), "install ../virt", "install virt/x", "install virt.json",
+		"update", "update --yes", "update virt other", "update virt --yes --yes", "update virt --plan-id", "update virt --plan-id nope", "update virt --update", "update Virt", "update virt --force",
+		"plan virt --update --update", "install virt --update", "remove virt --update", "list --update", "status virt --update", "plan virt --Update", "plan virt --update=1",
 		"install virt --plan-id m1-" + strings.Repeat("A", 32), "install virt --plan-id m1-" + strings.Repeat("a", 31), "install virt --plan-id m2-" + strings.Repeat("a", 32),
 	}
 	for _, line := range bad {

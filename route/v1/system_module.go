@@ -1,7 +1,10 @@
 package v1
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -47,9 +50,63 @@ func moduleName(ctx echo.Context) (string, error) {
 	return name, nil
 }
 
-// moduleInstallRequest is the body of an install: the plan that the user read.
+// moduleInstallRequest is the body of an install, or of an update when mode says so: the plan that the user read. A mode that is not there is an install.
 type moduleInstallRequest struct {
-	PlanID string `json:"plan_id"`
+	PlanID string          `json:"plan_id"`
+	Mode   json.RawMessage `json:"mode"`
+}
+
+// moduleMode is the mode a request asks for, as the text of the value of its "mode" key (nil when the key is not there): install when there is none, and when there is it is the string install or
+// the string update, and nothing else (null, a number, another word and an empty string are a field that is not valid). The plan and the start read it the same way.
+func moduleMode(raw json.RawMessage) (string, error) {
+	if raw == nil {
+		return osmodule.ModeInstall, nil
+	}
+	var mode string
+	if json.Unmarshal(raw, &mode) != nil {
+		return "", badOSUpgradeRequest("mode")
+	}
+	switch mode {
+	case osmodule.ModeInstall:
+		return osmodule.ModeInstall, nil
+	case osmodule.ModeUpdate:
+		return osmodule.ModeUpdate, nil
+	}
+	return "", badOSUpgradeRequest("mode")
+}
+
+// planModeOf is the mode of a plan. The route took no body and ignored whatever it was sent, and still does: a body that is not a JSON object, or that has no "mode" key, is the plan of an
+// install. When "mode" is there it is strict: a string that is install or update, once, and anything else is a 400 on the field mode.
+func planModeOf(ctx echo.Context) (string, error) {
+	raw, err := io.ReadAll(io.LimitReader(ctx.Request().Body, osUpgradeBodyMax+1))
+	if err != nil || len(raw) > osUpgradeBodyMax {
+		return osmodule.ModeInstall, nil
+	}
+	// (a body that is not a JSON object leaves the map empty, and has no "mode")
+	var object map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &object)
+	value, there := object["mode"]
+	if !there {
+		return osmodule.ModeInstall, nil
+	}
+	// (a key that comes twice is not read as the last one)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	_, _ = decoder.Token()
+	seen := 0
+	for decoder.More() {
+		key, _ := decoder.Token()
+		if key == "mode" {
+			seen++
+		}
+		var skip json.RawMessage
+		if decoder.Decode(&skip) != nil {
+			break
+		}
+	}
+	if seen != 1 {
+		return "", badOSUpgradeRequest("mode")
+	}
+	return moduleMode(value)
 }
 
 // @Summary  the modules that this release can install, and what the box says of each
@@ -67,8 +124,8 @@ func GetSystemModules(ctx echo.Context) error {
 	return osPlanAnswer(ctx, http.StatusOK, common_err.GetMsg(common_err.SUCCESS), list)
 }
 
-// @Summary  the plan of installing a module: what the box says of it and what apt would do, with the machine unchanged
-// @Description Runs the module assistant's plan in the core, for at most 60 seconds: the checks in their order (catalogue, os, arch, recasaos, already_installed, foreign_unit, busy, dpkg_state, disk, apt, each with code, ok and detail), refused (null, or the code of the first check that failed), the packages apt would install and upgrade with the sizes it gives, the archive, and plan_id, the id that the install must be given back. A plan that is refused is still a plan: 200 with refused set. 400 bad_request (data.data.field is name) for a name that is not a module's; 409 with data.error_code plan_timeout when the plan could not be made in its time. It changes nothing. The token goes in the Authorization header, and is not the refresh token.
+// @Summary  the plan of installing a module, or of updating one that is installed: what the box says of it and what apt would do, with the machine unchanged
+// @Description Runs the module assistant's plan in the core, for at most 60 seconds. The body is optional and, as it always was, ignored when it is not a JSON object or has no "mode" key: that is the plan of an install. {"mode": "update"} is the plan of the update of a module that is installed to the tag the catalogue names; when "mode" is there it is install or update, once, and anything else is a 400 bad_request (data.data.field is mode). The checks of an install in their order (catalogue, os, arch, recasaos, already_installed, foreign_unit, busy, dpkg_state, disk, apt, each with code, ok and detail); those of an update (catalogue, os, arch, recasaos, installed, newer, foreign_unit, busy, dpkg_state, disk, apt), with mode "update" and update (installed and latest tags, added: the packages apt says it would install (those of the new manifest that are not installed), dropped: those it no longer names, which are never removed), and refused with not_installed, manifest_invalid, files_unreadable, files_unverified, version_unknown, up_to_date, downgrade or unit_changed besides the codes of an install; then refused (null, or the code of the first check that failed), the packages apt would install and upgrade with the sizes it gives, the archive, and plan_id, the id that the install or the update must be given back. A plan that is refused is still a plan: 200 with refused set. 400 bad_request (data.data.field is name or mode) for a name or a mode that is not valid; 409 with data.error_code plan_timeout when the plan could not be made in its time. It changes nothing. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Tags sys
 // @Security ApiKeyAuth
@@ -82,15 +139,24 @@ func PlanSystemModule(ctx echo.Context) error {
 	if err != nil {
 		return moduleFailed(ctx, err)
 	}
-	plan, err := service.MyService.System().PlanSystemModule(name)
+	mode, err := planModeOf(ctx)
+	if err != nil {
+		return moduleFailed(ctx, err)
+	}
+	var plan osmodule.PlanResult
+	if mode == osmodule.ModeUpdate {
+		plan, err = service.MyService.System().PlanSystemModuleUpdate(name)
+	} else {
+		plan, err = service.MyService.System().PlanSystemModule(name)
+	}
 	if err != nil {
 		return moduleFailed(ctx, err)
 	}
 	return osPlanAnswer(ctx, http.StatusOK, common_err.GetMsg(common_err.SUCCESS), plan)
 }
 
-// @Summary  install a module
-// @Description Starts the unit that installs the module, for the plan that the user read (plan_id): the plan is made again now and must be the same, and nothing else may be changing the box. The body is strict JSON, {"plan_id": "m1-..."}, with no field besides it. 202 with the status (data.job.kind is install and data.job.state is running; follow it with GET /sys/modules/{name}/status); 400 bad_request (data.data.field) for a name, a body or a field that is not valid; 409 with data.error_code when it is refused: not_root, unsupported, busy (data.data.reason), plan_changed, plan_timeout, and the codes of the plan's checks (catalogue, os, arch, recasaos, already_installed, foreign_unit, dpkg_state, disk_short, disk_unknown, apt_missing, apt_failed, apt_removes, apt_downgrades, held_package, package_not_exact, with data.data.checks); 500 start_failed when the unit could not be started (the log could not be written, systemd did not start it, or /usr/bin/casaos is not a program that can be run): nothing was changed. Every busy carries data.data.reason. The token goes in the Authorization header, and is not the refresh token.
+// @Summary  install a module, or update one that is installed
+// @Description Starts the unit that installs the module, for the plan that the user read (plan_id): the plan is made again now and must be the same, and nothing else may be changing the box. The body is strict JSON, {"plan_id": "m1-..."} for an install and {"plan_id": "m1-...", "mode": "update"} for the update of a module that is installed (the plan_id is the one of the plan of that mode, and a mode that is not there is an install), with no field besides them; mode is install or update, any other value is a 400 bad_request (data.data.field is mode). 202 with the status (data.job.kind is install, or update for an update, and data.job.state is running; follow it with GET /sys/modules/{name}/status); 400 bad_request (data.data.field) for a name, a body or a field that is not valid; 409 with data.error_code when it is refused: not_root, unsupported, busy (data.data.reason), plan_changed, plan_timeout, and the codes of the plan's checks (catalogue, os, arch, recasaos, already_installed, foreign_unit, dpkg_state, disk_short, disk_unknown, apt_missing, apt_failed, apt_removes, apt_downgrades, held_package, package_not_exact, with data.data.checks; for an update: catalogue, os, arch, recasaos, not_installed, manifest_invalid, files_unreadable, files_unverified, version_unknown, up_to_date, downgrade, foreign_unit, unit_changed, busy, dpkg_state, disk_short, disk_unknown, apt_missing, apt_failed, apt_removes, apt_downgrades, held_package, package_not_exact); 500 start_failed when the unit could not be started (the log could not be written, systemd did not start it, or /usr/bin/casaos is not a program that can be run): nothing was changed. Every busy carries data.data.reason. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Accept   application/json
 // @Tags sys
@@ -113,7 +179,16 @@ func InstallSystemModule(ctx echo.Context) error {
 	if req.PlanID == "" {
 		return moduleFailed(ctx, badOSUpgradeRequest("plan_id"))
 	}
-	status, err := service.MyService.System().StartSystemModuleInstall(ctx.Request().Context(), name, req.PlanID)
+	mode, err := moduleMode(req.Mode)
+	if err != nil {
+		return moduleFailed(ctx, err)
+	}
+	var status service.SystemModuleStatus
+	if mode == osmodule.ModeUpdate {
+		status, err = service.MyService.System().StartSystemModuleUpdate(ctx.Request().Context(), name, req.PlanID)
+	} else {
+		status, err = service.MyService.System().StartSystemModuleInstall(ctx.Request().Context(), name, req.PlanID)
+	}
 	if err != nil {
 		return moduleFailed(ctx, err)
 	}
@@ -149,7 +224,7 @@ func RemoveSystemModule(ctx echo.Context) error {
 }
 
 // @Summary  how the job of a module is going, and the module
-// @Description data.job is the job that the core started for the module, or the last that it started: kind (install or remove, as the core started it; "" when the log does not say, as for a job that was started by hand), state (idle, running, succeeded, refused, failed or interrupted), step (where it is, or where it failed), code (why it was refused or failed), undo (rolled_back or rollback_incomplete for an install that failed after it changed the box), kept_packages (the packages an install that failed left on the box, null when it is not known), started_at, ended_at and log_tail (the last 20 lines of the log that are not marker lines, as text). data.status is the module as the assistant says it: installed, version, unit (active, enabled) and route (answers). It runs no apt and takes no lock of a job: it is safe to ask every few seconds. 400 bad_request for a name that is not a module's.
+// @Description data.job is the job that the core started for the module, or the last that it started: kind (install, remove or update, as the core started it; "" when the log does not say, as for a job that was started by hand), state (idle, running, succeeded, refused, failed or interrupted), step (where it is, or where it failed), code (why it was refused or failed), undo (rolled_back, rolled_back_with_left or rollback_incomplete for an install or an update that failed after it changed the box), kept_packages (the packages an install that failed left on the box, null when it is not known), started_at, ended_at and log_tail (the last 20 lines of the log that are not marker lines, as text). data.status is the module as the assistant says it: installed, version, unit (active, enabled) and route (answers). It runs no apt and takes no lock of a job: it is safe to ask every few seconds. 400 bad_request for a name that is not a module's.
 // @Produce  application/json
 // @Tags sys
 // @Security ApiKeyAuth

@@ -120,7 +120,8 @@ func TestHelperProcess(t *testing.T) {
 //	MODULECMD_UMASK the umask of the process, in octal
 //	MODULECMD_MODE  "kill": SIGKILL to itself there; "block": say it has got there (<root>/stub/reached-<at>) and wait for the signal that ends the run
 //	                "panic": panic there; "waitfile": wait there for <root>/stub/go to be made
-//	MODULECMD_VERB  "remove" to run a remove in place of the install
+//	MODULECMD_VERB  "remove" to run a remove in place of the install, "update" to run an update; for an update MODULECMD_AT can also be "swap-1", "swap-2" or "swap-3" (that many files
+//	                of the swap are in place; the staging has written four before them)
 func helperInstall() int {
 	root := os.Getenv("MODULECMD_ROOT")
 	at, mode := os.Getenv("MODULECMD_AT"), os.Getenv("MODULECMD_MODE")
@@ -167,6 +168,12 @@ func helperInstall() int {
 			reach()
 		}
 	}
+	if strings.HasPrefix(at, "swap-") {
+		after, count := 4+int(at[len(at)-1]-'0'), new(int)
+		env.Host = &hostOverride{Host: newHost(), free: env.Host.FreeBytes, wrapDest: func(d osmodule.Destination) osmodule.Destination {
+			return &sharedReachDest{Destination: d, count: count, after: after, reach: reach}
+		}}
+	}
 	if strings.HasPrefix(at, "unpack-") {
 		after := map[string]int{"unpack-planned": 0, "unpack-first": 1, "unpack-mid": 2}[at]
 		env.Host = &hostOverride{Host: newHost(), free: env.Host.FreeBytes, wrapDest: func(d osmodule.Destination) osmodule.Destination {
@@ -176,6 +183,9 @@ func helperInstall() int {
 	args := []string{"install", testName, "--yes"}
 	if id := os.Getenv("MODULECMD_PLAN_ID"); id != "" {
 		args = append(args, "--plan-id", id)
+	}
+	if os.Getenv("MODULECMD_VERB") == "update" {
+		args = []string{"update", testName, "--yes"}
 	}
 	if os.Getenv("MODULECMD_VERB") == "remove" {
 		args = []string{"remove", testName, "--yes"}
@@ -199,3 +209,19 @@ func (d *reachingDest) NewFile(p string, perm os.FileMode, replace bool) (osmodu
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// sharedReachDest is reachingDest for the file systems of one run that share the count: an update asks for four files of the staging before the first of the swap.
+type sharedReachDest struct {
+	osmodule.Destination
+	count *int
+	after int
+	reach func()
+}
+
+func (d *sharedReachDest) NewFile(p string, perm os.FileMode, replace bool) (osmodule.File, error) {
+	if *d.count++; *d.count == d.after+1 {
+		d.reach()
+		return nil, os.ErrDeadlineExceeded
+	}
+	return d.Destination.NewFile(p, perm, replace)
+}

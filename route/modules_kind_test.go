@@ -26,10 +26,13 @@ func TestTheJobOfEveryAnswerSaysWhetherItIsAnInstallOrARemove(t *testing.T) {
 	if got := kindOf(http.MethodPost, "/v1/sys/modules/virt/install", `{"plan_id":"`+modulePlanID+`"}`); got != "install" {
 		t.Errorf("install: %#v", got)
 	}
+	if got := kindOf(http.MethodPost, "/v1/sys/modules/virt/install", `{"plan_id":"`+modulePlanID+`","mode":"update"}`); got != "update" {
+		t.Errorf("update: %#v", got)
+	}
 	if got := kindOf(http.MethodPost, "/v1/sys/modules/virt/remove", `{}`); got != "remove" {
 		t.Errorf("remove: %#v", got)
 	}
-	for _, kind := range []string{modulecmd.KindInstall, modulecmd.KindRemove, ""} {
+	for _, kind := range []string{modulecmd.KindInstall, modulecmd.KindRemove, modulecmd.KindUpdate, ""} {
 		system.statusKind = kind
 		if got := kindOf(http.MethodGet, "/v1/sys/modules/virt/status", ""); got != kind {
 			t.Errorf("status of a job of kind %q: %#v", kind, got)

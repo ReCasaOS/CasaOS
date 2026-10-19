@@ -1,0 +1,1112 @@
+package modulecmd
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
+)
+
+// The update of an installed module: `casaos module update <name>`. It is an install that finds the module there. The new archive is checked and unpacked into a staging folder first, so
+// that nothing of the box is changed until everything the new version is made of is known to be good; then the files that are going to be replaced are copied into a backup folder (under
+// the area of the download, backup-<name>), the unit is stopped, the new files are put in place one by one, each by a rename, the lists, the manifest and the version are written last,
+// and the unit is started again. A failure from the step stop on puts the backup back and starts the old unit; a run that is killed leaves the backup folder, and the next run of the
+// module (an update, a remove or an install) puts it back before it does anything else. The backup is deleted when the update has ended, and not before.
+
+// The steps of an update that an install does not have; the others are those of an install (packages, download, verify, unpack, units, start, route) and StepStop of a remove.
+const (
+	StepBackup = "backup"
+	StepSwap   = "swap"
+)
+
+// The codes of an update besides the ones of the plan (osmodule.Refused*: not_installed, up_to_date, downgrade, ...) and of an install.
+const (
+	CodeBackupFailed       = "backup_failed"
+	CodeSwapFailed         = "swap_failed"
+	CodeRecoveryIncomplete = "recovery_incomplete"
+	CodeBackupNotDropped   = "backup_not_dropped"
+)
+
+// What the folder of a backup holds. COMPLETE is written last: a folder without it is a backup that was not finished, when nothing of the box had been changed yet.
+const (
+	backupComplete  = "COMPLETE"
+	backupCopies    = "copies"           // copies/<n>: the n-th entry of backupActual, when it is a file
+	backupActual    = "old.files.actual" // the files and links of the old list as they were found, with what each held
+	backupFilesCopy = "old.files"        // the list of the files, as it was
+	backupDirsCopy  = "old.dirs"         // the list of the directories, as it was (not there when the module had none)
+	backupManifest  = "old.json"         // the manifest, as it was
+	backupVersion   = "old.version"      // the version, as it was
+	backupNewFiles  = "new.files"        // what the swap is going to put down (the list that the update ends with)
+	backupNewDirs   = "new.dirs"         // the directories the swap is going to make (not there when it makes none)
+)
+
+// An update is the state of one run: an install (the packages, the archive, the lists) that finds the old version on the box.
+type update struct {
+	*install
+	oldManifest osmodule.Manifest
+	oldTag      string
+	oldList     osmodule.FilesList
+	oldDirs     []string
+	merged      bool
+	// ours are the entries of the old list that still hold what the list says
+	ours []osmodule.FileEntry
+	// staged is what the new archive unpacked to in the staging folder; newEntries the list of the files the update ends with, newDirs the directories it has to make (parents first)
+	staged     osmodule.Result
+	newEntries []osmodule.FileEntry
+	newDirs    []string
+	// backupDone is set when the backup is complete: from there a failure is put back from it (what it finds to put back, and nothing else, is done)
+	backupDone bool
+	// before is what the units of the module were (running, enabled) before anything was stopped
+	before []unitRecord
+}
+
+// canonPath is a path of a file with /lib spelled /usr/lib when the box has one directory for the two.
+func canonPath(merged bool, p string) string {
+	if rest, ok := strings.CutPrefix(p, "/lib/"); ok && merged {
+		return "/usr/lib/" + rest
+	}
+	return p
+}
+
+func (u *update) canon(p string) string { return canonPath(u.merged, p) }
+
+// runUpdate updates the module c.name: the plan, the question when there is to be one, then (holding the lock) what an earlier update that was killed left, the plan again, and the
+// steps. It returns the exit code.
+func runUpdate(ctx context.Context, env Env, c command) (code int) {
+	env = env.withDefaults()
+	if env.EUID() != 0 {
+		return refuseEarly(env, c.name, CodeNotRoot)
+	}
+	if err := makeDirs(env.Roots.state(), 0o755); err != nil {
+		return refuseEarly(env, c.name, CodeLockFailed)
+	}
+	if err := env.Host.SafeDir(env.Roots.state()); err != nil {
+		return refuseEarly(env, c.name, CodeStateUnsafe)
+	}
+	asked := ""
+	if !c.yes {
+		plan := PlanUpdateOf(ctx, env, c.name)
+		if why := planRefusal(c, plan, ""); why != "" {
+			return refuseEarly(env, c.name, why)
+		}
+		if !env.Terminal() {
+			return refuseEarly(env, c.name, CodeConfirmationNeeded)
+		}
+		if !newJob(env, c.name).confirm(plan.Name, plan.Tag, plan.Tier, plan.Packages.ToInstall, plan.Packages.DownloadBytes, plan.Archive.URL, "update") {
+			return refuseEarly(env, c.name, CodeDeclined)
+		}
+		asked = plan.PlanID
+	}
+	release, err := env.Host.Lock(env.Roots.lock())
+	switch {
+	case errors.Is(err, ErrLockHeld):
+		return refuseEarly(env, c.name, CodeBusy)
+	case err != nil:
+		return refuseEarly(env, c.name, CodeLockFailed)
+	}
+	defer release()
+	j := newJob(env, c.name)
+	if err := j.openLog(KindUpdate); err != nil {
+		return refuseEarly(env, c.name, CodeLogUnwritable)
+	}
+	defer j.close()
+	var u *update
+	defer j.recoverRun(&code, func() string {
+		if u != nil && u.backupDone {
+			return undoIncomplete
+		}
+		return undoDone
+	})
+	if err := emptyTmp(env.Host, env.Roots.tmp()); err != nil {
+		if errors.Is(err, errUnsafe) {
+			return j.refuse(CodeStateUnsafe)
+		}
+		return j.refuse(CodeTmpUnusable)
+	}
+	if code, stop := j.recoverUpdate(ctx, KindUpdate); stop {
+		return code
+	}
+	if bad := j.unreadableLists(c.name); len(bad) > 0 {
+		for _, p := range bad {
+			j.say("the list %s cannot be read: look at it, and delete it by hand, and remove the module, and install it again", printable(env.Roots.Slash(p), 200))
+		}
+		return j.refuse(CodeFilesUnreadable)
+	}
+	defer func() { _ = emptyTmp(env.Host, env.Roots.tmp()) }()
+
+	plan := PlanUpdateOf(ctx, env, c.name)
+	if why := planRefusal(c, plan, asked); why != "" {
+		return j.refuse(why)
+	}
+	cat := loadCatalogue(env).cat
+	entry, _ := cat.Find(c.name)
+	asset, _ := entry.Asset(env.Arch)
+	bx := &box{ctx: ctx, env: &env}
+	st := bx.Installed(c.name)
+	oldList, err := readFilesEntries(env.Roots.files(c.name))
+	if err != nil {
+		return j.refuse(CodeFilesUnreadable)
+	}
+	oldDirs, err := readDirsList(env.Roots.dirs(c.name))
+	if err != nil {
+		return j.refuse(CodeFilesUnreadable)
+	}
+	merged, _ := bx.MergedUsr()
+	var packages []string
+	if len(plan.Update.Added) > 0 {
+		packages = osmodule.PackagesFor(entry.Manifest, env.Arch)
+	}
+	u = &update{
+		install:     &install{job: j, ctx: ctx, entry: entry, asset: asset, packages: packages, noUpgrade: true},
+		oldManifest: st.Manifest, oldTag: st.Tag, oldList: oldList, oldDirs: oldDirs, merged: merged,
+	}
+	defer u.closeArchive()
+	return u.steps()
+}
+
+func (u *update) steps() int {
+	steps := []struct {
+		name string
+		do   func() *stepFailure
+	}{
+		{StepPackages, u.stepPackages},
+		{StepDownload, u.stepDownload},
+		{StepVerify, u.stepVerify},
+		{StepUnpack, u.stepUnpack},
+		{StepBackup, u.stepBackup},
+		{StepStop, u.stepStop},
+		{StepSwap, u.stepSwap},
+		{StepUnits, u.stepUnits},
+		{StepStart, u.stepStart},
+		{StepRoute, u.stepRoute},
+	}
+	for _, s := range steps {
+		// a module that was not running is not started, and its route does not answer: the steps that wait for that are not made
+		if (s.name == StepStart && u.backupDone && !anyActive(u.before)) || (s.name == StepRoute && u.backupDone && !activeOf(u.before, u.oldManifest.Unit)) {
+			u.marker(s.name, "skipped")
+			continue
+		}
+		u.marker(s.name, "begin")
+		u.hook(u.ctx, s.name, "begin")
+		var f *stepFailure
+		if err := u.ctx.Err(); err != nil {
+			f = &stepFailure{CodeInterrupted, err}
+		} else {
+			f = u.guarded(s.do)
+		}
+		if f != nil {
+			u.marker(s.name, "failed")
+			return u.failed(s.name, f)
+		}
+		u.marker(s.name, "done")
+		u.hook(u.ctx, s.name, "done")
+		if s.name == StepPackages {
+			u.packagesDone = true
+		}
+	}
+	if err := u.dropBackup(); err != nil {
+		// the update is made, and the folder still says it is complete: the next run would revert it
+		u.say("updated: %s %s -> %s is installed, but the backup folder %s could not be dropped, and the next casaos module install, update or remove will put the old version back over it unless the folder is deleted by hand", u.entry.Name, u.oldTag, u.entry.Tag, printable(u.env.Roots.Slash(u.env.Roots.backup(u.entry.Name)), 200))
+		u.result("failed", "-", CodeBackupNotDropped, "-")
+		return ExitFailed
+	}
+	u.marker(StepDone, "done")
+	u.say("updated: %s %s -> %s", u.entry.Name, u.oldTag, u.entry.Tag)
+	u.result("ok", StepDone, "-", "-")
+	return ExitOK
+}
+
+// failed puts the box back as it was when the update had begun to change it, and says what was kept.
+func (u *update) failed(step string, f *stepFailure) int {
+	u.say("failed at step %s: %s", step, f.code)
+	undo := undoDone
+	if u.backupDone {
+		if bad := u.rollback(); bad > 0 {
+			u.say("rollback incomplete: %d things could not be put back; the files of the old version are kept in %s, and the next casaos module update or remove %s puts them back", bad, printable(u.env.Roots.Slash(u.env.Roots.backup(u.entry.Name)), 200), u.entry.Name)
+			undo = undoIncomplete
+		} else if len(u.left) > 0 {
+			u.say("rolled back, but these files were left as they are, and the old version is not whole: %s", printable(strings.Join(u.left, " "), 600))
+			undo = undoLeft
+		} else {
+			u.say("rolled back")
+		}
+	} else {
+		// (nothing of the box was changed: whatever there is of a backup is a copy)
+		u.dropBackup()
+	}
+	if u.aptStarted && step == StepPackages && (f.code == CodeInterrupted || errors.Is(f.err, context.DeadlineExceeded)) {
+		u.say("apt-get was ended while it worked: dpkg --configure -a is probably needed")
+	}
+	u.say("kept_packages: %s", u.keptPackages())
+	u.result("failed", step, f.code, undo)
+	return ExitFailed
+}
+
+// rollback puts the old version back from the backup; what it does is not stopped by the signal that interrupted the run, and a panic in it is a rollback that could not be finished.
+func (u *update) rollback() (bad int) {
+	defer func() {
+		if r := recover(); r != nil {
+			u.panicked(r)
+			u.failOpen()
+			bad = 1
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(u.ctx), rollbackTime)
+	defer cancel()
+	bad, _ = u.restoreBackup(ctx, u.entry.Name, "rollback_")
+	return bad
+}
+
+// dropBackup takes the backup folder away, once the update has ended or when nothing of the box was changed.
+func (u *update) dropBackup() error {
+	dir := u.env.Roots.backup(u.entry.Name)
+	if err := removeBackup(dir); err != nil {
+		u.say("not removed: %s (%s)", printable(u.env.Roots.Slash(dir), 200), printable(err.Error(), 100))
+		var nd *notDroppedError
+		if errors.As(err, &nd) {
+			return err
+		}
+	}
+	return nil
+}
+
+// ---- the steps ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+// unpackFailure is the failure of a step that unpacks: the code of a refusal of the archive, or unpack_failed.
+func (u *update) unpackFailure(err error) *stepFailure {
+	var refused *osmodule.Refused
+	if errors.As(err, &refused) {
+		return u.fail(refused.Code, err)
+	}
+	return u.fail(CodeUnpackFailed, err)
+}
+
+// stepUnpack checks the archive against the box as it is (what is in the way, what is not the module's: nothing is written), unpacks it into the staging folder, where it is checked
+// against the same rules and limits as an install's, and checks the manifest it carries. Nothing of the box is changed.
+func (u *update) stepUnpack() *stepFailure {
+	tarFile, f := u.openTar()
+	if f != nil {
+		return f
+	}
+	defer tarFile.Close()
+	ours, err := u.stillTheirs(u.oldList)
+	if err != nil {
+		return u.fail(CodeUnpackFailed, err)
+	}
+	u.ours = ours
+	own := make([]string, len(ours))
+	for i, e := range ours {
+		own[i] = e.Path
+	}
+	opts := osmodule.Options{Unit: u.entry.Manifest.Unit}
+	// the box as it is: a file of the new version that is there and is not the module's (changed by the administrator, or somebody else's) refuses the update
+	if _, err := osmodule.ValidateArchive(tarFile, u.env.Host.NewDest(u.env.Roots.Prefix), own, opts); err != nil {
+		return u.unpackFailure(err)
+	}
+	stage := u.env.Roots.stage()
+	if err := makeDirs(stage, 0o700); err != nil {
+		return u.fail(CodeUnpackFailed, err)
+	}
+	res, err := osmodule.Unpack(tarFile, u.env.Host.NewDest(stage), nil, opts)
+	if err != nil {
+		return u.unpackFailure(err)
+	}
+	u.staged, u.manifest = res, res.Manifest
+	m, err := osmodule.Parse(osmodule.FileName(u.entry.Name), u.manifest)
+	if err != nil {
+		return u.fail(CodeManifestInvalid, err)
+	}
+	if !manifestMatches(m, u.entry.Manifest) {
+		return u.fail(CodeManifestMismatch, errors.New("the manifest of the archive is not the catalogue's"))
+	}
+	for _, p := range res.Files {
+		w := res.Want[p]
+		u.newEntries = append(u.newEntries, osmodule.FileEntry{Path: p, Link: w.Link, Want: []string{w.Value}})
+	}
+	u.newDirs = missingDirs(u.env.Host.NewDest(u.env.Roots.Prefix), res.Files)
+	return nil
+}
+
+// missingDirs are the directories above the files that the box does not have, parents first.
+func missingDirs(dst osmodule.Destination, files []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range files {
+		at := ""
+		for _, part := range strings.Split(strings.TrimPrefix(path.Dir(f), "/"), "/") {
+			at += "/" + part
+			if seen[at] {
+				continue
+			}
+			seen[at] = true
+			if _, err := dst.Lstat(at); errors.Is(err, fs.ErrNotExist) {
+				out = append(out, at)
+			}
+		}
+	}
+	return out
+}
+
+// copyFileTo copies the regular file src (not through a link) to dst with the permissions it has, and gives the sha256 of what it copied.
+func copyFileTo(src, dst string) (string, error) {
+	in, err := os.OpenFile(src, os.O_RDONLY|noFollow, 0)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("not a regular file")
+	}
+	out, err := createPrivate(dst)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	_, err = io.Copy(io.MultiWriter(out, h), in)
+	if err == nil {
+		err = syncFile(out)
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(dst, info.Mode().Perm())
+	}
+	if err != nil {
+		_ = os.Remove(dst)
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// stepBackup copies everything the swap is going to replace or delete into the backup folder, with the lists, the manifest and the version, and the list of what the swap is going to put
+// down; the folder is complete when COMPLETE is there. Nothing of the box is changed.
+func (u *update) stepBackup() *stepFailure {
+	roots := u.env.Roots
+	dir := roots.backup(u.entry.Name)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return u.fail(CodeBackupFailed, err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, backupCopies), 0o700); err != nil {
+		return u.fail(CodeBackupFailed, err)
+	}
+	var actual []osmodule.FileEntry
+	owners := map[int][2]int{}
+	for _, e := range u.oldList.Entries {
+		if err := u.ctx.Err(); err != nil {
+			return u.fail(CodeBackupFailed, err)
+		}
+		real := roots.Path(e.Path)
+		info, err := os.Lstat(real)
+		switch {
+		case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
+			// (taken away by the administrator: there is nothing to keep)
+		case err != nil:
+			return u.fail(CodeBackupFailed, err)
+		case info.Mode()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(real)
+			if err != nil {
+				return u.fail(CodeBackupFailed, err)
+			}
+			if uid, gid, ok := ownerOf(info); ok {
+				owners[len(actual)] = [2]int{uid, gid}
+			}
+			actual = append(actual, osmodule.FileEntry{Path: e.Path, Link: true, Want: []string{target}})
+		case info.Mode().IsRegular():
+			sum, err := copyFileTo(real, filepath.Join(dir, backupCopies, strconv.Itoa(len(actual))))
+			if err != nil {
+				return u.fail(CodeBackupFailed, err)
+			}
+			if uid, gid, ok := ownerOf(info); ok {
+				owners[len(actual)] = [2]int{uid, gid}
+			}
+			actual = append(actual, osmodule.FileEntry{Path: e.Path, Want: []string{sum}})
+		default:
+			return u.fail(CodeBackupFailed, fmt.Errorf("%s is not a file nor a link", printable(e.Path, 200)))
+		}
+	}
+	put := func(name string, raw []byte) error { return writeFileAtomic(filepath.Join(dir, name), raw, 0o600) }
+	if len(actual) > 0 {
+		raw, err := osmodule.FormatFilesList(actual)
+		if err == nil {
+			err = put(backupActual, raw)
+		}
+		if err != nil {
+			return u.fail(CodeBackupFailed, err)
+		}
+	}
+	for _, c := range []struct {
+		from, to string
+		optional bool
+	}{
+		{roots.files(u.entry.Name), backupFilesCopy, false},
+		{roots.dirs(u.entry.Name), backupDirsCopy, true},
+		{roots.manifest(u.entry.Name), backupManifest, false},
+		{roots.version(u.entry.Name), backupVersion, false},
+	} {
+		raw, err := readRegular(c.from, int64(osmodule.MaxFilesBytes))
+		if errors.Is(err, fs.ErrNotExist) && c.optional {
+			continue
+		}
+		if err == nil {
+			err = put(c.to, raw)
+		}
+		if err != nil {
+			return u.fail(CodeBackupFailed, err)
+		}
+	}
+	raw, err := osmodule.FormatFilesList(u.newEntries)
+	if err == nil {
+		err = put(backupNewFiles, raw)
+	}
+	if err == nil && len(u.newDirs) > 0 {
+		if raw, err = osmodule.FormatDirs(u.newDirs); err == nil {
+			err = put(backupNewDirs, raw)
+		}
+	}
+	if err != nil {
+		return u.fail(CodeBackupFailed, err)
+	}
+	// who owned the files, and what the units were doing before anything is stopped
+	if len(owners) > 0 {
+		if err := put(backupOwners, formatOwners(owners, len(actual))); err != nil {
+			return u.fail(CodeBackupFailed, err)
+		}
+	}
+	before, err := u.recordUnits(u.ctx, unitNames(u.oldManifest.Unit, u.oldList.Paths()))
+	if err == nil {
+		u.before = before
+		err = put(backupUnits, formatUnits(before))
+	}
+	if err != nil {
+		return u.fail(CodeBackupFailed, err)
+	}
+	syncDir(filepath.Join(dir, backupCopies))
+	syncDir(dir)
+	if err := put(backupComplete, []byte("complete\n")); err != nil {
+		return u.fail(CodeBackupFailed, err)
+	}
+	u.backupDone = true
+	syncDir(dir)
+	syncDir(roots.tmp())
+	return nil
+}
+
+// stopOnly stops a unit, and asks whether it is stopped: the unit stays enabled.
+func (j *job) stopOnly(ctx context.Context, unit string) bool {
+	_, _ = j.sh(ctx, systemctlTimeout, "systemctl", "stop", unit)
+	if !j.unitIsStopped(ctx, unit) {
+		j.say("the unit %s is not known to be stopped", printable(unit, 80))
+		return false
+	}
+	return true
+}
+
+func (u *update) stepStop() *stepFailure {
+	stuck := 0
+	for _, r := range u.before {
+		// (a unit that is not running is not stopped, and is not started again by a rollback)
+		if r.Active && !u.stopOnly(u.ctx, r.Name) {
+			stuck++
+		}
+	}
+	if stuck > 0 {
+		return u.fail(CodeUnitNotStopped, errors.New("a unit could not be stopped"))
+	}
+	return nil
+}
+
+// putFile puts the regular file src at the path abs of the box, whole or not at all, and checks that what was put is the sha256 sum. replace says the file at abs is the module's own.
+func putFile(dst osmodule.Destination, abs, src, sum string, replace bool, verify func() error) error {
+	in, err := os.OpenFile(src, os.O_RDONLY|noFollow, 0)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("not a regular file")
+	}
+	file, err := dst.NewFile(abs, info.Mode().Perm(), replace)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(file, h), in); err != nil {
+		file.Abort()
+		return err
+	}
+	if hex.EncodeToString(h.Sum(nil)) != sum {
+		file.Abort()
+		return errors.New("what was read is not what was saved")
+	}
+	// the last look before the rename: the file that is replaced is still the module's. A write between this look and the rename is not seen: the unit is stopped, which is what closes that window.
+	if verify != nil {
+		if err := verify(); err != nil {
+			file.Abort()
+			return err
+		}
+	}
+	if err := file.Commit(); err != nil {
+		file.Abort()
+		return err
+	}
+	return nil
+}
+
+// stepSwap puts the new version in place: the directories it needs, then each file by a rename (the unit last), then the files of the old version that the new one does not have
+// (only the ones that still hold what the old list says), then the lists, the manifest and the version, each written whole or not at all.
+func (u *update) stepSwap() *stepFailure {
+	roots := u.env.Roots
+	dst := u.env.Host.NewDest(roots.Prefix)
+	stage := Roots{Prefix: roots.stage()}
+	for _, d := range u.newDirs {
+		switch err := dst.Mkdir(d, 0o755); {
+		case err == nil:
+		case errors.Is(err, fs.ErrExist):
+			if mode, err := dst.Lstat(d); err != nil || !mode.IsDir() {
+				return u.fail(osmodule.UnpackPath, errors.New("a directory of the new version is not one"))
+			}
+		default:
+			return u.fail(CodeSwapFailed, err)
+		}
+	}
+	oldBy := map[string]osmodule.FileEntry{}
+	for _, e := range u.ours {
+		oldBy[u.canon(e.Path)] = e
+	}
+	// the paths that the lists of the other modules have too are theirs as much as this one's: the file of the old version that the new one does not have is not deleted from under them
+	others, err := (&box{ctx: u.ctx, env: &u.env}).FilesLists()
+	if err != nil {
+		return u.fail(CodeSwapFailed, err)
+	}
+	owner := map[string]string{}
+	for _, other := range sortedKeys(others) {
+		if other == u.entry.Name {
+			continue
+		}
+		for _, p := range others[other] {
+			if _, ok := owner[p]; !ok {
+				owner[p] = other
+			}
+		}
+	}
+	newPaths := map[string]bool{}
+	touched := map[string]bool{}
+	for _, p := range u.staged.Files {
+		if err := u.ctx.Err(); err != nil {
+			return u.fail(CodeSwapFailed, err)
+		}
+		w := u.staged.Want[p]
+		newPaths[u.canon(p)] = true
+		// (the file is the module's if it still holds what its record says now, and not only when the archive was checked; if it does not, nothing is written over it: the rename that puts the
+		// new file in place does not replace what it is not told to, and the swap fails with file_exists)
+		replace := false
+		var verify func() error
+		if oe, mine := oldBy[u.canon(p)]; mine {
+			switch h, err := holds(roots.Path(oe.Path), oe); {
+			case err != nil:
+				return u.fail(CodeSwapFailed, err)
+			case h == holdsOurs:
+				replace = true
+				verify = func() error {
+					if h, err := holds(roots.Path(oe.Path), oe); err != nil {
+						return err
+					} else if h == holdsOther {
+						return fmt.Errorf("%s: %w", oe.Path, fs.ErrExist)
+					}
+					return nil
+				}
+			}
+		}
+		var err error
+		if w.Link {
+			err = dst.Symlink(w.Value, p, replace)
+		} else {
+			err = putFile(dst, p, stage.Path(p), w.Value, replace, verify)
+		}
+		if errors.Is(err, fs.ErrExist) {
+			return u.fail(osmodule.FileExists, err)
+		}
+		if err != nil {
+			return u.fail(CodeSwapFailed, err)
+		}
+		touched[filepath.Dir(roots.Path(p))] = true
+	}
+	// what the new version does not have: taken away when it is what the old list says; left when somebody changed it (the unpack step has said so)
+	for _, e := range u.oldList.Entries {
+		if newPaths[u.canon(e.Path)] {
+			continue
+		}
+		if other, ok := owner[e.Path]; ok {
+			u.say("kept, it is the list of %s too: %s", other, printable(e.Path, 200))
+			continue
+		}
+		real := roots.Path(e.Path)
+		switch h, err := holds(real, e); {
+		case err != nil:
+			return u.fail(CodeSwapFailed, err)
+		case h == holdsOurs:
+			if _, err := removeEntry(real); err != nil {
+				return u.fail(CodeSwapFailed, err)
+			}
+			touched[filepath.Dir(real)] = true
+		}
+	}
+	for d := range touched {
+		syncDir(d)
+	}
+	// the lists, the manifest and the version, last
+	if err := u.recordFiles(u.newEntries); err != nil {
+		return u.fail(CodeSwapFailed, err)
+	}
+	made := slices.Clone(u.newDirs)
+	slices.Reverse(made)
+	if err := u.recordDirs(union(made, u.oldDirs)); err != nil {
+		return u.fail(CodeSwapFailed, err)
+	}
+	if err := makeDirs(roots.manifests(), 0o755); err != nil {
+		return u.fail(CodeSwapFailed, err)
+	}
+	if err := writeFileAtomic(roots.manifest(u.entry.Name), u.manifest, 0o644); err != nil {
+		return u.fail(CodeSwapFailed, err)
+	}
+	if err := writeFileAtomic(roots.version(u.entry.Name), []byte(u.entry.Tag+"\n"), 0o644); err != nil {
+		return u.fail(CodeSwapFailed, err)
+	}
+	syncDir(roots.manifests())
+	syncDir(roots.state())
+	return nil
+}
+
+// stepStart starts what was running before the update, and enables what was enabled and is not any more; the units that were not running stay as they were.
+func (u *update) stepStart() *stepFailure {
+	if u.settleUnits(u.ctx, u.before) > 0 {
+		return u.fail(CodeStartFailed, errors.New("a unit could not be started"))
+	}
+	return nil
+}
+
+// ---- putting the backup back --------------------------------------------------------------------------------------------------------------------------------------------------
+
+// A backupState is a backup folder as it was read: every list in it has passed the parser of its kind.
+type backupState struct {
+	actual            osmodule.FilesList
+	files, dirs       []byte
+	manifest, version []byte
+	parsed            osmodule.Manifest
+	oldPaths          []string
+	newList           osmodule.FilesList
+	newDirs           []string
+	units             []unitRecord
+	unitsGuessed      bool
+	owners            map[int][2]int
+}
+
+var errBackupUnfinished = errors.New("the backup was not finished")
+
+// readBackup reads the folder of a backup. A folder without COMPLETE is errBackupUnfinished (an update that was ended while it copied, when nothing of the box had been changed); any
+// other error is a backup that cannot be trusted, and is kept.
+func readBackup(name, dir string) (b backupState, err error) {
+	if _, err := os.Lstat(filepath.Join(dir, backupDropped)); err == nil {
+		return b, errBackupUnfinished // (marked as dropped: COMPLETE could not be taken away)
+	}
+	switch info, err := os.Lstat(filepath.Join(dir, backupComplete)); {
+	case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
+		return b, errBackupUnfinished
+	case err != nil:
+		return b, err
+	case !info.Mode().IsRegular():
+		return b, errors.New("COMPLETE is not a file")
+	}
+	read := func(file string, optional bool) ([]byte, error) {
+		raw, err := readRegular(filepath.Join(dir, file), int64(osmodule.MaxFilesBytes))
+		if errors.Is(err, fs.ErrNotExist) && optional {
+			return nil, nil
+		}
+		return raw, err
+	}
+	var raw []byte
+	list := func(file string, optional bool) (osmodule.FilesList, error) {
+		raw, err := read(file, optional)
+		if err != nil || raw == nil {
+			return osmodule.FilesList{}, err
+		}
+		l, err := osmodule.ParseFilesList(raw)
+		if err == nil && !l.Verified {
+			err = errors.New("a list of the earlier format")
+		}
+		return l, err
+	}
+	if b.actual, err = list(backupActual, true); err != nil {
+		return b, err
+	}
+	old, err := list(backupFilesCopy, false)
+	if err != nil {
+		return b, err
+	}
+	b.oldPaths = old.Paths()
+	if b.files, err = read(backupFilesCopy, false); err != nil {
+		return b, err
+	}
+	if b.dirs, err = read(backupDirsCopy, true); err != nil {
+		return b, err
+	}
+	if b.dirs != nil {
+		if _, err = osmodule.ParseDirs(b.dirs); err != nil {
+			return b, err
+		}
+	}
+	if b.manifest, err = read(backupManifest, false); err != nil {
+		return b, err
+	}
+	if b.parsed, err = osmodule.Parse(osmodule.FileName(name), b.manifest); err != nil {
+		return b, err
+	}
+	if b.version, err = read(backupVersion, false); err != nil {
+		return b, err
+	}
+	if !tagRe.MatchString(strings.TrimSpace(string(b.version))) {
+		return b, errors.New("the saved version is not a tag")
+	}
+	if b.newList, err = list(backupNewFiles, false); err != nil {
+		return b, err
+	}
+	// (a record of the units that is not there, or cannot be read, must not keep the files from being put back: the module's units are taken for running, which they were)
+	if raw, err = read(backupUnits, false); err == nil {
+		b.units, err = parseUnits(raw)
+	}
+	if err != nil {
+		b.unitsGuessed = true
+		for _, name := range unitNames(b.parsed.Unit, b.oldPaths) {
+			b.units = append(b.units, unitRecord{Name: name, Active: true})
+		}
+		err = nil
+	}
+	if raw, err = read(backupOwners, true); err != nil {
+		return b, err
+	}
+	if raw != nil {
+		if b.owners, err = parseOwners(raw); err != nil {
+			return b, err
+		}
+	}
+	if raw, err = read(backupNewDirs, true); err != nil {
+		return b, err
+	}
+	if raw != nil {
+		if b.newDirs, err = osmodule.ParseDirs(raw); err != nil {
+			return b, err
+		}
+	}
+	return b, nil
+}
+
+// putBack puts the file or the link the backup has of a path at the path.
+func putBack(dst osmodule.Destination, roots Roots, dir string, k int, a osmodule.FileEntry) error {
+	if err := makeDirs(filepath.Dir(roots.Path(a.Path)), 0o755); err != nil {
+		return err
+	}
+	if a.Link {
+		return dst.Symlink(a.Want[0], a.Path, true)
+	}
+	return putFile(dst, a.Path, filepath.Join(dir, backupCopies, strconv.Itoa(k)), a.Want[0], true, nil)
+}
+
+// restoreBackup puts the box back as the backup of the update of the module called name has it, as steps behind prefix: restore (stop the units that were running, when there is anything to
+// put back; put back what is not what the backup holds, take away what only the new version put down, and then write the lists, the manifest and the version as they were), units (systemd
+// reads them again) and start (what was running is started, what was enabled and is not is enabled). What it does can be done again, so that a run that is ended in the middle of it is put
+// back by the next. When something cannot be put back the lists, the manifest and the version are left as they are, the other steps are made all the same (the unit is started), and the
+// backup is kept. The backup folder is deleted at the end, and only when everything was put back; it returns what it could not do, and the first step it could not do it in.
+func (j *job) restoreBackup(ctx context.Context, name, prefix string) (bad int, step string) {
+	roots := j.env.Roots
+	dir := roots.backup(name)
+	where := printable(roots.Slash(dir), 200)
+	b, err := readBackup(name, dir)
+	switch {
+	case errors.Is(err, errBackupUnfinished):
+		j.say("the backup in %s has no COMPLETE mark: nothing is put back from it, and it is dropped (an update that was ended while it copied had changed nothing; one that was over has nothing left to put back)", where)
+		if err := removeBackup(dir); err != nil {
+			j.say("not removed: %s (%s)", where, printable(err.Error(), 100))
+			return 1, ""
+		}
+		return 0, ""
+	case err != nil:
+		j.say("the backup in %s cannot be read (%s): nothing was put back from it, and it is kept", where, printable(err.Error(), 100))
+		j.wayOut(name, where)
+		return 1, ""
+	}
+	if b.unitsGuessed {
+		j.say("the record of the units in the backup cannot be read: the units of the module are started, as they were before the units were recorded")
+	}
+	run := func(s string, do func() int) {
+		j.marker(prefix+s, "begin")
+		j.hook(ctx, prefix+s, "begin")
+		if n := do(); n > 0 {
+			j.marker(prefix+s, "failed")
+			if bad == 0 {
+				bad, step = n, prefix+s
+			}
+			return
+		}
+		j.marker(prefix+s, "done")
+		j.hook(ctx, prefix+s, "done")
+	}
+	// (a step that fails does not keep the ones after it from being made: the unit is started whatever came of the files)
+	run("restore", func() int { return j.putBackFiles(ctx, name, dir, b) })
+	run("units", func() int {
+		if out, err := j.sh(ctx, systemctlTimeout, "systemctl", "daemon-reload"); err != nil || out.ExitCode != 0 {
+			j.say("systemctl daemon-reload failed")
+			return 1
+		}
+		return 0
+	})
+	run("start", func() int { return j.settleUnits(ctx, b.units) })
+	if bad > 0 {
+		return bad, step
+	}
+	if err := removeBackup(dir); err != nil {
+		j.say("not removed: %s (%s)", where, printable(err.Error(), 100))
+		return 1, ""
+	}
+	return 0, ""
+}
+
+// putBackFiles is the step restore. It first looks at every path and decides what is to be done: a path is put back when it holds the new file or is gone, and a path that only the new
+// version has is taken away when it holds what the new list says; one that holds neither the old file nor the new one is somebody else's, and is left. When any path cannot be done
+// nothing is changed (the lists, the manifest and the version are the ones of the box now), and the way out by hand is said. The units that were running are stopped only when there is
+// something to do.
+func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState) (bad int) {
+	roots := j.env.Roots
+	where := printable(roots.Slash(dir), 200)
+	merged, _ := (&box{ctx: ctx, env: &j.env}).MergedUsr()
+	canon := func(p string) string { return canonPath(merged, p) }
+	dst := j.env.Host.NewDest(roots.Prefix)
+	newBy := map[string]osmodule.FileEntry{}
+	for _, e := range b.newList.Entries {
+		newBy[canon(e.Path)] = e
+	}
+	type put struct {
+		k int
+		a osmodule.FileEntry
+	}
+	var puts []put
+	var removes []osmodule.FileEntry
+	saved := map[string]bool{}
+	for k, a := range b.actual.Entries {
+		saved[canon(a.Path)] = true
+		real := roots.Path(a.Path)
+		h, err := holds(real, a)
+		if err == nil && h == holdsOther {
+			// not the old file: the new one is what the swap put there
+			if n, ok := newBy[canon(a.Path)]; ok {
+				if hn, err := holds(real, n); err == nil && hn == holdsOurs {
+					h = holdsNothing
+				}
+			}
+		}
+		switch {
+		case err != nil:
+			j.say("cannot be looked at: %s (%s)", printable(a.Path, 200), printable(err.Error(), 100))
+			bad++
+		case h == holdsOther:
+			j.say("left: %s (it is neither the old file nor the new one: it stays as it was left)", printable(a.Path, 200))
+			j.left = append(j.left, a.Path)
+		case h == holdsNothing:
+			// (what is put back is looked at first: a copy that is not what was saved changes nothing)
+			if !a.Link {
+				if sum, err := sumOf(filepath.Join(dir, backupCopies, strconv.Itoa(k))); err != nil || sum != a.Want[0] {
+					j.say("cannot be put back: %s (its copy in the backup is not what was saved)", printable(a.Path, 200))
+					bad++
+					continue
+				}
+			}
+			puts = append(puts, put{k, a})
+		}
+	}
+	for _, n := range b.newList.Entries {
+		if saved[canon(n.Path)] {
+			continue
+		}
+		switch h, err := holds(roots.Path(n.Path), n); {
+		case err != nil:
+			j.say("cannot be looked at: %s (%s)", printable(n.Path, 200), printable(err.Error(), 100))
+			bad++
+		case h == holdsOurs:
+			removes = append(removes, n)
+		case h == holdsOther:
+			j.say("left: %s (changed)", printable(n.Path, 200))
+			j.left = append(j.left, n.Path)
+		}
+	}
+	// the temporary names that an interrupted write leaves are the module's, whichever version they were for
+	defer func() {
+		temps := slices.Clone(b.oldPaths)
+		for _, n := range b.newList.Entries {
+			temps = append(temps, n.Path)
+		}
+		for _, p := range temps {
+			_, _ = removeEntry(tempName(roots.Path(p)))
+		}
+		for _, p := range []string{roots.manifest(name), roots.version(name), roots.files(name), roots.dirs(name)} {
+			_, _ = removeEntry(tempName(p))
+		}
+	}()
+	if bad > 0 {
+		j.say("nothing was put back, and the lists, the manifest and the version are as they are on the box")
+		j.wayOut(name, where)
+		return bad
+	}
+	acted := len(puts) + len(removes)
+	stopFailed := false
+	if acted > 0 {
+		for _, r := range b.units {
+			if r.Active && !j.stopOnly(ctx, r.Name) {
+				stopFailed = true
+			}
+		}
+	}
+	touched := map[string]bool{}
+	for _, p := range puts {
+		real := roots.Path(p.a.Path)
+		if err := putBack(dst, roots, dir, p.k, p.a); err != nil {
+			j.say("not put back: %s (%s)", printable(p.a.Path, 200), printable(err.Error(), 100))
+			bad++
+			continue
+		}
+		if o, ok := b.owners[p.k]; ok {
+			chownBack(real, o[0], o[1])
+		}
+		touched[filepath.Dir(real)] = true
+	}
+	for _, n := range removes {
+		real := roots.Path(n.Path)
+		if _, err := removeEntry(real); err != nil {
+			j.say("not removed: %s (%s)", printable(n.Path, 200), printable(err.Error(), 100))
+			bad++
+		}
+		touched[filepath.Dir(real)] = true
+	}
+	for d := range touched {
+		syncDir(d)
+	}
+	if bad > 0 {
+		j.say("the lists, the manifest and the version were left as they are on the box")
+		j.wayOut(name, where)
+		return bad
+	}
+	// the lists, the manifest and the version, as they were
+	state := func(p string, raw []byte) {
+		var err error
+		if raw == nil {
+			_, err = removeEntry(p)
+		} else {
+			err = writeFileAtomic(p, raw, 0o644)
+		}
+		if err != nil {
+			j.say("not put back: %s (%s)", printable(roots.Slash(p), 200), printable(err.Error(), 100))
+			bad++
+		}
+	}
+	if err := makeDirs(roots.manifests(), 0o755); err != nil {
+		bad++
+	}
+	state(roots.manifest(name), b.manifest)
+	state(roots.version(name), b.version)
+	state(roots.files(name), b.files)
+	state(roots.dirs(name), b.dirs)
+	for _, d := range sortedDeepestFirst(b.newDirs) {
+		touched[filepath.Dir(roots.Path(d))] = true
+		if err := removeEmptyDir(roots.Path(d)); err != nil {
+			j.say("not removed: %s (%s)", printable(d, 200), printable(err.Error(), 100))
+			bad++
+		}
+	}
+	for d := range touched {
+		syncDir(d)
+	}
+	syncDir(roots.state())
+	if stopFailed && acted > 0 {
+		j.say("a unit could not be stopped while its files were put back")
+		bad++
+	}
+	return bad
+}
+
+// recoverUpdate puts back what an update of the module that was killed (or whose rollback was) left in its backup folder, before the run that finds it does anything else. It returns
+// true with the exit code when the run is over: the recovery could not be finished, and the result line says so.
+func (j *job) recoverUpdate(ctx context.Context, verb string) (code int, stop bool) {
+	dir := j.env.Roots.backup(j.name)
+	where := printable(j.env.Roots.Slash(dir), 200)
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) || isNotDir(err) {
+		return 0, false
+	}
+	if !modulePresent(j.env.Roots, j.name) {
+		// the backup of a module that is not on the box any more (a remove kept it): there is nothing to put it back over. A remove leaves it alone; the run that installs the module again
+		// takes it away, since what it holds is the files of a version that is gone.
+		if verb == KindRemove {
+			j.say("the backup in %s is of a module that is not on the box: it is left as it is", where)
+			return 0, false
+		}
+		if err := removeBackup(dir); err != nil {
+			j.say("not removed: %s (%s)", where, printable(err.Error(), 100))
+		} else {
+			j.say("the backup in %s was of a module that is not on the box any more: it is dropped", where)
+		}
+		return 0, false
+	}
+	j.say("an update of %s was ended before it was over: the files of the old version are put back from %s", j.name, where)
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTime)
+	defer cancel()
+	bad, step := j.restoreBackup(rctx, j.name, "recover_")
+	if bad > 0 {
+		j.say("rollback incomplete: %d things could not be put back; the backup is kept in %s", bad, where)
+		if verb == KindRemove {
+			// a remove is never kept from taking the module away: it goes by the lists that are on the box, and says where the backup is
+			j.keptBackup = where
+			j.say("the module is taken away by the lists that are on the box; the backup is not touched")
+			return 0, false
+		}
+		if step == "" {
+			step = "-"
+		} else {
+			j.say("failed at step %s: %s", step, CodeRecoveryIncomplete)
+		}
+		j.result("failed", step, CodeRecoveryIncomplete, undoIncomplete)
+		return ExitFailed, true
+	}
+	if len(j.left) > 0 {
+		j.say("recovered, but these files were left as they are, and the old version is not whole: %s", printable(strings.Join(j.left, " "), 600))
+		return 0, false
+	}
+	j.say("recovered: %s is as it was before the update", j.name)
+	return 0, false
+}
+
+// modulePresent says whether anything of the module is on the box: a manifest, a list of files or of directories, a version.
+func modulePresent(roots Roots, name string) bool {
+	for _, p := range []string{roots.manifest(name), roots.files(name), roots.dirs(name), roots.version(name)} {
+		if _, err := os.Lstat(p); err == nil || !(errors.Is(err, fs.ErrNotExist) || isNotDir(err)) {
+			return true
+		}
+	}
+	return false
+}

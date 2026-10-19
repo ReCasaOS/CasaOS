@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // tempName is the name a file is written under before it takes its place: in the same directory, so that the rename is atomic, short (the name of a file can be as long as a name can be,
@@ -101,7 +102,20 @@ var errUnsafe = errors.New("a directory that is not safe")
 // emptyDir removes what is in a directory and keeps the directory. A directory that is not there is made (0700); one that is there must be a directory and not a link, owned by the user the
 // assistant runs as and writable by nobody else (Host.SafeDir), or nothing is removed, and the error is errUnsafe: what somebody else could have put in it, or made it point to, is not
 // root's to remove.
-func emptyDir(host Host, dir string) error {
+func emptyDir(host Host, dir string) error { return emptyDirExcept(host, dir, nil) }
+
+// emptyTmp is emptyDir for the area of the download, which keeps the backups of updates that were interrupted: what is in them is the only copy of the files an update replaced, and is
+// for the next run of the module to put back (recoverUpdate) before it empties anything else.
+func emptyTmp(host Host, dir string) error { return emptyDirExcept(host, dir, isBackupName) }
+
+// isBackupName says whether a name in the area of the download is the folder of the backup of a module's update.
+func isBackupName(name string) bool {
+	rest, ok := strings.CutPrefix(name, "backup-")
+	return ok && nameRe.MatchString(rest)
+}
+
+// emptyDirExcept is emptyDir but for the entries whose names keep says to keep (a directory that is not a link: whatever else has such a name goes with the rest).
+func emptyDirExcept(host Host, dir string, keep func(name string) bool) error {
 	switch _, err := os.Lstat(dir); {
 	case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
 		return makeDirs(dir, 0o700)
@@ -117,6 +131,11 @@ func emptyDir(host Host, dir string) error {
 	}
 	var first error
 	for _, e := range entries {
+		if keep != nil && keep(e.Name()) {
+			if info, err := os.Lstat(filepath.Join(dir, e.Name())); err == nil && info.IsDir() {
+				continue
+			}
+		}
 		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil && first == nil {
 			first = err
 		}

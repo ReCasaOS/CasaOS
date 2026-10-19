@@ -351,7 +351,12 @@ func (b *box) AptGetExists() bool {
 func (b *box) ArchiveBytes(string) (int64, bool) { return 0, false }
 
 // SimulateApt asks apt what installing the packages would do, in a sandbox of the same kind as the plan of the upgrade's: its allow-list, its environment and its parser.
-func (b *box) SimulateApt(packages []string) osmodule.AptResult {
+func (b *box) SimulateApt(packages []string) osmodule.AptResult { return b.simulate(packages, false) }
+
+// SimulateUpdate is the simulation of the command an update runs, which upgrades nothing that is installed.
+func (b *box) SimulateUpdate(packages []string) osmodule.AptResult { return b.simulate(packages, true) }
+
+func (b *box) simulate(packages []string, noUpgrade bool) osmodule.AptResult {
 	failed := func(detail string) osmodule.AptResult {
 		return osmodule.AptResult{Failure: osmodule.RefusedAptFailed, Detail: detail}
 	}
@@ -377,11 +382,15 @@ func (b *box) SimulateApt(packages []string) osmodule.AptResult {
 	if err := sb.WriteFile(osplan.ModuleStatesFile(dir), nil, 0o600); err != nil {
 		return failed("sandbox: " + err.Error())
 	}
-	simArgv, err := osplan.ModuleSimArgv(dir, packages)
+	simFor, estFor := osplan.ModuleSimArgv, osplan.ModuleEstimateArgv
+	if noUpgrade {
+		simFor, estFor = osplan.ModuleSimArgvNoUpgrade, osplan.ModuleEstimateArgvNoUpgrade
+	}
+	simArgv, err := simFor(dir, packages)
 	if err != nil {
 		return failed("the packages are not ones apt is asked about")
 	}
-	estArgv, _ := osplan.ModuleEstimateArgv(dir, packages)
+	estArgv, _ := estFor(dir, packages)
 	run := func(argv []string) (osplan.Output, error) {
 		ctx, cancel := context.WithTimeout(b.ctx, osplan.SolverTimeout)
 		defer cancel()
@@ -467,4 +476,55 @@ func (b *box) heldPackagesWithin(most int64) ([]string, error) {
 	}
 	end()
 	return held, nil
+}
+
+var _ osmodule.UpdateBox = (*box)(nil)
+
+// Installed is what the box has of the module called name for the plan of an update: its manifest, its recorded version, the state of its list of files and the size of the files that
+// list records (the size of a backup of them). It reads, and writes nothing.
+func (b *box) Installed(name string) osmodule.InstalledState {
+	var st osmodule.InstalledState
+	installed, broken, err := b.InstalledManifests()
+	switch m, there := installed[name]; {
+	case err != nil:
+		st.Unreadable = true
+		return st
+	case there:
+		st.Present, st.Manifest = true, m
+	case slices.Contains(broken, name):
+		st.Broken = true
+		return st
+	default:
+		return st
+	}
+	if v := installedVersion(*b.env, name); v != nil {
+		st.Tag = *v
+	}
+	list, err := readFilesEntries(b.env.Roots.files(name))
+	switch {
+	case err != nil:
+		st.Files = osmodule.FilesUnreadable
+	case len(list.Entries) == 0:
+		st.Files = osmodule.FilesMissing
+	case !list.Verified:
+		st.Files = osmodule.FilesUnverified
+	default:
+		st.Files = osmodule.FilesVerified
+		st.BytesOK = true
+		for _, e := range list.Entries {
+			if e.Link {
+				continue
+			}
+			// (a file that is not there is not a file to back up; one that cannot be looked at is a size that cannot be told)
+			info, err := os.Lstat(b.env.Roots.Path(e.Path))
+			switch {
+			case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
+			case err != nil:
+				st.BytesOK = false
+			case info.Mode().IsRegular():
+				st.Bytes += info.Size()
+			}
+		}
+	}
+	return st
 }

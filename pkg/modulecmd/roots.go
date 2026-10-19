@@ -55,10 +55,14 @@ func (r Roots) Slash(real string) string {
 	return "/" + filepath.ToSlash(rel)
 }
 
-func (r Roots) catalogue() string           { return r.Path(pathCatalogue) }
-func (r Roots) manifests() string           { return r.Path(pathManifests) }
-func (r Roots) state() string               { return r.Path(pathState) }
-func (r Roots) tmp() string                 { return r.Path(pathState + "/tmp") }
+func (r Roots) catalogue() string { return r.Path(pathCatalogue) }
+func (r Roots) manifests() string { return r.Path(pathManifests) }
+func (r Roots) state() string     { return r.Path(pathState) }
+func (r Roots) tmp() string       { return r.Path(pathState + "/tmp") }
+
+// backup is the folder an update keeps the files it replaces in, stage the one it unpacks the new archive into; both are under the area of the download.
+func (r Roots) backup(name string) string   { return r.tmp() + "/backup-" + name }
+func (r Roots) stage() string               { return r.tmp() + "/stage" }
 func (r Roots) lock() string                { return r.Path(pathState + "/.lock") }
 func (r Roots) logs() string                { return r.Path(pathLogs) }
 func (r Roots) manifest(name string) string { return r.Path(pathManifests + "/" + name + ".json") }
