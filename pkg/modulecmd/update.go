@@ -30,12 +30,10 @@ const (
 	StepSwap   = "swap"
 )
 
-// The codes of an update besides the ones of the plan and of an install.
+// The codes of an update besides the ones of the plan (osmodule.Refused*: not_installed, up_to_date, downgrade, ...) and of an install.
 const (
-	CodeFilesUnverified    = osmodule.RefusedFilesUnverified
 	CodeBackupFailed       = "backup_failed"
 	CodeSwapFailed         = "swap_failed"
-	CodeUnitChanged        = osmodule.RefusedUnitChanged
 	CodeRecoveryIncomplete = "recovery_incomplete"
 )
 
@@ -309,9 +307,6 @@ func (u *update) stepUnpack() *stepFailure {
 	}
 	if !manifestMatches(m, u.entry.Manifest) {
 		return u.fail(CodeManifestMismatch, errors.New("the manifest of the archive is not the catalogue's"))
-	}
-	if m.Unit != u.oldManifest.Unit {
-		return u.fail(CodeUnitChanged, errors.New("the new version names another unit"))
 	}
 	for _, p := range res.Files {
 		w := res.Want[p]

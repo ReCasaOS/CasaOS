@@ -436,3 +436,13 @@ func TestAStartIsGivenTheContextOfItsRequest(t *testing.T) {
 		}
 	}
 }
+
+func (f *fakeModuleSystem) PlanSystemModuleUpdate(name string) (osmodule.PlanResult, error) {
+	f.calls = append(f.calls, "plan-update "+name)
+	return osmodule.PlanResult{Name: name, Mode: osmodule.ModeUpdate, Checks: []osmodule.Check{}, PlanID: modulePlanID}, f.err
+}
+
+func (f *fakeModuleSystem) StartSystemModuleUpdate(ctx context.Context, name, planID string) (service.SystemModuleStatus, error) {
+	f.calls, f.ended = append(f.calls, "update "+name+" "+planID), ctx.Err() != nil
+	return f.status(modulecmd.KindUpdate), f.err
+}

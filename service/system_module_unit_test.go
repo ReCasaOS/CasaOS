@@ -98,10 +98,10 @@ func TestNoWordOfTheUnitIsAnythingButTheFixedOnesAndTheValidatedOnes(t *testing.
 		}
 		return string(b)
 	}
-	fixed := regexp.MustCompile(`^(--quiet|--no-block|--collect|--unit=casaos-module-[a-z][a-z0-9-]{0,31}\.service|--property=Type=exec|--property=KillMode=mixed|--property=TimeoutStopSec=420|--setenv=CASAOS_MODULE_NONCE=[0-9a-f]{32}|--|/usr/bin/casaos|module|install|remove|[a-z][a-z0-9-]{0,31}|--yes|--plan-id|m1-[0-9a-f]{32})$`)
+	fixed := regexp.MustCompile(`^(--quiet|--no-block|--collect|--unit=casaos-module-[a-z][a-z0-9-]{0,31}\.service|--property=Type=exec|--property=KillMode=mixed|--property=TimeoutStopSec=420|--setenv=CASAOS_MODULE_NONCE=[0-9a-f]{32}|--|/usr/bin/casaos|module|install|remove|update|[a-z][a-z0-9-]{0,31}|--yes|--plan-id|m1-[0-9a-f]{32})$`)
 	given := 0
 	for i := 0; i < 20000; i++ {
-		verb := []string{"install", "remove", word(8)}[rnd.Intn(3)]
+		verb := []string{"install", "remove", "update", word(8)}[rnd.Intn(4)]
 		name := []string{"virt", word(12), word(40)}[rnd.Intn(3)]
 		plan := []string{unitPlanID, "", word(40), "m1-" + word(32)}[rnd.Intn(4)]
 		nonce := []string{unitNonce, word(34)}[rnd.Intn(2)]
@@ -124,7 +124,7 @@ func TestNoWordOfTheUnitIsAnythingButTheFixedOnesAndTheValidatedOnes(t *testing.
 // The properties of the unit are three and these: the type, a kill mode that asks the assistant alone to stop (it stops apt and dpkg in its own way, and rolls back), and a time to stop
 // that is above what the assistant needs to roll back. No other property is given, and none is given another value.
 func TestTheUnitIsGivenTheseThreePropertiesAndNoOther(t *testing.T) {
-	for _, verb := range []string{"install", "remove"} {
+	for _, verb := range []string{"install", "remove", "update"} {
 		plan := unitPlanID
 		if verb == "remove" {
 			plan = ""
@@ -173,5 +173,37 @@ func TestNoUnitThatTheMaintenanceCheckListsCanBeTheUnitOfAModule(t *testing.T) {
 	}
 	if osmodule.ValidUnit(systemOSUpgradeUnit) || osmodule.ValidUnit(systemPackageUpdateUnit) || osmodule.ValidUnit(systemDockerUpdateUnit) {
 		t.Error("the unit of an update may be a module's")
+	}
+}
+
+func TestTheUnitOfAnUpdateIsExactlyThis(t *testing.T) {
+	got, err := systemModuleUnitArgs("update", "virt", unitPlanID, unitNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"--quiet", "--no-block", "--collect", "--unit=casaos-module-virt.service", "--property=Type=exec", "--property=KillMode=mixed", "--property=TimeoutStopSec=420",
+		"--setenv=CASAOS_MODULE_NONCE=" + unitNonce,
+		"--", "/usr/bin/casaos", "module", "update", "virt", "--yes", "--plan-id", unitPlanID,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+// An update has the shape of an install: a plan, and a name and a nonce that pass the same rules.
+func TestTheUnitOfAnUpdateIsStartedForNothingOutsideItsShape(t *testing.T) {
+	for name, in := range map[string][4]string{
+		"an update with no plan":      {"update", "virt", "", unitNonce},
+		"a plan of the wrong version": {"update", "virt", "m2-0123456789abcdef0123456789abcdef", unitNonce},
+		"a plan in capitals":          {"update", "virt", "m1-0123456789ABCDEF0123456789ABCDEF", unitNonce},
+		"a name with a dollar":        {"update", "vi$rt", unitPlanID, unitNonce},
+		"a name that is an option":    {"update", "--yes", unitPlanID, unitNonce},
+		"no nonce":                    {"update", "virt", unitPlanID, ""},
+		"a verb in capitals":          {"Update", "virt", unitPlanID, unitNonce},
+	} {
+		if got, err := systemModuleUnitArgs(in[0], in[1], in[2], in[3]); err == nil || got != nil {
+			t.Errorf("%s: %q, %v", name, got, err)
+		}
 	}
 }

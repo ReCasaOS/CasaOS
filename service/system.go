@@ -118,6 +118,9 @@ type SystemService interface {
 	PlanSystemModule(name string) (osmodule.PlanResult, error)
 	StartSystemModuleInstall(ctx context.Context, name, planID string) (SystemModuleStatus, error)
 	StartSystemModuleRemove(ctx context.Context, name string) (SystemModuleStatus, error)
+	// PlanSystemModuleUpdate and StartSystemModuleUpdate are the plan and the start for the update of a module that is installed, to the tag the catalogue names.
+	PlanSystemModuleUpdate(name string) (osmodule.PlanResult, error)
+	StartSystemModuleUpdate(ctx context.Context, name, planID string) (SystemModuleStatus, error)
 	GetSystemModuleStatus(name string) (SystemModuleStatus, error)
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string

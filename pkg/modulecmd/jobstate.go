@@ -14,7 +14,7 @@ import (
 // read; nothing is kept in memory, so that a restart of the core in the middle of a job changes nothing. A job is one run of install or remove, and the log holds one run.
 //
 // The core writes the first line of the log itself, before it starts the unit (QueuedLine): it carries the nonce of the job, so that the log is a job's from the moment it is
-// started, and what the job is (KindInstall or KindRemove: the markers of a run are the same for both). The unit replaces the log with its own lines, which carry the same nonce, and keeps
+// started, and what the job is (KindInstall, KindRemove or KindUpdate: the markers of a run are the same for all). The unit replaces the log with its own lines, which carry the same nonce, and keeps
 // that first line (see the log of the assistant, job.go). A line counts as the job's word only if it is a whole line of exactly the shape of
 // a marker, of the job's module, with the job's nonce, and does not begin with the "| " of the output of a tool; the nonce of the job is the one the core wrote, and when it is
 // not given (a core that was restarted) it is the first marker of the log that has one, a marker with the nonce "-" (a run by hand) never counting.
@@ -101,7 +101,7 @@ const (
 // A Job is how the job of a module is going, or how it went.
 type Job struct {
 	Name string `json:"name"`
-	// Kind is what the job is: KindInstall or KindRemove, as the core said when it started the job; "" when the log does not say (a job that was not started by the core).
+	// Kind is what the job is: KindInstall, KindRemove or KindUpdate, as the core said when it started the job; "" when the log does not say (a job that was not started by the core).
 	Kind  string `json:"kind"`
 	State string `json:"state"`
 	// Step is where the job is: the step of the last STEP line (the rollback's steps are those of a remove behind "rollback_"), and for a job that failed the step of the RESULT line,
@@ -109,7 +109,7 @@ type Job struct {
 	Step string `json:"step"`
 	// Code is the reason of a job that was refused or failed: the code of the RESULT line.
 	Code string `json:"code"`
-	// Undo is UndoRolledBack or UndoIncomplete for an install that failed after it had changed the box, "" otherwise.
+	// Undo is UndoRolledBack or UndoIncomplete for an install or an update that failed after it had changed the box, "" otherwise.
 	Undo string `json:"undo"`
 	// KeptPackages are the packages of the module that an install that failed left on the box, from the sentence kept_packages that comes before the RESULT line: null when it is not said
 	// or not known, an empty list when there are none.
@@ -131,7 +131,7 @@ var (
 type marker struct {
 	kind        string // stepMarker, resultMarker or queuedMarker
 	nonce       string
-	jobKind     string // a QUEUED line: KindInstall or KindRemove
+	jobKind     string // a QUEUED line: KindInstall, KindRemove or KindUpdate
 	step, phase string // a STEP line; the RESULT line's step is in step too
 	verdict     string // a RESULT line: ok, refused or failed
 	code, undo  string
