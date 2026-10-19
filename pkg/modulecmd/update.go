@@ -596,14 +596,13 @@ func (u *update) stepSwap() *stepFailure {
 		}
 		w := u.staged.Want[p]
 		newPaths[u.canon(p)] = true
-		// (the file is the module's if it still holds what its record says now, and not only when the archive was checked)
+		// (the file is the module's if it still holds what its record says now, and not only when the archive was checked; if it does not, nothing is written over it: the rename that puts the
+		// new file in place does not replace what it is not told to, and the swap fails with file_exists)
 		replace := false
 		if oe, mine := oldBy[u.canon(p)]; mine {
 			switch h, err := holds(roots.Path(oe.Path), oe); {
 			case err != nil:
 				return u.fail(CodeSwapFailed, err)
-			case h == holdsOther:
-				return u.fail(osmodule.FileExists, errors.New("a file of the module was changed since the archive was checked"))
 			case h == holdsOurs:
 				replace = true
 			}
@@ -918,9 +917,6 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState)
 	// the temporary names that an interrupted write leaves are the module's, whichever version they were for
 	defer func() {
 		temps := slices.Clone(b.oldPaths)
-		for _, a := range b.actual.Entries {
-			temps = append(temps, a.Path)
-		}
 		for _, n := range b.newList.Entries {
 			temps = append(temps, n.Path)
 		}

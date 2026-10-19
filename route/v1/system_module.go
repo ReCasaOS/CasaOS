@@ -74,10 +74,9 @@ func planModeOf(ctx echo.Context) (string, error) {
 	if err != nil || len(raw) > osUpgradeBodyMax {
 		return osmodule.ModeInstall, nil
 	}
+	// (a body that is not a JSON object leaves the map empty, and has no "mode")
 	var object map[string]json.RawMessage
-	if json.Unmarshal(raw, &object) != nil || object == nil {
-		return osmodule.ModeInstall, nil
-	}
+	_ = json.Unmarshal(raw, &object)
 	value, there := object["mode"]
 	if !there {
 		return osmodule.ModeInstall, nil

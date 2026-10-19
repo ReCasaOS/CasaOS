@@ -3,6 +3,7 @@ package modulecmd
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -252,7 +253,16 @@ func TestACopyThatIsNotWhatWasSavedChangesNothing(t *testing.T) {
 	f := updatable(t)
 	f.killed("units") // the swap is over: the files are the new ones and so are the lists
 	f.writeFile("/var/lib/casaos/modules/tmp/backup-virt/copies/0", "a copy that was changed")
+	leftovers := []string{tempName(f.path(toolPath)), tempName(f.path("/var/lib/casaos/modules/virt.files")), tempName(f.path("/etc/casaos/modules/virt.json"))}
+	for _, p := range leftovers {
+		if err := os.WriteFile(p, []byte("half a write"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	before := f.treeWithoutBookkeeping()
+	for _, p := range leftovers {
+		delete(before, f.env.Roots.Slash(p))
+	}
 	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), "cannot be put back: "+progPath+" (its copy in the backup is not what was saved)") ||
 		!strings.Contains(f.out.String(), " virt failed recover_restore "+CodeRecoveryIncomplete+" rollback_incomplete ") {
 		t.Fatalf("exit %d:\n%s", code, f.out)
@@ -276,6 +286,7 @@ func TestARecoveryTakesAwayTheTemporaryNamesOfThePathsOfBothVersions(t *testing.
 			tempName(f.path(helperPath)),                           // only the old one has it
 			tempName(f.path("/var/lib/casaos/modules/virt.files")), // the list
 			tempName(f.path("/etc/casaos/modules/virt.json")),      // the manifest
+			tempName(f.path("/var/lib/casaos/modules/virt.dirs")),  // the list of directories (the old version has none)
 		}
 	}
 	left := func(f *fixture, names []string) (out []string) {
@@ -507,5 +518,57 @@ func TestAFileThatAnotherModulesListHasToIsNotDeleted(t *testing.T) {
 	}
 	if f.read(helperPath) != "helper v1\n" || !strings.Contains(f.out.String(), "kept, it is the list of other too: "+helperPath+"\n") {
 		t.Errorf("the file of the other module:\n%s", f.out)
+	}
+}
+
+// onRead calls do the first time it is read, and then reads from r.
+type onRead struct {
+	do   func()
+	r    io.Reader
+	done bool
+}
+
+func (o *onRead) Read(p []byte) (int, error) {
+	if !o.done {
+		o.done = true
+		o.do()
+	}
+	return o.r.Read(p)
+}
+
+// What the administrator said yes to is the plan that was shown: a catalogue that changes while the question is asked is another plan, and the update is not made.
+func TestAnUpdateWhosePlanChangesWhileTheQuestionIsAskedIsNotMade(t *testing.T) {
+	f := updatable(t)
+	f.isTTY = true
+	f.env.Stdin = &onRead{r: strings.NewReader("y\n"), do: func() { f.publish("v0.1.2", testManifest(), v2Entries(t, testManifest())) }}
+	f.out.Reset()
+	before := f.treeWithoutBookkeeping()
+	if code := Main(context.Background(), []string{"update", testName}, f.env); code != ExitRefused || !strings.Contains(f.out.String(), "refused: "+CodePlanChanged+"\n") {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	delete(before, "/usr/share/casaos/modules/catalogue.json")
+	after := f.treeWithoutBookkeeping()
+	delete(after, "/usr/share/casaos/modules/catalogue.json")
+	sameTree(t, before, after)
+}
+
+// A file that fails to be put back, after every path was looked at and could be, leaves the lists, the manifest and the version as they are: the new version's, which the files that were put
+// back are not.
+func TestARollbackThatFailsWhilePuttingFilesBackLeavesTheListsAlone(t *testing.T) {
+	f := updatable(t)
+	f.gw.never = true
+	failNewFile(f, 9) // the staging writes four files, the swap four, and the first the rollback puts back is the ninth
+	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed route route_timeout rollback_incomplete ") {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	out := f.out.String()
+	if !strings.Contains(out, "were left as they are on the box") || !strings.Contains(out, "not put back: "+progPath) {
+		t.Errorf("not said:\n%s", out)
+	}
+	if f.read("/var/lib/casaos/modules/virt.version") != newTag+"\n" || !strings.Contains(f.read("/var/lib/casaos/modules/virt.files"), toolPath) {
+		t.Error("the old lists, manifest or version were written")
+	}
+	if !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") || !f.runner.isRunning(testUnit) {
+		t.Error("the backup was not kept, or the unit is not running")
 	}
 }
