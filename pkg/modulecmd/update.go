@@ -288,7 +288,7 @@ func (u *update) stepUnpack() *stepFailure {
 		own[i] = e.Path
 	}
 	opts := osmodule.Options{Unit: u.entry.Manifest.Unit}
-	// the box as it is: a file of the new version that is there and is not the module's (changed by the owner, or somebody else's) refuses the update
+	// the box as it is: a file of the new version that is there and is not the module's (changed by the administrator, or somebody else's) refuses the update
 	if _, err := osmodule.ValidateArchive(tarFile, u.env.Host.NewDest(u.env.Roots.Prefix), own, opts); err != nil {
 		return u.unpackFailure(err)
 	}
@@ -392,7 +392,7 @@ func (u *update) stepBackup() *stepFailure {
 		info, err := os.Lstat(real)
 		switch {
 		case errors.Is(err, fs.ErrNotExist) || isNotDir(err):
-			// (taken away by the owner: there is nothing to keep)
+			// (taken away by the administrator: there is nothing to keep)
 		case err != nil:
 			return u.fail(CodeBackupFailed, err)
 		case info.Mode()&fs.ModeSymlink != 0:

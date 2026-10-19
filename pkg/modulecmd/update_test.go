@@ -133,7 +133,7 @@ func TestAnUpdateDoesTheStepsInOrderAndPutsTheNewVersionOnTheBox(t *testing.T) {
 	if v := f.read("/var/lib/casaos/modules/virt.version"); v != newTag+"\n" {
 		t.Errorf("the version: %q", v)
 	}
-	// the owner's configuration is not the module's
+	// the administrator's configuration is not the module's
 	if f.read("/etc/casaos/virt-management.conf") != "mine" {
 		t.Error("the configuration was touched")
 	}
@@ -427,16 +427,16 @@ func TestAnUpdateInstallsOnlyThePackagesTheNewVersionAddsAndNeverRemovesOne(t *t
 	}
 }
 
-// ---- what the owner changed ---------------------------------------------------------------------------------------------------------------------------------------------------
+// ---- what the administrator changed ---------------------------------------------------------------------------------------------------------------------------------------------------
 
-func TestAFileTheOwnerChangedIsKeptWhenTheNewVersionDoesNotHaveIt(t *testing.T) {
+func TestAFileTheAdministratorChangedIsKeptWhenTheNewVersionDoesNotHaveIt(t *testing.T) {
 	f := updatable(t)
-	f.writeFile(helperPath, "the owner's helper")
+	f.writeFile(helperPath, "the administrator's helper")
 	if code := f.update("--yes"); code != ExitOK {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
-	if f.read(helperPath) != "the owner's helper" {
-		t.Error("the helper of the owner was deleted")
+	if f.read(helperPath) != "the administrator's helper" {
+		t.Error("the helper of the administrator was deleted")
 	}
 	if !strings.Contains(f.out.String(), "left: "+helperPath+" (changed)\n") {
 		t.Errorf("not said:\n%s", f.out)
@@ -445,14 +445,14 @@ func TestAFileTheOwnerChangedIsKeptWhenTheNewVersionDoesNotHaveIt(t *testing.T) 
 		t.Errorf("the helper is still the module's:\n%s", list)
 	}
 	// and it is not deleted by a remove either
-	if code := f.remove("--yes"); code != ExitOK || f.read(helperPath) != "the owner's helper" {
+	if code := f.remove("--yes"); code != ExitOK || f.read(helperPath) != "the administrator's helper" {
 		t.Errorf("remove: %d", code)
 	}
 }
 
-func TestAFileTheOwnerChangedAndTheNewVersionShipsRefusesTheUpdateAndChangesNothing(t *testing.T) {
+func TestAFileTheAdministratorChangedAndTheNewVersionShipsRefusesTheUpdateAndChangesNothing(t *testing.T) {
 	f := updatable(t)
-	f.writeFile(progPath, "the owner's program")
+	f.writeFile(progPath, "the administrator's program")
 	before := f.treeWithoutBookkeeping()
 	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), "failed at step unpack: "+osmodule.FileExists+"\n") {
 		t.Fatalf("exit %d:\n%s", code, f.out)
@@ -463,7 +463,7 @@ func TestAFileTheOwnerChangedAndTheNewVersionShipsRefusesTheUpdateAndChangesNoth
 	}
 }
 
-func TestAFileTheOwnerTookAwayIsMadeAgainOrLeftAlone(t *testing.T) {
+func TestAFileTheAdministratorTookAwayIsMadeAgainOrLeftAlone(t *testing.T) {
 	f := updatable(t)
 	_ = os.Remove(f.path(progPath))   // the new version has it
 	_ = os.Remove(f.path(helperPath)) // the new version does not
@@ -587,7 +587,7 @@ func TestAFailureAtEachStepIsRolledBackAndTheBoxIsAsItWas(t *testing.T) {
 		{"the archive has no manifest that reads", StepUnpack, CodeManifestInvalid, "none", func(f *fixture) {
 			f.setEntries(append([]tent{{name: "module.json", body: `{"schema":1}`}}, v2Entries(f.t, testManifest())[1:]...))
 		}},
-		{"the owner turned a file of the module into a directory", StepBackup, CodeBackupFailed, "none", func(f *fixture) {
+		{"the administrator turned a file of the module into a directory", StepBackup, CodeBackupFailed, "none", func(f *fixture) {
 			_ = os.Remove(f.path(helperPath))
 			if err := os.Mkdir(f.path(helperPath), 0o755); err != nil {
 				f.t.Fatal(err)
@@ -990,7 +990,7 @@ func TestTheLogOfAnUpdateKeepsTheQueuedLineOfTheCore(t *testing.T) {
 	}
 }
 
-// ---- the swap and the rollback, where they meet the owner --------------------------------------------------------------------------------------------------------------------
+// ---- the swap and the rollback, where they meet the administrator --------------------------------------------------------------------------------------------------------------------
 
 // An interruption in the middle of the swap stops it at the file it is at: the files after it are not written (the rollback has the one it wrote to put back).
 func TestAnInterruptionInTheMiddleOfTheSwapGoesNoFurther(t *testing.T) {
