@@ -161,6 +161,10 @@ func TestAnUpdateDoesTheStepsInOrderAndPutsTheNewVersionOnTheBox(t *testing.T) {
 		t.Errorf("the last line: %q", last)
 	}
 	checkGrammar(t, f, ExitOK, false, false, "")
+	// a run that has nothing to put back says nothing of a backup
+	if strings.Contains(f.out.String(), "put back") || strings.Contains(f.out.String(), "recover") {
+		t.Errorf("an update that went well talks of a backup:\n%s", f.out)
+	}
 	// the list says the module is up to date, and a second update has nothing to do
 	if u := listOf(t, f).module(testName).Update; u == nil || u.Available || u.Installed != newTag || u.Latest != newTag {
 		t.Errorf("list: %+v", u)
@@ -1055,4 +1059,48 @@ func TestARollbackLeavesWhatSomebodyPutAtAPathOfTheModule(t *testing.T) {
 		t.Error("the backup was not kept")
 	}
 	checkGrammar(t, f, ExitFailed, false, false, "")
+}
+
+// A rollback that cannot stop the unit it puts the files under is not complete when it had files to put back: the old version is there, and the unit that runs may not be the old one.
+func TestARollbackThatCannotStopTheUnitWhileItPutsFilesBackIsIncomplete(t *testing.T) {
+	f := updatable(t)
+	failNewFile(f, 6) // the swap writes one file and cannot write the next
+	stops := 0
+	f.runner.onRun = func(_ context.Context, argv []string) {
+		if strings.HasPrefix(strings.Join(argv, " "), "systemctl stop") {
+			if stops++; stops == 2 { // the stop of the update works, the one of the rollback does not
+				f.runner.fail["systemctl stop"] = 1
+				delete(f.runner.stopped, testUnit) // (something started it again)
+			}
+		}
+	}
+	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed swap swap_failed rollback_incomplete ") ||
+		!strings.Contains(f.out.String(), "a unit could not be stopped while its files were put back") {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") || f.read(progPath) != "#!/bin/sh\nexit 0\n" {
+		t.Error("the backup was not kept, or the files were not put back")
+	}
+	checkGrammar(t, f, ExitFailed, false, false, "")
+}
+
+// What the plan says the files to keep weigh is the files of the list as they are on the box.
+func TestTheBoxSaysWhatABackupOfTheFilesOfTheModuleWeighs(t *testing.T) {
+	f := updatable(t)
+	bx := &box{ctx: context.Background(), env: &f.env}
+	var want int64
+	for _, p := range []string{progPath, samplePath, helperPath, unitPath} {
+		want += int64(len(f.read(p)))
+	}
+	if st := bx.Installed(testName); !st.BytesOK || st.Bytes != want || st.Files != osmodule.FilesVerified || st.Tag != testTag || !st.Present {
+		t.Errorf("%+v, want %d bytes", st, want)
+	}
+	// a file that is not there weighs nothing; one that cannot be looked at is a weight that cannot be told
+	_ = os.Remove(f.path(helperPath))
+	if st := bx.Installed(testName); !st.BytesOK || st.Bytes != want-int64(len("helper v1\n")) {
+		t.Errorf("%+v", st)
+	}
+	if st := bx.Installed("nothing"); st.Present || st.Broken || st.Unreadable || st.BytesOK {
+		t.Errorf("a module that is not there: %+v", st)
+	}
 }
