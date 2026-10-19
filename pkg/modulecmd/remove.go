@@ -368,8 +368,11 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	defer j.close()
 	defer j.recoverRun(&code, func() string { return "-" })
 	// what an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
-	if err := emptyDir(env.Host, env.Roots.tmp()); errors.Is(err, errUnsafe) {
+	if err := emptyTmp(env.Host, env.Roots.tmp()); errors.Is(err, errUnsafe) {
 		return j.refuse(CodeStateUnsafe)
+	}
+	if code, stop := j.recoverUpdate(ctx); stop {
+		return code
 	}
 	if why := removeRefusal(ctx, env, c.name); why != "" {
 		return j.refuse(why)

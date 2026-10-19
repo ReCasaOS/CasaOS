@@ -231,11 +231,14 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 		return undoDone
 	})
 	// whatever an earlier run that was killed left in the area of the download is nobody's now: this run has the lock
-	if err := emptyDir(env.Host, env.Roots.tmp()); err != nil {
+	if err := emptyTmp(env.Host, env.Roots.tmp()); err != nil {
 		if errors.Is(err, errUnsafe) {
 			return j.refuse(CodeStateUnsafe)
 		}
 		return j.refuse(CodeTmpUnusable)
+	}
+	if code, stop := j.recoverUpdate(ctx); stop {
+		return code
 	}
 	// a list of an earlier install that cannot be read is a state for the administrator to look at: the module cannot be told from it, and nothing is changed
 	if bad := j.unreadableLists(c.name); len(bad) > 0 {
@@ -244,7 +247,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 		}
 		return j.refuse(CodeFilesUnreadable)
 	}
-	defer func() { _ = emptyDir(env.Host, env.Roots.tmp()) }()
+	defer func() { _ = emptyTmp(env.Host, env.Roots.tmp()) }()
 
 	if why := planRefusal(c, PlanOf(ctx, env, c.name), asked); why != "" {
 		return j.refuse(why)
@@ -260,7 +263,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 // confirm shows what is going to be done and asks.
 func (j *job) confirm(name, tag, tier string, packages []string, download int64, url, verb string) bool {
 	fmt.Fprintf(j.env.Stdout, "%s %s %s (%s)\n", verb, name, tag, tier)
-	if verb == "install" {
+	if verb == "install" || verb == "update" {
 		fmt.Fprintf(j.env.Stdout, "  packages to install: %s\n  download: %d bytes of packages, then %s\n", strings.Join(packages, " "), download, url)
 	}
 	fmt.Fprint(j.env.Stdout, "Go on? [y/N] ")
@@ -471,25 +474,34 @@ func (in *install) stepVerify() *stepFailure {
 	return nil
 }
 
-func (in *install) stepUnpack() *stepFailure {
-	// The archive that was checked is the one that is read: by the descriptor it was written by, and the tar it makes is written to a descriptor and read from the same one, so that nothing
-	// that is done to a path in the meantime reaches the unpack.
+// openTar makes the tar of the archive that was checked, in a file of its own that is returned open. The archive that was checked is the one that is read: by the descriptor it was written
+// by, and the tar it makes is written to a descriptor and read from the same one, so that nothing that is done to a path in the meantime reaches the unpack.
+func (in *install) openTar() (*os.File, *stepFailure) {
 	if _, err := in.archive.Seek(0, io.SeekStart); err != nil {
-		return in.fail(CodeUnpackFailed, err)
+		return nil, in.fail(CodeUnpackFailed, err)
 	}
 	tarFile, err := createPrivate(in.tarPath())
 	if err != nil {
-		return in.fail(CodeUnpackFailed, err)
+		return nil, in.fail(CodeUnpackFailed, err)
 	}
-	defer tarFile.Close()
 	if err := gunzipTo(in.ctx, in.archive, tarFile, osmodule.MaxStreamBytes); err != nil {
+		_ = tarFile.Close()
 		code := osmodule.UnpackCorrupt
 		if errors.Is(err, ErrTooLarge) {
 			code = osmodule.UnpackLimits
 		}
-		return in.fail(code, err)
+		return nil, in.fail(code, err)
 	}
 	_ = os.Remove(in.archivePath())
+	return tarFile, nil
+}
+
+func (in *install) stepUnpack() *stepFailure {
+	tarFile, f := in.openTar()
+	if f != nil {
+		return f
+	}
+	defer tarFile.Close()
 	// from here the box may hold files of the module
 	in.unpackBegun = true
 	if err := makeDirs(in.env.Roots.state(), 0o755); err != nil {

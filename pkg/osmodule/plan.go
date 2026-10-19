@@ -161,6 +161,9 @@ type PlanResult struct {
 	Packages PlanPackages `json:"packages"`
 	Archive  PlanArchive  `json:"archive"`
 	PlanID   string       `json:"plan_id"`
+	// Mode and Update are the plan of an update's: "update", and the two tags with the packages that change. An install plan says neither.
+	Mode   string      `json:"mode,omitempty"`
+	Update *UpdateInfo `json:"update,omitempty"`
 }
 
 // PlanPackages are what apt would do. The sizes are apt's own, and Known says whether apt gave them.
@@ -266,7 +269,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 
 	disk := notChecked(CheckDisk)
 	if standing && simulated && sim.Failure == "" {
-		disk = diskCheck(box, asset, sim, &r.Archive)
+		disk = diskCheck(box, asset, sim, &r.Archive, 0, true)
 	}
 	checks = append(checks, disk, aptCheck(aptThere, simulated, sim))
 
@@ -423,18 +426,19 @@ func dpkgCheck(box Box) Check {
 	return Check{Code: CheckDpkgState, OK: true}
 }
 
-// diskCheck is ok when both file systems have room for what the install writes there. Anything the plan cannot tell (the sizes of apt, the room of a path) is not ok: it is not room.
-func diskCheck(box Box, asset Asset, sim AptResult, archive *PlanArchive) Check {
+// diskCheck is ok when both file systems have room for what the install writes there. Anything the plan cannot tell (the sizes of apt, the room of a path) is not ok: it is not room. An
+// update also keeps a copy of the files it replaces (backup bytes, which backupKnown says could be told).
+func diskCheck(box Box, asset Asset, sim AptResult, archive *PlanArchive, backup int64, backupKnown bool) Check {
 	size := MaxArchiveBytes
 	if n, ok := box.ArchiveBytes(asset.URL); ok && n > 0 {
 		size = n
 		archive.Bytes = &n
 	}
 	unknown := Check{Code: CheckDisk, Detail: "unknown", refusal: RefusedDiskUnknown}
-	if !sim.Known || sim.DownloadBytes < 0 {
+	if !sim.Known || sim.DownloadBytes < 0 || !backupKnown || backup < 0 {
 		return unknown
 	}
-	need := satAdd(satAdd(satMul(size, DiskArchiveFactor), satMul(sim.DownloadBytes, DiskAptDownloadFactor)), satMul(max(sim.ExtraBytes, 0), DiskAptExtraFactor))
+	need := satAdd(satAdd(satAdd(satMul(size, DiskArchiveFactor), backup), satMul(sim.DownloadBytes, DiskAptDownloadFactor)), satMul(max(sim.ExtraBytes, 0), DiskAptExtraFactor))
 	short := ""
 	for _, path := range []string{TmpDir, UsrDir} {
 		free, err := box.FreeBytes(path)

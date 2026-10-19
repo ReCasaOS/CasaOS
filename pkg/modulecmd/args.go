@@ -6,8 +6,9 @@ import (
 )
 
 const usage = `usage: casaos module list
-       casaos module plan <name>
+       casaos module plan <name> [--update]
        casaos module install <name> [--yes] [--plan-id <id>]
+       casaos module update <name> [--yes] [--plan-id <id>]
        casaos module remove <name> [--yes]
        casaos module status [name]`
 
@@ -21,6 +22,8 @@ type command struct {
 	name   string
 	yes    bool
 	planID string
+	// update is the plan of an update (plan --update)
+	update bool
 }
 
 // parseArgs reads what follows "module" and nothing but the forms of the usage: a flag that is not one of them, a flag twice, a missing or surplus name, a name that is not a module's
@@ -30,10 +33,12 @@ func parseArgs(args []string) (command, error) {
 		return command{}, errors.New("no command")
 	}
 	c := command{verb: args[0]}
-	var yesOK, planOK bool
+	var yesOK, planOK, updateOK bool
 	switch c.verb {
-	case "list", "status", "plan":
-	case "install":
+	case "list", "status":
+	case "plan":
+		updateOK = true
+	case "install", "update":
 		yesOK, planOK = true, true
 	case "remove":
 		yesOK = true
@@ -45,6 +50,8 @@ func parseArgs(args []string) (command, error) {
 		switch a := args[i]; {
 		case a == "--yes" && yesOK && !seenYes:
 			c.yes, seenYes = true, true
+		case a == "--update" && updateOK && !c.update:
+			c.update = true
 		case a == "--plan-id" && planOK && !seenPlan && i+1 < len(args):
 			i++
 			if !planIDRe.MatchString(args[i]) {

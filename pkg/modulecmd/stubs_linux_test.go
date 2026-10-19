@@ -10,6 +10,7 @@ import (
 // way the real ones would keep it in systemd and dpkg. They find their directory from the path they are run by.
 //
 //	enabled-<unit>        the unit is enabled and active (systemctl enable --now makes it, disable --now removes it)
+//	stopped-<unit>        the unit is enabled and not running (systemctl stop makes it, start removes it)
 //	fail-<verb>           the verb ends with status 1
 //	block-<verb>          the next such verb removes it, makes reached-<verb> and waits for half a minute (or for the signal that ends it)
 //	systemctl.log, apt-get.log   the commands, one to a line
@@ -25,9 +26,11 @@ if [ -e "$state/fail-$verb" ]; then exit 1; fi
 if [ -e "$state/block-$verb" ]; then rm -f "$state/block-$verb"; : > "$state/reached-$verb"; sleep 30 & echo $! >> "$state/sleepers"; wait; fi
 case "$verb" in
 show) printf '%s\n' inactive ;;
-enable) : > "$state/enabled-$3" ;;
-disable) rm -f "$state/enabled-$3" ;;
-is-active) if [ -e "$state/enabled-$2" ]; then printf '%s\n' active; exit 0; fi; printf '%s\n' inactive; exit 3 ;;
+enable) : > "$state/enabled-$3"; rm -f "$state/stopped-$3" ;;
+disable) rm -f "$state/enabled-$3" "$state/stopped-$3" ;;
+stop) : > "$state/stopped-$2" ;;
+start) rm -f "$state/stopped-$2" ;;
+is-active) if [ -e "$state/enabled-$2" ] && [ ! -e "$state/stopped-$2" ]; then printf '%s\n' active; exit 0; fi; printf '%s\n' inactive; exit 3 ;;
 is-enabled) if [ -e "$state/enabled-$2" ]; then printf '%s\n' enabled; exit 0; fi; printf '%s\n' disabled; exit 1 ;;
 esac
 exit 0

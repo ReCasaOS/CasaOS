@@ -50,10 +50,13 @@ const (
 const (
 	KindInstall = "install"
 	KindRemove  = "remove"
+	KindUpdate  = "update"
 )
 
 // ValidKind says whether kind is the kind of a job.
-func ValidKind(kind string) bool { return kind == KindInstall || kind == KindRemove }
+func ValidKind(kind string) bool {
+	return kind == KindInstall || kind == KindRemove || kind == KindUpdate
+}
 
 // The words of Job.Undo: the last field of the RESULT line of a job that failed. The empty word is a failure that had nothing to undo or a verb that does not undo.
 const (
