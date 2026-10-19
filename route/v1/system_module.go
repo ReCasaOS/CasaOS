@@ -2,6 +2,7 @@ package v1
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -55,11 +56,6 @@ type moduleInstallRequest struct {
 	Mode   *string `json:"mode"`
 }
 
-// modulePlanRequest is the optional body of a plan: the mode of the plan. No body is the plan of an install.
-type modulePlanRequest struct {
-	Mode *string `json:"mode"`
-}
-
 // moduleMode is the mode a request asks for: install when the field is not there, and install or update when it is. Anything else is a field that is not valid.
 func moduleMode(mode *string) (string, error) {
 	switch {
@@ -71,17 +67,40 @@ func moduleMode(mode *string) (string, error) {
 	return "", badOSUpgradeRequest("mode")
 }
 
-// readOptionalModuleBody reads the body of a request that may have none: an empty body (or one of blanks) leaves the value as it is, and any other is read as strictly as a body is.
-func readOptionalModuleBody(ctx echo.Context, into any) error {
+// planModeOf is the mode of a plan. The route took no body and ignored whatever it was sent, and still does: a body that is not a JSON object, or that has no "mode" key, is the plan of an
+// install. When "mode" is there it is strict: a string that is install or update, once, and anything else is a 400 on the field mode.
+func planModeOf(ctx echo.Context) (string, error) {
 	raw, err := io.ReadAll(io.LimitReader(ctx.Request().Body, osUpgradeBodyMax+1))
 	if err != nil || len(raw) > osUpgradeBodyMax {
-		return badOSUpgradeRequest("body")
+		return osmodule.ModeInstall, nil
 	}
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return nil
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil || object == nil {
+		return osmodule.ModeInstall, nil
 	}
-	ctx.Request().Body = io.NopCloser(bytes.NewReader(raw))
-	return readOSUpgradeBody(ctx, into)
+	value, there := object["mode"]
+	if !there {
+		return osmodule.ModeInstall, nil
+	}
+	// (a key that comes twice is not read as the last one)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	_, _ = decoder.Token()
+	seen := 0
+	for decoder.More() {
+		key, _ := decoder.Token()
+		if key == "mode" {
+			seen++
+		}
+		var skip json.RawMessage
+		if decoder.Decode(&skip) != nil {
+			break
+		}
+	}
+	var mode *string
+	if seen != 1 || json.Unmarshal(value, &mode) != nil || mode == nil {
+		return "", badOSUpgradeRequest("mode")
+	}
+	return moduleMode(mode)
 }
 
 // @Summary  the modules that this release can install, and what the box says of each
@@ -100,7 +119,7 @@ func GetSystemModules(ctx echo.Context) error {
 }
 
 // @Summary  the plan of installing a module, or of updating one that is installed: what the box says of it and what apt would do, with the machine unchanged
-// @Description Runs the module assistant's plan in the core, for at most 60 seconds. The body is optional: none (or {}) is the plan of an install, {"mode": "update"} the plan of the update of a module that is installed to the tag the catalogue names (mode is install or update; any other value is a 400 bad_request, data.data.field is mode). The checks of an install in their order (catalogue, os, arch, recasaos, already_installed, foreign_unit, busy, dpkg_state, disk, apt, each with code, ok and detail); those of an update (catalogue, os, arch, recasaos, installed, newer, foreign_unit, busy, dpkg_state, disk, apt), with mode "update" and update (installed and latest tags, added: the packages the new manifest names and the installed one did not, dropped: those it no longer names, which are never removed), and refused with not_installed, manifest_invalid, files_unreadable, files_unverified, version_unknown, up_to_date, downgrade or unit_changed besides the codes of an install; then refused (null, or the code of the first check that failed), the packages apt would install and upgrade with the sizes it gives, the archive, and plan_id, the id that the install or the update must be given back. A plan that is refused is still a plan: 200 with refused set. 400 bad_request (data.data.field is name, mode or body) for a name, a mode or a body that is not valid; 409 with data.error_code plan_timeout when the plan could not be made in its time. It changes nothing. The token goes in the Authorization header, and is not the refresh token.
+// @Description Runs the module assistant's plan in the core, for at most 60 seconds. The body is optional and, as it always was, ignored when it is not a JSON object or has no "mode" key: that is the plan of an install. {"mode": "update"} is the plan of the update of a module that is installed to the tag the catalogue names; when "mode" is there it is install or update, once, and anything else is a 400 bad_request (data.data.field is mode). The checks of an install in their order (catalogue, os, arch, recasaos, already_installed, foreign_unit, busy, dpkg_state, disk, apt, each with code, ok and detail); those of an update (catalogue, os, arch, recasaos, installed, newer, foreign_unit, busy, dpkg_state, disk, apt), with mode "update" and update (installed and latest tags, added: the packages apt says it would install (those of the new manifest that are not installed), dropped: those it no longer names, which are never removed), and refused with not_installed, manifest_invalid, files_unreadable, files_unverified, version_unknown, up_to_date, downgrade or unit_changed besides the codes of an install; then refused (null, or the code of the first check that failed), the packages apt would install and upgrade with the sizes it gives, the archive, and plan_id, the id that the install or the update must be given back. A plan that is refused is still a plan: 200 with refused set. 400 bad_request (data.data.field is name or mode) for a name or a mode that is not valid; 409 with data.error_code plan_timeout when the plan could not be made in its time. It changes nothing. The token goes in the Authorization header, and is not the refresh token.
 // @Produce  application/json
 // @Tags sys
 // @Security ApiKeyAuth
@@ -114,11 +133,7 @@ func PlanSystemModule(ctx echo.Context) error {
 	if err != nil {
 		return moduleFailed(ctx, err)
 	}
-	var req modulePlanRequest
-	if err := readOptionalModuleBody(ctx, &req); err != nil {
-		return moduleFailed(ctx, err)
-	}
-	mode, err := moduleMode(req.Mode)
+	mode, err := planModeOf(ctx)
 	if err != nil {
 		return moduleFailed(ctx, err)
 	}

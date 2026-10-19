@@ -59,6 +59,12 @@ func checkGrammar(t *testing.T, f *fixture, exit int, remove, early bool, logBef
 	for _, s := range steps {
 		name, phase, _ := strings.Cut(s, " ")
 		switch {
+		case strings.HasSuffix(s, " skipped"):
+			// (a step that was not made is one marker, with no begin)
+			if open != "" {
+				t.Errorf("%s while %s is open:\n%s", s, open, out)
+			}
+			ended[name] = phase
 		case s == "done done":
 			// (the end of a run is one marker, with no begin)
 			if open != "" {

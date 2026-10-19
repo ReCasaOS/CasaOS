@@ -18,7 +18,7 @@ import (
 // resultRe is the RESULT line, in the one shape it has
 var resultRe = regexp.MustCompile(`^CASAOS_MODULE_RESULT (-|[0-9a-f]{32}) ` + testName + ` (ok|refused|failed) ([a-z_]+|-) ([a-z_]+|-) (rolled_back|rollback_incomplete|-) \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
 
-var stepRe = regexp.MustCompile(`^CASAOS_MODULE_STEP (-|[0-9a-f]{32}) ` + testName + ` ([a-z_]+) (begin|done|failed) \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
+var stepRe = regexp.MustCompile(`^CASAOS_MODULE_STEP (-|[0-9a-f]{32}) ` + testName + ` ([a-z_]+) (begin|done|failed|skipped) \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
 
 // markers are the steps of the output, as "step phase", in order; a line that starts like a marker and is not one is a failure of the test.
 func markers(t *testing.T, lines []string) []string {

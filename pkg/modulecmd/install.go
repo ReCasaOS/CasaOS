@@ -146,6 +146,8 @@ type install struct {
 	// archiveSum is the sha256 of its bytes, taken as they were written.
 	archive    *os.File
 	archiveSum string
+	// noUpgrade makes apt-get leave the packages that are installed as they are (an update's)
+	noUpgrade bool
 	// aptStarted is set when apt-get has been started: a run that ends it leaves dpkg in the state it was in
 	aptStarted  bool
 	unpackBegun bool
@@ -384,6 +386,10 @@ func (in *install) stepPackages() *stepFailure {
 	argv, err := aptInstallArgv(in.packages)
 	if err != nil {
 		return in.fail(CodePackagesFailed, err)
+	}
+	if in.noUpgrade {
+		// (an update installs what is missing, and upgrades nothing that is there)
+		argv = slices.Insert(argv, slices.Index(argv, "--no-remove")+1, "--no-upgrade")
 	}
 	if f := in.repairDpkg(); f != nil {
 		return f

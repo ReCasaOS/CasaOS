@@ -16,7 +16,7 @@ import (
 // has the lock, and so before it may touch the log, says its lines on the standard output only). A line the program says about itself is a marker, a result or a sentence; what the
 // commands it runs print goes in the log only, and every line of it starts with "| ", so that nothing a package prints can look like a marker.
 //
-//	CASAOS_MODULE_STEP <nonce|-> <name> <step> <begin|done|failed> <time>
+//	CASAOS_MODULE_STEP <nonce|-> <name> <step> <begin|done|failed|skipped> <time>
 //	CASAOS_MODULE_RESULT <nonce|-> <name> <ok|refused|failed> <step|-> <code|-> <undo> <time>
 //
 // The core, when it starts a job, writes a first line of its own in the log before the program runs (Queue): CASAOS_MODULE_QUEUED <nonce> <name> <install|remove|update> <time>. The program does not write
@@ -26,7 +26,7 @@ import (
 // letters and underscores: for an install packages, download, verify, unpack, units, manifest, start, route and done; for a remove stop, files, manifest, reload and done; for an update
 // packages, download, verify, unpack, backup, stop, swap, units, start, route and done (the rollback of an update, and the recovery of one that was ended, are the steps restore, units and start
 // behind "rollback_" and "recover_"); and the steps of
-// the rollback of an install, which are those of a remove behind "rollback_". Every "begin" of a step is followed by its "done" or its "failed", and a step that failed is never "done".
+// the rollback of an install, which are those of a remove behind "rollback_". Every "begin" of a step is followed by its "done" or its "failed", and a step that failed is never "done". A step that a run does not make (the start and the route of an update of a module that was not running) is one marker, "skipped", with no begin.
 //
 // A run says its outcome in exactly one RESULT line, and every run that ends says it: a run that is refused (exit 2, nothing changed) has no STEP line and its RESULT line is its last; a
 // run that failed (exit 3) has the failed STEP line before the sentences that say what was undone and what was kept, and its RESULT line is its last, said once the rollback is over, so that

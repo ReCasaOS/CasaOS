@@ -146,7 +146,7 @@ func parseMarker(line, name string) (marker, bool) {
 	switch {
 	case f[0] == stepMarker && len(f) == 6:
 		m = marker{kind: stepMarker, nonce: f[1], step: f[3], phase: f[4]}
-		if f[2] != name || !stepWordRe.MatchString(m.step) || (m.phase != "begin" && m.phase != "done" && m.phase != "failed") {
+		if f[2] != name || !stepWordRe.MatchString(m.step) || (m.phase != "begin" && m.phase != "done" && m.phase != "failed" && m.phase != "skipped") {
 			return marker{}, false
 		}
 	case f[0] == resultMarker && len(f) == 8:

@@ -113,3 +113,101 @@ func TestAnUpdateOnABoxWithAMergedUsrKnowsTheUnitUnderBothSpellings(t *testing.T
 		}
 	}
 }
+
+const sentinelPath = "/usr/bin/casaos-sentinel"
+
+// A path of the module that is a link in one version and a file in the other is replaced, by a rename that puts the new thing in the place of the old one: what the link points to is never
+// written. Both ways, for a good update and for a rollback.
+func TestALinkAndAFileOfTheModuleReplaceEachOtherAndNothingIsWrittenThroughTheLink(t *testing.T) {
+	asFile := func(ents []tent) []tent {
+		return append(slices.Clone(ents), tent{name: "build/sysroot" + aliasPath, body: "the alias, a file\n"})
+	}
+	for _, c := range []struct {
+		name     string
+		old, new []tent
+		wantNew  func(t *testing.T, f *fixture)
+		wantOld  func(t *testing.T, f *fixture)
+	}{
+		{"a link and then a file", withAlias(v1Entries(t), "casaos-sentinel"), asFile(v2Entries(t, testManifest())),
+			func(t *testing.T, f *fixture) {
+				if _, err := os.Readlink(f.path(aliasPath)); err == nil || f.read(aliasPath) != "the alias, a file\n" {
+					t.Errorf("the alias is not the file: %v", err)
+				}
+			},
+			func(t *testing.T, f *fixture) {
+				if target, err := os.Readlink(f.path(aliasPath)); err != nil || target != "casaos-sentinel" {
+					t.Errorf("the alias is not the link: %q %v", target, err)
+				}
+			}},
+		{"a file and then a link", asFile(v1Entries(t)), withAlias(v2Entries(t, testManifest()), "casaos-sentinel"),
+			func(t *testing.T, f *fixture) {
+				if target, err := os.Readlink(f.path(aliasPath)); err != nil || target != "casaos-sentinel" {
+					t.Errorf("the alias is not the link: %q %v", target, err)
+				}
+			},
+			func(t *testing.T, f *fixture) {
+				if _, err := os.Readlink(f.path(aliasPath)); err == nil || f.read(aliasPath) != "the alias, a file\n" {
+					t.Errorf("the alias is not the file: %v", err)
+				}
+			}},
+	} {
+		for _, fail := range []bool{false, true} {
+			t.Run(c.name+map[bool]string{false: ", an update", true: ", a rollback"}[fail], func(t *testing.T) {
+				f := newFixture(t, withEntries(c.old))
+				f.writeFile(sentinelPath, "the sentinel\n")
+				if code := f.install("--yes"); code != ExitOK {
+					t.Fatalf("install: %d\n%s", code, f.out)
+				}
+				f.publish(newTag, testManifest(), c.new)
+				before := f.treeWithoutBookkeeping()
+				f.gw.never = fail
+				code := f.update("--yes")
+				if f.read(sentinelPath) != "the sentinel\n" {
+					t.Errorf("what the link points to was written: %q", f.read(sentinelPath))
+				}
+				if fail {
+					if code != ExitFailed {
+						t.Fatalf("exit %d:\n%s", code, f.out)
+					}
+					sameTree(t, before, f.treeWithoutBookkeeping())
+					c.wantOld(t, f)
+					return
+				}
+				if code != ExitOK {
+					t.Fatalf("exit %d:\n%s", code, f.out)
+				}
+				c.wantNew(t, f)
+			})
+		}
+	}
+}
+
+// A rollback gives a file its mode back, and its user and group when the assistant may (it is root on a box).
+func TestARollbackGivesTheModeAndTheOwnerOfAFileBack(t *testing.T) {
+	f := updatable(t)
+	if err := os.Chmod(f.path(progPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	root := os.Geteuid() == 0
+	if root {
+		if err := os.Lchown(f.path(progPath), 4242, 4343); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Lchown(f.path(samplePath), 4242, 4343); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.gw.never = true
+	if code := f.update("--yes"); code != ExitFailed {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	info, err := os.Lstat(f.path(progPath))
+	if err != nil || info.Mode().Perm() != 0o750 {
+		t.Fatalf("the mode: %v %v", info, err)
+	}
+	if root {
+		if uid, gid, ok := ownerOf(info); !ok || uid != 4242 || gid != 4343 {
+			t.Errorf("the owner: %d %d %v", uid, gid, ok)
+		}
+	}
+}

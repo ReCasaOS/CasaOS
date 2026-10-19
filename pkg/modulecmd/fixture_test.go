@@ -450,6 +450,9 @@ func (r *fakeRunner) Run(ctx context.Context, c Cmd) (Output, error) {
 		delete(r.enabled, c.Argv[3])
 		delete(r.stopped, c.Argv[3])
 		return say("")
+	case len(c.Argv) == 3 && c.Argv[0] == "systemctl" && c.Argv[1] == "enable":
+		r.enabled[c.Argv[2]] = true
+		return say("")
 	case len(c.Argv) == 3 && c.Argv[0] == "systemctl" && c.Argv[1] == "stop":
 		if r.enabled[c.Argv[2]] {
 			r.stopped[c.Argv[2]] = true

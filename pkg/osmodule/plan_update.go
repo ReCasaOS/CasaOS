@@ -68,7 +68,7 @@ type UpdateBox interface {
 type UpdateInfo struct {
 	Installed string `json:"installed"`
 	Latest    string `json:"latest"`
-	// Added are the packages the new manifest names and the old one did not: what the update installs. Dropped are those the old one named and the new one no longer does: said, never removed.
+	// Added are the packages apt says it would install (the ones of the new manifest that are not installed, and what they need). Dropped are those the old one named and the new one no longer does: said, never removed.
 	Added   []string `json:"added"`
 	Dropped []string `json:"dropped"`
 }
@@ -186,11 +186,10 @@ func PlanUpdate(cat Catalogue, name string, box UpdateBox) PlanResult {
 	st := box.Installed(name)
 	installed, newer := UpdateChecks(st, entry)
 	r.Update = &UpdateInfo{Installed: st.Tag, Latest: entry.Tag, Added: []string{}, Dropped: []string{}}
+	// apt is asked about every package of the new manifest, and installs the ones that are missing (and upgrades none: the job says --no-upgrade); Added is what it says it would install
 	packages := PackagesFor(entry.Manifest, arch)
 	if st.Present {
-		old := PackagesFor(st.Manifest, arch)
-		packages = diff(PackagesFor(entry.Manifest, arch), old)
-		r.Update.Added, r.Update.Dropped = packages, diff(old, PackagesFor(entry.Manifest, arch))
+		r.Update.Dropped = diff(PackagesFor(st.Manifest, arch), packages)
 	}
 
 	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
@@ -222,6 +221,7 @@ func PlanUpdate(cat Catalogue, name string, box UpdateBox) PlanResult {
 	}
 	if simulated && sim.Failure == "" {
 		r.Packages = PlanPackages{ToInstall: sortedCopy(sim.ToInstall), ToUpgrade: sortedCopy(sim.ToUpgrade), DownloadBytes: sim.DownloadBytes, ExtraBytes: sim.ExtraBytes, Known: sim.Known}
+		r.Update.Added = sortedCopy(sim.ToInstall)
 	}
 	if r.Refused == "" {
 		r.PlanID = UpdatePlanID(entry.Name, st.Tag, entry.Tag, asset.SHA256, osID, osVersion, r.Packages.ToInstall)

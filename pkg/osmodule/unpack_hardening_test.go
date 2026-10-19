@@ -508,8 +508,8 @@ func TestTheModulesOwnLinkIsReplacedByALinkAndNothingElseIs(t *testing.T) {
 			t.Errorf("%s: written %v", name, dst.log)
 		}
 	}
-	// a link the module owns is not made a file, and not a directory
-	for name, ent := range map[string]tent{"a file": {name: sysroot + "usr/bin/virt", body: "x"}, "a directory": {name: sysroot + "usr/bin/virt/", typ: tar.TypeDir}} {
+	// a link the module owns is not made a directory
+	for name, ent := range map[string]tent{"a directory": {name: sysroot + "usr/bin/virt/", typ: tar.TypeDir}} {
 		dst = newFS()
 		dst.nodes["/usr/bin/virt"] = &node{mode: fs.ModeSymlink | 0o777, target: "old"}
 		_, err = unpack(t, dst, own, tent{name: "module.json", body: "{}"}, ent)
@@ -517,6 +517,16 @@ func TestTheModulesOwnLinkIsReplacedByALinkAndNothingElseIs(t *testing.T) {
 		if len(dst.log) != 0 {
 			t.Errorf("%s: written %v", name, dst.log)
 		}
+	}
+	// a link the module owns is made a file by a rename that puts the file in the place of the link: what the link points to is not written
+	dst = newFS()
+	dst.nodes["/usr/bin/virt"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"}
+	dst.put("/etc/passwd", 0o644, "root")
+	if _, err = unpack(t, dst, own, tent{name: "module.json", body: "{}"}, tent{name: sysroot + "usr/bin/virt", mode: 0o755, body: "x"}); err != nil {
+		t.Fatalf("a link made a file: %v", err)
+	}
+	if n := dst.nodes["/usr/bin/virt"]; n.mode&fs.ModeSymlink != 0 || string(n.data) != "x" || string(dst.nodes["/etc/passwd"].data) != "root" {
+		t.Errorf("a link made a file: %+v, passwd %q", n, dst.nodes["/etc/passwd"].data)
 	}
 	// the module's own file is replaced by a link, as before
 	dst = newFS()

@@ -108,7 +108,7 @@ func (f *fakeFS) NewFile(p string, perm fs.FileMode, replace bool) (File, error)
 	if n := f.nodes[path.Dir(f.real(p))]; n == nil || !n.mode.IsDir() {
 		return nil, fs.ErrNotExist // (a file goes in a directory that is there)
 	}
-	if n := f.nodes[f.real(p)]; n != nil && n.mode&fs.ModeSymlink != 0 {
+	if n := f.nodes[f.real(p)]; n != nil && n.mode&fs.ModeSymlink != 0 && !replace {
 		return nil, errors.New("would write through a link")
 	}
 	return &fakeFile{fs: f, path: f.real(p), perm: perm, replace: replace}, nil
@@ -693,14 +693,13 @@ func TestADestinationThatIsALinkOrBehindOneIsNotWrittenTo(t *testing.T) {
 		"the sample is a link to the password file": func(f *fakeFS) {
 			f.nodes["/etc/casaos/fine.sample"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"}
 		},
-		"the allowed directory itself is a link":        func(f *fakeFS) { f.nodes["/usr/bin"] = &node{mode: fs.ModeSymlink | 0o777, target: "/srv"} },
-		"the other allowed directory is a link":         func(f *fakeFS) { f.nodes["/etc/casaos"] = &node{mode: fs.ModeSymlink | 0o777, target: "/srv"} },
-		"the file is a link to nothing":                 func(f *fakeFS) { f.nodes["/usr/bin/fine"] = &node{mode: fs.ModeSymlink | 0o777, target: "/nowhere"} },
-		"the file is a link, and is in the modules own": func(f *fakeFS) { f.nodes["/usr/bin/fine"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"} },
+		"the allowed directory itself is a link": func(f *fakeFS) { f.nodes["/usr/bin"] = &node{mode: fs.ModeSymlink | 0o777, target: "/srv"} },
+		"the other allowed directory is a link":  func(f *fakeFS) { f.nodes["/etc/casaos"] = &node{mode: fs.ModeSymlink | 0o777, target: "/srv"} },
+		"the file is a link to nothing":          func(f *fakeFS) { f.nodes["/usr/bin/fine"] = &node{mode: fs.ModeSymlink | 0o777, target: "/nowhere"} },
 	} {
 		dst := newFS()
 		setup(dst)
-		_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, []string{"/usr/bin/fine"}, testOpts)
+		_, err := Unpack(bytes.NewReader(tarOf(t, ents...)), dst, nil, testOpts)
 		var r *Refused
 		if !errors.As(err, &r) || r.Code != "unpack_path" {
 			t.Errorf("%s: error = %v", name, err)
@@ -895,7 +894,7 @@ func TestAnArchiveOrADestinationThatChangesBetweenTheReadingsIsNotUnpacked(t *te
 	if len(dst.log) != 0 {
 		t.Errorf("written %v", dst.log)
 	}
-	// a file that was the module's own, and is gone from the list by the second reading, cannot happen: the list is an argument. A destination that turns into a link does
+	// a file that was the module's own, and is gone from the list by the second reading, cannot happen: the list is an argument. A destination of the module's own that turns into a link is replaced
 	dst = newFS()
 	dst.put("/usr/bin/casaos-virt-management", 0o755, "old")
 	_, err = Unpack(&hooked{r: bytes.NewReader(good), onStart: func(n int, _ *hooked) {
@@ -903,9 +902,9 @@ func TestAnArchiveOrADestinationThatChangesBetweenTheReadingsIsNotUnpacked(t *te
 			dst.nodes["/usr/bin/casaos-virt-management"] = &node{mode: fs.ModeSymlink | 0o777, target: "/etc/passwd"}
 		}
 	}}, dst, []string{"/usr/bin/casaos-virt-management"}, testOpts)
-	wantRefused(t, err, "unpack_path")
-	if len(dst.log) != 0 {
-		t.Errorf("written %v", dst.log)
+	// (the file is the module's own: it is put in the place of the link, and what the link pointed to is not written)
+	if n := dst.nodes["/usr/bin/casaos-virt-management"]; err != nil || n == nil || n.mode&fs.ModeSymlink != 0 {
+		t.Errorf("a destination that turned into a link: %v %+v", err, n)
 	}
 }
 

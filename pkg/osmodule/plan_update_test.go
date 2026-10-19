@@ -74,6 +74,7 @@ var updateChecks = []string{"catalogue", "os", "arch", "recasaos", "installed", 
 
 func TestAPlanOfAnUpdateThatCanBeMade(t *testing.T) {
 	box := newUpdBox(t)
+	box.sim = AptResult{Known: true} // (everything is there)
 	r := PlanUpdate(newer(t), "virt", box)
 	if r.Refused != "" || len(failed(r)) != 0 {
 		t.Fatalf("refused %q, failed %v, checks %+v", r.Refused, failed(r), r.Checks)
@@ -84,7 +85,8 @@ func TestAPlanOfAnUpdateThatCanBeMade(t *testing.T) {
 	if r.Mode != "update" || r.Tag != "v0.1.1" || r.Update == nil || r.Update.Installed != "v0.1.0" || r.Update.Latest != "v0.1.1" {
 		t.Errorf("%+v %+v", r, r.Update)
 	}
-	if len(r.Update.Added) != 0 || len(r.Update.Dropped) != 0 || len(box.simulated) != 0 {
+	allFive := []string{"libvirt-clients", "libvirt-daemon-system", "ovmf", "qemu-system-x86", "qemu-utils"}
+	if len(r.Update.Added) != 0 || len(r.Update.Dropped) != 0 || len(box.simulated) != 1 || !slices.Equal(box.simulated[0], allFive) {
 		t.Errorf("the packages did not change, and apt was asked about %v (%+v)", box.simulated, r.Update)
 	}
 	if len(r.PlanID) != 35 || !strings.HasPrefix(r.PlanID, "m1-") {
@@ -120,10 +122,11 @@ func TestAnUpdatePlanSimulatesOnlyThePackagesTheNewManifestAddsAndSaysWhichItDro
 	if r.Refused != "" {
 		t.Fatalf("refused %q: %+v", r.Refused, r.Checks)
 	}
-	if len(box.simulated) != 1 || !slices.Equal(box.simulated[0], []string{"swtpm"}) {
+	// apt is asked about every package of the new manifest, and says which it would install
+	if len(box.simulated) != 1 || !slices.Equal(box.simulated[0], []string{"libvirt-daemon-system", "ovmf", "qemu-system-x86", "qemu-utils", "swtpm"}) {
 		t.Errorf("apt was asked about %v", box.simulated)
 	}
-	if !slices.Equal(r.Update.Added, []string{"swtpm"}) || !slices.Equal(r.Update.Dropped, []string{"libvirt-clients"}) {
+	if !slices.Equal(r.Update.Added, []string{"libtpms0", "swtpm"}) || !slices.Equal(r.Update.Dropped, []string{"libvirt-clients"}) {
 		t.Errorf("added %v, dropped %v", r.Update.Added, r.Update.Dropped)
 	}
 	if !slices.Equal(r.Packages.ToInstall, []string{"libtpms0", "swtpm"}) || r.Packages.DownloadBytes != 2*mb {
@@ -135,10 +138,11 @@ func TestAnUpdatePlanSimulatesOnlyThePackagesTheNewManifestAddsAndSaysWhichItDro
 	if got := PlanUpdate(cat, "virt", again); got.PlanID == r.PlanID {
 		t.Error("the id does not depend on the packages to install")
 	}
-	// packages that were only dropped are nothing to install: apt is not asked
+	// packages that were only dropped are no work for apt, which is still asked about the others
 	box = newUpdBox(t)
+	box.sim = AptResult{Known: true}
 	r = PlanUpdate(newer(t, func(s string) string { return strings.ReplaceAll(s, `, "libvirt-clients"]`, `]`) }), "virt", box)
-	if r.Refused != "" || len(box.simulated) != 0 || !slices.Equal(r.Update.Dropped, []string{"libvirt-clients"}) || len(r.Update.Added) != 0 {
+	if r.Refused != "" || len(box.simulated) != 1 || slices.Contains(box.simulated[0], "libvirt-clients") || !slices.Equal(r.Update.Dropped, []string{"libvirt-clients"}) || len(r.Update.Added) != 0 {
 		t.Errorf("%q %v %+v", r.Refused, box.simulated, r.Update)
 	}
 }
@@ -256,6 +260,7 @@ func TestTheRoomAnUpdateNeedsCountsTheBackupOfTheOldFiles(t *testing.T) {
 		short bool
 	}{{need, false}, {need - 1, true}} {
 		box := newUpdBox(t)
+		box.sim = AptResult{Known: true}
 		box.st.Bytes = 100 * mb
 		box.free[TmpDir], box.free[UsrDir] = c.free, 10*gb
 		r := PlanUpdate(newer(t), "virt", box)
@@ -265,6 +270,7 @@ func TestTheRoomAnUpdateNeedsCountsTheBackupOfTheOldFiles(t *testing.T) {
 	}
 	// the same on the other file system
 	box := newUpdBox(t)
+	box.sim = AptResult{Known: true}
 	box.st.Bytes = 100 * mb
 	box.free[TmpDir], box.free[UsrDir] = 10*gb, need-1
 	if r := PlanUpdate(newer(t), "virt", box); r.Refused != RefusedDiskShort {

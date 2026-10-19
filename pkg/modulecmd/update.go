@@ -64,8 +64,10 @@ type update struct {
 	staged     osmodule.Result
 	newEntries []osmodule.FileEntry
 	newDirs    []string
-	// stopBegun is set when the step stop begins: from there a failure is put back from the backup
-	stopBegun bool
+	// backupDone is set when the backup is complete: from there a failure is put back from it (what it finds to put back, and nothing else, is done)
+	backupDone bool
+	// before is what the units of the module were (running, enabled) before anything was stopped
+	before []unitRecord
 }
 
 // canonPath is a path of a file with /lib spelled /usr/lib when the box has one directory for the two.
@@ -120,7 +122,7 @@ func runUpdate(ctx context.Context, env Env, c command) (code int) {
 	defer j.close()
 	var u *update
 	defer j.recoverRun(&code, func() string {
-		if u != nil && u.stopBegun {
+		if u != nil && u.backupDone {
 			return undoIncomplete
 		}
 		return undoDone
@@ -160,8 +162,12 @@ func runUpdate(ctx context.Context, env Env, c command) (code int) {
 		return j.refuse(CodeFilesUnreadable)
 	}
 	merged, _ := bx.MergedUsr()
+	var packages []string
+	if len(plan.Update.Added) > 0 {
+		packages = osmodule.PackagesFor(entry.Manifest, env.Arch)
+	}
 	u = &update{
-		install:     &install{job: j, ctx: ctx, entry: entry, asset: asset, packages: plan.Update.Added},
+		install:     &install{job: j, ctx: ctx, entry: entry, asset: asset, packages: packages, noUpgrade: true},
 		oldManifest: st.Manifest, oldTag: st.Tag, oldList: oldList, oldDirs: oldDirs, merged: merged,
 	}
 	defer u.closeArchive()
@@ -185,11 +191,13 @@ func (u *update) steps() int {
 		{StepRoute, u.stepRoute},
 	}
 	for _, s := range steps {
+		// a module that was not running is not started, and its route does not answer: the steps that wait for that are not made
+		if (s.name == StepStart && u.backupDone && !anyActive(u.before)) || (s.name == StepRoute && u.backupDone && !activeOf(u.before, u.entry.Manifest.Unit)) {
+			u.marker(s.name, "skipped")
+			continue
+		}
 		u.marker(s.name, "begin")
 		u.hook(u.ctx, s.name, "begin")
-		if s.name == StepStop {
-			u.stopBegun = true
-		}
 		var f *stepFailure
 		if err := u.ctx.Err(); err != nil {
 			f = &stepFailure{CodeInterrupted, err}
@@ -217,7 +225,7 @@ func (u *update) steps() int {
 func (u *update) failed(step string, f *stepFailure) int {
 	u.say("failed at step %s: %s", step, f.code)
 	undo := undoDone
-	if u.stopBegun {
+	if u.backupDone {
 		if bad := u.rollback(); bad > 0 {
 			u.say("rollback incomplete: %d things could not be put back; the files of the old version are kept in %s, and the next casaos module update or remove %s puts them back", bad, printable(u.env.Roots.Slash(u.env.Roots.backup(u.entry.Name)), 200), u.entry.Name)
 			undo = undoIncomplete
@@ -254,7 +262,7 @@ func (u *update) rollback() (bad int) {
 // dropBackup takes the backup folder away, once the update has ended or when nothing of the box was changed.
 func (u *update) dropBackup() {
 	dir := u.env.Roots.backup(u.entry.Name)
-	if err := os.RemoveAll(dir); err != nil {
+	if err := removeBackup(dir); err != nil {
 		u.say("not removed: %s (%s)", printable(u.env.Roots.Slash(dir), 200), printable(err.Error(), 100))
 	}
 }
@@ -384,6 +392,7 @@ func (u *update) stepBackup() *stepFailure {
 		return u.fail(CodeBackupFailed, err)
 	}
 	var actual []osmodule.FileEntry
+	owners := map[int][2]int{}
 	for _, e := range u.oldList.Entries {
 		if err := u.ctx.Err(); err != nil {
 			return u.fail(CodeBackupFailed, err)
@@ -400,11 +409,17 @@ func (u *update) stepBackup() *stepFailure {
 			if err != nil {
 				return u.fail(CodeBackupFailed, err)
 			}
+			if uid, gid, ok := ownerOf(info); ok {
+				owners[len(actual)] = [2]int{uid, gid}
+			}
 			actual = append(actual, osmodule.FileEntry{Path: e.Path, Link: true, Want: []string{target}})
 		case info.Mode().IsRegular():
 			sum, err := copyFileTo(real, filepath.Join(dir, backupCopies, strconv.Itoa(len(actual))))
 			if err != nil {
 				return u.fail(CodeBackupFailed, err)
+			}
+			if uid, gid, ok := ownerOf(info); ok {
+				owners[len(actual)] = [2]int{uid, gid}
 			}
 			actual = append(actual, osmodule.FileEntry{Path: e.Path, Want: []string{sum}})
 		default:
@@ -453,11 +468,26 @@ func (u *update) stepBackup() *stepFailure {
 	if err != nil {
 		return u.fail(CodeBackupFailed, err)
 	}
+	// who owned the files, and what the units were doing before anything is stopped
+	if len(owners) > 0 {
+		if err := put(backupOwners, formatOwners(owners, len(actual))); err != nil {
+			return u.fail(CodeBackupFailed, err)
+		}
+	}
+	before, err := u.recordUnits(u.ctx, unitNames(u.oldManifest.Unit, u.oldList.Paths()))
+	if err == nil {
+		u.before = before
+		err = put(backupUnits, formatUnits(before))
+	}
+	if err != nil {
+		return u.fail(CodeBackupFailed, err)
+	}
 	syncDir(filepath.Join(dir, backupCopies))
 	syncDir(dir)
 	if err := put(backupComplete, []byte("complete\n")); err != nil {
 		return u.fail(CodeBackupFailed, err)
 	}
+	u.backupDone = true
 	syncDir(dir)
 	syncDir(roots.tmp())
 	return nil
@@ -475,8 +505,9 @@ func (j *job) stopOnly(ctx context.Context, unit string) bool {
 
 func (u *update) stepStop() *stepFailure {
 	stuck := 0
-	for _, unit := range unitNames(u.oldManifest.Unit, u.oldList.Paths()) {
-		if !u.stopOnly(u.ctx, unit) {
+	for _, r := range u.before {
+		// (a unit that is not running is not stopped, and is not started again by a rollback)
+		if r.Active && !u.stopOnly(u.ctx, r.Name) {
 			stuck++
 		}
 	}
@@ -537,9 +568,25 @@ func (u *update) stepSwap() *stepFailure {
 			return u.fail(CodeSwapFailed, err)
 		}
 	}
-	replaces := map[string]bool{}
+	oldBy := map[string]osmodule.FileEntry{}
 	for _, e := range u.ours {
-		replaces[u.canon(e.Path)] = true
+		oldBy[u.canon(e.Path)] = e
+	}
+	// the paths that the lists of the other modules have too are theirs as much as this one's: the file of the old version that the new one does not have is not deleted from under them
+	others, err := (&box{ctx: u.ctx, env: &u.env}).FilesLists()
+	if err != nil {
+		return u.fail(CodeSwapFailed, err)
+	}
+	owner := map[string]string{}
+	for _, other := range sortedKeys(others) {
+		if other == u.entry.Name {
+			continue
+		}
+		for _, p := range others[other] {
+			if _, ok := owner[p]; !ok {
+				owner[p] = other
+			}
+		}
 	}
 	newPaths := map[string]bool{}
 	touched := map[string]bool{}
@@ -549,7 +596,18 @@ func (u *update) stepSwap() *stepFailure {
 		}
 		w := u.staged.Want[p]
 		newPaths[u.canon(p)] = true
-		replace := replaces[u.canon(p)]
+		// (the file is the module's if it still holds what its record says now, and not only when the archive was checked)
+		replace := false
+		if oe, mine := oldBy[u.canon(p)]; mine {
+			switch h, err := holds(roots.Path(oe.Path), oe); {
+			case err != nil:
+				return u.fail(CodeSwapFailed, err)
+			case h == holdsOther:
+				return u.fail(osmodule.FileExists, errors.New("a file of the module was changed since the archive was checked"))
+			case h == holdsOurs:
+				replace = true
+			}
+		}
 		var err error
 		if w.Link {
 			err = dst.Symlink(w.Value, p, replace)
@@ -567,6 +625,10 @@ func (u *update) stepSwap() *stepFailure {
 	// what the new version does not have: taken away when it is what the old list says; left when somebody changed it (the unpack step has said so)
 	for _, e := range u.oldList.Entries {
 		if newPaths[u.canon(e.Path)] {
+			continue
+		}
+		if other, ok := owner[e.Path]; ok {
+			u.say("kept, it is the list of %s too: %s", other, printable(e.Path, 200))
 			continue
 		}
 		real := roots.Path(e.Path)
@@ -606,9 +668,10 @@ func (u *update) stepSwap() *stepFailure {
 	return nil
 }
 
+// stepStart starts what was running before the update, and enables what was enabled and is not any more; the units that were not running stay as they were.
 func (u *update) stepStart() *stepFailure {
-	if out, err := u.sh(u.ctx, systemctlTimeout, "systemctl", "start", u.entry.Manifest.Unit); err != nil || out.ExitCode != 0 {
-		return u.fail(CodeStartFailed, errors.New("systemctl start failed"))
+	if u.settleUnits(u.ctx, u.before) > 0 {
+		return u.fail(CodeStartFailed, errors.New("a unit could not be started"))
 	}
 	return nil
 }
@@ -624,6 +687,8 @@ type backupState struct {
 	oldPaths          []string
 	newList           osmodule.FilesList
 	newDirs           []string
+	units             []unitRecord
+	owners            map[int][2]int
 }
 
 var errBackupUnfinished = errors.New("the backup was not finished")
@@ -692,6 +757,20 @@ func readBackup(name, dir string) (b backupState, err error) {
 	if b.newList, err = list(backupNewFiles, false); err != nil {
 		return b, err
 	}
+	if raw, err = read(backupUnits, false); err != nil {
+		return b, err
+	}
+	if b.units, err = parseUnits(raw); err != nil {
+		return b, err
+	}
+	if raw, err = read(backupOwners, true); err != nil {
+		return b, err
+	}
+	if raw != nil {
+		if b.owners, err = parseOwners(raw); err != nil {
+			return b, err
+		}
+	}
 	if raw, err = read(backupNewDirs, true); err != nil {
 		return b, err
 	}
@@ -714,90 +793,83 @@ func putBack(dst osmodule.Destination, roots Roots, dir string, k int, a osmodul
 	return putFile(dst, a.Path, filepath.Join(dir, backupCopies, strconv.Itoa(k)), a.Want[0], true)
 }
 
-// restoreBackup puts the box back as the backup of the update of the module called name has it, as steps behind prefix: restore (stop the unit; put back what is not what the backup holds,
-// take away what only the new version put down, write the lists, the manifest and the version as they were), units (systemd reads them again) and start. What it does is idempotent, so that
-// a run that is ended in the middle of it is put back by the next. The backup folder is deleted at the end, and only when everything was put back; it returns what it could not do, and the
-// step it was in.
+// restoreBackup puts the box back as the backup of the update of the module called name has it, as steps behind prefix: restore (stop the units that were running, when there is anything to
+// put back; put back what is not what the backup holds, take away what only the new version put down, and then write the lists, the manifest and the version as they were), units (systemd
+// reads them again) and start (what was running is started, what was enabled and is not is enabled). What it does can be done again, so that a run that is ended in the middle of it is put
+// back by the next. When something cannot be put back the lists, the manifest and the version are left as they are, the other steps are made all the same (the unit is started), and the
+// backup is kept. The backup folder is deleted at the end, and only when everything was put back; it returns what it could not do, and the first step it could not do it in.
 func (j *job) restoreBackup(ctx context.Context, name, prefix string) (bad int, step string) {
 	roots := j.env.Roots
 	dir := roots.backup(name)
+	where := printable(roots.Slash(dir), 200)
 	b, err := readBackup(name, dir)
 	switch {
 	case errors.Is(err, errBackupUnfinished):
-		j.say("the backup of %s was not finished, so nothing of the box had been changed: it is dropped", name)
-		if err := os.RemoveAll(dir); err != nil {
-			j.say("not removed: %s (%s)", printable(roots.Slash(dir), 200), printable(err.Error(), 100))
+		j.say("the backup in %s has no COMPLETE mark: nothing is put back from it, and it is dropped (an update that was ended while it copied had changed nothing; one that was over has nothing left to put back)", where)
+		if err := removeBackup(dir); err != nil {
+			j.say("not removed: %s (%s)", where, printable(err.Error(), 100))
 			return 1, ""
 		}
 		return 0, ""
 	case err != nil:
-		j.say("the backup in %s cannot be read (%s): nothing was put back, and it is kept", printable(roots.Slash(dir), 200), printable(err.Error(), 100))
+		j.say("the backup in %s cannot be read (%s): nothing was put back from it, and it is kept", where, printable(err.Error(), 100))
+		j.say("if the update is over and %s is as it should be, delete the folder %s by hand; if it is not, put the files of the old version back by hand from what is in it, and delete it; then run the command again", name, where)
 		return 1, ""
 	}
-	units := unitNames(b.parsed.Unit, b.oldPaths)
-	run := func(s string, do func() int) bool {
+	run := func(s string, do func() int) {
 		j.marker(prefix+s, "begin")
 		j.hook(ctx, prefix+s, "begin")
 		if n := do(); n > 0 {
 			j.marker(prefix+s, "failed")
-			bad, step = n, prefix+s
-			return false
+			if bad == 0 {
+				bad, step = n, prefix+s
+			}
+			return
 		}
 		j.marker(prefix+s, "done")
 		j.hook(ctx, prefix+s, "done")
-		return true
 	}
-	if !run("restore", func() int { return j.putBackFiles(ctx, name, dir, b, units) }) {
-		return bad, step
-	}
-	if !run("units", func() int {
+	// (a step that fails does not keep the ones after it from being made: the unit is started whatever came of the files)
+	run("restore", func() int { return j.putBackFiles(ctx, name, dir, b) })
+	run("units", func() int {
 		if out, err := j.sh(ctx, systemctlTimeout, "systemctl", "daemon-reload"); err != nil || out.ExitCode != 0 {
 			j.say("systemctl daemon-reload failed")
 			return 1
 		}
 		return 0
-	}) {
+	})
+	run("start", func() int { return j.settleUnits(ctx, b.units) })
+	if bad > 0 {
 		return bad, step
 	}
-	if !run("start", func() int {
-		failed := 0
-		for _, unit := range units {
-			if out, err := j.sh(ctx, systemctlTimeout, "systemctl", "start", unit); err != nil || out.ExitCode != 0 {
-				j.say("the unit %s could not be started", printable(unit, 80))
-				failed++
-			}
-		}
-		return failed
-	}) {
-		return bad, step
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		j.say("not removed: %s (%s)", printable(roots.Slash(dir), 200), printable(err.Error(), 100))
+	if err := removeBackup(dir); err != nil {
+		j.say("not removed: %s (%s)", where, printable(err.Error(), 100))
 		return 1, ""
 	}
 	return 0, ""
 }
 
-// putBackFiles is the step restore. A path is put back when it holds the new file or is gone; one that holds neither the old file nor the new one is somebody's, and is left (and the
-// rollback is not complete).
-func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState, units []string) (bad int) {
+// putBackFiles is the step restore. It first looks at every path and decides what is to be done: a path is put back when it holds the new file or is gone, and a path that only the new
+// version has is taken away when it holds what the new list says; one that holds neither the old file nor the new one is somebody else's, and is left. When any path cannot be done
+// nothing is changed (the lists, the manifest and the version are the ones of the box now), and the way out by hand is said. The units that were running are stopped only when there is
+// something to do.
+func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState) (bad int) {
 	roots := j.env.Roots
+	where := printable(roots.Slash(dir), 200)
 	merged, _ := (&box{ctx: ctx, env: &j.env}).MergedUsr()
 	canon := func(p string) string { return canonPath(merged, p) }
-	stopFailed := false
-	for _, unit := range units {
-		if !j.stopOnly(ctx, unit) {
-			stopFailed = true
-		}
-	}
 	dst := j.env.Host.NewDest(roots.Prefix)
 	newBy := map[string]osmodule.FileEntry{}
 	for _, e := range b.newList.Entries {
 		newBy[canon(e.Path)] = e
 	}
+	type put struct {
+		k int
+		a osmodule.FileEntry
+	}
+	var puts []put
+	var removes []osmodule.FileEntry
 	saved := map[string]bool{}
-	acted := 0
-	touched := map[string]bool{}
 	for k, a := range b.actual.Entries {
 		saved[canon(a.Path)] = true
 		real := roots.Path(a.Path)
@@ -812,43 +884,94 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState,
 		}
 		switch {
 		case err != nil:
-			j.say("not put back: %s (%s)", printable(a.Path, 200), printable(err.Error(), 100))
+			j.say("cannot be looked at: %s (%s)", printable(a.Path, 200), printable(err.Error(), 100))
 			bad++
-			continue
-		case h == holdsOurs:
-			continue
 		case h == holdsOther:
 			j.say("left: %s (it is neither the old file nor the new one)", printable(a.Path, 200))
 			bad++
-			continue
+		case h == holdsNothing:
+			// (what is put back is looked at first: a copy that is not what was saved changes nothing)
+			if !a.Link {
+				if sum, err := sumOf(filepath.Join(dir, backupCopies, strconv.Itoa(k))); err != nil || sum != a.Want[0] {
+					j.say("cannot be put back: %s (its copy in the backup is not what was saved)", printable(a.Path, 200))
+					bad++
+					continue
+				}
+			}
+			puts = append(puts, put{k, a})
 		}
-		acted++
-		if err := putBack(dst, roots, dir, k, a); err != nil {
-			j.say("not put back: %s (%s)", printable(a.Path, 200), printable(err.Error(), 100))
-			bad++
-			continue
-		}
-		touched[filepath.Dir(real)] = true
 	}
 	for _, n := range b.newList.Entries {
 		if saved[canon(n.Path)] {
 			continue
 		}
-		real := roots.Path(n.Path)
-		switch h, err := holds(real, n); {
+		switch h, err := holds(roots.Path(n.Path), n); {
 		case err != nil:
-			j.say("not removed: %s (%s)", printable(n.Path, 200), printable(err.Error(), 100))
+			j.say("cannot be looked at: %s (%s)", printable(n.Path, 200), printable(err.Error(), 100))
 			bad++
 		case h == holdsOurs:
-			acted++
-			if _, err := removeEntry(real); err != nil {
-				j.say("not removed: %s (%s)", printable(n.Path, 200), printable(err.Error(), 100))
-				bad++
-			}
-			touched[filepath.Dir(real)] = true
+			removes = append(removes, n)
 		case h == holdsOther:
 			j.say("left: %s (changed)", printable(n.Path, 200))
 		}
+	}
+	// the temporary names that an interrupted write leaves are the module's, whichever version they were for
+	defer func() {
+		temps := slices.Clone(b.oldPaths)
+		for _, a := range b.actual.Entries {
+			temps = append(temps, a.Path)
+		}
+		for _, n := range b.newList.Entries {
+			temps = append(temps, n.Path)
+		}
+		for _, p := range temps {
+			_, _ = removeEntry(tempName(roots.Path(p)))
+		}
+		for _, p := range []string{roots.manifest(name), roots.version(name), roots.files(name), roots.dirs(name)} {
+			_, _ = removeEntry(tempName(p))
+		}
+	}()
+	if bad > 0 {
+		j.say("nothing was put back, and the lists, the manifest and the version are as they are on the box: the old version is in %s (the files in copies/, named by old.files.actual; old.files, old.dirs, old.json and old.version)", where)
+		j.say("to go back by hand put them back and delete the folder; to keep what is on the box delete the folder; then run the command again")
+		return bad
+	}
+	acted := len(puts) + len(removes)
+	stopFailed := false
+	if acted > 0 {
+		for _, r := range b.units {
+			if r.Active && !j.stopOnly(ctx, r.Name) {
+				stopFailed = true
+			}
+		}
+	}
+	touched := map[string]bool{}
+	for _, p := range puts {
+		real := roots.Path(p.a.Path)
+		if err := putBack(dst, roots, dir, p.k, p.a); err != nil {
+			j.say("not put back: %s (%s)", printable(p.a.Path, 200), printable(err.Error(), 100))
+			bad++
+			continue
+		}
+		if o, ok := b.owners[p.k]; ok {
+			chownBack(real, o[0], o[1])
+		}
+		touched[filepath.Dir(real)] = true
+	}
+	for _, n := range removes {
+		real := roots.Path(n.Path)
+		if _, err := removeEntry(real); err != nil {
+			j.say("not removed: %s (%s)", printable(n.Path, 200), printable(err.Error(), 100))
+			bad++
+		}
+		touched[filepath.Dir(real)] = true
+	}
+	for d := range touched {
+		syncDir(d)
+	}
+	if bad > 0 {
+		j.say("the lists, the manifest and the version were left as they are on the box: the old version is in %s; put the files back by hand from it and delete it, or delete it to keep what is on the box; then run the command again", where)
+		return bad
 	}
 	// the lists, the manifest and the version, as they were
 	state := func(p string, raw []byte) {

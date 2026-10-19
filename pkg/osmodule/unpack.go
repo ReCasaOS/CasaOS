@@ -497,8 +497,10 @@ func checkDestination(plan *UnpackPlan, dst Destination, own []string) error {
 		case errors.Is(err, fs.ErrNotExist):
 		case err != nil:
 			return fmt.Errorf("looking at %s: %w", abs, err)
-		case mode&fs.ModeSymlink != 0 && e.kind == kLink && owned[resolve(abs)]:
-			e.replace = true // the module's own link, made by an install that is done again
+		case mode&fs.ModeSymlink != 0 && owned[resolve(abs)]:
+			// the module's own link (the caller says what is the module's: only what still holds what its record says), which the new entry replaces whatever it is: a rename puts it in place of the
+			// link, and nothing is ever written through it
+			e.replace = true
 		case mode&fs.ModeSymlink != 0:
 			return refuse(UnpackPath, e.rel)
 		case owned[resolve(abs)] && mode.IsRegular():

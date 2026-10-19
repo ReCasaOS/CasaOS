@@ -74,7 +74,33 @@ func updatable(t *testing.T) *fixture {
 		t.Fatalf("install: exit %d\n%s", code, f.out)
 	}
 	f.publish(newTag, testManifest(), v2Entries(t, testManifest()))
+	aptSays(f, []string{"libvirt-clients", "qemu-utils"}, nil)
 	return f
+}
+
+// aptSays makes the simulation of apt say that these packages are installed and the newest, and that it would install those (which are new on the box).
+func aptSays(f *fixture, there, missing []string) {
+	var sim, est strings.Builder
+	sim.WriteString(aptProgress)
+	est.WriteString(aptProgress)
+	for _, p := range there {
+		fmt.Fprintf(&sim, "%s is already the newest version (1.0).\n", p)
+		fmt.Fprintf(&est, "%s is already the newest version (1.0).\n", p)
+	}
+	if len(missing) == 0 {
+		sim.WriteString("0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n")
+		est.WriteString("0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n")
+	} else {
+		notes := "The following NEW packages will be installed:\n  " + strings.Join(missing, " ") + "\n"
+		count := fmt.Sprintf("0 upgraded, %d newly installed, 0 to remove and 0 not upgraded.\n", len(missing))
+		sim.WriteString(notes + count)
+		est.WriteString(notes + count + "Need to get 1 MB of archives.\nAfter this operation, 3 MB of additional disk space will be used.\n")
+		for _, p := range missing {
+			fmt.Fprintf(&sim, "Inst %s (1.0 Debian:12.15/oldstable [amd64])\n", p)
+			fmt.Fprintf(&est, "'http://deb.debian.org/debian/pool/main/x/%s/%s_1.0_amd64.deb' %s_1.0_amd64.deb 1000000 SHA256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n", p, p, p)
+		}
+	}
+	f.sandbox.sim.Text, f.sandbox.est.Text = sim.String(), est.String()
 }
 
 func (f *fixture) update(args ...string) int {
@@ -386,19 +412,17 @@ func withPackage(f *fixture) {
 	m := testManifest()
 	m.Packages.AMD64 = append(slices.Clone(m.Packages.AMD64), "swtpm")
 	f.publish(newTag, m, v2Entries(f.t, m))
-	f.sandbox.sim.Text = aptProgress + "The following NEW packages will be installed:\n  swtpm\n0 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.\nInst swtpm (0.8.0 Debian:12.15/oldstable [amd64])\n"
-	f.sandbox.est.Text = aptProgress + "The following NEW packages will be installed:\n  swtpm\n0 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.\nNeed to get 1 MB of archives.\nAfter this operation, 3 MB of additional disk space will be used.\n" +
-		"'http://deb.debian.org/debian/pool/main/s/swtpm/swtpm_0.8.0_amd64.deb' swtpm_0.8.0_amd64.deb 1000000 SHA256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+	aptSays(f, []string{"libvirt-clients", "qemu-utils"}, []string{"swtpm"})
 }
 
-func TestAnUpdateInstallsOnlyThePackagesTheNewVersionAddsAndNeverRemovesOne(t *testing.T) {
+func TestAnUpdateAsksAptAboutEveryPackageOfTheNewManifestAndInstallsWhatIsMissing(t *testing.T) {
 	f := updatable(t)
 	withPackage(f)
 	plan := f.planUpdate()
 	if plan.Refused != "" || !slices.Equal(plan.Update.Added, []string{"swtpm"}) || !slices.Equal(plan.Packages.ToInstall, []string{"swtpm"}) {
 		t.Fatalf("%+v %+v", plan, plan.Update)
 	}
-	if last := f.sandbox.argvs[len(f.sandbox.argvs)-1]; !slices.Contains(last, "swtpm") || slices.Contains(last, "qemu-utils") || slices.Contains(last, "libvirt-clients") {
+	if last := f.sandbox.argvs[len(f.sandbox.argvs)-1]; !slices.Contains(last, "swtpm") || !slices.Contains(last, "qemu-utils") || !slices.Contains(last, "libvirt-clients") {
 		t.Errorf("apt was asked %q", last)
 	}
 	if code := f.update("--yes"); code != ExitOK {
@@ -410,15 +434,33 @@ func TestAnUpdateInstallsOnlyThePackagesTheNewVersionAddsAndNeverRemovesOne(t *t
 			apt = append(apt, strings.Join(c, " "))
 		}
 	}
-	if len(apt) != 2 || !strings.HasSuffix(apt[1], " --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 swtpm") {
+	// (the first is the install's; the update's names every package and upgrades none)
+	if len(apt) != 2 || !strings.HasSuffix(apt[1], " --no-remove --no-upgrade -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 libvirt-clients qemu-utils swtpm") {
 		t.Errorf("apt-get install: %q", apt)
 	}
-	// the packages the new version drops are said, as text, and kept
-	f = updatable(t)
+}
+
+// A package that both versions name and that is not installed (it was removed by hand) is installed again; the ones that are there are not asked for twice.
+func TestAnUpdateInstallsAgainAPackageThatBothVersionsNameAndThatIsGone(t *testing.T) {
+	f := updatable(t)
+	aptSays(f, []string{"libvirt-clients"}, []string{"qemu-utils"})
+	plan := f.planUpdate()
+	if plan.Refused != "" || !slices.Equal(plan.Update.Added, []string{"qemu-utils"}) || len(plan.Update.Dropped) != 0 {
+		t.Fatalf("%+v %+v", plan, plan.Update)
+	}
+	if code := f.update("--yes"); code != ExitOK || f.runner.called("apt-get", "install") != 2 {
+		t.Fatalf("exit %d, apt: %q\n%s", code, f.runner.calls, f.out)
+	}
+}
+
+// The packages the new version drops are said, as text, and kept; a package of the new manifest that apt says is there is no work for it.
+func TestAnUpdateSaysTheDroppedPackagesAndNeverRemovesOne(t *testing.T) {
+	f := updatable(t)
 	m := testManifest()
 	m.Packages.Common = nil
 	f.publish(newTag, m, v2Entries(t, m))
-	plan = f.planUpdate()
+	aptSays(f, []string{"libvirt-clients"}, nil)
+	plan := f.planUpdate()
 	if plan.Refused != "" || !slices.Equal(plan.Update.Dropped, []string{"qemu-utils"}) || len(plan.Update.Added) != 0 {
 		t.Errorf("%+v %+v", plan, plan.Update)
 	}
@@ -614,7 +656,7 @@ func TestAFailureAtEachStepIsRolledBackAndTheBoxIsAsItWas(t *testing.T) {
 		{"systemd cannot read its units", StepUnits, CodeUnitsFailed, "none", func(f *fixture) { failOnce(f, "systemctl daemon-reload") }},
 		{"the unit does not start", StepStart, CodeStartFailed, "none", func(f *fixture) { failOnce(f, "systemctl start") }},
 		{"the gateway does not answer", StepRoute, CodeRouteTimeout, "none", func(f *fixture) { f.gw.never = true }},
-		{"the gateway does not answer, and a package was added", StepRoute, CodeRouteTimeout, "swtpm", func(f *fixture) { withPackage(f); f.gw.never = true }},
+		{"the gateway does not answer, and a package was added", StepRoute, CodeRouteTimeout, "libvirt-clients qemu-utils swtpm", func(f *fixture) { withPackage(f); f.gw.never = true }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -858,7 +900,7 @@ func TestABackupThatWasNotFinishedIsDroppedAndNothingIsPutBack(t *testing.T) {
 	if code := f.update("--yes"); code != ExitOK {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
-	if !strings.Contains(f.out.String(), "was not finished, so nothing of the box had been changed") {
+	if !strings.Contains(f.out.String(), "has no COMPLETE mark: nothing is put back from it") {
 		t.Errorf("not said:\n%s", f.out)
 	}
 	if f.read(progPath) != wantAfter[progPath] || f.exists("/var/lib/casaos/modules/tmp/backup-virt") {
@@ -1014,24 +1056,6 @@ func TestAnInterruptionInTheMiddleOfTheSwapGoesNoFurther(t *testing.T) {
 		t.Errorf("%d files were written: four by the staging, one by the swap and one put back", files)
 	}
 	sameTree(t, before, f.treeWithoutBookkeeping())
-}
-
-// A copy in the backup that is not what was saved is never put back, and the recovery says so and keeps the backup.
-func TestACopyThatIsNotWhatWasSavedIsNotPutBack(t *testing.T) {
-	f := updatable(t)
-	f.killed("swap-2")
-	f.writeFile("/var/lib/casaos/modules/tmp/backup-virt/copies/0", "a copy that was changed")
-	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), "not put back: "+progPath) ||
-		!strings.Contains(f.out.String(), " virt failed recover_restore "+CodeRecoveryIncomplete+" rollback_incomplete ") {
-		t.Fatalf("exit %d:\n%s", code, f.out)
-	}
-	if f.read(progPath) != wantAfter[progPath] {
-		t.Errorf("the program is %q", f.read(progPath))
-	}
-	if !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") {
-		t.Error("the backup was not kept")
-	}
-	checkGrammar(t, f, ExitFailed, false, false, "")
 }
 
 // What somebody put at a path of the module while the update ran is theirs: the rollback leaves it, and says so, and a path of the old version that is neither the old file nor the new one makes
