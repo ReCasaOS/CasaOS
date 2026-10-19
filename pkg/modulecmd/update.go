@@ -133,7 +133,7 @@ func runUpdate(ctx context.Context, env Env, c command) (code int) {
 		}
 		return j.refuse(CodeTmpUnusable)
 	}
-	if code, stop := j.recoverUpdate(ctx); stop {
+	if code, stop := j.recoverUpdate(ctx, KindUpdate); stop {
 		return code
 	}
 	if bad := j.unreadableLists(c.name); len(bad) > 0 {
@@ -192,7 +192,7 @@ func (u *update) steps() int {
 	}
 	for _, s := range steps {
 		// a module that was not running is not started, and its route does not answer: the steps that wait for that are not made
-		if (s.name == StepStart && u.backupDone && !anyActive(u.before)) || (s.name == StepRoute && u.backupDone && !activeOf(u.before, u.entry.Manifest.Unit)) {
+		if (s.name == StepStart && u.backupDone && !anyActive(u.before)) || (s.name == StepRoute && u.backupDone && !activeOf(u.before, u.oldManifest.Unit)) {
 			u.marker(s.name, "skipped")
 			continue
 		}
@@ -518,7 +518,7 @@ func (u *update) stepStop() *stepFailure {
 }
 
 // putFile puts the regular file src at the path abs of the box, whole or not at all, and checks that what was put is the sha256 sum. replace says the file at abs is the module's own.
-func putFile(dst osmodule.Destination, abs, src, sum string, replace bool) error {
+func putFile(dst osmodule.Destination, abs, src, sum string, replace bool, verify func() error) error {
 	in, err := os.OpenFile(src, os.O_RDONLY|noFollow, 0)
 	if err != nil {
 		return err
@@ -543,6 +543,13 @@ func putFile(dst osmodule.Destination, abs, src, sum string, replace bool) error
 	if hex.EncodeToString(h.Sum(nil)) != sum {
 		file.Abort()
 		return errors.New("what was read is not what was saved")
+	}
+	// the last look before the rename: the file that is replaced is still the module's. A write between this look and the rename is not seen: the unit is stopped, which is what closes that window.
+	if verify != nil {
+		if err := verify(); err != nil {
+			file.Abort()
+			return err
+		}
 	}
 	if err := file.Commit(); err != nil {
 		file.Abort()
@@ -599,19 +606,28 @@ func (u *update) stepSwap() *stepFailure {
 		// (the file is the module's if it still holds what its record says now, and not only when the archive was checked; if it does not, nothing is written over it: the rename that puts the
 		// new file in place does not replace what it is not told to, and the swap fails with file_exists)
 		replace := false
+		var verify func() error
 		if oe, mine := oldBy[u.canon(p)]; mine {
 			switch h, err := holds(roots.Path(oe.Path), oe); {
 			case err != nil:
 				return u.fail(CodeSwapFailed, err)
 			case h == holdsOurs:
 				replace = true
+				verify = func() error {
+					if h, err := holds(roots.Path(oe.Path), oe); err != nil {
+						return err
+					} else if h == holdsOther {
+						return fmt.Errorf("%s: %w", oe.Path, fs.ErrExist)
+					}
+					return nil
+				}
 			}
 		}
 		var err error
 		if w.Link {
 			err = dst.Symlink(w.Value, p, replace)
 		} else {
-			err = putFile(dst, p, stage.Path(p), w.Value, replace)
+			err = putFile(dst, p, stage.Path(p), w.Value, replace, verify)
 		}
 		if errors.Is(err, fs.ErrExist) {
 			return u.fail(osmodule.FileExists, err)
@@ -687,6 +703,7 @@ type backupState struct {
 	newList           osmodule.FilesList
 	newDirs           []string
 	units             []unitRecord
+	unitsGuessed      bool
 	owners            map[int][2]int
 }
 
@@ -756,11 +773,16 @@ func readBackup(name, dir string) (b backupState, err error) {
 	if b.newList, err = list(backupNewFiles, false); err != nil {
 		return b, err
 	}
-	if raw, err = read(backupUnits, false); err != nil {
-		return b, err
+	// (a record of the units that is not there, or cannot be read, must not keep the files from being put back: the module's units are taken for running, which they were)
+	if raw, err = read(backupUnits, false); err == nil {
+		b.units, err = parseUnits(raw)
 	}
-	if b.units, err = parseUnits(raw); err != nil {
-		return b, err
+	if err != nil {
+		b.unitsGuessed = true
+		for _, name := range unitNames(b.parsed.Unit, b.oldPaths) {
+			b.units = append(b.units, unitRecord{Name: name, Active: true})
+		}
+		err = nil
 	}
 	if raw, err = read(backupOwners, true); err != nil {
 		return b, err
@@ -789,7 +811,7 @@ func putBack(dst osmodule.Destination, roots Roots, dir string, k int, a osmodul
 	if a.Link {
 		return dst.Symlink(a.Want[0], a.Path, true)
 	}
-	return putFile(dst, a.Path, filepath.Join(dir, backupCopies, strconv.Itoa(k)), a.Want[0], true)
+	return putFile(dst, a.Path, filepath.Join(dir, backupCopies, strconv.Itoa(k)), a.Want[0], true, nil)
 }
 
 // restoreBackup puts the box back as the backup of the update of the module called name has it, as steps behind prefix: restore (stop the units that were running, when there is anything to
@@ -812,8 +834,11 @@ func (j *job) restoreBackup(ctx context.Context, name, prefix string) (bad int, 
 		return 0, ""
 	case err != nil:
 		j.say("the backup in %s cannot be read (%s): nothing was put back from it, and it is kept", where, printable(err.Error(), 100))
-		j.say("if the update is over and %s is as it should be, delete the folder %s by hand; if it is not, put the files of the old version back by hand from what is in it, and delete it; then run the command again", name, where)
+		j.wayOut(name, where)
 		return 1, ""
+	}
+	if b.unitsGuessed {
+		j.say("the record of the units in the backup cannot be read: the units of the module are started, as they were before the units were recorded")
 	}
 	run := func(s string, do func() int) {
 		j.marker(prefix+s, "begin")
@@ -886,8 +911,7 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState)
 			j.say("cannot be looked at: %s (%s)", printable(a.Path, 200), printable(err.Error(), 100))
 			bad++
 		case h == holdsOther:
-			j.say("left: %s (it is neither the old file nor the new one)", printable(a.Path, 200))
-			bad++
+			j.say("left: %s (it is neither the old file nor the new one: it stays as it was left)", printable(a.Path, 200))
 		case h == holdsNothing:
 			// (what is put back is looked at first: a copy that is not what was saved changes nothing)
 			if !a.Link {
@@ -928,8 +952,8 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState)
 		}
 	}()
 	if bad > 0 {
-		j.say("nothing was put back, and the lists, the manifest and the version are as they are on the box: the old version is in %s (the files in copies/, named by old.files.actual; old.files, old.dirs, old.json and old.version)", where)
-		j.say("to go back by hand put them back and delete the folder; to keep what is on the box delete the folder; then run the command again")
+		j.say("nothing was put back, and the lists, the manifest and the version are as they are on the box")
+		j.wayOut(name, where)
 		return bad
 	}
 	acted := len(puts) + len(removes)
@@ -966,7 +990,8 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState)
 		syncDir(d)
 	}
 	if bad > 0 {
-		j.say("the lists, the manifest and the version were left as they are on the box: the old version is in %s; put the files back by hand from it and delete it, or delete it to keep what is on the box; then run the command again", where)
+		j.say("the lists, the manifest and the version were left as they are on the box")
+		j.wayOut(name, where)
 		return bad
 	}
 	// the lists, the manifest and the version, as they were
@@ -1009,17 +1034,38 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState)
 
 // recoverUpdate puts back what an update of the module that was killed (or whose rollback was) left in its backup folder, before the run that finds it does anything else. It returns
 // true with the exit code when the run is over: the recovery could not be finished, and the result line says so.
-func (j *job) recoverUpdate(ctx context.Context) (code int, stop bool) {
+func (j *job) recoverUpdate(ctx context.Context, verb string) (code int, stop bool) {
 	dir := j.env.Roots.backup(j.name)
+	where := printable(j.env.Roots.Slash(dir), 200)
 	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) || isNotDir(err) {
 		return 0, false
 	}
-	j.say("an update of %s was ended before it was over: the files of the old version are put back from %s", j.name, printable(j.env.Roots.Slash(dir), 200))
+	if !modulePresent(j.env.Roots, j.name) {
+		// the backup of a module that is not on the box any more (a remove kept it): there is nothing to put it back over. A remove leaves it alone; the run that installs the module again
+		// takes it away, since what it holds is the files of a version that is gone.
+		if verb == KindRemove {
+			j.say("the backup in %s is of a module that is not on the box: it is left as it is", where)
+			return 0, false
+		}
+		if err := removeBackup(dir); err != nil {
+			j.say("not removed: %s (%s)", where, printable(err.Error(), 100))
+		} else {
+			j.say("the backup in %s was of a module that is not on the box any more: it is dropped", where)
+		}
+		return 0, false
+	}
+	j.say("an update of %s was ended before it was over: the files of the old version are put back from %s", j.name, where)
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTime)
 	defer cancel()
 	bad, step := j.restoreBackup(rctx, j.name, "recover_")
 	if bad > 0 {
-		j.say("rollback incomplete: %d things could not be put back; the backup is kept in %s", bad, printable(j.env.Roots.Slash(dir), 200))
+		j.say("rollback incomplete: %d things could not be put back; the backup is kept in %s", bad, where)
+		if verb == KindRemove {
+			// a remove is never kept from taking the module away: it goes by the lists that are on the box, and says where the backup is
+			j.keptBackup = where
+			j.say("the module is taken away by the lists that are on the box; the backup is not touched")
+			return 0, false
+		}
 		if step == "" {
 			step = "-"
 		} else {
@@ -1030,4 +1076,14 @@ func (j *job) recoverUpdate(ctx context.Context) (code int, stop bool) {
 	}
 	j.say("recovered: %s is as it was before the update", j.name)
 	return 0, false
+}
+
+// modulePresent says whether anything of the module is on the box: a manifest, a list of files or of directories, a version.
+func modulePresent(roots Roots, name string) bool {
+	for _, p := range []string{roots.manifest(name), roots.files(name), roots.dirs(name), roots.version(name)} {
+		if _, err := os.Lstat(p); err == nil || !(errors.Is(err, fs.ErrNotExist) || isNotDir(err)) {
+			return true
+		}
+	}
+	return false
 }

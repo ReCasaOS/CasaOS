@@ -62,6 +62,8 @@ type UpdateBox interface {
 	Box
 	// Installed reads the manifest, the version and the list of the files of the module called name.
 	Installed(name string) InstalledState
+	// SimulateUpdate is SimulateApt for the command the update runs: it upgrades no package that is installed (apt-get install --no-upgrade), so that the plan and the job agree.
+	SimulateUpdate(packages []string) AptResult
 }
 
 // An UpdateInfo is what the plan of an update says of the two versions and of the packages.
@@ -203,7 +205,7 @@ func PlanUpdate(cat Catalogue, name string, box UpdateBox) PlanResult {
 	case len(packages) == 0:
 		sim, simulated = AptResult{Known: true}, true
 	case standing && aptThere:
-		sim, simulated = box.SimulateApt(packages), true
+		sim, simulated = box.SimulateUpdate(packages), true
 	}
 
 	disk := notChecked(CheckDisk)

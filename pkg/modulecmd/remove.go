@@ -371,7 +371,7 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	if err := emptyTmp(env.Host, env.Roots.tmp()); errors.Is(err, errUnsafe) {
 		return j.refuse(CodeStateUnsafe)
 	}
-	if code, stop := j.recoverUpdate(ctx); stop {
+	if code, stop := j.recoverUpdate(ctx, KindRemove); stop {
 		return code
 	}
 	if why := removeRefusal(ctx, env, c.name); why != "" {
@@ -405,19 +405,16 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	j.result("ok", StepDone, "-", "-")
 	j.say("removed: %s", c.name)
 	j.sayLeftovers(c.name, osmodule.PackagesFor(manifest, env.Arch))
+	if j.keptBackup != "" {
+		j.say("the backup in %s was not touched: it is the one copy of the files of the old version, and is deleted by hand", j.keptBackup)
+	}
 	return ExitOK
 }
 
 // removeRefusal is the code a remove is refused with: there is nothing of the module to remove, or a package manager or the upgrade of the system is at work.
 func removeRefusal(ctx context.Context, env Env, name string) string {
 	roots := env.Roots
-	present := false
-	for _, p := range []string{roots.manifest(name), roots.files(name), roots.dirs(name), roots.version(name)} {
-		if _, err := os.Lstat(p); err == nil || !(errors.Is(err, fs.ErrNotExist) || isNotDir(err)) {
-			present = true
-		}
-	}
-	if !present {
+	if !modulePresent(roots, name) {
 		return CodeNotInstalled
 	}
 	bx := &box{ctx: ctx, env: &env}

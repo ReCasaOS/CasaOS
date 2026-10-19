@@ -348,6 +348,11 @@ func TestThePlanOfAnUpdateIsRefusedForEachReasonAndAnUpdateWithIt(t *testing.T) 
 		{"a list of files that is cut short", func(f *fixture) { f.writeFile("/var/lib/casaos/modules/virt.files", "casaos-module-files 1\n") }, osmodule.RefusedFilesUnreadable},
 		{"a manifest that is broken", func(f *fixture) { f.writeFile("/etc/casaos/modules/virt.json", "{") }, osmodule.RefusedManifestInvalid},
 		{"nothing installed", func(f *fixture) { _ = os.Remove(f.path("/etc/casaos/modules/virt.json")) }, osmodule.RefusedNotInstalled},
+		{"a new version that names another unit", func(f *fixture) {
+			m := testManifest()
+			m.Unit = "casaos-virt-other.service"
+			f.publish(newTag, m, v2Entries(f.t, m))
+		}, osmodule.RefusedUnitChanged},
 		{"a unit of the name that is not the module's", func(f *fixture) { f.writeFile("/etc/systemd/system/"+testUnit, "[Unit]\n") }, osmodule.CheckForeignUnit},
 		{"another system", func(f *fixture) { f.writeFile("/etc/os-release", "ID=debian\nVERSION_ID=\"11\"\n") }, osmodule.CheckOS},
 		{"a package manager at work", func(f *fixture) { f.runner.busyUnit = "casaos-package-update.service" }, osmodule.CheckBusy},
@@ -918,7 +923,8 @@ func TestABackupThatCannotBeReadIsKeptAndTheRunStops(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
 	sameTree(t, before, f.treeWithoutBookkeeping())
-	if code := f.remove("--yes"); code != ExitFailed {
+	// a remove is never kept from taking the module away, and leaves the backup as it is
+	if code := f.remove("--yes"); code != ExitOK || f.exists(progPath) || !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") {
 		t.Errorf("remove: %d\n%s", code, f.out)
 	}
 }
@@ -1069,18 +1075,19 @@ func TestARollbackLeavesWhatSomebodyPutAtAPathOfTheModule(t *testing.T) {
 			f.writeFile(progPath, "somebody's program")
 		}
 	}
-	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed route route_timeout rollback_incomplete ") {
+	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed route route_timeout rolled_back ") {
 		t.Fatalf("exit %d:\n%s", code, f.out)
 	}
 	out := f.out.String()
-	if !strings.Contains(out, "left: "+toolPath+" (changed)\n") || !strings.Contains(out, "left: "+progPath+" (it is neither the old file nor the new one)\n") {
+	if !strings.Contains(out, "left: "+toolPath+" (changed)\n") || !strings.Contains(out, "left: "+progPath+" (it is neither the old file nor the new one: it stays as it was left)\n") {
 		t.Errorf("not said:\n%s", out)
 	}
 	if f.read(toolPath) != "somebody's tool" || f.read(progPath) != "somebody's program" {
 		t.Error("what was put there was replaced or deleted")
 	}
-	if !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") {
-		t.Error("the backup was not kept")
+	// (what the administrator left is theirs: the rest is put back, the old lists are written, and the backup is gone)
+	if f.exists("/var/lib/casaos/modules/tmp/backup-virt") || f.read("/var/lib/casaos/modules/virt.version") != testTag+"\n" || f.read(helperPath) != "helper v1\n" {
+		t.Error("the old version was not put back around the files that were left")
 	}
 	checkGrammar(t, f, ExitFailed, false, false, "")
 }

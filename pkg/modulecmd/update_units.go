@@ -49,7 +49,7 @@ func (j *job) recordUnits(ctx context.Context, names []string) ([]unitRecord, er
 		if !ok1 || !ok2 {
 			return nil, fmt.Errorf("systemd does not say what the unit %s is", printable(name, 80))
 		}
-		out = append(out, unitRecord{Name: name, Active: active == "active", Enabled: enabled == "enabled"})
+		out = append(out, unitRecord{Name: name, Active: unitIsUp(active), Enabled: enabled == "enabled"})
 	}
 	return out, nil
 }
@@ -85,7 +85,7 @@ func parseUnits(raw []byte) ([]unitRecord, error) {
 // settleUnits starts the units that were running and enables the ones that were enabled and are not any more; it touches no other. It returns the number it could not do.
 func (j *job) settleUnits(ctx context.Context, rs []unitRecord) (failed int) {
 	for _, r := range rs {
-		if word, ok := j.unitWord(ctx, "is-active", r.Name); r.Active && (!ok || word != "active") {
+		if word, ok := j.unitWord(ctx, "is-active", r.Name); r.Active && (!ok || !unitIsUp(word)) {
 			if out, err := j.sh(ctx, systemctlTimeout, "systemctl", "start", r.Name); err != nil || out.ExitCode != 0 {
 				j.say("the unit %s could not be started", printable(r.Name, 80))
 				failed++
@@ -170,4 +170,19 @@ func removeBackup(dir string) error {
 	}
 	syncDir(dir)
 	return removeAll(dir)
+}
+
+// wayOut says what can be done when the old version could not be put back whole: the box may hold files of both versions, `casaos module remove` works whatever is in the backup folder, and
+// the folder, which is the one copy of the old files, is deleted only by hand.
+func (j *job) wayOut(name, where string) {
+	j.say("the box may hold files of both versions. casaos module remove %s takes the module away by the lists that are on the box, whatever is in %s. To go back to the old version put its files back by hand from %s (copies/, named by old.files.actual; old.files, old.dirs, old.json and old.version) and delete the folder. Deleting the folder alone keeps the files as they are on the box", name, where, where)
+}
+
+// unitIsUp says whether the word systemd gives for a unit is one of a unit that is running or on its way to or from running: such a unit is stopped before the swap, and started again.
+func unitIsUp(word string) bool {
+	switch word {
+	case "active", "activating", "reloading", "deactivating":
+		return true
+	}
+	return false
 }

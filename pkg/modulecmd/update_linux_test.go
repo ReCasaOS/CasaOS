@@ -2,6 +2,7 @@ package modulecmd
 
 import (
 	"archive/tar"
+	"context"
 	"os"
 	"slices"
 	"strings"
@@ -209,5 +210,51 @@ func TestARollbackGivesTheModeAndTheOwnerOfAFileBack(t *testing.T) {
 		if uid, gid, ok := ownerOf(info); !ok || uid != 4242 || gid != 4343 {
 			t.Errorf("the owner: %d %d %v", uid, gid, ok)
 		}
+	}
+}
+
+// The last look at a file the update replaces is made when the new file is written and about to take its place: an edit that comes between the first look and that one is not written over.
+func TestAFileEditedBetweenTheFirstLookAndTheRenameIsNotWrittenOver(t *testing.T) {
+	f := updatable(t)
+	old := afterClear
+	t.Cleanup(func() { afterClear = old })
+	temp := tempName(f.path(progPath))
+	afterClear = func(p string) {
+		if p == temp {
+			_ = os.WriteFile(f.path(progPath), []byte("edited at the last moment"), 0o755)
+		}
+	}
+	if code := f.update("--yes"); code != ExitFailed || !slices.Contains(f.lines(), "failed at step swap: "+osmodule.FileExists) {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if f.read(progPath) != "edited at the last moment" {
+		t.Errorf("the file was written over: %q", f.read(progPath))
+	}
+}
+
+// A link of the module that its administrator pointed elsewhere is theirs: the update does not replace it, and the rollback leaves it.
+func TestALinkTheAdministratorPointedElsewhereIsNotReplaced(t *testing.T) {
+	f := newFixture(t, withEntries(withAlias(v1Entries(t), "casaos-sentinel")))
+	f.writeFile(sentinelPath, "the sentinel\n")
+	if code := f.install("--yes"); code != ExitOK {
+		t.Fatal(f.out.String())
+	}
+	f.publish(newTag, testManifest(), withAlias(v2Entries(t, testManifest()), "casaos-virt-tool"))
+	f.env.StepHook = func(_ context.Context, step, phase string) {
+		if step == StepStop && phase == "done" {
+			_ = os.Remove(f.path(aliasPath))
+			if err := os.Symlink("casaos-elsewhere", f.path(aliasPath)); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	if code := f.update("--yes"); code != ExitFailed || !slices.Contains(f.lines(), "failed at step swap: "+osmodule.FileExists) || !strings.Contains(f.out.String(), " rolled_back ") {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if target, err := os.Readlink(f.path(aliasPath)); err != nil || target != "casaos-elsewhere" {
+		t.Errorf("the link is %q, %v", target, err)
+	}
+	if f.read(progPath) != "#!/bin/sh\nexit 0\n" {
+		t.Errorf("what the swap had done was not put back: %q", f.read(progPath))
 	}
 }

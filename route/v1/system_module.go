@@ -52,16 +52,24 @@ func moduleName(ctx echo.Context) (string, error) {
 
 // moduleInstallRequest is the body of an install, or of an update when mode says so: the plan that the user read. A mode that is not there is an install.
 type moduleInstallRequest struct {
-	PlanID string  `json:"plan_id"`
-	Mode   *string `json:"mode"`
+	PlanID string          `json:"plan_id"`
+	Mode   json.RawMessage `json:"mode"`
 }
 
-// moduleMode is the mode a request asks for: install when the field is not there, and install or update when it is. Anything else is a field that is not valid.
-func moduleMode(mode *string) (string, error) {
-	switch {
-	case mode == nil || *mode == osmodule.ModeInstall:
+// moduleMode is the mode a request asks for, as the text of the value of its "mode" key (nil when the key is not there): install when there is none, and when there is it is the string install or
+// the string update, and nothing else (null, a number, another word and an empty string are a field that is not valid). The plan and the start read it the same way.
+func moduleMode(raw json.RawMessage) (string, error) {
+	if raw == nil {
 		return osmodule.ModeInstall, nil
-	case *mode == osmodule.ModeUpdate:
+	}
+	var mode string
+	if json.Unmarshal(raw, &mode) != nil {
+		return "", badOSUpgradeRequest("mode")
+	}
+	switch mode {
+	case osmodule.ModeInstall:
+		return osmodule.ModeInstall, nil
+	case osmodule.ModeUpdate:
 		return osmodule.ModeUpdate, nil
 	}
 	return "", badOSUpgradeRequest("mode")
@@ -95,11 +103,10 @@ func planModeOf(ctx echo.Context) (string, error) {
 			break
 		}
 	}
-	var mode *string
-	if seen != 1 || json.Unmarshal(value, &mode) != nil || mode == nil {
+	if seen != 1 {
 		return "", badOSUpgradeRequest("mode")
 	}
-	return moduleMode(mode)
+	return moduleMode(value)
 }
 
 // @Summary  the modules that this release can install, and what the box says of each

@@ -49,6 +49,8 @@ type job struct {
 	tool  int64 // the bytes of the output of the commands written so far
 	// openStep is the step that has begun and has not ended: a panic ends it, as a failed one
 	openStep string
+	// keptBackup is where a backup that a remove could not put back is, said again at the end of the remove
+	keptBackup string
 }
 
 func newJob(env Env, name string) *job {

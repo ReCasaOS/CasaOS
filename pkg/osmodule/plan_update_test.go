@@ -42,13 +42,22 @@ func TestTagsAreComparedAsNumbers(t *testing.T) {
 // updBox is a box that has the module installed at v0.1.0, with its unit, and that can say so.
 type updBox struct {
 	*fakeBox
-	st InstalledState
+	// plain is set when the plan asked for the simulation of an install
+	plain bool
+	st    InstalledState
 }
 
 func (b *updBox) Installed(name string) InstalledState {
 	b.calls = append(b.calls, "Installed "+name)
 	return b.st
 }
+
+func (b *updBox) SimulateApt(p []string) AptResult {
+	b.plain = true
+	return b.fakeBox.SimulateApt(p)
+}
+
+func (b *updBox) SimulateUpdate(packages []string) AptResult { return b.fakeBox.SimulateApt(packages) }
 
 const virtUnitPath = "/usr/lib/systemd/system/casaos-virt-management.service"
 
@@ -282,5 +291,13 @@ func TestTheRoomAnUpdateNeedsCountsTheBackupOfTheOldFiles(t *testing.T) {
 	ibox.free[TmpDir], ibox.free[UsrDir] = 3*MaxArchiveBytes, 3*MaxArchiveBytes
 	if r := Plan(newer(t), "virt", ibox); r.Refused != "" {
 		t.Errorf("install: refused %q", r.Refused)
+	}
+}
+
+// The plan simulates the command the update runs (which upgrades nothing), not the install's.
+func TestAnUpdatePlanSimulatesTheCommandTheJobRuns(t *testing.T) {
+	box := newUpdBox(t)
+	if r := PlanUpdate(newer(t), "virt", box); r.Refused != "" || len(box.simulated) != 1 || box.plain {
+		t.Errorf("refused %q, simulated %v, the install's simulation was asked: %v", r.Refused, box.simulated, box.plain)
 	}
 }

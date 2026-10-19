@@ -239,7 +239,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 		}
 		return j.refuse(CodeTmpUnusable)
 	}
-	if code, stop := j.recoverUpdate(ctx); stop {
+	if code, stop := j.recoverUpdate(ctx, KindInstall); stop {
 		return code
 	}
 	// a list of an earlier install that cannot be read is a state for the administrator to look at: the module cannot be told from it, and nothing is changed

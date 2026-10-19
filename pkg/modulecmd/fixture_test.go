@@ -368,6 +368,8 @@ type fakeRunner struct {
 	enabled map[string]bool
 	// stopped are the units that are enabled and not running (systemctl stop)
 	stopped map[string]bool
+	// activeWord is what is-active says of a unit that is running, when it is not "active" (activating, reloading)
+	activeWord map[string]string
 	// fail maps the start of a command ("apt-get install", "systemctl daemon-reload") to its exit status
 	fail map[string]int
 	// text is what a command that matches says
@@ -462,6 +464,9 @@ func (r *fakeRunner) Run(ctx context.Context, c Cmd) (Output, error) {
 		delete(r.stopped, c.Argv[2])
 		return say("")
 	case len(c.Argv) == 3 && c.Argv[0] == "systemctl" && c.Argv[1] == "is-active":
+		if w := r.activeWord[c.Argv[2]]; w != "" && r.enabled[c.Argv[2]] && !r.stopped[c.Argv[2]] {
+			return say(w + string(rune(10)))
+		}
 		if r.enabled[c.Argv[2]] && !r.stopped[c.Argv[2]] {
 			return say("active\n")
 		}
@@ -549,13 +554,15 @@ func (c *fakeClock) Sleep(ctx context.Context, d time.Duration) error {
 
 // fakeSandbox is the sandbox of the simulation, with what apt says of it.
 type fakeSandbox struct {
-	dir      string
-	sim, est osplan.Output
-	err      error
-	argvs    [][]string
-	removed  int
-	written  []string
-	content  map[string]string // what each file written says
+	// simNoUpgrade, when it is set, is what the simulation says when it is told to upgrade nothing
+	simNoUpgrade *osplan.Output
+	dir          string
+	sim, est     osplan.Output
+	err          error
+	argvs        [][]string
+	removed      int
+	written      []string
+	content      map[string]string // what each file written says
 }
 
 const (
@@ -597,6 +604,9 @@ func (s *fakeSandbox) Run(_ context.Context, argv []string) (osplan.Output, erro
 		return osplan.Output{}, s.err
 	}
 	if slices.Contains(argv, "-s") {
+		if s.simNoUpgrade != nil && slices.Contains(argv, "--no-upgrade") {
+			return *s.simNoUpgrade, nil
+		}
 		return s.sim, nil
 	}
 	return s.est, nil

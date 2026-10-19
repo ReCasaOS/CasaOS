@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
+	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 )
 
 // The ways an update can be ended or disturbed that leave the box with two versions in it, and what keeps them from being left.
@@ -163,88 +164,6 @@ func TestTheDropOfTheBackupOfARolledBackUpdateThatIsEndedLeavesTheOldVersion(t *
 			}
 			sameTree(t, wantUpdated, f.treeWithoutBookkeeping())
 		})
-	}
-}
-
-// A folder that says it is complete and is not (it was not left by this assistant) cannot be put back from: the run says which folder and what to do, changes nothing, and the way out works.
-func TestACompleteBackupWithoutItsManifestIsKeptAndTheWayOutIsSaid(t *testing.T) {
-	f := updatable(t)
-	f.killed("units")
-	if err := os.Remove(f.path("/var/lib/casaos/modules/tmp/backup-virt/old.json")); err != nil {
-		t.Fatal(err)
-	}
-	before := f.treeWithoutBookkeeping()
-	for _, run := range []func() int{func() int { return f.update("--yes") }, func() int { return f.remove("--yes") }} {
-		code := run()
-		out := f.out.String()
-		if code != ExitFailed || !strings.Contains(out, "/var/lib/casaos/modules/tmp/backup-virt cannot be read") && !strings.Contains(out, "the backup in /var/lib/casaos/modules/tmp/backup-virt cannot be read") ||
-			!strings.Contains(out, "delete the folder /var/lib/casaos/modules/tmp/backup-virt by hand") {
-			t.Fatalf("exit %d:\n%s", code, out)
-		}
-		sameTree(t, before, f.treeWithoutBookkeeping())
-	}
-	// the new version is there (the update was over but for the end of its work), so the way out is to delete the folder
-	if err := os.RemoveAll(f.path("/var/lib/casaos/modules/tmp/backup-virt")); err != nil {
-		t.Fatal(err)
-	}
-	if code := f.update("--yes"); code != ExitRefused || !strings.Contains(f.out.String(), "refused: "+osmodule.RefusedUpToDate) {
-		t.Errorf("after the way out: %d\n%s", code, f.out)
-	}
-}
-
-// When something cannot be put back the lists, the manifest and the version stay the ones of the box, the unit is started all the same, the backup is kept, and the way out is said.
-func TestARollbackThatCannotPutBackAFileLeavesTheListsAloneStartsTheUnitAndSaysTheWayOut(t *testing.T) {
-	f := updatable(t)
-	f.gw.never = true
-	listBefore := ""
-	f.env.StepHook = func(_ context.Context, step, phase string) {
-		if step == StepRoute && phase == "begin" {
-			listBefore = f.read("/var/lib/casaos/modules/virt.files")
-		}
-		if step == "rollback_restore" && phase == "begin" {
-			f.writeFile(progPath, "somebody else's program")
-		}
-	}
-	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), " virt failed route route_timeout rollback_incomplete ") {
-		t.Fatalf("exit %d:\n%s", code, f.out)
-	}
-	out := f.out.String()
-	if !strings.Contains(out, "to go back by hand put them back and delete the folder") || !strings.Contains(out, "/var/lib/casaos/modules/tmp/backup-virt") {
-		t.Errorf("the way out is not said:\n%s", out)
-	}
-	// nothing of the old lists, manifest or version was written
-	if got := f.read("/var/lib/casaos/modules/virt.files"); got != listBefore || !strings.Contains(got, toolPath) {
-		t.Errorf("the list of files was changed:\n%s", got)
-	}
-	if f.read("/var/lib/casaos/modules/virt.version") != newTag+"\n" {
-		t.Errorf("the version was put back: %q", f.read("/var/lib/casaos/modules/virt.version"))
-	}
-	if f.read(progPath) != "somebody else's program" || f.read(toolPath) != wantAfter[toolPath] {
-		t.Error("a file was changed though the rollback could not be made")
-	}
-	// the unit was started all the same, and the folder is kept whole
-	if !f.runner.isRunning(testUnit) || !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") {
-		t.Error("the unit is not running, or the backup was not kept")
-	}
-	if !slices.Contains(markers(t, f.lines()), "rollback_start done") {
-		t.Errorf("the unit was not started:\n%s", out)
-	}
-	// a run again says the same and changes nothing
-	before := f.treeWithoutBookkeeping()
-	f.env.StepHook = nil
-	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), "to go back by hand") {
-		t.Fatalf("again: %d\n%s", code, f.out)
-	}
-	sameTree(t, before, f.treeWithoutBookkeeping())
-	// and the way out works: the folder is deleted, and the box is the new version with a file that is somebody's
-	if err := os.RemoveAll(f.path("/var/lib/casaos/modules/tmp/backup-virt")); err != nil {
-		t.Fatal(err)
-	}
-	if code := f.remove("--yes"); code != ExitOK {
-		t.Fatalf("remove after the way out: %d\n%s", code, f.out)
-	}
-	if f.read(progPath) != "somebody else's program" {
-		t.Error("the file of somebody else was deleted")
 	}
 }
 
@@ -570,5 +489,25 @@ func TestARollbackThatFailsWhilePuttingFilesBackLeavesTheListsAlone(t *testing.T
 	}
 	if !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") || !f.runner.isRunning(testUnit) {
 		t.Error("the backup was not kept, or the unit is not running")
+	}
+}
+
+// The plan is the simulation of the command the job runs: nothing that is installed is upgraded, so a held package that an upgrade would change is no reason to refuse.
+func TestTheUpdatePlanSimulatesWithNoUpgrade(t *testing.T) {
+	f := updatable(t)
+	nothing := f.sandbox.sim
+	f.sandbox.sim = osplan.Output{Text: aptHeld, ExitCode: 100}
+	f.sandbox.simNoUpgrade = &nothing
+	plan := f.planUpdate()
+	if plan.Refused != "" || len(plan.Packages.ToUpgrade) != 0 {
+		t.Fatalf("refused %q: %+v", plan.Refused, plan.Checks)
+	}
+	if len(f.sandbox.argvs) < 2 {
+		t.Fatalf("apt was asked %d times", len(f.sandbox.argvs))
+	}
+	for _, argv := range f.sandbox.argvs[len(f.sandbox.argvs)-2:] {
+		if !slices.Contains(argv, "--no-upgrade") {
+			t.Errorf("apt was asked %q", argv)
+		}
 	}
 }
