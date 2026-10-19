@@ -115,6 +115,8 @@ var (
 	// the held packages that apt would change; the names are read
 	heldHeader    = "The following held packages will be changed:"
 	alreadyNewest = regexp.MustCompile(`^[a-z0-9][a-z0-9+.:~-]* is already the newest version \([^()]+\)\.$`)
+	// the line apt says, with --no-upgrade, for a package it is asked to install that is installed (apt-private/private-install.cc, TryToInstall: the same string in apt 2.2.4 and 2.6.1): it stays as it is
+	skippedInstalled = regexp.MustCompile(`^Skipping [a-z0-9][a-z0-9+.:~-]*, it is already installed and upgrade is not set\.$`)
 	// the line apt says, before the summary, for a package that is installed as a dependency and that it is asked to install: it is installed by hand from then on. It says nothing of
 	// the transaction.
 	markedByHand = regexp.MustCompile(`^[a-z0-9][a-z0-9+.:~-]* set to manually installed\.$`)
@@ -144,9 +146,13 @@ func withoutInstallNotes(text string) (string, []string, []string, *Failure) {
 		case l == heldHeader || slices.Contains(installNotes, l):
 			block = l
 			continue
-		case alreadyNewest.MatchString(l):
+		case alreadyNewest.MatchString(l), skippedInstalled.MatchString(l):
 			block = ""
-			newest = append(newest, strings.Fields(l)[0])
+			f := strings.Fields(l)
+			if f[0] == "Skipping" {
+				f[0] = strings.TrimSuffix(f[1], ",")
+			}
+			newest = append(newest, f[0])
 			continue
 		case markedByHand.MatchString(l):
 			block = ""
