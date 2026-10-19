@@ -212,3 +212,19 @@ func TestASigtermEndsTheCommandOfAnUpdateThatIsRunning(t *testing.T) {
 		})
 	}
 }
+
+// A folder of manifests that cannot be read (here, a file where it goes) is a module that cannot be told: the plan of its update is refused, and the list of files is not looked at.
+func TestAFolderOfManifestsThatCannotBeReadRefusesTheUpdate(t *testing.T) {
+	f := updatable(t)
+	_ = os.RemoveAll(f.path("/etc/casaos/modules"))
+	f.writeFile("/etc/casaos/modules", "a file where the folder goes")
+	plan := f.planUpdate()
+	if plan.Refused != "manifest_invalid" || plan.PlanID != "" {
+		t.Fatalf("%q: %+v", plan.Refused, plan.Checks)
+	}
+	for _, c := range plan.Checks {
+		if c.Code == "installed" && c.Detail != "unreadable" {
+			t.Errorf("%+v", c)
+		}
+	}
+}

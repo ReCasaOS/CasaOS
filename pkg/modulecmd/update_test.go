@@ -892,9 +892,9 @@ func TestTheBackupOfAnUpdateIsNotEmptiedByTheNextRunOfTheAreaOfTheDownload(t *te
 	if !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") || f.exists("/var/lib/casaos/modules/tmp/stage/x") {
 		t.Error("the backup was emptied, or the staging was not")
 	}
-	// what has the name of a backup and is not a directory, or is not the name of one, goes
+	// what has the name of a backup and is not a directory, or is a directory that is not the name of one, goes
 	f.writeFile("/var/lib/casaos/modules/tmp/backup-other", "a file")
-	f.writeFile("/var/lib/casaos/modules/tmp/backup-Bad", "x")
+	f.writeFile("/var/lib/casaos/modules/tmp/backup-Bad/x", "x") // (a folder, but not the name of a backup)
 	if err := emptyTmp(f.env.Host, f.env.Roots.tmp()); err != nil {
 		t.Fatal(err)
 	}
@@ -1102,5 +1102,103 @@ func TestTheBoxSaysWhatABackupOfTheFilesOfTheModuleWeighs(t *testing.T) {
 	}
 	if st := bx.Installed("nothing"); st.Present || st.Broken || st.Unreadable || st.BytesOK {
 		t.Errorf("a module that is not there: %+v", st)
+	}
+}
+
+// What a recovery puts back is the old version, whole: a run that finds a backup and does nothing else (an install, which then finds the module installed) leaves the box as it was
+// before the update, whatever step the update was killed in.
+func TestARecoveryPutsTheOldVersionBackWhateverTheStepTheUpdateWasKilledIn(t *testing.T) {
+	for _, at := range killPointsOfUpdate {
+		t.Run(at, func(t *testing.T) {
+			f := updatable(t)
+			before := f.treeWithoutBookkeeping()
+			f.killed(at)
+			if code := f.install("--yes"); code != ExitRefused || !strings.Contains(f.out.String(), "refused: "+osmodule.CheckInstalled+"\n") {
+				t.Fatalf("install: %d\n%s", code, f.out)
+			}
+			sameTree(t, before, f.treeWithoutBookkeeping())
+			if !f.runner.isRunning(testUnit) {
+				t.Error("the old unit is not running")
+			}
+			if f.exists("/var/lib/casaos/modules/tmp/backup-virt") {
+				t.Error("the backup is left")
+			}
+		})
+	}
+}
+
+// A file that is the same in both versions is still there once the update is over: the files of the old version that the new one does not have are the ones that are taken away.
+func TestAFileThatDidNotChangeBetweenTheVersionsIsStillThere(t *testing.T) {
+	f := newFixture(t, withEntries(v1Entries(t)))
+	if code := f.install("--yes"); code != ExitOK {
+		t.Fatal(f.out.String())
+	}
+	next := v2Entries(t, testManifest())
+	for i := range next {
+		if next[i].name == "build/sysroot"+progPath {
+			next[i].body = "#!/bin/sh\nexit 0\n" // the program of v0.1.0
+		}
+	}
+	f.publish(newTag, testManifest(), next)
+	if code := f.update("--yes"); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if f.read(progPath) != "#!/bin/sh\nexit 0\n" || !strings.Contains(f.read("/var/lib/casaos/modules/virt.files"), progPath) {
+		t.Error("the program that did not change is gone or is not the module's")
+	}
+	if strings.Contains(f.out.String(), "left:") {
+		t.Errorf("something was left:\n%s", f.out)
+	}
+}
+
+// A directory the new version needs that somebody made since the plan is fine; one that is a file is in the way, and the update is rolled back.
+func TestADirectoryThatAppearsBeforeTheSwapIsUsedOrRefused(t *testing.T) {
+	v1 := slices.DeleteFunc(slices.Clone(v1Entries(t)), func(e tent) bool { return strings.Contains(e.name, "/system/") })
+	for _, asFile := range []bool{false, true} {
+		f := newFixture(t, withEntries(v1))
+		if code := f.install("--yes"); code != ExitOK {
+			t.Fatal(f.out.String())
+		}
+		f.publish(newTag, testManifest(), v2Entries(t, testManifest()))
+		before := f.treeWithoutBookkeeping()
+		f.env.StepHook = func(_ context.Context, step, phase string) {
+			if step == StepStop && phase == "done" {
+				if asFile {
+					f.writeFile("/usr/lib", "a file")
+				} else if err := os.MkdirAll(f.path("/usr/lib"), 0o755); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+		code := f.update("--yes")
+		if !asFile {
+			if code != ExitOK || f.read(unitPath) != unitV2 {
+				t.Errorf("a directory that appeared: %d\n%s", code, f.out)
+			}
+			continue
+		}
+		if code != ExitFailed || !slices.Contains(f.lines(), "failed at step swap: "+osmodule.UnpackPath) {
+			t.Errorf("a file where the directory goes: %d\n%s", code, f.out)
+		}
+		delete(before, "/usr/lib") // (what somebody made is theirs: it stays)
+		after := f.treeWithoutBookkeeping()
+		if after["/usr/lib"] == "" {
+			t.Error("the file that somebody made was taken away")
+		}
+		delete(after, "/usr/lib")
+		sameTree(t, before, after)
+	}
+}
+
+// A list in the backup that has no record of what each file held (the earlier format) is not one to put files back by.
+func TestABackupWhoseListHoldsNoRecordIsKept(t *testing.T) {
+	f := updatable(t)
+	f.killed("swap-1")
+	f.writeFile("/var/lib/casaos/modules/tmp/backup-virt/old.files.actual", progPath+"\n")
+	if code := f.update("--yes"); code != ExitFailed || !strings.Contains(f.out.String(), "cannot be read") {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if f.read(progPath) != wantAfter[progPath] || !f.exists("/var/lib/casaos/modules/tmp/backup-virt/COMPLETE") {
+		t.Error("something was put back, or the backup was not kept")
 	}
 }

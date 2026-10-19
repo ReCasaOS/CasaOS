@@ -152,7 +152,7 @@ func runUpdate(ctx context.Context, env Env, c command) (code int) {
 	bx := &box{ctx: ctx, env: &env}
 	st := bx.Installed(c.name)
 	oldList, err := readFilesEntries(env.Roots.files(c.name))
-	if err != nil || !oldList.Verified || len(oldList.Entries) == 0 {
+	if err != nil {
 		return j.refuse(CodeFilesUnreadable)
 	}
 	oldDirs, err := readDirsList(env.Roots.dirs(c.name))
@@ -564,7 +564,7 @@ func (u *update) stepSwap() *stepFailure {
 		}
 		touched[filepath.Dir(roots.Path(p))] = true
 	}
-	// what the new version does not have: taken away when it is what the old list says, left (and said) when somebody changed it
+	// what the new version does not have: taken away when it is what the old list says; left when somebody changed it (the unpack step has said so)
 	for _, e := range u.oldList.Entries {
 		if newPaths[u.canon(e.Path)] {
 			continue
@@ -573,8 +573,6 @@ func (u *update) stepSwap() *stepFailure {
 		switch h, err := holds(real, e); {
 		case err != nil:
 			return u.fail(CodeSwapFailed, err)
-		case h == holdsOther:
-			u.say("left: %s (changed)", printable(e.Path, 200))
 		case h == holdsOurs:
 			if _, err := removeEntry(real); err != nil {
 				return u.fail(CodeSwapFailed, err)
@@ -624,7 +622,6 @@ type backupState struct {
 	manifest, version []byte
 	parsed            osmodule.Manifest
 	oldPaths          []string
-	oldDirs           []string
 	newList           osmodule.FilesList
 	newDirs           []string
 }
@@ -676,7 +673,7 @@ func readBackup(name, dir string) (b backupState, err error) {
 		return b, err
 	}
 	if b.dirs != nil {
-		if b.oldDirs, err = osmodule.ParseDirs(b.dirs); err != nil {
+		if _, err = osmodule.ParseDirs(b.dirs); err != nil {
 			return b, err
 		}
 	}
@@ -874,9 +871,6 @@ func (j *job) putBackFiles(ctx context.Context, name, dir string, b backupState,
 	state(roots.files(name), b.files)
 	state(roots.dirs(name), b.dirs)
 	for _, d := range sortedDeepestFirst(b.newDirs) {
-		if slices.Contains(b.oldDirs, d) {
-			continue
-		}
 		touched[filepath.Dir(roots.Path(d))] = true
 		if err := removeEmptyDir(roots.Path(d)); err != nil {
 			j.say("not removed: %s (%s)", printable(d, 200), printable(err.Error(), 100))

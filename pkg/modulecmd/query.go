@@ -152,10 +152,8 @@ func updateInfo(installed *string, latest string) *UpdateInfo {
 	if installed == nil {
 		return nil
 	}
-	c, ok := osmodule.CompareTags(*installed, latest)
-	if !ok {
-		return nil
-	}
+	// (both are tags: the installed one was read as one, and the catalogue is not taken whole when one of its tags is not)
+	c, _ := osmodule.CompareTags(*installed, latest)
 	return &UpdateInfo{Available: c < 0, Installed: *installed, Latest: latest}
 }
 
