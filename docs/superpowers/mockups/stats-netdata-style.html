@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><title>Statistiques, style Netdata</title>
+<style>
+:root{--bg:#0f1519;--panel:#151d23;--line:#243038;--txt:#cfd8dc;--mut:#7f929c;--a:#00ab44;--b:#3b9cf5;--c:#f5a623;--d:#e0568a;--e:#9a6bf0}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.35 system-ui,Segoe UI,Roboto,sans-serif}
+.wrap{display:grid;grid-template-columns:230px 1fr;min-height:100vh}
+aside{background:var(--panel);border-right:1px solid var(--line);padding:12px 0}
+aside h4{margin:10px 14px 6px;color:var(--mut);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.item{display:flex;align-items:center;gap:8px;padding:6px 14px;cursor:pointer}
+.item.on{background:#1d2a32;border-left:3px solid var(--a);padding-left:11px}
+.item .n{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .v{color:var(--mut);font-variant-numeric:tabular-nums;font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--a)}
+.dot.vm{border-radius:2px;background:var(--b)}
+.spark{width:44px;height:14px}
+main{padding:14px 18px}
+.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+.top h1{font-size:18px;margin:0;font-weight:600}
+.tag{background:#1d2a32;border:1px solid var(--line);border-radius:4px;padding:2px 8px;color:var(--mut);font-size:12px}
+.pills{display:flex;gap:4px;margin-left:auto}
+.pill{border:1px solid var(--line);background:var(--panel);color:var(--txt);padding:5px 11px;border-radius:4px;cursor:pointer}
+.pill.on{background:var(--a);border-color:var(--a);color:#fff}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:12px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+.kpi b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+.kpi span{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 10px 4px;position:relative}
+.card.wide{grid-column:1/3}
+.card h3{margin:0 0 2px;font-size:13px;font-weight:600;display:flex;gap:8px;align-items:baseline}
+.card h3 small{color:var(--mut);font-weight:400}
+.legend{display:flex;gap:12px;flex-wrap:wrap;color:var(--mut);font-size:12px;margin:2px 0}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+.legend b{color:var(--txt);font-weight:500;font-variant-numeric:tabular-nums}
+svg{display:block;width:100%}
+.tip{position:absolute;pointer-events:none;background:#0b1013;border:1px solid var(--line);border-radius:4px;padding:6px 8px;font-size:12px;display:none;z-index:5;white-space:nowrap}
+.hint{color:var(--mut);font-size:12px;margin:8px 0 0}
+</style></head><body>
+<div class="wrap">
+<aside>
+  <h4>Conteneurs</h4>
+  <div class="item on"><span class="dot"></span><span class="n">Jellyfin</span><span class="v">38 %</span></div>
+  <div class="item"><span class="dot"></span><span class="n">Nextcloud</span><span class="v">12 %</span></div>
+  <div class="item"><span class="dot"></span><span class="n">Home Assistant</span><span class="v">4 %</span></div>
+  <div class="item"><span class="dot"></span><span class="n">Syncthing</span><span class="v">1 %</span></div>
+  <h4>Machines virtuelles</h4>
+  <div class="item"><span class="dot vm"></span><span class="n">VM Windows 11</span><span class="v">55 %</span></div>
+  <div class="item"><span class="dot vm"></span><span class="n">VM Debian</span><span class="v">2 %</span></div>
+  <h4>Machine</h4>
+  <div class="item"><span class="dot" style="background:var(--c)"></span><span class="n">Ensemble du serveur</span><span class="v">71 %</span></div>
+</aside>
+<main>
+  <div class="top">
+    <h1>Jellyfin</h1><span class="tag">conteneur</span><span class="tag">démarré il y a 12 j</span><span class="tag">image jellyfin/jellyfin:10.10</span>
+    <div class="pills" id="pills"><div class="pill">Direct</div><div class="pill">15 min</div><div class="pill">1 h</div><div class="pill">24 h</div><div class="pill on">7 jours</div></div>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><span>Processeur</span><b>38 %</b></div>
+    <div class="kpi"><span>Mémoire</span><b>1,2 Go</b></div>
+    <div class="kpi"><span>Réseau ↓</span><b>4,1 Mo/s</b></div>
+    <div class="kpi"><span>Réseau ↑</span><b>0,3 Mo/s</b></div>
+    <div class="kpi"><span>Disque</span><b>2,5 Mo/s</b></div>
+    <div class="kpi"><span>Processus</span><b>47</b></div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <p class="hint">Dans la vraie page : le survol suit la même heure sur tous les graphiques ; on sélectionne une plage sur le grand graphique pour zoomer ; on clique une série de la légende pour la masquer.</p>
+</main>
+</div>
+<script>
+const N=168, W=640;
+function rng(s){return()=> (s=(s*16807)%2147483647)/2147483647}
+function series(seed,base,amp,spikes){const r=rng(seed);let v=base;const o=[];for(let i=0;i<N;i++){v+= (r()-.5)*amp; v=Math.max(base*.3,Math.min(base*1.8,v)); let x=v; if(spikes&&r()>.93)x+=base*r()*1.6; o.push(Math.max(0,x))}return o}
+const day=i=>{const d=Math.floor(i/24),h=i%24;return ['lun.','mar.','mer.','jeu.','ven.','sam.','dim.'][d%7]+' '+String(h).padStart(2,'0')+':00'};
+const charts=[];
+function area(el,H,ser,cols,names,unit,opts={}){
+  const stack=opts.stack!==false;
+  const tot=Array.from({length:N},(_,i)=>ser.reduce((a,s)=>a+s[i],0));
+  const max=(opts.max|| Math.max(...(stack?tot:ser.flat())))*1.12;
+  const x=i=>i*(W/(N-1)), y=v=>H-6-(v/max)*(H-14);
+  let acc=new Array(N).fill(0), paths='';
+  ser.forEach((s,k)=>{const top=[],bot=[];for(let i=0;i<N;i++){const b=stack?acc[i]:0, t=b+s[i];top.push([x(i),y(t)]);bot.push([x(i),y(b)]);if(stack)acc[i]=t}
+    const d='M'+top.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join('L')+'L'+bot.reverse().map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join('L')+'Z';
+    paths+=`<path d="${d}" fill="${cols[k]}" fill-opacity="${stack?.55:.25}" stroke="${cols[k]}" stroke-width="1.2"/>`});
+  let grid='';for(let g=0;g<=3;g++){const gy=y(max/1.12*g/3);grid+=`<line x1="0" x2="${W}" y1="${gy}" y2="${gy}" stroke="#243038" stroke-dasharray="2 4"/><text x="3" y="${gy-3}" fill="#7f929c" font-size="10">${fmt(max/1.12*g/3,unit)}</text>`}
+  if(opts.limit){const ly=y(opts.limit);grid+=`<line x1="0" x2="${W}" y1="${ly}" y2="${ly}" stroke="#e0568a" stroke-dasharray="6 3"/><text x="${W-4}" y="${ly-3}" fill="#e0568a" font-size="10" text-anchor="end">limite ${fmt(opts.limit,unit)}</text>`}
+  let xl='';[0,24,48,72,96,120,144,167].forEach(i=>xl+=`<text x="${Math.min(W-30,x(i)+2)}" y="${H-0}" fill="#7f929c" font-size="9">${['lun.','mar.','mer.','jeu.','ven.','sam.','dim.'][Math.floor(i/24)%7]}</text>`);
+  el.innerHTML=`<svg viewBox="0 0 ${W} ${H+4}" height="${H+4}" preserveAspectRatio="none">${grid}${paths}${xl}<line class="cur" x1="0" x2="0" y1="0" y2="${H}" stroke="#cfd8dc" stroke-opacity=".7" style="display:none"/></svg>`;
+  charts.push({el,ser,names,cols,unit,x});
+}
+function fmt(v,u){if(u==='%')return Math.round(v)+' %';if(u==='Mo')return (v>=1024?(v/1024).toFixed(1)+' Go':Math.round(v)+' Mo');if(u==='Mo/s')return v.toFixed(1)+' Mo/s';if(u==='')return Math.round(v);return v.toFixed(1)+' '+u}
+const grid=document.getElementById('grid');
+function card(title,sub,legendHTML,wide){const c=document.createElement('div');c.className='card'+(wide?' wide':'');c.innerHTML=`<h3>${title}<small>${sub}</small></h3><div class="legend">${legendHTML}</div><div class="plot"></div><div class="tip"></div>`;grid.appendChild(c);return c}
+const L=(c,n,v)=>`<span><i style="background:${c}"></i>${n} <b>${v}</b></span>`;
+const cpu=[series(11,22,6,true),series(12,9,3,false),series(13,3,2,true)];
+let c1=card('Processeur','% d’un cœur · 4 cœurs alloués',L('#3b9cf5','utilisateur','24 %')+L('#00ab44','système','10 %')+L('#f5a623','attente disque','4 %')+L('#e0568a','bridé (throttled)','0 %'),true);
+area(c1.querySelector('.plot'),170,cpu,['#3b9cf5','#00ab44','#f5a623'],['utilisateur','système','attente disque'],'%');
+const mem=[series(21,700,40,false),series(22,380,50,false),series(23,60,15,true)];
+let c2=card('Mémoire','sur 4 Go autorisés',L('#9a6bf0','applicatif (RSS)','712 Mo')+L('#3b9cf5','cache fichiers','401 Mo')+L('#f5a623','swap','63 Mo'));
+area(c2.querySelector('.plot'),150,mem,['#9a6bf0','#3b9cf5','#f5a623'],['applicatif','cache','swap'],'Mo',{limit:4096,max:4300});
+const net=[series(31,2.6,1.2,true),series(32,.22,.1,true)];
+let c3=card('Réseau','eth0 du conteneur',L('#00ab44','reçu ↓','4,1 Mo/s')+L('#3b9cf5','envoyé ↑','0,3 Mo/s')+L('#e0568a','paquets perdus','0'));
+area(c3.querySelector('.plot'),150,net,['#00ab44','#3b9cf5'],['reçu','envoyé'],'Mo/s',{stack:false});
+const dio=[series(41,1.6,.9,true),series(42,.6,.4,true)];
+let c4=card('Disque','entrées/sorties du conteneur',L('#3b9cf5','lecture','2,0 Mo/s')+L('#e0568a','écriture','0,5 Mo/s')+L('#f5a623','opérations','38 /s'));
+area(c4.querySelector('.plot'),150,dio,['#3b9cf5','#e0568a'],['lecture','écriture'],'Mo/s',{stack:false});
+const pid=[series(51,46,2,false)];
+let c5=card('Processus et fichiers ouverts','',L('#9a6bf0','processus','47')+L('#00ab44','descripteurs','312'));
+area(c5.querySelector('.plot'),150,pid,['#9a6bf0'],['processus'],'',{stack:false,max:60});
+const rst=[series(61,1,.5,true)];
+let c6=card('Redémarrages et santé','',L('#e0568a','redémarrages','0 sur 7 j')+L('#00ab44','santé','OK'));
+area(c6.querySelector('.plot'),150,[series(62,0.2,0.1,false)],['#e0568a'],['redémarrages'],'',{stack:false,max:4});
+const tip=(card)=>card.querySelector('.tip');
+charts.forEach(ch=>{const card=ch.el.parentElement;
+  ch.el.addEventListener('mousemove',e=>{const r=ch.el.getBoundingClientRect();const f=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));const i=Math.round(f*(N-1));
+    charts.forEach(o=>{const cur=o.el.querySelector('.cur');cur.style.display='block';const xx=o.x(i);cur.setAttribute('x1',xx);cur.setAttribute('x2',xx);
+      const t=tip(o.el.parentElement);t.style.display='block';t.style.left=Math.min(r.width-170,Math.max(6,f*r.width+12))+'px';t.style.top='34px';
+      t.innerHTML=`<b>${day(i)}</b><br>`+o.ser.map((s,k)=>`<span style="color:${o.cols[k]}">■</span> ${o.names[k]} : <b>${fmt(s[i],o.unit)}</b>`).join('<br>')})});
+  ch.el.addEventListener('mouseleave',()=>charts.forEach(o=>{o.el.querySelector('.cur').style.display='none';tip(o.el.parentElement).style.display='none'}));
+});
+document.querySelectorAll('.pill').forEach(p=>p.addEventListener('click',()=>{document.querySelectorAll('.pill').forEach(q=>q.classList.remove('on'));p.classList.add('on')}));
+</script>
+</body></html>
