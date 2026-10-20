@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +59,7 @@ type statsRig struct {
 	clock *stats.FakeClock
 	src   *statsSource
 	svc   *hoststats.Service
+	dir   string
 }
 
 func (r *statsRig) minutes(n int) {
@@ -71,10 +74,19 @@ func (r *statsRig) minutes(n int) {
 // 10 % CPU, restored when the test ends.
 func useStatsFixture(t *testing.T) *statsRig {
 	t.Helper()
+	r := useEmptyStatsFixture(t)
+	r.minutes(3)
+	return r
+}
+
+// useEmptyStatsFixture is a service that has recorded nothing.
+func useEmptyStatsFixture(t *testing.T) *statsRig {
+	t.Helper()
+	dir := t.TempDir()
 	clock := stats.NewFakeClock(statsT0)
 	src := &statsSource{clock: clock, cpu: 10}
 	svc, err := hoststats.New(hoststats.Config{
-		Dir:    t.TempDir(),
+		Dir:    dir,
 		Source: src,
 		Clock:  clock,
 		Name:   func() string { return "nas" },
@@ -86,9 +98,7 @@ func useStatsFixture(t *testing.T) *statsRig {
 	original := hoststats.Default
 	hoststats.Default = svc
 	t.Cleanup(func() { hoststats.Default = original; _ = svc.Close() })
-	r := &statsRig{t: t, clock: clock, src: src, svc: svc}
-	r.minutes(3)
-	return r
+	return &statsRig{t: t, clock: clock, src: src, svc: svc, dir: dir}
 }
 
 func callStats(t *testing.T, method, id, sub, query, body string) (int, map[string]any) {
@@ -361,5 +371,33 @@ func TestAnActiveAlertIsListed(t *testing.T) {
 	_, list := callStats(t, http.MethodGet, "", "", "", "")
 	if got := dataOf(t, list)["items"].([]any)[0].(map[string]any)["alerts"]; got != float64(1) {
 		t.Errorf("alerts = %v, want 1", got)
+	}
+}
+
+func TestSeriesBeforeAnySampleIsEmpty(t *testing.T) {
+	useEmptyStatsFixture(t)
+	for q, step := range map[string]float64{"?range=1h": 60, "?range=live": 5} {
+		code, out := callStats(t, http.MethodGet, "host", "", q, "")
+		d := dataOf(t, out)
+		if s, ok := d["series"].([]any); code != 200 || !ok || len(s) != 0 || d["step_seconds"] != step {
+			t.Errorf("%s = %d %v", q, code, d)
+		}
+		if sc := d["scale"].(map[string]any); sc["cpu_allocation"] != nil || sc["memory_limit"] != nil {
+			t.Errorf("%s scale = %v", q, sc)
+		}
+	}
+}
+
+func TestRulesThatCannotBeSavedAre503(t *testing.T) {
+	r := useStatsFixture(t)
+	path := filepath.Join(r.dir, "alerts.json")
+	_ = os.Remove(path) // may not exist yet
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	put := `{"rules":[{"key":"cpu_high","enabled":true,"threshold":80,"minutes":5}]}`
+	code, out := callStats(t, http.MethodPut, "host", "/alerts", "", put)
+	if code != 503 || out["message"] != "stats_unavailable" {
+		t.Errorf("PUT = %d %v", code, out["message"])
 	}
 }

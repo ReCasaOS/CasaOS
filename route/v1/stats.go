@@ -145,8 +145,10 @@ func GetStatsSeries(ctx echo.Context) error {
 		}
 	}
 	res, err := s.Store.Query(id, r)
-	if err != nil {
-		// ErrUnknownItem here is the host before its first sample
+	switch {
+	case errors.Is(err, stats.ErrUnknownItem) && !s.Store.Unreadable(id):
+		res = emptyStatsResult(r, time.Now()) // listed, nothing stored yet
+	case err != nil:
 		return statsFail(ctx, http.StatusServiceUnavailable, "stats_unavailable")
 	}
 	live := res
@@ -163,6 +165,28 @@ func GetStatsSeries(ctx echo.Context) error {
 		},
 		Notes: []string{},
 	})
+}
+
+// emptyStatsResult is what Query answers for the range when nothing is
+// stored: the range's step and window at now, no series.
+func emptyStatsResult(r stats.Range, now time.Time) stats.Result {
+	step, n := int64(5), int64(stats.LiveSlots)
+	switch r {
+	case stats.Range15m:
+		step, n = 60, 15
+	case stats.Range1h:
+		step, n = 60, 60
+	case stats.Range24h:
+		step, n = 300, 288
+	case stats.Range7d:
+		step, n = 1800, 336
+	}
+	floor := func(x, m int64) int64 { return x - x%m }
+	to := floor(now.Unix(), step)
+	if r != stats.RangeLive {
+		to = floor(floor(now.Unix(), 60)-60, step)
+	}
+	return stats.Result{Range: r, StepSeconds: int(step), From: to - (n-1)*step, To: to, Series: []stats.SeriesData{}}
 }
 
 type statsAlert struct {
@@ -253,7 +277,7 @@ func PutStatsAlerts(ctx echo.Context) error {
 	switch err := s.Eval.SetRules(hoststats.Item, rules); {
 	case errors.As(err, &re):
 		return badRules(ctx, fmt.Sprintf("rules[%d].%s", re.Index, re.Field))
-	case err != nil:
+	case err != nil, s.Eval.LastError() != nil: // the latter: applied in memory, not durable
 		return statsFail(ctx, http.StatusServiceUnavailable, "stats_unavailable")
 	}
 	return statsAlertsOf(ctx, s)
