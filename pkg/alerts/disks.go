@@ -158,3 +158,37 @@ func get(ctx context.Context, address, runtimePath string, out any) error {
 	}
 	return json.NewDecoder(response.Body).Decode(out)
 }
+
+// Volume is a storage of LocalStorage's list, sizes in bytes.
+type Volume struct {
+	MountPoint, Label string
+	Size, Used        uint64
+}
+
+// StorageVolumes is the dashboard's list of storages (GET /v1/storage?system=show,
+// children flattened). A storage whose sizes are not numbers, or without a
+// mount point, is skipped.
+func StorageVolumes(ctx context.Context, runtimePath string) ([]Volume, error) {
+	address, err := localStorage(ctx, runtimePath)
+	if err != nil {
+		return nil, err
+	}
+	var storages []struct {
+		Children []storage `json:"children"`
+	}
+	if err := get(ctx, address+"/v1/storage?system=show", runtimePath, &model.Result{Data: &storages}); err != nil {
+		return nil, err
+	}
+	var volumes []Volume
+	for _, s := range storages {
+		for _, c := range s.Children {
+			size, sizeErr := strconv.ParseUint(c.Size, 10, 64)
+			used, usedErr := strconv.ParseUint(c.Used, 10, 64)
+			if c.MountPoint == "" || sizeErr != nil || usedErr != nil {
+				continue
+			}
+			volumes = append(volumes, Volume{c.MountPoint, c.Label, size, used})
+		}
+	}
+	return volumes, nil
+}
