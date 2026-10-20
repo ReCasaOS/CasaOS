@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -141,6 +142,11 @@ func localStorage(ctx context.Context, runtimePath string) (string, error) {
 
 // get reads the JSON at address into out, as an internal request.
 func get(ctx context.Context, address, runtimePath string, out any) error {
+	return getLimited(ctx, address, runtimePath, out, 0)
+}
+
+// getLimited is get reading at most limit bytes of the answer (0: no limit).
+func getLimited(ctx context.Context, address, runtimePath string, out any, limit int64) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
@@ -156,7 +162,11 @@ func get(ctx context.Context, address, runtimePath string, out any) error {
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s answered %s", address, response.Status)
 	}
-	return json.NewDecoder(response.Body).Decode(out)
+	var body io.Reader = response.Body
+	if limit > 0 {
+		body = io.LimitReader(body, limit)
+	}
+	return json.NewDecoder(body).Decode(out)
 }
 
 // Volume is a storage of LocalStorage's list, sizes in bytes.
@@ -176,7 +186,7 @@ func StorageVolumes(ctx context.Context, runtimePath string) ([]Volume, error) {
 	var storages []struct {
 		Children []storage `json:"children"`
 	}
-	if err := get(ctx, address+"/v1/storage?system=show", runtimePath, &model.Result{Data: &storages}); err != nil {
+	if err := getLimited(ctx, address+"/v1/storage?system=show", runtimePath, &model.Result{Data: &storages}, 1<<20); err != nil {
 		return nil, err
 	}
 	var volumes []Volume

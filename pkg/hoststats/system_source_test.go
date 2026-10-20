@@ -5,8 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ReCasaOS/CasaOS-Common/pkg/stats"
 )
 
 type counted struct {
@@ -100,5 +103,92 @@ func TestSystemSourceReadsThisMachine(t *testing.T) {
 	}
 	if r.Cores <= 0 || r.MemTotal == 0 || r.CPU.Total <= 0 {
 		t.Fatalf("cores %d, memory %d, cpu total %v: want all above 0", r.Cores, r.MemTotal, r.CPU.Total)
+	}
+}
+
+// hung is a source whose Interfaces blocks until release is closed.
+func hung(t *testing.T) (s *SystemSource, started *int32, release chan struct{}) {
+	old := refreshWait
+	refreshWait = 50 * time.Millisecond
+	t.Cleanup(func() { refreshWait = old })
+	release = make(chan struct{})
+	started = new(int32)
+	now := t0
+	s = &SystemSource{
+		Now:        func() time.Time { return now },
+		ListEvery:  time.Minute,
+		Interfaces: func() []string { atomic.AddInt32(started, 1); <-release; return []string{"eth0"} },
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	return s, started, release
+}
+
+func TestAHungInterfaceListNeverHoldsARead(t *testing.T) {
+	s, started, release := hung(t)
+	var now = t0
+	s.Now = func() time.Time { return now }
+	begin := time.Now()
+	r, err := s.Read(context.Background())
+	if err != nil || r.MemTotal == 0 {
+		t.Fatalf("read: %v %+v", err, r)
+	}
+	if time.Since(begin) > 5*time.Second {
+		t.Fatal("Read waited for the hung list")
+	}
+	// ListEvery passes several times while it hangs: no second refresh starts.
+	for range 3 {
+		now = now.Add(2 * time.Minute)
+		begin = time.Now()
+		if _, err := s.Read(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if time.Since(begin) > 5*time.Second {
+			t.Fatal("Read waited for the hung list")
+		}
+	}
+	if n := atomic.LoadInt32(started); n != 1 {
+		t.Fatalf("%d refreshes started while the first hangs, want 1", n)
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.mu.Lock()
+		idle, nets := s.running == nil, s.nets
+		s.mu.Unlock()
+		if idle {
+			if len(nets) != 1 || nets[0] != "eth0" {
+				t.Fatalf("late list %q not used", nets)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the late refresh never landed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestAHungSourceDoesNotBlockTickOrClose(t *testing.T) {
+	s, _, _ := hung(t)
+	svc, err := New(Config{Dir: t.TempDir(), Source: s, Clock: stats.NewFakeClock(t0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = svc.Tick(context.Background())
+		_ = svc.Close()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Tick or Close blocked on the hung list")
 	}
 }
