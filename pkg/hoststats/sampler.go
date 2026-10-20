@@ -27,6 +27,13 @@ var (
 // stuck for longer than any burst of alerts: the newest event is dropped.
 const queueSize = 64
 
+// logPartial is replaced by tests, like logError; it reports a sample some of whose
+// series the Store refused (the others were stored).
+var logPartial = func(msg string, err error) { logger.Warn(msg, zap.Error(err)) }
+
+// partialEvery is the least time between two logs of a partial sample.
+const partialEvery = 10 * time.Minute
+
 // logError is replaced by tests: the shared logger is not initialised there.
 var logError = func(msg string, err error) { logger.Error(msg, zap.Error(err)) }
 
@@ -105,8 +112,18 @@ func (s *Service) Run(ctx context.Context) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	failing := false
+	var partialAt time.Time
 	for {
 		err := s.Tick(ctx)
+		if stats.IsPartial(err) {
+			// the other keys were stored: not a failed sample, and not a change of state
+			if now := time.Now(); partialAt.IsZero() || now.Sub(partialAt) >= partialEvery {
+				partialAt = now
+				logPartial("host statistics: some series were not stored", err)
+			}
+			err = nil
+			failing = false
+		}
 		if err != nil && !failing && ctx.Err() == nil {
 			logError("host statistics: a sample failed", err)
 		}

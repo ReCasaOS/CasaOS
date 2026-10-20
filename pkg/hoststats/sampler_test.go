@@ -3,19 +3,24 @@ package hoststats
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/pkg/stats"
 )
 
-func init() { logError = func(string, error) {} }
+func init() {
+	logError = func(string, error) {}
+	logPartial = func(string, error) {}
+}
 
 // fakeSource scripts what the machine shows: each good Read adds 100 to the
 // total CPU time and cpu to the busy time, so alert/cpu_high is cpu.
@@ -607,5 +612,48 @@ func TestASourceWithoutCoresLosesNoPoint(t *testing.T) {
 	}
 	if n != 12 {
 		t.Fatalf("got %d points, want 12", n)
+	}
+}
+
+// manySeries renames half of its interfaces at every read: the Collector keeps at most
+// 8 of them, but the Store never frees a series, so the 48 are reached after some reads.
+type manySeries struct{ n *int }
+
+func (m manySeries) Read(context.Context) (Reading, error) {
+	*m.n++
+	nets := map[string]NetCounters{}
+	for i := range 8 {
+		nets[fmt.Sprintf("eth%d", *m.n*4+i)] = NetCounters{}
+	}
+	return Reading{At: t0.Add(time.Duration(*m.n) * 5 * time.Second), MemTotal: 100, Nets: nets}, nil
+}
+
+func TestAPartialSampleIsNotAFailedSample(t *testing.T) {
+	var failed, partial atomic.Int32
+	oldE, oldP := logError, logPartial
+	logError = func(string, error) { failed.Add(1) }
+	logPartial = func(string, error) { partial.Add(1) }
+	t.Cleanup(func() { logError, logPartial = oldE, oldP })
+
+	svc, err := New(Config{Dir: t.TempDir(), Source: manySeries{n: new(int)}, Clock: stats.NewFakeClock(t0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Close() })
+	var tickErr error
+	for i := 0; i < 30 && !stats.IsPartial(tickErr); i++ {
+		tickErr = svc.Tick(context.Background())
+	}
+	if !stats.IsPartial(tickErr) {
+		t.Fatalf("precondition: Tick = %v, want a partial error", tickErr)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { svc.Run(ctx); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+	if failed.Load() != 0 || partial.Load() != 1 {
+		t.Fatalf("failed logs %d, partial logs %d; want 0 and 1", failed.Load(), partial.Load())
 	}
 }

@@ -54,7 +54,7 @@ var refreshWait = 10 * time.Second
 // never holds a Read: the last good interface and disk lists are used, the
 // volumes are none, and the late refresh lands when it ends. At most one
 // refresh, so one goroutine, exists at a time.
-func (s *SystemSource) refresh(now time.Time) {
+func (s *SystemSource) refresh(ctx context.Context, now time.Time) {
 	every := s.ListEvery
 	if every <= 0 {
 		every = time.Minute
@@ -74,6 +74,7 @@ func (s *SystemSource) refresh(now time.Time) {
 	defer t.Stop()
 	select {
 	case <-done:
+	case <-ctx.Done(): // a stopping sampler is not held by a late refresh
 	case <-t.C:
 		s.mu.Lock()
 		s.volumes = nil // never stale data shown as live
@@ -119,7 +120,10 @@ func (s *SystemSource) Read(ctx context.Context) (Reading, error) {
 	if s.Now != nil {
 		now = s.Now()
 	}
-	s.refresh(now)
+	s.refresh(ctx, now)
+	if err := ctx.Err(); err != nil {
+		return Reading{}, err
+	}
 	s.mu.Lock()
 	nets, wholeDisk, volumes := s.nets, s.wholeDisk, s.volumes
 	s.mu.Unlock()

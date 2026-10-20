@@ -192,3 +192,22 @@ func TestAHungSourceDoesNotBlockTickOrClose(t *testing.T) {
 		t.Fatal("Tick or Close blocked on the hung list")
 	}
 }
+
+func TestACancelledContextDoesNotWaitForARefresh(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	s := &SystemSource{
+		Now:        func() time.Time { return t0 },
+		Interfaces: func() []string { <-release; return nil },
+		blockDir:   t.TempDir(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	start := time.Now()
+	if _, err := s.Read(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Read = %v, want context.Canceled", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("Read held %v by a hanging refresh", d)
+	}
+}

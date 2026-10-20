@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -195,25 +196,6 @@ func main() {
 		return apps, nil
 	})
 	go autoupdate.Default.Run(context.Background())
-	// The host's statistics start after the alerts (their Handle exists) and before the routes
-	// and the crontab. Without them the core goes on: the routes answer 503. On a stop the
-	// sampler's context ends first and the service is closed after it, never while it ticks.
-	statsCtx, stopStats := context.WithCancel(context.Background())
-	defer stopStats()
-	if svc, err := hoststats.New(hostStatsConfig()); err != nil {
-		logger.Error("host statistics are off", zap.Error(err))
-	} else {
-		hoststats.Default = svc
-		running := make(chan struct{})
-		go func() { svc.Run(statsCtx); close(running) }()
-		stopHostStats = func() {
-			stopStats()
-			<-running
-			if err := svc.Close(); err != nil {
-				logger.Error("host statistics did not close cleanly", zap.Error(err))
-			}
-		}
-	}
 	v1Router := route.InitV1Router()
 
 	v2Router := route.InitV2Router()
@@ -288,6 +270,27 @@ func main() {
 		time.Sleep(time.Second)
 	}
 
+	// The host's statistics start after the event types are registered (building the service can
+	// emit alerts rebuilt from its history), so after the alerts (their Handle exists) and before
+	// the cron push, which is the order the registration loop leaves. Without them the core goes on: the routes answer 503. On a stop the
+	// sampler's context ends first and the service is closed after it, never while it ticks.
+	statsCtx, stopStats := context.WithCancel(context.Background())
+	defer stopStats()
+	if svc, err := hoststats.New(hostStatsConfig()); err != nil {
+		logger.Error("host statistics are off", zap.Error(err))
+	} else {
+		hoststats.Default = svc
+		running := make(chan struct{})
+		go func() { svc.Run(statsCtx); close(running) }()
+		stop := func() {
+			stopStats()
+			<-running
+			if err := svc.Close(); err != nil {
+				logger.Error("host statistics did not close cleanly", zap.Error(err))
+			}
+		}
+		stopHostStats.Store(&stop)
+	}
 	go func() {
 		time.Sleep(time.Second * 2)
 		// v0.3.6
@@ -352,7 +355,7 @@ func main() {
 }
 
 // stopHostStats ends the sampler and closes the service; a no-op while the statistics are off.
-var stopHostStats = func() {}
+var stopHostStats atomic.Pointer[func()]
 
 // hostStatsConfig wires the host's statistics to this core: the same interfaces as
 // /v1/sys/utilization, the storages the dashboard lists, the alerts and the message bus.
@@ -416,9 +419,12 @@ func stopThePlanWhenTheCoreIsToldToStop() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, service.OSPlanStopSignals(sigintIgnoredAtStart)...)
 	received := <-signals
-	stopHostStats()
 	service.MyService.System().StopSystemOSUpgradeSettle(service.OSPlanStopWait)
 	service.MyService.System().StopSystemOSPlan(service.OSPlanStopWait)
+	// the plan ends first; then the sampler, whose last tick no longer waits for a late refresh
+	if f := stopHostStats.Load(); f != nil {
+		(*f)()
+	}
 	// the default again, and the signal again
 	signal.Stop(signals)
 	if number, ok := received.(syscall.Signal); ok {
