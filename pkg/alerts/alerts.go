@@ -54,13 +54,14 @@ const (
 
 // The categories of an alert, each on unless the owner turns it off.
 const (
-	Backups = "backups"
-	Disks   = "disks"
-	Updates = "updates"
-	Apps    = "apps"
+	Backups   = "backups"
+	Disks     = "disks"
+	Updates   = "updates"
+	Apps      = "apps"
+	Resources = "resources"
 )
 
-var categories = []string{Backups, Disks, Updates, Apps}
+var categories = []string{Backups, Disks, Updates, Apps, Resources}
 
 // alert is one condition: its key is what dedupe and resolution go by, its
 // sentence says what and where, and never anything more sensitive than an

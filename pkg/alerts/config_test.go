@@ -35,7 +35,7 @@ func TestTheConfigurationFile(t *testing.T) {
 			`{"channels":[{"id":"a1","name":"Phone","url":"` + phone + `"}],"categories":{"apps":false,"weather":true},"disk_threshold":80}`,
 			Config{
 				Channels:      []Channel{{ID: "a1", Name: "Phone", URL: phone}},
-				Categories:    map[string]bool{Backups: true, Disks: true, Updates: true, Apps: false},
+				Categories:    map[string]bool{Backups: true, Disks: true, Updates: true, Apps: false, Resources: true},
 				DiskThreshold: 80,
 			},
 		},
@@ -161,7 +161,7 @@ func TestAPutChangesCategoriesAndThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := map[string]bool{Backups: true, Disks: false, Updates: true, Apps: true}
+	want := map[string]bool{Backups: true, Disks: false, Updates: true, Apps: true, Resources: true}
 	if !reflect.DeepEqual(status.Categories, want) || status.DiskThreshold != 75 || len(status.Channels) != 2 {
 		t.Fatalf("PUT answered %+v, want disks off, 75 %%, the channels untouched", status)
 	}
@@ -226,5 +226,63 @@ func TestATestSendsToOneChannelOrAll(t *testing.T) {
 	}
 	if _, err := h.Test("zz"); !errors.Is(err, ErrNoChannel) {
 		t.Fatalf("Test(zz) = %v, want ErrNoChannel", err)
+	}
+}
+
+const withoutResources = `{"channels":[{"id":"a1","name":"Phone","url":"ntfy://ntfy.sh/box-topic"}],"categories":{"backups":true,"disks":false,"updates":true,"apps":true},"disk_threshold":90}`
+
+func TestAFileWithoutResourcesKeepsItOn(t *testing.T) {
+	h, _, _ := newHub(t)
+	writeConfigFile(t, h, withoutResources)
+
+	want := map[string]bool{Backups: true, Disks: false, Updates: true, Apps: true, Resources: true}
+	if got := h.load().Categories; !reflect.DeepEqual(got, want) {
+		t.Fatalf("load() categories = %v, want %v", got, want)
+	}
+	if !h.Status().Categories["resources"] {
+		t.Fatal("Status() has resources off")
+	}
+}
+
+func TestAPutOfAnotherSettingWritesResourcesAndKeepsTheRest(t *testing.T) {
+	h, _, _ := newHub(t)
+	writeConfigFile(t, h, withoutResources)
+
+	if _, err := h.Update(Change{DiskThreshold: new(80)}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(h.path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Categories    map[string]bool `json:"categories"`
+		DiskThreshold int             `json:"disk_threshold"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if !raw.Categories["resources"] || raw.Categories["disks"] || raw.DiskThreshold != 80 {
+		t.Fatalf("file = %s, want resources on, disks off, 80", data)
+	}
+}
+
+func TestResourcesCanBeTurnedOffAndAnUnknownCategoryIsIgnored(t *testing.T) {
+	h, _, _ := newHub(t)
+
+	status, err := h.Update(Change{Categories: map[string]bool{"resources": false, "weather": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if on, ok := status.Categories["resources"]; !ok || on {
+		t.Fatalf("categories = %v, want resources off", status.Categories)
+	}
+	if _, ok := status.Categories["weather"]; ok {
+		t.Fatalf("categories = %v, want no weather", status.Categories)
+	}
+	if data, _ := os.ReadFile(h.path()); strings.Contains(string(data), "weather") {
+		t.Fatalf("file = %s, want no weather", data)
 	}
 }

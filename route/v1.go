@@ -178,6 +178,11 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/proxy", v1.GetSystemProxy)
 			v1SysGroup.PUT("/state/:state", v1.PutSystemState)
 			v1SysGroup.GET("/entry", v1.GetSystemEntry)
+			// Statistics of the machine: the item, its series, its alert rules.
+			v1SysGroup.GET("/stats", v1.GetStats)
+			v1SysGroup.GET("/stats/:id", v1.GetStatsSeries)
+			v1SysGroup.GET("/stats/:id/alerts", v1.GetStatsAlerts)
+			v1SysGroup.PUT("/stats/:id/alerts", v1.PutStatsAlerts)
 			// Anonymous statistics: their state, the heartbeat as it would be
 			// sent, and the switch (dashboard notice and settings).
 			v1SysGroup.GET("/telemetry", v1.GetTelemetry)

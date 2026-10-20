@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -141,6 +142,11 @@ func localStorage(ctx context.Context, runtimePath string) (string, error) {
 
 // get reads the JSON at address into out, as an internal request.
 func get(ctx context.Context, address, runtimePath string, out any) error {
+	return getLimited(ctx, address, runtimePath, out, 0)
+}
+
+// getLimited is get reading at most limit bytes of the answer (0: no limit).
+func getLimited(ctx context.Context, address, runtimePath string, out any, limit int64) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
@@ -156,5 +162,43 @@ func get(ctx context.Context, address, runtimePath string, out any) error {
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s answered %s", address, response.Status)
 	}
-	return json.NewDecoder(response.Body).Decode(out)
+	var body io.Reader = response.Body
+	if limit > 0 {
+		body = io.LimitReader(body, limit)
+	}
+	return json.NewDecoder(body).Decode(out)
+}
+
+// Volume is a storage of LocalStorage's list, sizes in bytes.
+type Volume struct {
+	MountPoint, Label string
+	Size, Used        uint64
+}
+
+// StorageVolumes is the dashboard's list of storages (GET /v1/storage?system=show,
+// children flattened). A storage whose sizes are not numbers, or without a
+// mount point, is skipped.
+func StorageVolumes(ctx context.Context, runtimePath string) ([]Volume, error) {
+	address, err := localStorage(ctx, runtimePath)
+	if err != nil {
+		return nil, err
+	}
+	var storages []struct {
+		Children []storage `json:"children"`
+	}
+	if err := getLimited(ctx, address+"/v1/storage?system=show", runtimePath, &model.Result{Data: &storages}, 1<<20); err != nil {
+		return nil, err
+	}
+	var volumes []Volume
+	for _, s := range storages {
+		for _, c := range s.Children {
+			size, sizeErr := strconv.ParseUint(c.Size, 10, 64)
+			used, usedErr := strconv.ParseUint(c.Used, 10, 64)
+			if c.MountPoint == "" || sizeErr != nil || usedErr != nil {
+				continue
+			}
+			volumes = append(volumes, Volume{c.MountPoint, c.Label, size, used})
+		}
+	}
+	return volumes, nil
 }

@@ -188,3 +188,22 @@ func TestNoPollWithoutTheGateway(t *testing.T) {
 		t.Fatalf("sent %+v, seen %+v: want nothing concluded", o.sent, h.seen)
 	}
 }
+
+func TestStorageVolumesReadsTheDisksWidgetsList(t *testing.T) {
+	runtimePath := t.TempDir()
+	f := newLocalStorage(t, runtimePath)
+	f.set(nil, []storage{
+		{MountPoint: "/DATA", Label: "Data", Size: "1000", Used: "250"},
+		{MountPoint: "/media/x", Label: "X", Size: "n/a", Used: "1"},
+	}, false)
+	got, err := StorageVolumes(context.Background(), runtimePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Volume{{"/DATA", "Data", 1000, 250}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if _, err := StorageVolumes(context.Background(), t.TempDir()); err == nil {
+		t.Fatal("no route to LocalStorage: want an error")
+	}
+}

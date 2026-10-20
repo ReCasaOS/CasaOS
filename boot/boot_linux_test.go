@@ -117,7 +117,10 @@ func TestTheAssistantRunsBeforeTheCoreIsInitialised(t *testing.T) {
 		}
 		switch pkg {
 		case "github.com/ReCasaOS/CasaOS-Common/utils/common_err", "github.com/ReCasaOS/CasaOS/pkg/utils/common_err", "github.com/ReCasaOS/CasaOS-Common/utils/systemctl",
-			"github.com/ReCasaOS/CasaOS-Common/external", "github.com/ReCasaOS/CasaOS/pkg/config", "github.com/ReCasaOS/CasaOS/pkg/osverify":
+			"github.com/ReCasaOS/CasaOS-Common/external", "github.com/ReCasaOS/CasaOS/pkg/config", "github.com/ReCasaOS/CasaOS/pkg/osverify",
+			// pkg/stats imports only the standard library and initialises only its error values,
+			// so Go orders it before this package whatever imports it.
+			"github.com/ReCasaOS/CasaOS-Common/pkg/stats":
 		case "github.com/ReCasaOS/CasaOS/pkg/dockerpkg", "github.com/ReCasaOS/CasaOS/pkg/osmodule", "github.com/ReCasaOS/CasaOS/pkg/ossupport", "github.com/ReCasaOS/CasaOS/pkg/osreadiness",
 			"github.com/ReCasaOS/CasaOS/pkg/osrun", "github.com/ReCasaOS/CasaOS/pkg/osplan", "github.com/ReCasaOS/CasaOS/pkg/modulecmd":
 		default:

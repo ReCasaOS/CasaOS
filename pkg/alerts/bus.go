@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
@@ -18,8 +19,20 @@ import (
 	"go.uber.org/zap"
 )
 
-// busSource is where the events an alert comes from are published.
-const busSource = "app-management"
+// A feed is one source on the message bus and the events of it that this package follows: the
+// bus filters a subscription by source, so each source is followed on its own.
+type feed struct {
+	source string
+	events func() []string
+}
+
+// virtSource is the virt module's SourceID on the message bus.
+// ponytail: not verified against CasaOS-VirtManagement; a wrong value costs only that module's
+// alerts, its feed finds nothing registered and retries at the one-minute cap.
+const virtSource = "virt-management"
+
+// feeds are the sources followed: AppManagement's events, and the virt module's resource events.
+var feeds = []feed{{"app-management", busEvents}, {virtSource, func() []string { return resourceEvents }}}
 
 // operations are the app operations whose failure is an alert, by the name of
 // their error event, app:<operation>-error, and what the sentence says.
@@ -48,6 +61,7 @@ var containerEvents = []string{"app:container-died", "app:container-unhealthy", 
 // busEvents are the events of AppManagement this package subscribes to.
 func busEvents() []string {
 	names := append([]string{"backup:error"}, containerEvents...)
+	names = append(names, resourceEvents...)
 	for operation := range operations {
 		names = append(names, "app:"+operation+"-error")
 	}
@@ -55,37 +69,45 @@ func busEvents() []string {
 	return names
 }
 
-// followBus subscribes to AppManagement's events on the message bus until ctx
-// is done, subscribing again when the subscription is lost or refused: after
-// a second, then twice as long each time up to a minute, and after a second
-// again once a subscription held.
+// followBus subscribes to the events of each feed on the message bus until ctx is done, each on
+// its own, subscribing again when a subscription is lost or refused: after a second, then twice
+// as long each time up to a minute, and after a second again once a subscription held. A source
+// the bus does not know yet (a module not installed) only waits.
 func (h *Hub) followBus(ctx context.Context) {
-	wait := time.Second
-	for {
-		if h.subscribe(ctx) {
-			wait = time.Second
-		}
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-			return
-		}
-		wait = min(2*wait, time.Minute)
+	var loops sync.WaitGroup
+	for _, f := range feeds {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			wait := time.Second
+			for {
+				if h.subscribe(ctx, f) {
+					wait = time.Second
+				}
+				select {
+				case <-time.After(wait):
+				case <-ctx.Done():
+					return
+				}
+				wait = min(2*wait, time.Minute)
+			}
+		}()
 	}
+	loops.Wait()
 }
 
 // subscribe subscribes the way this box's services do: at the address the bus
-// leaves in the runtime path, with this boot's secret, to the events of
-// busEvents AppManagement registered (an older AppManagement has fewer, and
-// the bus refuses a subscription to one it does not know). It reads them
-// until the subscription is lost, and reports whether it held.
-func (h *Hub) subscribe(ctx context.Context) bool {
+// leaves in the runtime path, with this boot's secret, to the events of the
+// feed its source registered (an older one has fewer, and the bus refuses a
+// subscription to one it does not know). It reads them until the subscription
+// is lost, and reports whether it held.
+func (h *Hub) subscribe(ctx context.Context, f feed) bool {
 	runtimePath := h.RuntimePath()
 	address, err := external.GetMessageBusAddress(runtimePath)
 	if err != nil {
 		return false
 	}
-	names, err := registered(ctx, address, runtimePath)
+	names, err := registered(ctx, address, runtimePath, f)
 	if err != nil || len(names) == 0 {
 		return false
 	}
@@ -95,7 +117,7 @@ func (h *Hub) subscribe(ctx context.Context) bool {
 		return false
 	}
 	_ = external.InternalRequestEditor(runtimePath)(ctx, request) // never fails
-	wsURL := "ws" + strings.TrimPrefix(address, "http") + "/event/" + busSource + "?" + url.Values{"names": names}.Encode()
+	wsURL := "ws" + strings.TrimPrefix(address, "http") + "/event/" + f.source + "?" + url.Values{"names": names}.Encode()
 	connection, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, request.Header)
 	if err != nil {
 		logger.Info("alerts: cannot subscribe to the message bus", zap.Error(err))
@@ -103,8 +125,8 @@ func (h *Hub) subscribe(ctx context.Context) bool {
 	}
 	defer connection.Close()
 	defer context.AfterFunc(ctx, func() { connection.Close() })()
-	logger.Info("alerts: subscribed to the message bus", zap.Strings("events", names))
-	if len(names) < len(busEvents()) {
+	logger.Info("alerts: subscribed to the message bus", zap.String("source", f.source), zap.Strings("events", names))
+	if len(names) < len(f.events()) {
 		watch, stop := context.WithCancel(ctx)
 		defer stop()
 		interval := recheckRegistered // read here: the goroutine may outlive this call
@@ -115,8 +137,8 @@ func (h *Hub) subscribe(ctx context.Context) bool {
 				case <-watch.Done():
 					return
 				}
-				if more, err := registered(watch, address, runtimePath); err == nil && len(more) > len(names) {
-					logger.Info("alerts: AppManagement registered more events, subscribing again", zap.Strings("events", more))
+				if more, err := registered(watch, address, runtimePath, f); err == nil && len(more) > len(names) {
+					logger.Info("alerts: more events registered, subscribing again", zap.String("source", f.source), zap.Strings("events", more))
 					connection.Close()
 					return
 				}
@@ -138,15 +160,15 @@ func (h *Hub) subscribe(ctx context.Context) bool {
 	}
 }
 
-// registered is the events of busEvents AppManagement registered with the bus.
-func registered(ctx context.Context, address, runtimePath string) ([]string, error) {
+// registered is the events of the feed that its source registered with the bus.
+func registered(ctx context.Context, address, runtimePath string, f feed) ([]string, error) {
 	client, err := message_bus.NewClientWithResponses(address, message_bus.WithRequestEditorFn(external.InternalRequestEditor(runtimePath)))
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	response, err := client.GetEventTypesBySourceIDWithResponse(ctx, busSource)
+	response, err := client.GetEventTypesBySourceIDWithResponse(ctx, f.source)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +177,7 @@ func registered(ctx context.Context, address, runtimePath string) ([]string, err
 	}
 	var names []string
 	for _, eventType := range *response.JSON200 {
-		if slices.Contains(busEvents(), eventType.Name) {
+		if slices.Contains(f.events(), eventType.Name) {
 			names = append(names, eventType.Name)
 		}
 	}
@@ -167,10 +189,14 @@ func registered(ctx context.Context, address, runtimePath string) ([]string, err
 // dropped, the Hub's memory of what it sent is not touched, so that no "resolved" follows an
 // alert that was never sent.
 func (h *Hub) onEvent(name string, properties map[string]string) {
-	if slices.Contains(containerEvents, name) && h.Muted() {
+	if (slices.Contains(containerEvents, name) || isMutedResource(name, properties)) && h.Muted() {
 		return
 	}
-	a, resolved, ok := fromEvent(name, properties)
+	from := fromEvent
+	if slices.Contains(resourceEvents, name) {
+		from = fromResource
+	}
+	a, resolved, ok := from(name, properties)
 	switch {
 	case !ok:
 	case resolved:
