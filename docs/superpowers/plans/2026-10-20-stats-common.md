@@ -31,7 +31,7 @@ Repository: `D:/clients/casaos/CasaOS-Common` (module `github.com/ReCasaOS/CasaO
 Failure modes the spec implies that no spec sentence tests; each has its test in the named task.
 
 1. Clock steps backwards or jumps from 1970 to now (NAS without RTC at boot): recording must not freeze or corrupt a slot. Task 4.
-2. `/proc` and Docker glitches: NaN, +-Inf, negative or huge values in a `Sample` are treated as absent, never stored as 0 or as garbage. Task 4.
+2. `/proc` and Docker glitches: NaN, +-Inf and huge values in a `Sample` are treated as absent, never stored as 0 or as garbage; a negative value is stored as given (services clamp negative rate deltas themselves). Task 4.
 3. Hostile item names (`../x`, `a/b`, `app:x:y:1`, 300 bytes, empty, unicode, two names differing by case on a case-insensitive disk) never escape the directory and never collide. Task 2 and 4.
 4. A brand-new or empty item must serialize as `"series": []`, not `null`, and a query must not fail. Task 5.
 5. A rule edited while an alert is firing (disabled, threshold raised, minutes changed) or a metric that vanishes mid-alert (container stopped) must resolve exactly once and never leave a zombie "firing". Task 8.
@@ -74,6 +74,7 @@ All in `D:/clients/casaos/CasaOS-Common/pkg/stats/` (package `stats`):
 - E9 Query semantics the contract leaves open: series of chart `alert` are never returned; a series with no data in the window is omitted; `live` points have Min = Max = Avg; `Series` is never nil. Unit vocabulary (Task 1) is `percent`, `bytes`, `bytes_per_second`, `packets_per_second`, `ops_per_second`, `count`, `flag`.
 - E10 Floats are stored as float32 (relative error <= 6e-8): 12 bytes per series per minute.
 - E11 `Evaluator.OnMinute` semantics for a minute that was never written: when `minute` is more than one minute after the item's `last`, the skipped minutes reset the run but do not end an active alert (see Review Focus 7); a minute that was written without the `alert/<key>` series resets the run and ends the alert.
+- E12 `func (e *Evaluator) LastError() error`: the error of the last write of `alerts.json`, nil once a later write succeeds.
 
 Contract points that do not hold as written: see "Deviations" at the end.
 
@@ -355,7 +356,7 @@ Contract points that do not hold as written: see "Deviations" at the end.
 - [ ] **Step 3: Implement** only what the tests force: the `fsys` plumbing already exists; add `newEvaluator`, ensure `Record` returns wrapped (`%w`) errors, ensure a failed commit leaves in-memory state consistent. Fix real defects the loops reveal in `ring.go`/`store.go` rather than weakening the tests.
 - [ ] **Step 4: Run the same; expect PASS (the kill loops take a few seconds).**
 - [ ] **Step 5: Mutation:** write the stamp before the values (`TestStampIsWrittenLast` and `TestKillAtEveryWriteStep` both fail); skip the `Sync` before the stamp (`TestStampIsWrittenLast`); write both header copies in place instead of alternating (`TestTornWriteAtEveryWriteStep`).
-- [ ] **Step 6: On Linux (WSL as root) run `go test ./pkg/stats/ -run TmpfsFull -v` once; expect PASS, not SKIP.**
+- [ ] **Step 6: On Linux (WSL as root) run `go test ./pkg/stats/ -run DiskFullTmpfs -v` once; expect PASS, not SKIP.**
 - [ ] **Step 7: Commit** `test(stats): crash, corruption and disk-full safety`.
 
 ---
