@@ -132,11 +132,13 @@ func (s *Service) Tick(ctx context.Context) error {
 		return err
 	}
 	smp := s.col.Sample(r)
-	// The first reading after a start or a gap has no CPU rate. Alone in its
-	// minute (the next tick falls in the next minute) it would write a minute
-	// without alert/cpu_high, which ends an active cpu_high; so it is not
-	// recorded (a minute without any Record keeps the alert). Cost: one 5 s
-	// point. alert/mem_high needs no previous reading, so it has no such case.
+	// Only a start has no CPU rate (the Collector keeps its previous reading
+	// across failed Reads). Alone in its minute (the next tick falls in the next
+	// minute) it would write a minute without alert/cpu_high, which ends an
+	// active cpu_high; so it is not recorded (a minute without any Record keeps
+	// the alert). Cost: one 5 s point. alert/mem_high needs no previous reading,
+	// so it has no such case. A source with Cores == 0 never has a CPU rate, so
+	// it is always recorded.
 	if _, ok := smp["alert/cpu_high"]; !ok && r.Cores > 0 && r.At.Add(interval).Unix()/60 != r.At.Unix()/60 {
 		return nil
 	}

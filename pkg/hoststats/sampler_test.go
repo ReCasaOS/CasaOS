@@ -562,3 +562,50 @@ func TestRunTicksAtOnceAndStopsWithItsContext(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// zeroCores is a source that never knows its core count, so never has a CPU rate.
+type zeroCores struct{ *fakeSource }
+
+func (z zeroCores) Read(ctx context.Context) (Reading, error) {
+	r, err := z.fakeSource.Read(ctx)
+	r.Cores = 0
+	return r, err
+}
+
+func TestASourceWithoutCoresLosesNoPoint(t *testing.T) {
+	r := newRig(t)
+	r.src.set(10, 50)
+	if err := r.svc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r.src.clock = r.clock
+	src := zeroCores{r.src}
+	svc, err := New(Config{Dir: t.TempDir(), Source: src, Clock: r.clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	for range 12 {
+		if err := svc.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		r.clock.Advance(interval)
+	}
+	res, err := svc.Store.Query(Item, stats.RangeLive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, s := range res.Series {
+		if s.Chart+"/"+s.Name == "memory/rss" {
+			for _, p := range s.Points {
+				if p.Avg != nil {
+					n++
+				}
+			}
+		}
+	}
+	if n != 12 {
+		t.Fatalf("got %d points, want 12", n)
+	}
+}
