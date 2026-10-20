@@ -100,16 +100,29 @@ func TestPlainKeepsAnErrorFitForANotification(t *testing.T) {
 	}
 }
 
-// bus plays the message bus: it lists AppManagement's registered events, and
-// takes a subscription only with this boot's secret, to events it knows. Each
-// subscription gets the events of the channel, and ends when it closes.
-type bus struct {
-	mu            sync.Mutex
+// sourceBus is what the bus holds for one source: the events it registered, and the channels of
+// its subscriptions.
+type sourceBus struct {
 	registered    []string
-	server        *httptest.Server
 	subscriptions chan []string // the names of each subscription
 	events        chan string   // the events to send, as JSON
 	drop          chan struct{} // ends the current subscription
+}
+
+func newSourceBus(registered ...string) *sourceBus {
+	return &sourceBus{registered: registered, subscriptions: make(chan []string, 10), events: make(chan string, 10), drop: make(chan struct{}, 10)}
+}
+
+// bus plays the message bus: it lists the events each source registered, and takes a subscription
+// only with this boot's secret, to events of that source it knows. The source "app-management" is
+// the one the fields subscriptions, events and drop are about; a source nobody registered is a 404.
+type bus struct {
+	mu            sync.Mutex
+	sources       map[string]*sourceBus
+	server        *httptest.Server
+	subscriptions chan []string
+	events        chan string
+	drop          chan struct{}
 }
 
 func newBus(t *testing.T, runtimePath string, registered ...string) *bus {
@@ -118,58 +131,66 @@ func newBus(t *testing.T, runtimePath string, registered ...string) *bus {
 		t.Fatal(err)
 	}
 	secret := external.InternalAuthorization(runtimePath)
-	b := &bus{registered: registered, subscriptions: make(chan []string, 10), events: make(chan string, 10), drop: make(chan struct{}, 10)}
+	app := newSourceBus(registered...)
+	b := &bus{sources: map[string]*sourceBus{"app-management": app}, subscriptions: app.subscriptions, events: app.events, drop: app.drop}
 	upgrader := websocket.Upgrader{}
 	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != secret {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		switch r.URL.Path {
-		case "/v2/message_bus/event_type/app-management":
+		if source, ok := strings.CutPrefix(r.URL.Path, "/v2/message_bus/event_type/"); ok {
+			if b.source(source) == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			var types []map[string]any
-			for _, name := range b.known() {
-				types = append(types, map[string]any{"sourceID": "app-management", "name": name, "propertyTypeList": []any{}})
+			for _, name := range b.known(source) {
+				types = append(types, map[string]any{"sourceID": source, "name": name, "propertyTypeList": []any{}})
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(types)
-		case "/v2/message_bus/event/app-management":
-			names := r.URL.Query()["names"]
-			for _, name := range names {
-				if !slices.Contains(b.known(), name) {
-					w.WriteHeader(http.StatusBadRequest)
-					return
-				}
-			}
-			connection, err := upgrader.Upgrade(w, r, nil)
-			if err != nil {
+			return
+		}
+		source, ok := strings.CutPrefix(r.URL.Path, "/v2/message_bus/event/")
+		s := b.source(source)
+		if !ok || s == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		names := r.URL.Query()["names"]
+		for _, name := range names {
+			if !slices.Contains(b.known(source), name) {
+				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			defer connection.Close()
-			gone := make(chan struct{})
-			go func() {
-				defer close(gone)
-				for {
-					if _, _, err := connection.ReadMessage(); err != nil {
-						return
-					}
-				}
-			}()
-			b.subscriptions <- names
+		}
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		gone := make(chan struct{})
+		go func() {
+			defer close(gone)
 			for {
-				select {
-				case <-gone:
-					return
-				case event := <-b.events:
-					if connection.WriteMessage(websocket.TextMessage, []byte(event)) != nil {
-						return
-					}
-				case <-b.drop:
+				if _, _, err := connection.ReadMessage(); err != nil {
 					return
 				}
 			}
-		default:
-			w.WriteHeader(http.StatusNotFound)
+		}()
+		s.subscriptions <- names
+		for {
+			select {
+			case <-gone:
+				return
+			case event := <-s.events:
+				if connection.WriteMessage(websocket.TextMessage, []byte(event)) != nil {
+					return
+				}
+			case <-s.drop:
+				return
+			}
 		}
 	}))
 	t.Cleanup(b.server.Close)
@@ -179,18 +200,33 @@ func newBus(t *testing.T, runtimePath string, registered ...string) *bus {
 	return b
 }
 
-// known is what AppManagement has registered so far.
-func (b *bus) known() []string {
+func (b *bus) source(name string) *sourceBus {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return slices.Clone(b.registered)
+	return b.sources[name]
+}
+
+// addSource is another source, such as a module, registering its events with the bus.
+func (b *bus) addSource(source string, names ...string) *sourceBus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sources[source] = newSourceBus(names...)
+	return b.sources[source]
+}
+
+// known is what a source has registered so far.
+func (b *bus) known(source string) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.sources[source].registered)
 }
 
 // register is AppManagement declaring more events, as it does when it starts.
 func (b *bus) register(names ...string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.registered = append(b.registered, names...)
+	app := b.sources["app-management"]
+	app.registered = append(app.registered, names...)
 }
 
 func (b *bus) subscribed(t *testing.T) []string {
@@ -273,12 +309,109 @@ func TestNoSubscriptionWithoutAnEventToFollow(t *testing.T) {
 	runtimePath := t.TempDir()
 	h.RuntimePath = func() string { return runtimePath }
 
-	if h.subscribe(context.Background()) {
+	if h.subscribe(context.Background(), feeds[0]) {
 		t.Fatal("subscribed with no bus address")
 	}
 	newBus(t, runtimePath, "app:install-begin") // an AppManagement not started yet registers nothing we follow
-	if h.subscribe(context.Background()) {
+	if h.subscribe(context.Background(), feeds[0]) {
 		t.Fatal("subscribed to nothing")
+	}
+}
+
+const virtResourceEvent = `{"sourceID":"virt-management","name":"resource:alert-firing","properties":{"item":"vm:abc","name":"web","kind":"vm","situation":"vm_crashed"}}`
+
+// Each source is followed on its own: the bus filters a subscription by source.
+func TestEachSourceIsFollowedOnItsOwn(t *testing.T) {
+	h, o, _ := newHub(t)
+	runtimePath := t.TempDir()
+	h.RuntimePath = func() string { return runtimePath }
+	b := newBus(t, runtimePath, "resource:alert-firing")
+	virt := b.addSource("virt-management", "resource:alert-firing", "resource:alert-resolved")
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { h.followBus(ctx); close(stopped) }()
+	defer func() {
+		cancel()
+		<-stopped
+	}()
+
+	if got := b.subscribed(t); !reflect.DeepEqual(got, []string{"resource:alert-firing"}) {
+		t.Fatalf("app-management subscription to %v", got)
+	}
+	select {
+	case got := <-virt.subscriptions:
+		if !reflect.DeepEqual(sorted(got), []string{"resource:alert-firing", "resource:alert-resolved"}) {
+			t.Fatalf("virt subscription to %v", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no subscription to the virt module")
+	}
+	virt.events <- virtResourceEvent
+	waitForTexts(t, o, 1)
+	if got := o.texts(phone); !reflect.DeepEqual(got, []string{"web crashed.\nhttp://192.168.1.20"}) {
+		t.Fatalf("sent %q", got)
+	}
+}
+
+// A box without the virt module has nothing registered under its source: that feed only waits, and
+// AppManagement's goes on, and followBus ends with its context.
+func TestAnAbsentVirtModuleDoesNotDisturbAppManagementsFeed(t *testing.T) {
+	h, o, _ := newHub(t)
+	runtimePath := t.TempDir()
+	h.RuntimePath = func() string { return runtimePath }
+	b := newBus(t, runtimePath, "app:install-error")
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { h.followBus(ctx); close(stopped) }()
+
+	if got := b.subscribed(t); !reflect.DeepEqual(got, []string{"app:install-error"}) {
+		t.Fatalf("subscribed to %v", got)
+	}
+	b.events <- `{"sourceID":"app-management","name":"app:install-error","properties":{"app:name":"immich"},"uuid":"1"}`
+	waitForTexts(t, o, 1)
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("followBus did not stop")
+	}
+}
+
+// Resource events AppManagement registers after the first subscription are followed too.
+func TestResourceEventsRegisteredLaterAreFollowed(t *testing.T) {
+	previous := recheckRegistered
+	recheckRegistered = 20 * time.Millisecond
+	t.Cleanup(func() { recheckRegistered = previous })
+	h, _, _ := newHub(t)
+	runtimePath := t.TempDir()
+	h.RuntimePath = func() string { return runtimePath }
+	b := newBus(t, runtimePath, "backup:error")
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() { h.followBus(ctx); close(stopped) }()
+	defer func() {
+		cancel()
+		<-stopped
+	}()
+
+	if got := b.subscribed(t); !reflect.DeepEqual(got, []string{"backup:error"}) {
+		t.Fatalf("first subscription to %v", got)
+	}
+	b.register("resource:alert-firing")
+	if got := b.subscribed(t); !reflect.DeepEqual(sorted(got), []string{"backup:error", "resource:alert-firing"}) {
+		t.Fatalf("subscribed again to %v, want the resource event registered since", got)
+	}
+}
+
+// waitForTexts waits until n messages reached the phone.
+func waitForTexts(t *testing.T, o *outbox, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(o.texts(phone)) < n && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := len(o.texts(phone)); got != n {
+		t.Fatalf("%d messages, want %d", got, n)
 	}
 }
 
