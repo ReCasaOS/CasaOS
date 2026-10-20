@@ -80,7 +80,7 @@ func TestGetAlertsAnswersTheChannelsWithoutTheirURLs(t *testing.T) {
 
 	want := map[string]any{
 		"channels":       []any{map[string]any{"id": "a1", "name": "Phone", "service": "ntfy", "host": "ntfy.sh"}},
-		"categories":     map[string]any{"backups": true, "disks": true, "updates": true, "apps": true},
+		"categories":     map[string]any{"backups": true, "disks": true, "updates": true, "apps": true, "resources": true},
 		"disk_threshold": float64(90),
 		"last_failure":   nil,
 	}

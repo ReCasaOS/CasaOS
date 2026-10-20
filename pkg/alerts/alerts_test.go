@@ -77,7 +77,7 @@ func newHub(t *testing.T) (*Hub, *outbox, *time.Time) {
 	h.RuntimePath = func() string { return t.TempDir() }
 	saveConfig(t, h, Config{
 		Channels:      []Channel{{ID: "a1", Name: "Phone", URL: phone}, {ID: "b2", Name: "Mail", URL: mail}},
-		Categories:    map[string]bool{Backups: true, Disks: true, Updates: true, Apps: true},
+		Categories:    map[string]bool{Backups: true, Disks: true, Updates: true, Apps: true, Resources: true},
 		DiskThreshold: 90,
 	})
 	return h, o, &now
