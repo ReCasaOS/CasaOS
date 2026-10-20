@@ -1,6 +1,8 @@
 package hoststats
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,5 +181,118 @@ func TestWholeDisksKeepsPhysicalOnes(t *testing.T) {
 		func(n string) bool { return n == "sda" || n == "nvme0n1" })
 	if len(got) != 2 || got[0] != "sda" || got[1] != "nvme0n1" {
 		t.Fatalf("got %v", got)
+	}
+}
+
+func TestAtMostEightInterfacesSortedAndLongNamesSkipped(t *testing.T) {
+	nets := map[string]NetCounters{strings.Repeat("x", 48): {}}
+	for i := 19; i >= 0; i-- {
+		nets[fmt.Sprintf("n%02d", i)] = NetCounters{}
+	}
+	var c Collector
+	c.Sample(reading(t0, func(r *Reading) { r.Nets = nets }))
+	s := c.Sample(reading(t0.Add(time.Second), func(r *Reading) { r.Nets = nets }))
+	n := 0
+	for k := range s {
+		if strings.HasPrefix(k, "network/rx:") {
+			n++
+			if k > "network/rx:n07" {
+				t.Errorf("not the first sorted: %s", k)
+			}
+		}
+	}
+	if n != 8 || has(s, "network/rx:"+strings.Repeat("x", 48)) {
+		t.Fatalf("got %d nics", n)
+	}
+}
+
+func TestAtMostTwelveMountsAndTheWorstCaseStaysUnder48Series(t *testing.T) {
+	nets := map[string]NetCounters{}
+	for i := 0; i < 20; i++ {
+		nets[fmt.Sprintf("n%02d", i)] = NetCounters{}
+	}
+	var vols []Volume
+	for i := 29; i >= 0; i-- {
+		vols = append(vols, Volume{fmt.Sprintf("/m%02d", i), 100, 1})
+	}
+	vols = append(vols, Volume{"/" + strings.Repeat("l", 48), 100, 1})
+	var c Collector
+	mut := func(r *Reading) {
+		r.Nets, r.Volumes = nets, vols
+		r.CPU = CPUTimes{1, 4}
+		r.Disk = &DiskCounters{}
+	}
+	c.Sample(reading(t0, mut))
+	s := c.Sample(reading(t0.Add(time.Second), func(r *Reading) {
+		mut(r)
+		r.CPU = CPUTimes{2, 8}
+	}))
+	fs := 0
+	for k := range s {
+		if strings.HasPrefix(k, "fs/") {
+			fs++
+		}
+		if len(k) > 63 {
+			t.Errorf("key too long: %s", k)
+		}
+	}
+	if fs != 12 || !has(s, "fs/free_percent:/m00") || has(s, "fs/free_percent:/m12") {
+		t.Fatalf("got %d mounts", fs)
+	}
+	if len(s) > 48 || len(s) != 12+24+12 {
+		t.Fatalf("series = %d", len(s))
+	}
+}
+
+func TestEmptyMountPointIsSkipped(t *testing.T) {
+	var c Collector
+	s := c.Sample(reading(t0, func(r *Reading) { r.Volumes = []Volume{{"", 100, 1}} }))
+	if has(s, "fs/free_percent:") {
+		t.Fatalf("got %v", s)
+	}
+}
+
+func TestMountPointsAreCleanedBeforeTheExclusionRule(t *testing.T) {
+	for _, mp := range []string{"//proc", "/proc/../proc/x", "/var/lib/../lib/docker/x"} {
+		if realVolume(Volume{MountPoint: mp}) {
+			t.Errorf("%s should be excluded", mp)
+		}
+	}
+	if !realVolume(Volume{MountPoint: "/x/../DATA"}) {
+		t.Error("/DATA should be kept")
+	}
+}
+
+func TestZeroCoresGivesNoCPUKeys(t *testing.T) {
+	var c Collector
+	z := func(b, tot float64) func(*Reading) {
+		return func(r *Reading) { r.Cores = 0; r.CPU = CPUTimes{b, tot} }
+	}
+	c.Sample(reading(t0, z(1, 4)))
+	s := c.Sample(reading(t0.Add(time.Second), z(2, 8)))
+	for _, k := range []string{"cpu/total", "cpu/vcpus", "alert/cpu_high"} {
+		if has(s, k) {
+			t.Errorf("unexpected %s", k)
+		}
+	}
+}
+
+func TestNegativeCPUDeltasGiveNoCPUKeys(t *testing.T) {
+	for _, cur := range []CPUTimes{{99, 404}, {101, 396}} {
+		var c Collector
+		c.Sample(reading(t0, func(r *Reading) { r.CPU = CPUTimes{100, 400} }))
+		s := c.Sample(reading(t0.Add(time.Second), func(r *Reading) { r.CPU = cur }))
+		if has(s, "cpu/total") || has(s, "alert/cpu_high") {
+			t.Fatalf("%v: got %v", cur, s)
+		}
+	}
+}
+
+func TestABackwardDiskCounterDropsOnlyThatRate(t *testing.T) {
+	var c Collector
+	c.Sample(reading(t0, func(r *Reading) { r.Disk = &DiskCounters{ReadBytes: 9000, WriteBytes: 0} }))
+	s := c.Sample(reading(t0.Add(time.Second), func(r *Reading) { r.Disk = &DiskCounters{ReadBytes: 100, WriteBytes: 50} }))
+	if has(s, "disk/read") || s["disk/write"] != 50 {
+		t.Fatalf("got %v", s)
 	}
 }

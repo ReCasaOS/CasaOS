@@ -2,6 +2,8 @@
 package hoststats
 
 import (
+	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,7 +46,9 @@ type Collector struct {
 // Sample converts r into a Sample; a value that cannot be computed is absent.
 func (c *Collector) Sample(r Reading) stats.Sample {
 	s := stats.Sample{}
-	s["cpu/vcpus"] = float64(r.Cores)
+	if r.Cores > 0 {
+		s["cpu/vcpus"] = float64(r.Cores)
+	}
 	s["memory/rss"] = float64(r.MemUsed)
 	s["memory/cache"] = float64(r.MemCached)
 	s["memory/swap"] = float64(r.SwapUsed)
@@ -52,10 +56,8 @@ func (c *Collector) Sample(r Reading) stats.Sample {
 	if r.MemTotal > 0 {
 		s["alert/mem_high"] = float64(r.MemUsed) / float64(r.MemTotal) * 100
 	}
-	for _, v := range r.Volumes {
-		if v.Size > 0 && v.Used <= v.Size && realVolume(v) {
-			s["fs/free_percent:"+v.MountPoint] = float64(v.Size-v.Used) / float64(v.Size) * 100
-		}
+	for _, v := range keptVolumes(r.Volumes) {
+		s["fs/free_percent:"+v.MountPoint] = float64(v.Size-v.Used) / float64(v.Size) * 100
 	}
 
 	if p := c.prev; c.hasPrev {
@@ -65,7 +67,8 @@ func (c *Collector) Sample(r Reading) stats.Sample {
 					s[key] = float64(cur-old) / secs
 				}
 			}
-			for name, cur := range r.Nets {
+			for _, name := range keptNets(r.Nets) {
+				cur := r.Nets[name]
 				if old, ok := p.Nets[name]; ok {
 					rate("network/rx:"+name, cur.RxBytes, old.RxBytes)
 					rate("network/tx:"+name, cur.TxBytes, old.TxBytes)
@@ -79,7 +82,7 @@ func (c *Collector) Sample(r Reading) stats.Sample {
 				rate("disk/iops_write", r.Disk.WriteOps, p.Disk.WriteOps)
 			}
 			dBusy, dTotal := r.CPU.Busy-p.CPU.Busy, r.CPU.Total-p.CPU.Total
-			if dBusy >= 0 && dTotal > 0 {
+			if r.Cores > 0 && dBusy >= 0 && dTotal > 0 {
 				pct := dBusy / dTotal * 100
 				s["cpu/total"] = pct * float64(r.Cores)
 				s["alert/cpu_high"] = pct
@@ -90,12 +93,54 @@ func (c *Collector) Sample(r Reading) stats.Sample {
 	return s
 }
 
+// The store allows 48 series per item and never frees one: 12 fixed keys,
+// 3 per interface and 1 per mount point, so at most 12 + 8*3 + 12 = 48.
+const (
+	maxNets    = 8
+	maxMounts  = 12
+	maxKeyLen  = 63
+	fsKeyPref  = "fs/free_percent:"
+	netKeyLong = "network/dropped:"
+)
+
+// keptNets returns the interface names that get series: sorted, short enough, first maxNets.
+func keptNets(nets map[string]NetCounters) []string {
+	var names []string
+	for n := range nets {
+		if len(netKeyLong)+len(n) <= maxKeyLen {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	if len(names) > maxNets {
+		names = names[:maxNets]
+	}
+	return names
+}
+
+// keptVolumes returns the volumes that get a series: sorted by mount point, first maxMounts.
+func keptVolumes(vols []Volume) []Volume {
+	var out []Volume
+	for _, v := range vols {
+		if v.MountPoint != "" && len(fsKeyPref)+len(v.MountPoint) <= maxKeyLen &&
+			v.Size > 0 && v.Used <= v.Size && realVolume(v) {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].MountPoint < out[j].MountPoint })
+	if len(out) > maxMounts {
+		out = out[:maxMounts]
+	}
+	return out
+}
+
 var pseudoRoots = []string{"/proc", "/sys", "/dev", "/run", "/snap", "/var/lib/docker", "/var/lib/containers"}
 
 // realVolume is false for pseudo and container mount points.
 func realVolume(v Volume) bool {
+	mp := path.Clean(v.MountPoint)
 	for _, root := range pseudoRoots {
-		if v.MountPoint == root || strings.HasPrefix(v.MountPoint, root+"/") {
+		if mp == root || strings.HasPrefix(mp, root+"/") {
 			return false
 		}
 	}
