@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/model"
+	"github.com/ReCasaOS/CasaOS-Common/pkg/stats"
 	"github.com/ReCasaOS/CasaOS-Common/utils/command"
 	"github.com/ReCasaOS/CasaOS-Common/utils/constants"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -30,6 +31,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/autoupdate"
 	"github.com/ReCasaOS/CasaOS/pkg/cache"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/hoststats"
 	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
 	"github.com/ReCasaOS/CasaOS/pkg/telemetry"
@@ -37,6 +39,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/route"
 	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/coreos/go-systemd/daemon"
+	"github.com/shirou/gopsutil/v3/host"
 	"go.uber.org/zap"
 
 	"github.com/robfig/cron/v3"
@@ -192,6 +195,25 @@ func main() {
 		return apps, nil
 	})
 	go autoupdate.Default.Run(context.Background())
+	// The host's statistics start after the alerts (their Handle exists) and before the routes
+	// and the crontab. Without them the core goes on: the routes answer 503. On a stop the
+	// sampler's context ends first and the service is closed after it, never while it ticks.
+	statsCtx, stopStats := context.WithCancel(context.Background())
+	defer stopStats()
+	if svc, err := hoststats.New(hostStatsConfig()); err != nil {
+		logger.Error("host statistics are off", zap.Error(err))
+	} else {
+		hoststats.Default = svc
+		running := make(chan struct{})
+		go func() { svc.Run(statsCtx); close(running) }()
+		stopHostStats = func() {
+			stopStats()
+			<-running
+			if err := svc.Close(); err != nil {
+				logger.Error("host statistics did not close cleanly", zap.Error(err))
+			}
+		}
+	}
 	v1Router := route.InitV1Router()
 
 	v2Router := route.InitV2Router()
@@ -329,6 +351,57 @@ func main() {
 	}
 }
 
+// stopHostStats ends the sampler and closes the service; a no-op while the statistics are off.
+var stopHostStats = func() {}
+
+// hostStatsConfig wires the host's statistics to this core: the same interfaces as
+// /v1/sys/utilization, the storages the dashboard lists, the alerts and the message bus.
+func hostStatsConfig() hoststats.Config {
+	return hoststats.Config{
+		Dir:   "/var/lib/casaos/stats/core",
+		Clock: stats.SystemClock{},
+		Source: &hoststats.SystemSource{
+			Interfaces: func() []string { return service.MyService.System().GetNet(true) },
+			Volumes: func(ctx context.Context) ([]hoststats.Volume, error) {
+				list, err := alerts.StorageVolumes(ctx, config.CommonInfo.RuntimePath)
+				if err != nil {
+					return nil, err
+				}
+				volumes := make([]hoststats.Volume, 0, len(list))
+				for _, v := range list {
+					volumes = append(volumes, hoststats.Volume{MountPoint: v.MountPoint, Size: v.Size, Used: v.Used})
+				}
+				return volumes, nil
+			},
+			IsPhysical: func(name string) bool {
+				_, err := os.Stat("/sys/block/" + name + "/device")
+				return err == nil
+			},
+		},
+		Publish: func(name string, properties map[string]string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			response, err := service.MyService.MessageBus().PublishEventWithResponse(ctx, common.SERVICENAME, name, properties)
+			if err != nil {
+				logger.Error("failed to publish event to message bus", zap.Error(err), zap.String("event", name))
+				return
+			}
+			if response.StatusCode() != http.StatusOK {
+				logger.Error("failed to publish event to message bus", zap.String("event", name), zap.String("status", response.Status()))
+			}
+		},
+		Hub:  alerts.Default.Handle,
+		Name: func() string { name, _ := os.Hostname(); return name },
+		Boot: func() time.Time {
+			seconds, err := host.BootTime()
+			if err != nil {
+				return time.Time{}
+			}
+			return time.Unix(int64(seconds), 0)
+		},
+	}
+}
+
 // sigintIgnoredAtStart says whether SIGINT was ignored when the process began (the job of a shell that is sent to the background
 // is): it is looked at here, where nothing of the core can have listened to it yet, since listening to a signal that was ignored
 // makes it one that is no longer.
@@ -343,6 +416,7 @@ func stopThePlanWhenTheCoreIsToldToStop() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, service.OSPlanStopSignals(sigintIgnoredAtStart)...)
 	received := <-signals
+	stopHostStats()
 	service.MyService.System().StopSystemOSUpgradeSettle(service.OSPlanStopWait)
 	service.MyService.System().StopSystemOSPlan(service.OSPlanStopWait)
 	// the default again, and the signal again
