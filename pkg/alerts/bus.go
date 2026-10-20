@@ -167,10 +167,14 @@ func registered(ctx context.Context, address, runtimePath string) ([]string, err
 // dropped, the Hub's memory of what it sent is not touched, so that no "resolved" follows an
 // alert that was never sent.
 func (h *Hub) onEvent(name string, properties map[string]string) {
-	if slices.Contains(containerEvents, name) && h.Muted() {
+	if (slices.Contains(containerEvents, name) || isMutedResource(name, properties)) && h.Muted() {
 		return
 	}
-	a, resolved, ok := fromEvent(name, properties)
+	from := fromEvent
+	if slices.Contains(resourceEvents, name) {
+		from = fromResource
+	}
+	a, resolved, ok := from(name, properties)
 	switch {
 	case !ok:
 	case resolved:
