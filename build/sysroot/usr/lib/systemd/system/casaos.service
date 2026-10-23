@@ -9,6 +9,7 @@ ExecStart=/usr/bin/casaos -c /etc/casaos/casaos.conf
 PIDFile=/var/run/casaos/casaos.pid
 Restart=always
 RestartSec=5
+TimeoutStartSec=3min
 Type=notify
 
 [Install]

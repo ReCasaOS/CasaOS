@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,5 +64,24 @@ func TestTheWaitForTheGatewayEnds(t *testing.T) {
 
 	if err == nil || tries < 2 || time.Since(start) > 10*time.Second {
 		t.Fatalf("err %v after %d tries in %s", err, tries, time.Since(start))
+	}
+}
+
+// systemd gives up on a start after TimeoutStartSec, 90 s when the unit does not say, and the core says
+// it is ready only once its routes are at the gateway: the unit must give it longer than the core waits
+// for the gateway, or that wait is cut short.
+func TestTheUnitWaitsLongerThanTheCoreWaitsForTheGateway(t *testing.T) {
+	unit, err := os.ReadFile("../build/sysroot/usr/lib/systemd/system/casaos.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, value, found := strings.Cut(string(unit), "\nTimeoutStartSec=")
+	if !found {
+		t.Fatal("the unit has no TimeoutStartSec: systemd gives up after 90 s")
+	}
+	value, _, _ = strings.Cut(value, "\n")
+	timeout, err := time.ParseDuration(strings.Replace(strings.TrimSpace(value), "min", "m", 1))
+	if err != nil || timeout <= gatewayWait {
+		t.Fatalf("TimeoutStartSec=%s (%v), the core waits %s for the gateway", value, err, gatewayWait)
 	}
 }
