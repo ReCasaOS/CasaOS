@@ -396,9 +396,10 @@ func TestTheCountSaysSinceWhenOnlyWithinADay(t *testing.T) {
 	}
 }
 
-// A resolved alert past its six hours holds nothing back any more: the next raise forgets it, so that
-// the memory does not keep every key the box ever had. One not resolved stays, its resolution may come.
-func TestAResolvedRecordPastSixHoursIsForgotten(t *testing.T) {
+// A resolved alert is forgotten by the next raise a day after it was sent, so that the memory does not
+// keep every key the box ever had; within the day it stays, the count's "since" needs it. One not
+// resolved stays, its resolution may come.
+func TestAResolvedRecordIsForgottenAfterADay(t *testing.T) {
 	h, _, now := newHub(t)
 	open := alert{key: "app:immich:install", category: Apps, sentence: "Installing immich failed."}
 
@@ -406,14 +407,20 @@ func TestAResolvedRecordPastSixHoursIsForgotten(t *testing.T) {
 	raise(h, open)
 	*now = now.Add(20 * time.Minute)
 	resolve(h, alert{key: crashed.key, category: Apps, sentence: "Resolved: immich runs normally again."})
+	kept := func(key string) bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		_, ok := h.sent[key]
+		return ok
+	}
 	*now = now.Add(6 * time.Hour)
 	raise(h, alert{key: "disk:WD-1:smart", category: Disks, sentence: "Disk sdb fails its SMART check."})
-
-	h.mu.Lock()
-	_, resolvedKept := h.sent[crashed.key]
-	_, openKept := h.sent[open.key]
-	h.mu.Unlock()
-	if resolvedKept || !openKept {
-		t.Fatalf("resolved kept: %v, open kept: %v; want only the open one kept", resolvedKept, openKept)
+	if !kept(crashed.key) {
+		t.Fatal("a resolved alert sent less than a day ago is forgotten")
+	}
+	*now = now.Add(18 * time.Hour)
+	raise(h, alert{key: "disk:WD-2:smart", category: Disks, sentence: "Disk sdc fails its SMART check."})
+	if kept(crashed.key) || !kept(open.key) {
+		t.Fatalf("resolved kept: %v, open kept: %v; want only the open one kept", kept(crashed.key), kept(open.key))
 	}
 }

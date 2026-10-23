@@ -11,6 +11,7 @@
 package service
 
 import (
+	"errors"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
@@ -157,20 +158,26 @@ func (c *store) MessageBus() *message_bus.ClientWithResponses {
 	return client
 }
 
-// gatewayWait is how long the core waits for a gateway that does not answer before it gives up and
-// lets systemd restart it. A var, so tests can shorten it.
-var gatewayWait = 2 * time.Minute
+// startWait is how long after the process started the core waits, at start, for the gateway (its first
+// look, its routes) and the message bus (the event types), all of them together.
+const startWait = 2 * time.Minute
 
-// RetryGateway calls try until it succeeds or gatewayWait has passed, waiting 1 s, then twice as long
-// each time up to 15 s, and returns try's last error.
+// StartDeadline is when those waits end: nothing starts after it, so that the start stays inside the
+// unit's TimeoutStartSec (service_test.go adds up what may still end after it). A var, so that tests
+// can move it.
+var StartDeadline = time.Now().Add(startWait)
+
+// RetryGateway calls try until it succeeds, waiting 1 s, then twice as long each time up to 15 s, and
+// gives up with try's last error rather than begin a try after StartDeadline; then systemd restarts the
+// core.
 func RetryGateway(try func() error) error {
-	deadline := time.Now().Add(gatewayWait)
-	for wait := time.Second; ; wait = min(2*wait, 15*time.Second) {
-		err := try()
-		if err == nil || time.Now().Add(wait).After(deadline) {
+	err := errors.New("the start's deadline for the gateway has passed")
+	for wait := time.Second; time.Now().Before(StartDeadline); wait = min(2*wait, 15*time.Second) {
+		if err = try(); err == nil || time.Now().Add(wait).After(StartDeadline) {
 			return err
 		}
 		logger.Info("the gateway does not answer, trying again", zap.Error(err), zap.Duration("in", wait))
 		time.Sleep(wait)
 	}
+	return err
 }

@@ -254,8 +254,8 @@ func main() {
 		}
 	}
 
-	// register at message bus
-	for i := 0; i < 10; i++ {
+	// register at message bus: once whatever the time, then again until the start's deadline
+	for i := 0; i < 10 && (i == 0 || time.Now().Before(service.StartDeadline)); i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		response, err := service.MyService.MessageBus().RegisterEventTypesWithResponse(ctx, common.EventTypes)
 		cancel()
