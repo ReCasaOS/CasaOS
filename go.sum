@@ -22,8 +22,8 @@ github.com/Curtis-Milo/nat-type-identifier-go v0.0.0-20220215191915-18d42168c63d
 github.com/Masterminds/semver/v3 v3.5.0 h1:kQceYJfbupGfZOKZQg0kou0DgAKhzDg2NZPAwZ/2OOE=
 github.com/Masterminds/semver/v3 v3.5.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/ReCasaOS/CasaOS-Common v0.4.30 h1:ufz3t3WieFYZ1mzkR/ewEKQenTDMc4i3hogkk7Okbaw=
-github.com/ReCasaOS/CasaOS-Common v0.4.30/go.mod h1:HjYCcRAVDa0c/IncJDof1sddCpze2esCTZt941Sk7LI=
+github.com/ReCasaOS/CasaOS-Common v0.4.31 h1:j0+PVY2suHW/StJ69MnDwBk+1rdS19ysxBuOsedK8Tc=
+github.com/ReCasaOS/CasaOS-Common v0.4.31/go.mod h1:HjYCcRAVDa0c/IncJDof1sddCpze2esCTZt941Sk7LI=
 github.com/STARRY-S/zip v0.2.3 h1:luE4dMvRPDOWQdeDdUxUoZkzUIpTccdKdhHHsQJ1fm4=
 github.com/STARRY-S/zip v0.2.3/go.mod h1:lqJ9JdeRipyOQJrYSOtpNAiaesFO6zVDsE8GIGFaoSk=
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=

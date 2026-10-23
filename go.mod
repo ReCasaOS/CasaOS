@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/Curtis-Milo/nat-type-identifier-go v0.0.0-20220215191915-18d42168c63d
-	github.com/ReCasaOS/CasaOS-Common v0.4.30
+	github.com/ReCasaOS/CasaOS-Common v0.4.31
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/deckarep/golang-set/v2 v2.3.0
 	github.com/deepmap/oapi-codegen v1.12.4
@@ -39,7 +39,6 @@ require (
 	github.com/tidwall/gjson v1.17.0
 	go.uber.org/goleak v1.3.0
 	go.uber.org/zap v1.24.0
-	golang.org/x/crypto v0.57.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
 	gorm.io/gorm v1.25.0
@@ -111,6 +110,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20230713183714-613f0c0eb8a1 // indirect
 	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
