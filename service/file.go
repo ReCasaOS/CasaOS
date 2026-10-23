@@ -12,11 +12,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -29,6 +31,12 @@ import (
 var FileQueue sync.Map
 
 var OpStrArr []string
+
+// FileQueueLock guards FileQueue and OpStrArr together: a task is in FileQueue while its id is in OpStrArr.
+var FileQueueLock sync.Mutex
+
+// fileMoveRename is how a move is first tried, a var for the tests that make it cross two disks.
+var fileMoveRename = os.Rename
 
 type reader struct {
 	ctx context.Context
@@ -102,54 +110,50 @@ func FileOperate(k string) {
 					os.RemoveAll(temp.To + "/" + lastPath)
 				}
 			}
-			err := file.CopyDir(v.From, temp.To, temp.Style)
-			if err == nil {
-				err = os.RemoveAll(v.From)
-				if err != nil {
-					logger.Error("file move error", zap.Any("err", err))
-					err = file.MoveFile(v.From, temp.To+"/"+lastPath)
-					if err != nil {
-						logger.Error("MoveFile error", zap.Any("err", err))
-						continue
-					}
-
+			// a rename on the same disk; on another one a copy, and the source is removed only once all of it is copied
+			err := fileMoveRename(v.From, temp.To+"/"+lastPath)
+			if errors.Is(err, syscall.EXDEV) {
+				if err = file.CopyDir(v.From, temp.To, temp.Style); err == nil {
+					err = os.RemoveAll(v.From)
+				} else {
+					os.RemoveAll(temp.To + "/" + lastPath)
 				}
 			}
-
-		} else if temp.Type == "copy" {
-			err := file.CopyDir(v.From, temp.To, temp.Style)
 			if err != nil {
-				continue
+				logger.Error("file move error", zap.Error(err))
 			}
-		} else {
-			continue
+		} else if temp.Type == "copy" {
+			if err := file.CopyDir(v.From, temp.To, temp.Style); err != nil {
+				logger.Error("file copy error", zap.Error(err))
+			}
 		}
-
 	}
 	temp.Finished = true
-	FileQueue.Store(k, temp)
+	FileQueueLock.Lock()
+	defer FileQueueLock.Unlock()
+	if _, ok := FileQueue.Load(k); ok { // a task cancelled meanwhile stays out of the queue
+		FileQueue.Store(k, temp)
+	}
 }
 
 func ExecOpFile() {
-	len := len(OpStrArr)
-	if len == 0 {
-		return
-	}
-	if len > 1 {
-		len = 1
-	}
-	for i := 0; i < len; i++ {
-		go FileOperate(OpStrArr[i])
+	FileQueueLock.Lock()
+	defer FileQueueLock.Unlock()
+	if len(OpStrArr) > 0 {
+		go FileOperate(OpStrArr[0])
 	}
 }
 
 // file move or copy and send notify
 func CheckFileStatus() {
 	for {
-		if len(OpStrArr) == 0 {
+		FileQueueLock.Lock()
+		ids := append([]string(nil), OpStrArr...)
+		FileQueueLock.Unlock()
+		if len(ids) == 0 {
 			return
 		}
-		for _, v := range OpStrArr {
+		for _, v := range ids {
 			var total int64 = 0
 			item, ok := FileQueue.Load(v)
 			if !ok {
@@ -172,7 +176,12 @@ func CheckFileStatus() {
 				}
 			}
 			temp.ProcessedSize = total
-			FileQueue.Store(v, temp)
+			FileQueueLock.Lock()
+			if current, ok := FileQueue.Load(v); ok { // still queued; and a task FileOperate has finished stays finished
+				temp.Finished = temp.Finished || current.(model.FileOperate).Finished
+				FileQueue.Store(v, temp)
+			}
+			FileQueueLock.Unlock()
 		}
 		time.Sleep(time.Second * 3)
 	}

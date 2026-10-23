@@ -11,6 +11,11 @@ import (
 // os.CreateTemp creates it 0600, whatever the old file's mode: it is for root's
 // own state files.
 func WriteFileAtomic(path string, data []byte) error {
+	return writeFileAtomic(path, data, nil)
+}
+
+// writeFileAtomic is WriteFileAtomic, prepare (when given) run on the temporary file first.
+func writeFileAtomic(path string, data []byte, prepare func(*os.File) error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -19,7 +24,12 @@ func WriteFileAtomic(path string, data []byte) error {
 		return err
 	}
 	defer os.Remove(tmp.Name()) // nothing left to remove once renamed
-	_, err = tmp.Write(data)
+	if prepare != nil {
+		err = prepare(tmp)
+	}
+	if err == nil {
+		_, err = tmp.Write(data)
+	}
 	if err == nil {
 		err = tmp.Sync()
 	}

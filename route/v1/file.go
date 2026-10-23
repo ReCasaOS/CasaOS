@@ -73,8 +73,6 @@ var (
 			return true
 		},
 	}
-	conn *websocket.Conn
-	err  error
 )
 
 // @Summary 读取文件
@@ -318,19 +316,19 @@ func DirPath(ctx echo.Context) error {
 	}
 	// Hide the files or folders in operation
 	fileQueue := make(map[string]string)
-	if len(service.OpStrArr) > 0 {
-		for _, v := range service.OpStrArr {
-			v, ok := service.FileQueue.Load(v)
-			if !ok {
-				continue
-			}
-			vt := v.(model.FileOperate)
-			for _, i := range vt.Item {
-				lastPath := i.From[strings.LastIndex(i.From, "/")+1:]
-				fileQueue[vt.To+"/"+lastPath] = i.From
-			}
+	service.FileQueueLock.Lock()
+	for _, v := range service.OpStrArr {
+		v, ok := service.FileQueue.Load(v)
+		if !ok {
+			continue
+		}
+		vt := v.(model.FileOperate)
+		for _, i := range vt.Item {
+			lastPath := i.From[strings.LastIndex(i.From, "/")+1:]
+			fileQueue[vt.To+"/"+lastPath] = i.From
 		}
 	}
+	service.FileQueueLock.Unlock()
 
 	pathList := []ObjResp{}
 	for i := (req.Index - 1) * req.Size; i < forEnd; i++ {
@@ -554,7 +552,7 @@ func PostFileUpload(ctx echo.Context) error {
 			}()
 		}
 	} else {
-		out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
+		out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 		if err != nil {
 			logger.Error("error when trying to open `"+path+"` for creation", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
@@ -642,8 +640,13 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 	if len(list.Item) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
-	if list.To == list.Item[0].From[:strings.LastIndex(list.Item[0].From, "/")] {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SOURCE_DES_SAME, Message: common_err.GetMsg(common_err.SOURCE_DES_SAME)})
+	list.To = filepath.Clean(list.To)
+	for i := range list.Item {
+		list.Item[i].From = filepath.Clean(list.Item[i].From)
+		// into its own folder (or onto itself) the copy never ends and the move removes both
+		if list.To == filepath.Dir(list.Item[i].From) || isSameOrInside(list.To, list.Item[i].From) {
+			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SOURCE_DES_SAME, Message: common_err.GetMsg(common_err.SOURCE_DES_SAME)})
+		}
 	}
 
 	var total int64 = 0
@@ -667,6 +670,7 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 	list.ProcessedSize = 0
 
 	uid := uuid.NewString()
+	service.FileQueueLock.Lock()
 	service.FileQueue.Store(uid, list)
 	service.OpStrArr = append(service.OpStrArr, uid)
 	if len(service.OpStrArr) == 1 {
@@ -676,8 +680,15 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 		go service.MyService.Notify().SendFileOperateNotify(false)
 
 	}
+	service.FileQueueLock.Unlock()
 
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
+}
+
+// isSameOrInside reports whether path is dir or under it, by whole names: /DATA/Photo2 is not inside /DATA/Photo. Paths it cannot compare count as inside.
+func isSameOrInside(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err != nil || (rel != ".." && !strings.HasPrefix(rel, "../"))
 }
 
 // @Summary delete file
@@ -733,16 +744,7 @@ func PutFileContent(ctx echo.Context) error {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
 	// err := os.Remove(path)
-	f, err := os.Stat(fi.FilePath)
-	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
-	}
-	fm := f.Mode()
-	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR), Data: err})
-	}
-	os.OpenFile(fi.FilePath, os.O_CREATE, fm)
-	err = file.WriteToFullPath([]byte(fi.FileContent), fi.FilePath, fm)
+	err := file.ReplaceFile(fi.FilePath, []byte(fi.FileContent))
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 	}
@@ -786,8 +788,12 @@ func GetFileImage(ctx echo.Context) error {
 
 func DeleteOperateFileOrDir(ctx echo.Context) error {
 	id := ctx.Param("id")
+	service.FileQueueLock.Lock()
 	if id == "0" {
-		service.FileQueue = sync.Map{}
+		service.FileQueue.Range(func(k, _ interface{}) bool {
+			service.FileQueue.Delete(k)
+			return true
+		})
 		service.OpStrArr = []string{}
 	} else {
 
@@ -801,6 +807,7 @@ func DeleteOperateFileOrDir(ctx echo.Context) error {
 		service.OpStrArr = tempList
 
 	}
+	service.FileQueueLock.Unlock()
 
 	go service.MyService.Notify().SendFileOperateNotify(true)
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
@@ -837,6 +844,8 @@ type CenterHandler struct {
 	unregister chan *Client
 	// 用户集合，每个用户本身也在跑两个协程，监听用户的读、写的状态
 	clients map[string]*Client
+	// mu guards clients and Client.left
+	mu sync.RWMutex
 }
 
 type Client struct {
@@ -844,6 +853,7 @@ type Client struct {
 	conn    *websocket.Conn
 	// 每个用户自己的循环跑起来的状态监控
 	send         chan []byte
+	left         bool         // send is closed
 	ID           string       `json:"id"`
 	IP           string       `json:"ip"`
 	Name         service.Name `json:"name"`
@@ -866,8 +876,10 @@ func ConnectWebSocket(ctx echo.Context) error {
 	// peerModel := service.MyService.Peer().GetPeerByUserAgent(ctx.Request().UserAgent())
 	peerModel := model2.PeerDriveDBModel{}
 	name := service.GetName(request)
-	if conn, err = upgraderFile.Upgrade(writer, request, writer.Header()); err != nil {
+	conn, err := upgraderFile.Upgrade(writer, request, writer.Header())
+	if err != nil {
 		log.Println(err)
+		return nil // the upgrader has answered
 	}
 	client := &Client{handler: &handler, conn: conn, send: make(chan []byte, 256), ID: service.GetPeerId(request, key), IP: service.GetIP(request), Name: name, RtcSupported: true, TimerId: 0, LastBeat: time.Now()}
 	if peerId != "" || len(peerModel.ID) > 0 {
@@ -904,7 +916,7 @@ func ConnectWebSocket(ctx echo.Context) error {
 		kickoutList := []Client{}
 		count := len(list) - 10
 		for i := len(list) - 1; count > 0 && i > -1; i-- {
-			if _, ok := handler.clients[list[i].ID]; !ok {
+			if handler.client(list[i].ID) == nil {
 				count--
 				kickoutList = append(kickoutList, Client{ID: list[i].ID, Name: service.GetNameByDB(list[i]), IP: list[i].IP})
 				service.MyService.Peer().DeletePeer(list[i].ID)
@@ -929,16 +941,13 @@ func ConnectWebSocket(ctx echo.Context) error {
 	pmsg["peer"] = currentPeer
 	pby, err := json.Marshal(pmsg)
 	fmt.Println(err)
-	for _, v := range handler.clients {
-		v.send <- pby
-	}
-	// client.handler.broadcast <- pby
+	client.handler.broadcast <- pby
 	clients := []PeerModel{}
-	for _, v := range client.handler.clients {
-		if _, ok := handler.clients[v.ID]; ok {
-			clients = append(clients, PeerModel{ID: v.ID, Name: v.Name, RtcSupported: v.RtcSupported})
-		}
+	handler.mu.RLock()
+	for _, v := range handler.clients {
+		clients = append(clients, PeerModel{ID: v.ID, Name: v.Name, RtcSupported: v.RtcSupported})
 	}
+	handler.mu.RUnlock()
 
 	other := make(map[string]interface{})
 	other["type"] = "peers"
@@ -946,9 +955,6 @@ func ConnectWebSocket(ctx echo.Context) error {
 	otherBy, err := json.Marshal(other)
 	fmt.Println(err)
 	client.send <- otherBy
-
-	// 推给监控中心注册到用户集合中
-	handler.register <- client
 
 	client.send <- []byte(`{"type":"ping"}`)
 
@@ -961,6 +967,10 @@ func ConnectWebSocket(ctx echo.Context) error {
 	msg["message"] = data
 	by, _ := json.Marshal(msg)
 	client.send <- by
+
+	// registered once its first messages are queued: from then on only the handler, under its lock, sends to it
+	// 推给监控中心注册到用户集合中
+	handler.register <- client
 
 	// 每个 client 都挂起 2 个新的协程，监控读、写状态
 	go client.writePump()
@@ -1001,7 +1011,10 @@ func (c *Client) writePump() {
 	}()
 	for {
 		// 广播推过来的新消息，马上通过websocket推给自己
-		message, _ := <-c.send
+		message, ok := <-c.send
+		if !ok {
+			return
+		}
 		fmt.Println("推送消息", string(message), "1")
 		if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 			return
@@ -1056,16 +1069,12 @@ func (c *Client) readPump() {
 		to := gjson.GetBytes(message, "to")
 
 		if len(to.String()) > 0 {
-			toC := c.handler.clients[to.String()]
-			if toC == nil {
-				continue
-			}
 			data := map[string]interface{}{}
 			json.Unmarshal(message, &data)
 			data["sender"] = c.ID
 			delete(data, "to")
 			message, err = json.Marshal(data)
-			toC.send <- message
+			c.handler.send(to.String(), message)
 			continue
 		}
 
@@ -1078,25 +1087,61 @@ func (ch *CenterHandler) monitoring() {
 		select {
 		// 注册，新用户连接过来会推进注册通道，这里接收推进来的用户指针
 		case client := <-ch.register:
+			ch.mu.Lock()
 			ch.clients[client.ID] = client
+			ch.mu.Unlock()
 			// 注销，关闭连接或连接异常会将用户推出群聊
 		case client := <-ch.unregister:
-			delete(ch.clients, client.ID)
+			ch.mu.Lock()
+			if ch.clients[client.ID] == client { // not the newer connection of the same peer
+				delete(ch.clients, client.ID)
+			}
+			if !client.left { // both pumps unregister: close once, and its writePump ends
+				client.left = true
+				close(client.send)
+			}
+			ch.mu.Unlock()
 			// 消息，监听到有新消息到来
 		case message := <-ch.broadcast:
 			println("消息来了，message：" + string(message))
 			// 推送给每个用户的通道，每个用户都有跑协程起了writePump的监听
+			ch.mu.RLock()
 			for _, client := range ch.clients {
-				client.send <- message
+				trySend(client, message)
 			}
+			ch.mu.RUnlock()
 		}
+	}
+}
+
+// client is the connected client of the peer id, nil when there is none.
+func (ch *CenterHandler) client(id string) *Client {
+	ch.mu.RLock()
+	defer ch.mu.RUnlock()
+	return ch.clients[id]
+}
+
+// send queues message for the connected client of the peer id, if any.
+func (ch *CenterHandler) send(id string, message []byte) {
+	ch.mu.RLock()
+	defer ch.mu.RUnlock()
+	if c := ch.clients[id]; c != nil {
+		trySend(c, message)
+	}
+}
+
+// trySend queues message for c, a client in clients with mu held: only then is its send open. A client that does not keep up misses the message rather than block everyone.
+func trySend(c *Client, message []byte) {
+	select {
+	case c.send <- message:
+	default:
 	}
 }
 
 func GetPeers(ctx echo.Context) error {
 	peers := service.MyService.Peer().GetPeers()
 	for i := 0; i < len(peers); i++ {
-		if _, ok := handler.clients[peers[i].ID]; ok {
+		if handler.client(peers[i].ID) != nil {
 			peers[i].Online = true
 		}
 	}

@@ -302,10 +302,7 @@ func CopyDir(src string, dst string, style string) error {
 		return err
 	}
 	if !srcinfo.IsDir() {
-		if err = CopyFile(src, dst, style); err != nil {
-			fmt.Println(err)
-		}
-		return nil
+		return CopyFile(src, dst, style)
 	}
 	// dstPath := dst
 	lastPath := src[strings.LastIndex(src, "/")+1:]
@@ -331,13 +328,12 @@ func CopyDir(src string, dst string, style string) error {
 		dstfp := dst // path.Join(dst, fd.Name())
 
 		if fd.IsDir() {
-			if err = CopyDir(srcfp, dstfp, style); err != nil {
-				fmt.Println(err)
-			}
+			err = CopyDir(srcfp, dstfp, style)
 		} else {
-			if err = CopyFile(srcfp, dstfp, style); err != nil {
-				fmt.Println(err)
-			}
+			err = CopyFile(srcfp, dstfp, style)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	return nil

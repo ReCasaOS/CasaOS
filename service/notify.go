@@ -71,160 +71,93 @@ func (i *notifyServer) SendNotify(name string, message map[string]interface{}) {
 
 // Send periodic broadcast messages
 func (i *notifyServer) SendFileOperateNotify(nowSend bool) {
-	if nowSend {
-		len := 0
-		FileQueue.Range(func(k, v interface{}) bool {
-			len++
-			return true
-		})
-
-		model := notify.NotifyModel{}
-		listMsg := make(map[string]interface{})
-		if len == 0 {
-			model.Data = []string{}
-			listMsg["file_operate"] = model
-			msg := make(map[string]string)
-			for k, v := range listMsg {
-				bt, _ := json.Marshal(v)
-				msg[k] = string(bt)
-			}
-			response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "casaos:file:operate", msg)
-			if err != nil {
-				logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", msg))
-			}
-			if response.StatusCode() != http.StatusOK {
-				logger.Error("failed to publish event to message bus", zap.String("status", response.Status()), zap.Any("response", response))
-			}
+	for {
+		list, queued := fileOperateTasks()
+		if !queued && !nowSend {
 			return
 		}
-
-		model.State = "NORMAL"
-		list := []notify.File{}
-		OpStrArrbak := OpStrArr
-
-		for _, v := range OpStrArrbak {
-			tempItem, ok := FileQueue.Load(v)
-			temp := tempItem.(model2.FileOperate)
-			if !ok {
-				continue
-			}
-			task := notify.File{}
-			task.Id = v
-			task.ProcessedSize = temp.ProcessedSize
-			task.TotalSize = temp.TotalSize
-			task.To = temp.To
-			task.Type = temp.Type
-			if task.ProcessedSize == 0 {
-				task.Status = "STARTING"
-			} else {
-				task.Status = "PROCESSING"
-			}
-
-			if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
-
-				task.Finished = true
-				task.Status = "FINISHED"
-				FileQueue.Delete(v)
-				OpStrArr = OpStrArr[1:]
-				go ExecOpFile()
-				list = append(list, task)
-				continue
-			}
-			for _, v := range temp.Item {
-				if v.Size != v.ProcessedSize {
-					task.ProcessingPath = v.From
-					break
-				}
-			}
-
-			list = append(list, task)
-		}
-		model.Data = list
-
-		listMsg["file_operate"] = model
-		msg := make(map[string]string)
-		for k, v := range listMsg {
-			bt, _ := json.Marshal(v)
-			msg[k] = string(bt)
-		}
-		response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "casaos:file:operate", msg)
-		if err != nil {
-			logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", msg))
-		}
-		if response.StatusCode() != http.StatusOK {
-			logger.Error("failed to publish event to message bus", zap.String("status", response.Status()), zap.Any("response", response))
-		}
-
-	} else {
-		for {
-
-			len := 0
-			FileQueue.Range(func(k, v interface{}) bool {
-				len++
-				return true
-			})
-			if len == 0 {
-				return
-			}
-			listMsg := make(map[string]interface{})
-			model := notify.NotifyModel{}
+		model := notify.NotifyModel{Data: []string{}}
+		if queued {
 			model.State = "NORMAL"
-			list := []notify.File{}
-			OpStrArrbak := OpStrArr
-
-			for _, v := range OpStrArrbak {
-				tempItem, ok := FileQueue.Load(v)
-				temp := tempItem.(model2.FileOperate)
-				if !ok {
-					continue
-				}
-				task := notify.File{}
-				task.Id = v
-				task.ProcessedSize = temp.ProcessedSize
-				task.TotalSize = temp.TotalSize
-				task.To = temp.To
-				task.Type = temp.Type
-				if task.ProcessedSize == 0 {
-					task.Status = "STARTING"
-				} else {
-					task.Status = "PROCESSING"
-				}
-				if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
-
-					task.Finished = true
-					task.Status = "FINISHED"
-					FileQueue.Delete(v)
-					OpStrArr = OpStrArr[1:]
-					go ExecOpFile()
-					list = append(list, task)
-					continue
-				}
-				for _, v := range temp.Item {
-					if v.Size != v.ProcessedSize {
-						task.ProcessingPath = v.From
-						break
-					}
-				}
-
-				list = append(list, task)
-			}
 			model.Data = list
-
-			listMsg["file_operate"] = model
-			msg := make(map[string]string)
-			for k, v := range listMsg {
-				bt, _ := json.Marshal(v)
-				msg[k] = string(bt)
-			}
-			response, err := MyService.MessageBus().PublishEventWithResponse(context.Background(), common.SERVICENAME, "casaos:file:operate", msg)
-			if err != nil {
-				logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", msg))
-			}
-			if response.StatusCode() != http.StatusOK {
-				logger.Error("failed to publish event to message bus", zap.String("status", response.Status()), zap.Any("response", response))
-			}
-			time.Sleep(time.Second * 3)
 		}
+		publishFileOperate(model)
+		if nowSend {
+			return
+		}
+		time.Sleep(time.Second * 3)
+	}
+}
+
+// fileOperateTasks reports the copy and move tasks, takes the finished ones out of the queue and starts the next one when the running one is done.
+func fileOperateTasks() (list []notify.File, queued bool) {
+	FileQueueLock.Lock()
+	defer FileQueueLock.Unlock()
+	FileQueue.Range(func(k, v interface{}) bool {
+		queued = true
+		return false
+	})
+	if !queued {
+		return nil, false
+	}
+	running := ""
+	if len(OpStrArr) > 0 {
+		running = OpStrArr[0]
+	}
+	list = []notify.File{}
+	waiting := []string{}
+	for _, v := range OpStrArr {
+		tempItem, ok := FileQueue.Load(v)
+		if !ok {
+			continue
+		}
+		temp := tempItem.(model2.FileOperate)
+		task := notify.File{}
+		task.Id = v
+		task.ProcessedSize = temp.ProcessedSize
+		task.TotalSize = temp.TotalSize
+		task.To = temp.To
+		task.Type = temp.Type
+		if task.ProcessedSize == 0 {
+			task.Status = "STARTING"
+		} else {
+			task.Status = "PROCESSING"
+		}
+		if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
+			task.Finished = true
+			task.Status = "FINISHED"
+			FileQueue.Delete(v)
+			list = append(list, task)
+			continue
+		}
+		for _, v := range temp.Item {
+			if v.Size != v.ProcessedSize {
+				task.ProcessingPath = v.From
+				break
+			}
+		}
+		waiting = append(waiting, v)
+		list = append(list, task)
+	}
+	OpStrArr = waiting
+	if len(OpStrArr) > 0 && OpStrArr[0] != running {
+		go ExecOpFile()
+	}
+	return list, true
+}
+
+func publishFileOperate(model notify.NotifyModel) {
+	bt, _ := json.Marshal(model)
+	msg := map[string]string{"file_operate": string(bt)}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	response, err := MyService.MessageBus().PublishEventWithResponse(ctx, common.SERVICENAME, "casaos:file:operate", msg)
+	if err != nil {
+		logger.Error("failed to publish event to message bus", zap.Error(err), zap.Any("event", msg))
+		return
+	}
+	if response.StatusCode() != http.StatusOK {
+		logger.Error("failed to publish event to message bus", zap.String("status", response.Status()), zap.Any("response", response))
 	}
 }
 
