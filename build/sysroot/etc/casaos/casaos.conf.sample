@@ -20,3 +20,8 @@ UpdateUrl = https://github.com/ReCasaOS/CasaOS-Install/releases/latest/download/
 UpdateVersionUrl = https://github.com/ReCasaOS/CasaOS-Install/releases/latest/download/version.json
 
 [system]
+
+[file]
+; directories the file API may browse, read, write and delete in, comma-separated
+; (e.g. /DATA,/mnt,/media); empty: anywhere on the machine
+ManagementRoots =

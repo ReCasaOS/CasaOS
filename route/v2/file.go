@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"net/http"
 	"strconv"
 
@@ -34,6 +35,12 @@ func (c *CasaOS) CheckUploadChunk(ctx echo.Context, params codegen.CheckUploadCh
 
 func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 	path := ctx.FormValue("path")
+	relativePath := ctx.FormValue("relativePath")
+	// [file] ManagementRoots: the folder and the file it lands in (pkg/fileroots)
+	target := path + "/" + relativePath
+	if fileroots.Default.CheckEach(&path, &target) != nil {
+		return ctx.JSON(http.StatusForbidden, map[string]string{"message": fileroots.ErrOutside.Error()})
+	}
 
 	// handle the request
 	chunkNumber, err := strconv.ParseInt(ctx.FormValue("chunkNumber"), 10, 64)
@@ -59,7 +66,6 @@ func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 
 	identifier := ctx.FormValue("identifier")
 	fileName := ctx.FormValue("filename")
-	relativePath := ctx.FormValue("relativePath")
 	bin, err := ctx.FormFile("file")
 
 	if err != nil {

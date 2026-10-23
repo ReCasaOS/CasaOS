@@ -1,6 +1,7 @@
 package route
 
 import (
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"net/http"
 	"net/url"
 	"path"
@@ -152,6 +153,13 @@ func InitFile() http.Handler {
 			return
 		}
 		filePath := r.URL.Query().Get("path")
+		// [file] ManagementRoots (pkg/fileroots)
+		if fileroots.Default.CheckEach(&filePath) != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"message": "` + fileroots.ErrOutside.Error() + `"}`))
+			return
+		}
 		fileName := path.Base(filePath)
 		w.Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
 		http.ServeFile(w, r, filePath)

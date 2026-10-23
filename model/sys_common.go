@@ -64,6 +64,9 @@ type RedisModel struct {
 type FileSetting struct {
 	ShareDir    []string `json:"share_dir" delim:"|"`
 	DownloadDir string   `json:"download_dir"`
+	// ManagementRoots: comma-separated directories the file API may touch
+	// (pkg/fileroots); empty: anywhere (unchanged)
+	ManagementRoots string
 }
 type BaseInfo struct {
 	Hash       string `json:"i"`

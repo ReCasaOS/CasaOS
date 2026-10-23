@@ -21,6 +21,7 @@ import (
 	cfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/model"
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/robfig/cron/v3"
@@ -92,6 +93,9 @@ func GetFilerContent(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	if managed(&filePath) != nil {
+		return outsideRoots(ctx)
+	}
 	if !file.Exists(filePath) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
 			Success: common_err.FILE_DOES_NOT_EXIST,
@@ -124,6 +128,9 @@ func GetLocalFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	if managed(&path) != nil {
+		return outsideRoots(ctx)
+	}
 	if !file.Exists(path) {
 		return ctx.JSON(http.StatusOK, model.Result{
 			Success: common_err.FILE_DOES_NOT_EXIST,
@@ -154,6 +161,11 @@ func GetDownloadFile(ctx echo.Context) error {
 		})
 	}
 	list := strings.Split(files, ",")
+	for i := range list {
+		if managed(&list[i]) != nil {
+			return outsideRoots(ctx)
+		}
+	}
 	for _, v := range list {
 		if !file.Exists(v) {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
@@ -223,6 +235,9 @@ func GetDownloadSingleFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	if managed(&filePath) != nil {
+		return outsideRoots(ctx)
+	}
 	fileName := path.Base(filePath)
 	// c.Header("Content-Disposition", "inline")
 	ctx.Request().Header.Add("Content-Disposition", "attachment; filename*=utf-8''"+url2.PathEscape(fileName))
@@ -276,9 +291,23 @@ func DirPath(ctx echo.Context) error {
 	path := ctx.QueryParam("path")
 	req.Path = path
 	req.Validate()
+	// a directory above the roots ("/" for the dashboard's Root) lists only the way down to them
+	ancestor := fileroots.Default.IsAncestor(req.Path)
+	if !ancestor && managed(&req.Path) != nil {
+		return outsideRoots(ctx)
+	}
 	info, err := service.MyService.System().GetDirPath(req.Path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+	}
+	if ancestor {
+		way := info[:0]
+		for _, entry := range info {
+			if fileroots.Default.Leads(req.Path, filepath.Base(entry.Path)) {
+				way = append(way, entry)
+			}
+		}
+		info = way
 	}
 	shares := service.MyService.Shares().GetSharesList()
 	sharesMap := make(map[string]string)
@@ -378,6 +407,9 @@ func RenamePath(ctx echo.Context) error {
 	if len(op) == 0 || len(np) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if managed(&op, &np) != nil {
+		return outsideRoots(ctx)
+	}
 	mounted := service.IsMounted(op)
 	if mounted {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.MOUNTED_DIRECTIORIES, Message: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES), Data: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES)})
@@ -402,6 +434,9 @@ func MkdirAll(ctx echo.Context) error {
 	var code int
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if managed(&path) != nil {
+		return outsideRoots(ctx)
 	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
@@ -428,6 +463,9 @@ func PostCreateFile(ctx echo.Context) error {
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if managed(&path) != nil {
+		return outsideRoots(ctx)
+	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
 	// 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
@@ -452,6 +490,10 @@ func GetFileUpload(ctx echo.Context) error {
 	chunkNumber := ctx.QueryParam("chunkNumber")
 	totalChunks, _ := strconv.Atoi(utils.DefaultQuery(ctx, "totalChunks", "0"))
 	path := ctx.QueryParam("path")
+	target := path + "/" + relative
+	if managed(&path, &target) != nil {
+		return outsideRoots(ctx)
+	}
 	dirPath := ""
 	hash := file.GetHashByContent([]byte(fileName))
 	if file.Exists(path + "/" + relative) {
@@ -498,6 +540,10 @@ func PostFileUpload(ctx echo.Context) error {
 	if len(path) == 0 {
 		logger.Error("path should not be empty")
 		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	target := path + "/" + relative
+	if managed(&path, &target) != nil {
+		return outsideRoots(ctx)
 	}
 	tempDir := filepath.Join(path, ".temp", hash+strconv.Itoa(totalChunks)) + "/"
 
@@ -605,7 +651,11 @@ func PostFileOctet(ctx echo.Context) error {
 		log.Printf("file :%s\n", file_header)
 		//
 		//os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
-		f, err := os.OpenFile(file_header["path"]+"/"+file_header["filename"], os.O_WRONLY|os.O_CREATE, 0o644)
+		target := file_header["path"] + "/" + file_header["filename"]
+		if managed(&target) != nil {
+			return outsideRoots(ctx)
+		}
+		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE, 0o644)
 		if err != nil {
 			log.Printf("create file fail:%v\n", err)
 		}
@@ -642,6 +692,14 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 
 	if len(list.Item) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if managed(&list.To) != nil {
+		return outsideRoots(ctx)
+	}
+	for i := range list.Item {
+		if managed(&list.Item[i].From) != nil {
+			return outsideRoots(ctx)
+		}
 	}
 	list.To = filepath.Clean(list.To)
 	for i := range list.Item {
@@ -705,6 +763,11 @@ func DeleteFile(ctx echo.Context) error {
 	//	path := ctx.QueryParam("path")
 
 	//	paths := strings.Split(path, ",")
+	for i := range paths {
+		if managed(&paths[i]) != nil {
+			return outsideRoots(ctx)
+		}
+	}
 	for _, v := range paths {
 		mounted := service.IsMounted(v)
 		if mounted {
@@ -740,6 +803,9 @@ func PutFileContent(ctx echo.Context) error {
 
 	// path := ctx.FormValue("path")
 	// content := ctx.FormValue("content")
+	if managed(&fi.FilePath) != nil {
+		return outsideRoots(ctx)
+	}
 	if !file.Exists(fi.FilePath) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
@@ -763,6 +829,9 @@ func PutFileContent(ctx echo.Context) error {
 func GetFileImage(ctx echo.Context) error {
 	t := ctx.QueryParam("type")
 	path := ctx.QueryParam("path")
+	if managed(&path) != nil {
+		return outsideRoots(ctx)
+	}
 	if !file.Exists(path) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
@@ -797,6 +866,9 @@ func GetSize(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
+	if managed(&path) != nil {
+		return outsideRoots(ctx)
+	}
 	size, err := file.GetFileOrDirSize(path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
@@ -808,6 +880,9 @@ func GetFileCount(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
+	if managed(&path) != nil {
+		return outsideRoots(ctx)
+	}
 	list, err := ioutil.ReadDir(path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})

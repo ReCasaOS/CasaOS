@@ -32,6 +32,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/autoupdate"
 	"github.com/ReCasaOS/CasaOS/pkg/cache"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"github.com/ReCasaOS/CasaOS/pkg/hoststats"
 	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
@@ -88,6 +89,16 @@ func init() {
 	logger.LogInit(config.AppInfo.LogPath, config.AppInfo.LogSaveName, config.AppInfo.LogFileExt)
 	if len(*dbFlag) == 0 {
 		*dbFlag = config.AppInfo.DBPath + "/db"
+	}
+
+	// [file] ManagementRoots: set but not usable → no start (fail closed, never silently unconfined)
+	roots, err := fileroots.Parse(config.FileSettingInfo.ManagementRoots)
+	if err == nil {
+		fileroots.Default, err = fileroots.Open(roots)
+	}
+	if err != nil {
+		logger.Error("the managed file roots cannot be opened", zap.Error(err))
+		os.Exit(1)
 	}
 
 	sqliteDB = sqlite.GetDb(*dbFlag)
