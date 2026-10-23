@@ -20,7 +20,8 @@ import (
 )
 
 // IsVersionNewer says whether latest is a later release than current, as osmodule.CompareVersions compares them (a pre-release before its release); a string that is not a version is
-// newer than nothing.
+// newer than nothing. So a tag of four numbers (v0.5.30.1) is never newer, being no version, and a tag with a suffix (v0.5.30-1, v0.5.30-ubuntu1) is a pre-release of v0.5.30: older
+// than it, and newer than v0.5.29.
 func IsVersionNewer(latest string, current string) bool {
 	c, ok := osmodule.CompareVersions(latest, current)
 	return ok && c > 0

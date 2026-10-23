@@ -193,3 +193,22 @@ func TestARunOfTheAssistantByHandKeepsEveryOtherChangeOfTheBoxAway(t *testing.T)
 	}
 	again()
 }
+
+// A lock of the assistant that cannot be looked at does not hide dpkg's: a package manager that holds dpkg's lock is busy, and the error is said only when nothing is seen busy.
+func TestALockOfTheAssistantThatCannotBeLookedAtDoesNotHideDpkgs(t *testing.T) {
+	ctx := context.Background()
+	b := newModuleBox(t)
+	b.write("/var/lib/casaos/modules/.lock/in-the-way", "")
+	b.mu.Lock()
+	b.dpkg = true
+	b.mu.Unlock()
+	if reason, busy := b.updater.maintenanceBusy(ctx, ""); !busy || !strings.Contains(reason, "dpkg") {
+		t.Errorf("maintenanceBusy() = %q, %v", reason, busy)
+	}
+	b.mu.Lock()
+	b.dpkg = false
+	b.mu.Unlock()
+	if _, busy, err := b.updater.maintenanceState(ctx, "", b.updater.command); busy || err == nil {
+		t.Errorf("nothing busy and a lock that cannot be looked at: busy = %v, err = %v", busy, err)
+	}
+}

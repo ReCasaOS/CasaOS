@@ -353,7 +353,7 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 			return refuseEarly(env, c.name, CodeDeclined)
 		}
 	}
-	release, err := env.Host.Lock(env.Roots.lock())
+	release, err := takeLock(env)
 	switch {
 	case errors.Is(err, ErrLockHeld):
 		return refuseEarly(env, c.name, CodeBusy)

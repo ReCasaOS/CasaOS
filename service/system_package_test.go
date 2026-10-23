@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 )
 
 func TestPackageToolsAreAskedForEnglishOutput(t *testing.T) {
@@ -356,8 +357,15 @@ func newTestSystemPackageUpdater(t *testing.T) *systemPackageUpdater {
 	originalLogPath := config.AppInfo.LogPath
 	config.AppInfo.LogPath = logDir
 	t.Cleanup(func() { config.AppInfo.LogPath = originalLogPath })
+	// the module assistant's world is the machine's, under a folder of the test: its lock and its lists are never the machine's own
+	modules := t.TempDir()
 
 	return &systemPackageUpdater{
+		moduleEnv: func() modulecmd.Env {
+			env := modulecmd.Production()
+			env.Roots = modulecmd.Roots{Prefix: modules}
+			return env
+		},
 		command: func(_ context.Context, name string, _ ...string) ([]byte, error) {
 			if name == "systemctl" {
 				return []byte("inactive\n"), nil

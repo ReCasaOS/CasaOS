@@ -117,10 +117,9 @@ func (u *systemPackageUpdater) maintenanceState(ctx context.Context, except stri
 	if support := u.support(); !support.supported {
 		return "", false, errors.New(support.reason)
 	}
-	// a run of the module assistant started by hand has no unit: its lock says it
-	if held, err := modulecmd.LockHeld(u.moduleWorld()); err != nil {
-		return "", false, err
-	} else if held {
+	// a run of the module assistant started by hand has no unit: its lock says it. Either lock that is held is busy, whatever the other could be seen to say
+	held, heldErr := modulecmd.LockHeld(u.moduleWorld())
+	if held {
 		return "a run of the module assistant holds its lock", true, nil
 	}
 	locked, err := state()
@@ -130,7 +129,7 @@ func (u *systemPackageUpdater) maintenanceState(ctx context.Context, except stri
 	if locked {
 		return "another package manager holds dpkg's lock", true, nil
 	}
-	return "", false, nil
+	return "", false, heldErr
 }
 
 // MaintenanceBusy is maintenanceBusy for a caller that is not one of the units: the

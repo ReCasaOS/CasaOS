@@ -343,6 +343,8 @@ type hostOverride struct {
 	dpkg      func([]string) (bool, error)
 	wrapDest  func(osmodule.Destination) osmodule.Destination
 	lockCalls int
+	// held is how many of the first tries of the lock find it taken (ErrLockHeld), as the core's look at it, held for an instant, makes them
+	held int
 }
 
 func (h *hostOverride) FreeBytes(p string) (int64, error) { return h.free(p) }
@@ -359,7 +361,13 @@ func (h *hostOverride) NewDest(prefix string) osmodule.Destination {
 	}
 	return d
 }
-func (h *hostOverride) Lock(p string) (func(), error) { h.lockCalls++; return h.Host.Lock(p) }
+func (h *hostOverride) Lock(p string) (func(), error) {
+	h.lockCalls++
+	if h.lockCalls <= h.held {
+		return nil, ErrLockHeld
+	}
+	return h.Host.Lock(p)
+}
 
 // fakeRunner runs nothing: it answers for systemctl and apt-get from a table, keeps what systemd would (which units are enabled and so active), and records every command.
 type fakeRunner struct {

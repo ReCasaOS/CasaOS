@@ -299,7 +299,7 @@ func TestALongDownloadThenALongInstallAreNotEndedByATimer(t *testing.T) {
 			apt = append(apt, l)
 		}
 	}
-	if len(apt) != 2 || !strings.HasPrefix(apt[0], "apt-get --download-only install -y ") || apt[1] != strings.Replace(apt[0], "--download-only ", "", 1) {
+	if len(apt) != 2 || !strings.HasPrefix(apt[0], "apt-get --download-only install -y ") || apt[1] != strings.Replace(apt[0], "--download-only install", "install --no-download", 1) {
 		t.Fatalf("apt-get: %q", apt)
 	}
 	download, install := f.runner.last[apt[0]], f.runner.last[apt[1]]

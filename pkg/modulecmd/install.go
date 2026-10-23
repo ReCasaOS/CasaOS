@@ -212,7 +212,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 		}
 		asked = plan.PlanID
 	}
-	release, err := env.Host.Lock(env.Roots.lock())
+	release, err := takeLock(env)
 	switch {
 	case errors.Is(err, ErrLockHeld):
 		return refuseEarly(env, c.name, CodeBusy)
@@ -414,7 +414,8 @@ func (in *install) stepPackages() *stepFailure {
 		return f
 	}
 	in.aptStarted = true
-	return apt(Cmd{Argv: argv, Finish: aptFinish})
+	// --no-download: what the download did not fetch (the mirror changed between the two) fails here, before dpkg, and is never fetched with no timer
+	return apt(Cmd{Argv: slices.Insert(slices.Clone(argv), 2, "--no-download"), Finish: aptFinish})
 }
 
 func (in *install) archivePath() string { return in.env.Roots.tmp() + "/" + archiveName }

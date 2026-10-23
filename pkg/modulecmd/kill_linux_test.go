@@ -275,7 +275,7 @@ func TestARealInstallRunsTheCommandsWithAnEnvironmentOfTheirOwn(t *testing.T) {
 			t.Errorf("the environment of apt-get has %q: %s", not, line)
 		}
 	}
-	if got, _ := os.ReadFile(stubFile(b.root, "apt-installed")); !strings.Contains(string(got), "install -y -q --no-install-recommends --no-remove") || !strings.HasSuffix(strings.TrimSpace(string(got)), "libvirt-clients qemu-utils") {
+	if got, _ := os.ReadFile(stubFile(b.root, "apt-installed")); !strings.Contains(string(got), "install --no-download -y -q --no-install-recommends --no-remove") || !strings.HasSuffix(strings.TrimSpace(string(got)), "libvirt-clients qemu-utils") {
 		t.Errorf("apt-get install: %q", got)
 	}
 	// the log has the output of the commands behind "| " and the markers with the nonce

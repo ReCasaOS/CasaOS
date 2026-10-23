@@ -15,9 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
+	"github.com/ReCasaOS/CasaOS/pkg/osverify"
 )
 
 // ---- the start that goes through ---------------------------------------------------------------------------------------
@@ -1359,4 +1361,65 @@ func TestTheBootIdOfTheMachineIsReadFromTheKernel(t *testing.T) {
 	if !ok || !osrun.ValidUUID(id) {
 		t.Errorf("the boot id is %q, %v", id, ok)
 	}
+}
+
+// The flag of an upgrade is put up while the core holds the lock of the module assistant, which a run of the assistant takes before it looks for the flag: the run sees the flag, or
+// the start sees the run. A run that took the lock after the start looked at the box refuses the start, and nothing is left of it.
+func TestTheStartOfAnUpgradeHoldsTheLockOfTheModuleAssistantWhileItPutsUpItsFlag(t *testing.T) {
+	lockOf := func(t *testing.T, box *upgradeBox) (modulecmd.Env, string) {
+		env := box.updater.moduleWorld()
+		lock := env.Roots.Path("/var/lib/casaos/modules/.lock")
+		if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return env, lock
+	}
+	t.Run("the flag is written under the lock", func(t *testing.T) {
+		box := newUpgradeBox(t)
+		_, plan := box.aMachineThatCanStart()
+		box.setBoot(boxBoot1)
+		env, lock := lockOf(t, box)
+		during := errors.New("the flag was not written")
+		was := osUpgradeWriteFile
+		t.Cleanup(func() { osUpgradeWriteFile = was })
+		osUpgradeWriteFile = func(path string, data []byte, mode os.FileMode) error {
+			if path == osUpgradeBusyFile {
+				release, err := env.Host.Lock(lock)
+				if err == nil {
+					release()
+				}
+				during = err
+			}
+			return was(path, data, mode)
+		}
+		if _, err := box.StartSystemOSUpgrade(box.aGoodRequest(plan)); err != nil {
+			t.Fatal(err)
+		}
+		if !errors.Is(during, modulecmd.ErrLockHeld) {
+			t.Errorf("a run of the assistant could take the lock while the flag was written: %v", during)
+		}
+	})
+	t.Run("a run that took the lock after the look refuses the start", func(t *testing.T) {
+		box := newUpgradeBox(t)
+		_, plan := box.aMachineThatCanStart()
+		box.setBoot(boxBoot1)
+		env, lock := lockOf(t, box)
+		release := func() {}
+		facts := osUpgradeTakeFacts
+		osUpgradeTakeFacts = func(ctx context.Context, p osreadiness.Probe) osverify.Facts {
+			if r, err := env.Host.Lock(lock); err == nil {
+				release = r
+			}
+			return facts(ctx, p)
+		}
+		_, err := box.StartSystemOSUpgrade(box.aGoodRequest(plan))
+		release()
+		if refusal := refusalOf(t, err); refusal.Code != OSUpgradeBusy {
+			t.Errorf("the start: %+v", refusal)
+		}
+		box.assertNothingChanged(nil)
+		if _, err := os.Lstat(osUpgradeBusyFile); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the flag is up: %v", err)
+		}
+	})
 }

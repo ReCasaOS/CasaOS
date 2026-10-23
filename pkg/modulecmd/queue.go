@@ -32,7 +32,7 @@ func withLock(env Env, write func(env Env) error) error {
 	if err := env.Host.SafeDir(env.Roots.state()); err != nil {
 		return fmt.Errorf("%w: %s: %v", errUnsafe, env.Roots.state(), err)
 	}
-	release, err := env.Host.Lock(env.Roots.lock())
+	release, err := takeLock(env)
 	if err != nil {
 		return err
 	}
@@ -41,6 +41,29 @@ func withLock(env Env, write func(env Env) error) error {
 		return err
 	}
 	return write(env)
+}
+
+// takeLock takes the lock of the assistant, trying lockTries times lockRetryAfter apart before it says ErrLockHeld: the core looks at the lock by taking it for an instant (LockHeld),
+// and that look is not a run.
+func takeLock(env Env) (func(), error) {
+	for try := 1; ; try++ {
+		release, err := env.Host.Lock(env.Roots.lock())
+		if !errors.Is(err, ErrLockHeld) || try == lockTries {
+			return release, err
+		}
+		time.Sleep(lockRetryAfter)
+	}
+}
+
+const (
+	lockTries      = 3
+	lockRetryAfter = 50 * time.Millisecond
+)
+
+// HoldLock runs do while the lock of the assistant is held (taken as a run takes it, made when it is not there), for a change of the box that a run must see or be seen by: the
+// start of the upgrade of the operating system puts up its flag under it, and a run looks for the flag once it has the lock. ErrLockHeld is a run that holds it, and do is not run.
+func HoldLock(env Env, do func() error) error {
+	return withLock(env, func(Env) error { return do() })
 }
 
 // LockHeld says whether a run of the assistant holds its lock, a run started by hand included, which has no unit to be seen by: the lock is tried, not waited for, and given back at
