@@ -23,6 +23,12 @@ func TestIsVersionNewer(t *testing.T) {
 		{name: "older compatibility release", latest: "v0.4.19", current: "v0.4.20", want: false},
 		{name: "missing latest", latest: "", current: "v0.4.20", want: false},
 		{name: "invalid latest", latest: "latest", current: "v0.4.20", want: false},
+		// a pre-release comes before its release, as the plan of a module reads min_recasaos
+		{name: "the release after its candidate", latest: "v0.5.30", current: "0.5.30-rc1", want: true},
+		{name: "a candidate is not newer than its release", latest: "v0.5.30-rc1", current: "0.5.30", want: false},
+		{name: "the candidate of the next release", latest: "v0.5.31-rc1", current: "0.5.30", want: true},
+		{name: "a build is the release", latest: "v0.5.30+2", current: "0.5.30", want: false},
+		{name: "numbers, not text", latest: "v0.5.100", current: "0.5.99", want: true},
 	}
 
 	for _, test := range tests {

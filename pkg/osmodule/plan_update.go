@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -91,29 +92,32 @@ func UpdatePlanID(name, installed, tag, archiveSHA256, osID, osVersion string, t
 	return "m1-" + hex.EncodeToString(sum[:])[:32]
 }
 
-// CompareTags compares two tags (v<major>.<minor>.<patch>) as numbers: -1, 0 or 1. ok is false when either is not a tag. The numbers are compared as digits (no overflow, however long).
+// CompareTags compares two tags (v<major>.<minor>.<patch>) with CompareVersions: -1, 0 or 1. ok is false when either is not a tag.
 func CompareTags(a, b string) (c int, ok bool) {
-	pa, okA := tagParts(a)
-	pb, okB := tagParts(b)
-	if !okA || !okB {
+	if !tagRe.MatchString(a) || !tagRe.MatchString(b) {
 		return 0, false
 	}
-	for i := range pa {
-		if c := cmp.Or(cmp.Compare(len(pa[i]), len(pb[i])), strings.Compare(pa[i], pb[i])); c != 0 {
+	return CompareVersions(a, b)
+}
+
+// comparableRe is a version: three numbers, a "v" before them or not, then a pre-release ("-rc1") or a build ("+5").
+var comparableRe = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:(-)[0-9A-Za-z.+-]{1,40}|\+[0-9A-Za-z.+-]{1,40})?$`)
+
+// CompareVersions compares two versions (comparableRe), the one comparison of versions of the core: the numbers as numbers (as digits: no overflow, however long), then a pre-release
+// before its release ("0.5.23-rc1" comes before "0.5.23"; two pre-releases of one release are equal, and a build is its release): -1, 0 or 1. ok is false when either is not a version.
+func CompareVersions(a, b string) (c int, ok bool) {
+	ma, mb := comparableRe.FindStringSubmatch(a), comparableRe.FindStringSubmatch(b)
+	if ma == nil || mb == nil {
+		return 0, false
+	}
+	for i := 1; i <= 3; i++ {
+		x, y := strings.TrimLeft(ma[i], "0"), strings.TrimLeft(mb[i], "0")
+		if c := cmp.Or(cmp.Compare(len(x), len(y)), strings.Compare(x, y)); c != 0 {
 			return c, true
 		}
 	}
-	return 0, true
-}
-
-func tagParts(s string) (parts [3]string, ok bool) {
-	if !tagRe.MatchString(s) {
-		return parts, false
-	}
-	for i, p := range strings.Split(s[1:], ".") {
-		parts[i] = strings.TrimLeft(p, "0")
-	}
-	return parts, true
+	// group 4 is "-" for a pre-release and "" for a release, which is the later
+	return cmp.Compare(mb[4], ma[4]), true
 }
 
 // diff is the names of a that are not in b.

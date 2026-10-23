@@ -9,7 +9,6 @@ import (
 	"math"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -191,9 +190,10 @@ type System struct {
 func SystemChecks(e Entry, s System) []Check {
 	osOK := slices.Contains(e.Manifest.OS, s.OSID+":"+s.OSVersion)
 	_, assetOK := e.Asset(s.Arch)
-	have, haveOK := parseVersion(s.ReCasaOS)
-	need, needOK := parseVersion(e.Manifest.MinReCasaOS)
-	versionOK := haveOK && needOK && have.atLeast(need)
+	// the release min_recasaos names or a later one; a pre-release of it is not
+	haveOK := releaseRe.MatchString(s.ReCasaOS)
+	c, ok := CompareVersions(s.ReCasaOS, e.Manifest.MinReCasaOS)
+	versionOK := haveOK && ok && c >= 0 && releaseRe.MatchString(e.Manifest.MinReCasaOS)
 	detail := func(ok bool, text string) string {
 		if ok {
 			return ""
@@ -508,29 +508,5 @@ func clipTo(s string, most int) string {
 	return string(b)
 }
 
-// A version is the three numbers of a release of ReCasaOS and whether it is a pre-release ("0.5.23-rc1" comes before "0.5.23").
-type version struct {
-	major, minor, patch int
-	pre                 bool
-}
-
+// releaseRe is a version of ReCasaOS as the plan takes it (comparableRe, compared by CompareVersions), with numbers of four digits at most.
 var releaseRe = regexp.MustCompile(`^v?([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})(?:(-)[0-9A-Za-z.+-]{1,40}|\+[0-9A-Za-z.+-]{1,40})?$`)
-
-func parseVersion(s string) (version, bool) {
-	m := releaseRe.FindStringSubmatch(s)
-	if m == nil {
-		return version{}, false
-	}
-	n := func(i int) int { v, _ := strconv.Atoi(m[i]); return v }
-	return version{n(1), n(2), n(3), m[4] == "-"}, true
-}
-
-// atLeast says whether v is the release w or a later one; a pre-release of w is not.
-func (v version) atLeast(w version) bool {
-	for _, d := range [][2]int{{v.major, w.major}, {v.minor, w.minor}, {v.patch, w.patch}} {
-		if d[0] != d[1] {
-			return d[0] > d[1]
-		}
-	}
-	return !v.pre || w.pre
-}
