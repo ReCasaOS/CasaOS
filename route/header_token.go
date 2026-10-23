@@ -29,7 +29,7 @@ func accessClaims(token string) (*jwt.Claims, error) {
 // logs, histories and Referers.
 func lookupToken(ctx echo.Context) ([]string, error) {
 	if authorization := ctx.Request().Header.Get(echo.HeaderAuthorization); authorization != "" {
-		return []string{authorization}, nil
+		return []string{jwt.TokenFromAuthorization(authorization)}, nil
 	}
 	if ctx.Request().Method == http.MethodGet {
 		return []string{ctx.QueryParam("token")}, nil
