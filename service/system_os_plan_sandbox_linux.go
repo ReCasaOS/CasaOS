@@ -4,7 +4,6 @@ package service
 
 import (
 	"context"
-	"io/fs"
 	"os"
 	"os/exec"
 	"syscall"
@@ -19,7 +18,7 @@ import (
 // osplan.MaxOutputBytes (Output.Truncated says it was cut). A command that ends with a status is an Output, whatever the
 // status is; one that could not be run, or that was killed with ctx, is an error (see finishRun).
 func (s *osPlanSandbox) Run(ctx context.Context, argv []string) (osplan.Output, error) {
-	dir := s.directory()
+	dir := s.Dir()
 	if dir == "" || !osplan.AllowedSandboxArgv(argv, dir) {
 		return osplan.Output{}, osreadiness.ErrNotAllowed
 	}
@@ -44,13 +43,4 @@ func (s *osPlanSandbox) Run(ctx context.Context, argv []string) (osplan.Output, 
 	}
 	text, truncated, err := runBounded(ctx, cmd, osplan.MaxOutputBytes)
 	return finishRun(ctx, text, truncated, err)
-}
-
-// ownerAndDevice are the user that owns a file and the device it is on, as the system says them; ok is false when it does not.
-func ownerAndDevice(info fs.FileInfo) (uid, dev uint64, ok bool) {
-	st, isStat := info.Sys().(*syscall.Stat_t)
-	if !isStat {
-		return 0, 0, false
-	}
-	return uint64(st.Uid), uint64(st.Dev), true //nolint:unconvert // the width of Dev is the platform's
 }
