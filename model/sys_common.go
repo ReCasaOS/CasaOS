@@ -61,10 +61,6 @@ type RedisModel struct {
 	IdleTimeout time.Duration
 }
 
-type SystemConfig struct {
-	ConfigPath string `json:"config_path"`
-}
-
 type FileSetting struct {
 	ShareDir    []string `json:"share_dir" delim:"|"`
 	DownloadDir string   `json:"download_dir"`

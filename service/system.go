@@ -125,7 +125,6 @@ type SystemService interface {
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()
-	UpSystemPort(port string)
 	GetTimeZone() string
 	UpAppOrderFile(str, id string)
 	GetAppOrderFile(id string) []byte
@@ -545,14 +544,6 @@ func (s *systemService) UpAppOrderFile(str, id string) {
 
 func (s *systemService) GetAppOrderFile(id string) []byte {
 	return file.ReadFullFile(config.AppInfo.UserDataPath + "/" + id + "/app_order.json")
-}
-
-func (s *systemService) UpSystemPort(port string) {
-	if len(port) > 0 && port != config.ServerInfo.HttpPort {
-		config.Cfg.Section("server").Key("HttpPort").SetValue(port)
-		config.ServerInfo.HttpPort = port
-	}
-	config.Cfg.SaveTo(config.SystemConfigInfo.ConfigPath)
 }
 
 func (s *systemService) GetCasaOSLogs(lineNumber int) string {

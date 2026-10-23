@@ -157,7 +157,7 @@ func TestWhatActsOnTheModulesTakesTheAccessTokenInTheHeaderAndNoOther(t *testing
 		}{
 			{"the access token in the header", g.target, access, http.StatusOK},
 			{"the access token in the query", g.target + "?token=" + access, "", http.StatusOK},
-			{"the refresh token in the header: the group takes it, as it takes it for the status of the upgrade", g.target, refresh, http.StatusOK},
+			{"the refresh token in the header: the group refuses it too", g.target, refresh, http.StatusUnauthorized},
 			{"nothing", g.target, "", http.StatusUnauthorized},
 			{"a header that is not a token", g.target, "nonsense", http.StatusUnauthorized},
 		} {

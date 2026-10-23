@@ -22,8 +22,6 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 	"github.com/ReCasaOS/CasaOS/service"
-	model2 "github.com/ReCasaOS/CasaOS/service/model"
-	"github.com/ReCasaOS/CasaOS/types"
 	"github.com/labstack/echo/v4"
 	"github.com/tidwall/gjson"
 )
@@ -37,16 +35,6 @@ import (
 // @Router /sys/version/check [get]
 func GetSystemCheckVersion(ctx echo.Context) error {
 	need, latestVersion := version.IsNeedUpdate(service.MyService.Casa().GetCasaosVersion())
-	if need {
-		installLog := model2.AppNotify{}
-		installLog.State = 0
-		installLog.Message = "New version " + latestVersion.Version + " is ready, ready to upgrade"
-		installLog.Type = types.NOTIFY_TYPE_NEED_CONFIRM
-		installLog.CreatedAt = strconv.FormatInt(time.Now().Unix(), 10)
-		installLog.UpdatedAt = strconv.FormatInt(time.Now().Unix(), 10)
-		installLog.Name = "CasaOS System"
-		service.MyService.Notify().AddLog(installLog)
-	}
 	data := make(map[string]interface{}, 3)
 	data["need_update"] = need
 	data["version"] = latestVersion
@@ -328,43 +316,6 @@ func GetCasaOSPort(ctx echo.Context) error {
 		})
 }
 
-// @Summary edit casaos server port
-// @Produce  application/json
-// @Accept application/json
-// @Tags sys
-// @Security ApiKeyAuth
-// @Param port json string true "port"
-// @Success 200 {string} string "ok"
-// @Router /sys/port [put]
-func PutCasaOSPort(ctx echo.Context) error {
-	json := make(map[string]string)
-	ctx.Bind(&json)
-	portStr := json["port"]
-	portNumber, err := strconv.Atoi(portStr)
-	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR,
-			model.Result{
-				Success: common_err.SERVICE_ERROR,
-				Message: err.Error(),
-			})
-	}
-
-	isAvailable := port.IsPortAvailable(portNumber, "tcp")
-	if !isAvailable {
-		return ctx.JSON(common_err.SERVICE_ERROR,
-			model.Result{
-				Success: common_err.PORT_IS_OCCUPIED,
-				Message: common_err.GetMsg(common_err.PORT_IS_OCCUPIED),
-			})
-	}
-	service.MyService.System().UpSystemPort(strconv.Itoa(portNumber))
-	return ctx.JSON(common_err.SUCCESS,
-		model.Result{
-			Success: common_err.SUCCESS,
-			Message: common_err.GetMsg(common_err.SUCCESS),
-		})
-}
-
 // exitCore ends the core: os.Exit, and a test's own in its place.
 var exitCore = os.Exit
 
@@ -579,6 +530,10 @@ func PutSystemState(ctx echo.Context) error {
 // @Router /app/getport [get]
 func GetPort(ctx echo.Context) error {
 	t := utils.DefaultQuery(ctx, "type", "tcp")
+	// any other type is never available, and the loop below never ended
+	if t != "tcp" && t != "udp" {
+		return ctx.JSON(http.StatusBadRequest, &model.Result{Success: common_err.INVALID_PARAMS, Message: "type must be tcp or udp"})
+	}
 	var p int
 	ok := true
 	for ok {

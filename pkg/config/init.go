@@ -35,9 +35,8 @@ var (
 	CommonInfo = &model.CommonModel{
 		RuntimePath: constants.DefaultRuntimePath,
 	}
-	ServerInfo       = &model.ServerModel{}
-	SystemConfigInfo = &model.SystemConfig{}
-	FileSettingInfo  = &model.FileSetting{}
+	ServerInfo      = &model.ServerModel{}
+	FileSettingInfo = &model.FileSetting{}
 
 	Cfg            *ini.File
 	ConfigFilePath string
@@ -77,7 +76,6 @@ func InitSetup(config string, sample string) {
 
 	mapTo("app", AppInfo)
 	mapTo("server", ServerInfo)
-	mapTo("system", SystemConfigInfo)
 	mapTo("file", FileSettingInfo)
 	mapTo("common", CommonInfo)
 }

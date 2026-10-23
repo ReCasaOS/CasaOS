@@ -44,13 +44,13 @@ type RemotesResult struct {
 var UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36"
 var DefaultTimeout = time.Second * 30
 
+// rcloneSocket is rclone's remote control; a test points it elsewhere.
+var rcloneSocket = "/var/run/rclone/rclone.sock"
+
 func NewRestyClient() *resty.Client {
-
-	unixSocket := "/var/run/rclone/rclone.sock"
-
 	transport := http.Transport{
 		Dial: func(_, _ string) (net.Conn, error) {
-			return net.Dial("unix", unixSocket)
+			return net.Dial("unix", rcloneSocket)
 		},
 	}
 
@@ -90,7 +90,7 @@ func Mount(mountPoint string, fs string) error {
 	if res.StatusCode() != 200 {
 		return fmt.Errorf("mount failed")
 	}
-	logger.Info("mount then", zap.Any("res", res.Body()))
+	logger.Info("mount then", zap.Int("status", res.StatusCode()))
 	return nil
 }
 func Unmount(mountPoint string) error {
@@ -102,11 +102,11 @@ func Unmount(mountPoint string) error {
 		return err
 	}
 	if res.StatusCode() != 200 {
-		logger.Error("then unmount failed", zap.Any("res", res.Body()))
+		logger.Error("then unmount failed", zap.Int("status", res.StatusCode()))
 		return fmt.Errorf("unmount failed")
 	}
 
-	logger.Info("unmount then", zap.Any("res", res.Body()))
+	logger.Info("unmount then", zap.Int("status", res.StatusCode()))
 	return nil
 }
 
@@ -118,10 +118,11 @@ func CreateConfig(data map[string]string, name, t string) error {
 		"parameters": string(dataStr),
 		"type":       t,
 	}).Post("/config/create")
-	logger.Info("when create config then", zap.Any("res", res.Body()))
 	if err != nil {
 		return err
 	}
+	// rclone answers with the parameters, the cloud token among them, when it refuses them
+	logger.Info("when create config then", zap.Int("status", res.StatusCode()))
 	if res.StatusCode() != 200 {
 		return fmt.Errorf("create config failed")
 	}
