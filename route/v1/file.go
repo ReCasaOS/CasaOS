@@ -457,15 +457,15 @@ func GetFileUpload(ctx echo.Context) error {
 	if file.Exists(path + "/" + relative) {
 		return ctx.JSON(http.StatusConflict, model.Result{Success: http.StatusConflict, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
+	chunk, ok := chunkName(chunkNumber, totalChunks)
+	if !ok {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS), Data: "chunkNumber must be a number from 1 to totalChunks"})
+	}
 	tempDir := filepath.Join(path, ".temp", hash+strconv.Itoa(totalChunks)) + "/"
 	if fileName != relative {
 		dirPath = strings.TrimSuffix(relative, fileName)
 		tempDir += dirPath
 		file.MkDir(path + "/" + dirPath)
-	}
-	chunk, ok := chunkName(chunkNumber, totalChunks)
-	if !ok {
-		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS), Data: "chunkNumber must be a number from 1 to totalChunks"})
 	}
 	tempDir += chunk
 	if !file.CheckNotExist(tempDir) {

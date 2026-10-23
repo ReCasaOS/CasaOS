@@ -20,8 +20,11 @@ type FileInfo struct {
 	uploadedChunkNum int64
 }
 
-// ErrInvalidChunk is a chunk number outside 1..totalChunks, or a chunk count that differs from the upload's first chunk.
+// ErrInvalidChunk is a chunk number outside 1..totalChunks, a chunk count the file's size cannot have, or one that differs from the upload's first chunk.
 var ErrInvalidChunk = errors.New("invalid chunk number")
+
+// maxChunks bounds the chunk table: 16 TiB in the dashboard's 1 MiB chunks.
+const maxChunks = 1 << 24
 
 type FileUploadService struct {
 	uploadStatus sync.Map
@@ -79,7 +82,8 @@ func (s *FileUploadService) UploadFile(
 	fileName string,
 	bin *multipart.FileHeader,
 ) error {
-	if totalChunks < 1 || chunkNumber < 1 || chunkNumber > totalChunks || chunkSize < 1 {
+	// a client never sends more chunks than the size holds (its last chunk takes the remainder): more would size the table from nothing
+	if totalChunks < 1 || totalChunks > maxChunks || chunkNumber < 1 || chunkNumber > totalChunks || chunkSize < 1 || totalSize < 0 || totalChunks > totalSize/chunkSize+1 {
 		return ErrInvalidChunk
 	}
 	s.lock.Lock()
