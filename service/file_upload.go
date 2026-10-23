@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -18,6 +19,9 @@ type FileInfo struct {
 	uploaded         []bool
 	uploadedChunkNum int64
 }
+
+// ErrInvalidChunk is a chunk number outside 1..totalChunks, or a chunk count that differs from the upload's first chunk.
+var ErrInvalidChunk = errors.New("invalid chunk number")
 
 type FileUploadService struct {
 	uploadStatus sync.Map
@@ -48,6 +52,11 @@ func (s *FileUploadService) TestChunk(
 		return fmt.Errorf("file not init")
 	}
 
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	if chunkNumber < 1 || chunkNumber > int64(len(fileInfo.uploaded)) {
+		return ErrInvalidChunk
+	}
 	// return StatusNoContent instead of 404
 	// the is require by frontend
 	if !fileInfo.uploaded[chunkNumber-1] {
@@ -70,9 +79,17 @@ func (s *FileUploadService) UploadFile(
 	fileName string,
 	bin *multipart.FileHeader,
 ) error {
+	if totalChunks < 1 || chunkNumber < 1 || chunkNumber > totalChunks || chunkSize < 1 {
+		return ErrInvalidChunk
+	}
 	s.lock.Lock()
 	fileInfoTemp, ok := s.uploadStatus.Load(identifier)
 	var fileInfo *FileInfo
+	// a chunk count unlike the first chunk's would index past what is recorded and leave the uploads locked
+	if ok && int64(len(fileInfoTemp.(*FileInfo).uploaded)) != totalChunks {
+		s.lock.Unlock()
+		return ErrInvalidChunk
+	}
 
 	if relativePath != fileName {
 		// uploaded file is folder
