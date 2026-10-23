@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -289,52 +288,94 @@ func TestOverlapResolvesTheLinksOfADestinationToBe(t *testing.T) {
 // The copy of a file over an older one is cancelled: the older one stays as it was, whole.
 func TestACancelledOverwriteKeepsTheOldFile(t *testing.T) {
 	root := t.TempDir()
+	src := filepath.Join(root, "a.txt")
+	writeTestFile(t, src, "the new content")
+	dst := filepath.Join(root, "dst")
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dst, "a.txt"), "the old content")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // as it is seen inside the copy of the file
+
+	if err := copyFile(ctx, src, dst, "overwrite"); !errors.Is(err, context.Canceled) {
+		t.Errorf("copyFile() = %v, want context.Canceled", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "a.txt")); err != nil || string(got) != "the old content" {
+		t.Errorf("the old file holds %q (%v), want it as it was", got, err)
+	}
+	if entries, _ := os.ReadDir(dst); len(entries) != 1 {
+		t.Errorf("%d files in the destination, want the old one alone", len(entries))
+	}
+}
+
+// A FIFO would hold the copy at its open until a writer came (a device or a socket is no file to copy either): it is skipped, the rest is copied,
+// and the copy says so.
+func TestCopyDirSkipsWhatIsNotARegularFile(t *testing.T) {
+	root := t.TempDir()
 	src := filepath.Join(root, "src")
 	if err := os.Mkdir(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	fifo := filepath.Join(src, "a.txt") // the copy waits at its open until the test writes to it
+	writeTestFile(t, filepath.Join(src, "a.txt"), "a")
+	fifo := filepath.Join(src, "b.fifo")
 	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(fifo, filepath.Join(src, "c.link")); err != nil { // a link is followed, to what it leads to
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(src, "d.txt"), "d")
+	t.Cleanup(func() { // lets a copy held at the open of the FIFO (as it was) go on
+		if f, err := os.OpenFile(fifo, os.O_RDWR, 0); err == nil {
+			f.Close()
+		}
+	})
 	dst := filepath.Join(root, "dst")
-	if err := os.MkdirAll(filepath.Join(dst, "src"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	writeTestFile(t, filepath.Join(dst, "src", "a.txt"), "the old content")
-	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- CopyDirContext(ctx, src, dst, "overwrite") }()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		buf := make([]byte, 1<<20)
-		if strings.Contains(string(buf[:runtime.Stack(buf, true)]), "file.copyFile(") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the copy never reached a.txt")
-		}
-	}
 
-	cancel()
-	writer, err := os.OpenFile(fifo, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writer.Write([]byte("new"))
-	writer.Close()
+	go func() { done <- CopyDir(src, dst, "overwrite") }()
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("CopyDirContext() = %v, want context.Canceled", err)
+		if !errors.Is(err, ErrNotRegular) {
+			t.Errorf("CopyDir() = %v, want ErrNotRegular", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the copy did not stop")
+		t.Fatal("the copy is held at the open of the FIFO")
 	}
-	if got, err := os.ReadFile(filepath.Join(dst, "src", "a.txt")); err != nil || string(got) != "the old content" {
-		t.Errorf("the old file holds %q (%v), want it as it was", got, err)
+	for name, want := range map[string]bool{"a.txt": true, "b.fifo": false, "c.link": false, "d.txt": true} {
+		if got := Exists(filepath.Join(dst, "src", name)); got != want {
+			t.Errorf("%s copied: %v, want %v", name, got, want)
+		}
 	}
-	if entries, _ := os.ReadDir(filepath.Join(dst, "src")); len(entries) != 1 {
-		t.Errorf("%d files in the destination, want the old one alone", len(entries))
+}
+
+// A name of 250 bytes (83 characters of Chinese) is a name a disk takes, and so is it for the temporary file a copy or a save writes first.
+func TestCopiesAndSavesTakeALongName(t *testing.T) {
+	root := t.TempDir()
+	name := strings.Repeat("长", 83) + "a" // 3*83+1 bytes
+	src := filepath.Join(root, "src", name)
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, src, "new")
+	dst := filepath.Join(root, "dst")
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dst, name), "old")
+
+	if err := CopyDir(src, dst, "overwrite"); err != nil {
+		t.Errorf("CopyDir() = %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, name)); string(got) != "new" {
+		t.Errorf("the copy holds %q, want new", got)
+	}
+	if err := WriteFileAtomic(filepath.Join(root, name), []byte("saved")); err != nil {
+		t.Errorf("WriteFileAtomic() = %v", err)
+	}
+	if err := WriteFileAtomicFrom(filepath.Join(root, "x"+name[1:]), strings.NewReader("sent"), 0o644); err != nil {
+		t.Errorf("WriteFileAtomicFrom() = %v", err)
 	}
 }

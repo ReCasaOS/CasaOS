@@ -31,7 +31,7 @@ func writeFileAtomic(path string, data []byte, prepare func(*os.File) error) err
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPattern)
 	if err != nil {
 		return err
 	}

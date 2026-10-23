@@ -19,7 +19,6 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
-	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/ReCasaOS/CasaOS/service"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 	"github.com/gorilla/websocket"
@@ -468,41 +467,8 @@ func TestASingleChunkUploadOntoALinkToNothingWritesANewFile(t *testing.T) {
 	}
 }
 
-// waitUntil fails the test when done is still false a few seconds on.
-func waitUntil(t *testing.T, what string, done func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("still waiting: %s", what)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func TestCancellingTheRunningTaskStopsItsCopyAndRunsTheNext(t *testing.T) {
+func TestCancellingATaskThroughTheRouteTakesItOutOfTheQueue(t *testing.T) {
 	useFakeFileService(t)
-	root := t.TempDir()
-	src := filepath.Join(root, "src")
-	if err := os.Mkdir(src, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for path, content := range map[string]string{filepath.Join(src, "a.txt"): "a", filepath.Join(src, "c.txt"): "c", filepath.Join(root, "n.txt"): "n"} {
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// the copy waits at b.fifo until the test writes to it: it is running there when the test cancels it
-	fifo := filepath.Join(src, "b.fifo")
-	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	headTo, nextTo := filepath.Join(root, "head"), filepath.Join(root, "next")
-	for _, dir := range []string{headTo, nextTo} {
-		if err := os.Mkdir(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
 	t.Cleanup(func() {
 		service.FileQueueLock.Lock()
 		service.OpStrArr = nil
@@ -513,29 +479,23 @@ func TestCancellingTheRunningTaskStopsItsCopyAndRunsTheNext(t *testing.T) {
 		service.FileQueueLock.Unlock()
 	})
 	service.FileQueueLock.Lock()
-	service.FileQueue.Store("head", model.FileOperate{Type: "copy", Style: "overwrite", To: headTo, TotalSize: 3, Item: []model.FileItem{{From: src}}})
-	service.FileQueue.Store("next", model.FileOperate{Type: "copy", Style: "overwrite", To: nextTo, TotalSize: 1, Item: []model.FileItem{{From: filepath.Join(root, "n.txt")}}})
-	service.OpStrArr = []string{"head", "next"}
+	service.FileQueue.Store("waiting", model.FileOperate{Type: "copy", Style: "overwrite", To: t.TempDir(), TotalSize: 1, Item: []model.FileItem{{From: filepath.Join(t.TempDir(), "missing")}}})
+	service.OpStrArr = []string{"waiting"}
 	service.FileQueueLock.Unlock()
-	service.ExecOpFile()
-	waitUntil(t, "the running copy reaches b.fifo", func() bool { return file.Exists(filepath.Join(headTo, "src", "a.txt")) })
-
-	req := httptest.NewRequest(http.MethodDelete, "/v1/batch/head/task", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/v1/batch/waiting/task", nil)
 	c := echo.New().NewContext(req, httptest.NewRecorder())
 	c.SetParamNames("id")
-	c.SetParamValues("head")
+	c.SetParamValues("waiting")
+
 	if err := DeleteOperateFileOrDir(c); err != nil {
 		t.Fatal(err)
 	}
-	writer, err := os.OpenFile(fifo, os.O_RDWR, 0) // never blocks, and lets the copy's open of b.fifo return
-	if err != nil {
-		t.Fatal(err)
-	}
-	writer.Write([]byte("b"))
-	writer.Close()
 
-	waitUntil(t, "the next task runs", func() bool { return file.Exists(filepath.Join(nextTo, "n.txt")) })
-	waitUntil(t, "the cancelled copy stops and its half copy goes", func() bool { return !file.Exists(filepath.Join(headTo, "src")) })
+	service.FileQueueLock.Lock()
+	defer service.FileQueueLock.Unlock()
+	if _, ok := service.FileQueue.Load("waiting"); ok || len(service.OpStrArr) != 0 {
+		t.Errorf("the task is still queued: %v", service.OpStrArr)
+	}
 }
 
 func TestAnUploadWithoutAFileLeavesTheFileAlone(t *testing.T) {

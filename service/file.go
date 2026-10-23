@@ -41,6 +41,9 @@ var fileOperateCancels = map[string]context.CancelFunc{}
 // fileMoveRename is how a move is first tried, a var for the tests that make it cross two disks.
 var fileMoveRename = os.Rename
 
+// fileCopyDir is how a task copies, a var for the tests that hold a copy while it runs.
+var fileCopyDir = file.CopyDirContext
+
 var errSamePath = errors.New("the destination is the source or holds it")
 
 type reader struct {
@@ -107,12 +110,20 @@ func fileOperate(ctx context.Context, k string) {
 	finished := false
 	var temp model.FileOperate
 	defer func() {
+		panicked := recover()
+		if panicked != nil {
+			logger.Error("file operation panicked", zap.String("id", k), zap.Any("panic", panicked), zap.Stack("stack"))
+		}
 		FileQueueLock.Lock()
 		if cancel := fileOperateCancels[k]; cancel != nil {
 			cancel()
 		}
 		delete(fileOperateCancels, k)
-		if _, ok := FileQueue.Load(k); ok && finished { // a task cancelled meanwhile stays out of the queue
+		if task, ok := FileQueue.Load(k); ok && panicked != nil { // what it did is not known: it failed
+			failed := task.(model.FileOperate)
+			failed.Finished, failed.Error = true, "internal"
+			FileQueue.Store(k, failed)
+		} else if ok && finished { // a task cancelled meanwhile stays out of the queue
 			FileQueue.Store(k, temp)
 		}
 		FileQueueLock.Unlock()
@@ -137,6 +148,8 @@ func fileOperate(ctx context.Context, k string) {
 			temp.Error = "same_path"
 		case errors.Is(err, file.ErrHoldsMountPoint):
 			temp.Error = "mount_point"
+		case errors.Is(err, file.ErrNotRegular):
+			temp.Error = "not_regular"
 		default:
 			temp.Error = temp.Type + "_failed"
 		}
@@ -164,7 +177,7 @@ func fileOperate(ctx context.Context, k string) {
 			if errors.Is(err, syscall.EXDEV) {
 				// a disk mounted in the source stops its removal: then it is not copied either, rather than left whole in two places
 				if err = file.CheckNoMountPoint(v.From); err == nil {
-					if err = file.CopyDirContext(ctx, v.From, temp.To, temp.Style); err == nil {
+					if err = fileCopyDir(ctx, v.From, temp.To, temp.Style); err == nil {
 						err = file.RemoveAllNoCross(v.From)
 					} else {
 						file.RemoveAllNoCross(target)
@@ -177,7 +190,7 @@ func fileOperate(ctx context.Context, k string) {
 		} else if temp.Type == "copy" {
 			_, statErr := os.Lstat(target) // a link to nothing there is there too
 			existed := statErr == nil
-			if err := file.CopyDirContext(ctx, v.From, temp.To, temp.Style); err != nil {
+			if err := fileCopyDir(ctx, v.From, temp.To, temp.Style); err != nil {
 				if ctx.Err() != nil && !existed {
 					file.RemoveAllNoCross(target) // the half copy of a cancelled task
 				}

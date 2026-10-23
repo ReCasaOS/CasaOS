@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -200,6 +201,12 @@ func ReadFullFile(path string) []byte {
 	return content
 }
 
+// ErrNotRegular is the error of a copy that skipped what is not a regular file.
+var ErrNotRegular = errors.New("not a regular file: skipped")
+
+// tempPattern names the temporary files of copies and saves: short, so that the name of the file they become (up to 255 bytes) does not matter.
+const tempPattern = ".casaos-*"
+
 // copyFile copies the file src into the folder dst, and stops when ctx is done.
 func copyFile(ctx context.Context, src, dst, style string) error {
 	lastPath := src[strings.LastIndex(src, "/")+1:]
@@ -211,6 +218,12 @@ func copyFile(ctx context.Context, src, dst, style string) error {
 	dstinfo, dstErr := os.Stat(dst)
 	if dstErr == nil && style == "skip" {
 		return nil
+	}
+	// a FIFO, a device or a socket would hold the copy at its open, or never end: only regular files are copied (a link, to one)
+	if info, err := os.Stat(src); err != nil {
+		return err
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s: %w", src, ErrNotRegular)
 	}
 	// the source is opened before anything of the old copy is removed
 	srcfd, err := os.Open(src)
@@ -227,7 +240,7 @@ func copyFile(ctx context.Context, src, dst, style string) error {
 	}
 
 	// into a file of its own, renamed over the old copy once whole: a cancel or an error leaves the old copy as it was
-	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+lastPath+"-*")
+	tmp, err := os.CreateTemp(filepath.Dir(dst), tempPattern)
 	if err != nil {
 		return err
 	}
@@ -321,7 +334,7 @@ func CopyDirContext(ctx context.Context, src, dst, style string) error {
 
 // copyDir is CopyDir; made holds the folders it copies into, which it never copies: through a link or a mount the destination may be inside the source.
 func copyDir(ctx context.Context, src, dst, style string, made map[[2]uint64]bool) error {
-	var err error
+	var err, skipped error
 	var fds []os.FileInfo
 	var srcinfo os.FileInfo
 
@@ -370,11 +383,15 @@ func copyDir(ctx context.Context, src, dst, style string, made map[[2]uint64]boo
 		} else {
 			err = copyFile(ctx, srcfp, dstfp, style)
 		}
+		if errors.Is(err, ErrNotRegular) { // skipped: the copy goes on, and says so at its end
+			skipped = err
+			continue
+		}
 		if err != nil {
 			return err
 		}
 	}
-	return nil
+	return skipped
 }
 
 func WriteToPath(data []byte, path, name string) error {
