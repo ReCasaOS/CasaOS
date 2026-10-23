@@ -18,6 +18,7 @@ type FileOperate struct {
 	To            string     `json:"to" binding:"required"`
 	Style         string     `json:"style"`
 	Finished      bool       `json:"finished"`
+	Error         string     `json:"-"` // the first failure of the task, for the notifier
 }
 
 type FileItem struct {

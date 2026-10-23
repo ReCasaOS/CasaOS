@@ -91,17 +91,11 @@ func (s *FileUploadService) UploadFile(
 		s.lock.Unlock()
 		return err
 	}
+	defer file.Close()
 
 	if !ok {
-
-		if err != nil {
-			s.lock.Unlock()
-			return err
-		}
-
-		// pre allocate file size
-		fmt.Println("truncate", totalSize)
-		if err != nil {
+		// pre allocate file size, and drop what an older upload left in the .tmp
+		if err := file.Truncate(totalSize); err != nil {
 			s.lock.Unlock()
 			return err
 		}
@@ -149,13 +143,11 @@ func (s *FileUploadService) UploadFile(
 	if fileInfo.uploadedChunkNum == totalChunks {
 		err := file.Close()
 		if err != nil {
-			s.lock.Unlock()
 			logger.Error("close file error: ", zap.Error(err))
 		}
 
 		err = os.Rename(path+"/"+relativePath+".tmp", path+"/"+relativePath)
 		if err != nil {
-			s.lock.Unlock()
 			logger.Error("rename file error: ", zap.Error(err))
 		}
 		// remove upload status info after upload complete

@@ -3,6 +3,8 @@ package file
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -199,44 +201,72 @@ func ReadFullFile(path string) []byte {
 	return content
 }
 
-// File copies a single file from src to dst
-func CopyFile(src, dst, style string) error {
-	var err error
-	var srcfd *os.File
-	var dstfd *os.File
-	var srcinfo os.FileInfo
+// ErrNotRegular is the error of a copy that skipped what is not a regular file.
+var ErrNotRegular = errors.New("not a regular file: skipped")
 
+// tempPattern names the temporary files of copies and saves: short, so that the name of the file they become (up to 255 bytes) does not matter.
+const tempPattern = ".casaos-*"
+
+// copyFile copies the file src into the folder dst, and stops when ctx is done.
+func copyFile(ctx context.Context, src, dst, style string) error {
 	lastPath := src[strings.LastIndex(src, "/")+1:]
 
 	if !strings.HasSuffix(dst, "/") {
 		dst += "/"
 	}
 	dst += lastPath
-	if Exists(dst) {
-		if style == "skip" {
-			return nil
-		} else {
-			os.Remove(dst)
-		}
+	dstinfo, dstErr := os.Stat(dst)
+	if dstErr == nil && style == "skip" {
+		return nil
 	}
-
-	if srcfd, err = os.Open(src); err != nil {
+	// a FIFO, a device or a socket would hold the copy at its open, or never end: only regular files are copied (a link, to one)
+	if info, err := os.Stat(src); err != nil {
+		return err
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s: %w", src, ErrNotRegular)
+	}
+	// the source is opened before anything of the old copy is removed
+	srcfd, err := os.Open(src)
+	if err != nil {
 		return err
 	}
 	defer srcfd.Close()
+	srcinfo, err := srcfd.Stat()
+	if err != nil {
+		return err
+	}
+	if dstErr == nil && os.SameFile(srcinfo, dstinfo) {
+		return fmt.Errorf("%s is %s itself", dst, src)
+	}
 
-	if dstfd, err = os.Create(dst); err != nil {
+	// into a file of its own, renamed over the old copy once whole: a cancel or an error leaves the old copy as it was
+	tmp, err := os.CreateTemp(filepath.Dir(dst), tempPattern)
+	if err != nil {
 		return err
 	}
-	defer dstfd.Close()
-
-	if _, err = io.Copy(dstfd, srcfd); err != nil {
+	defer os.Remove(tmp.Name()) // nothing left to remove once renamed
+	// by parts, to see ctx between them; each part is still copied by the kernel
+	for {
+		if err = ctx.Err(); err != nil {
+			break
+		}
+		if _, err = io.CopyN(tmp, srcfd, 64<<20); err != nil {
+			break
+		}
+	}
+	if err == io.EOF {
+		err = tmp.Chmod(srcinfo.Mode())
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
 		return err
 	}
-	if srcinfo, err = os.Stat(src); err != nil {
-		return err
+	if dstErr == nil && dstinfo.IsDir() {
+		os.Remove(dst) // an empty folder of the same name gives way, as it did
 	}
-	return os.Chmod(dst, srcinfo.Mode())
+	return os.Rename(tmp.Name(), dst)
 }
 
 /**
@@ -294,7 +324,17 @@ func GetNoDuplicateFileName(fullPath string) string {
 
 // Dir copies a whole directory recursively
 func CopyDir(src string, dst string, style string) error {
-	var err error
+	return CopyDirContext(context.Background(), src, dst, style)
+}
+
+// CopyDirContext is CopyDir that stops when ctx is done, between files and inside them.
+func CopyDirContext(ctx context.Context, src, dst, style string) error {
+	return copyDir(ctx, src, dst, style, map[[2]uint64]bool{})
+}
+
+// copyDir is CopyDir; made holds the folders it copies into, which it never copies: through a link or a mount the destination may be inside the source.
+func copyDir(ctx context.Context, src, dst, style string, made map[[2]uint64]bool) error {
+	var err, skipped error
 	var fds []os.FileInfo
 	var srcinfo os.FileInfo
 
@@ -302,10 +342,7 @@ func CopyDir(src string, dst string, style string) error {
 		return err
 	}
 	if !srcinfo.IsDir() {
-		if err = CopyFile(src, dst, style); err != nil {
-			fmt.Println(err)
-		}
-		return nil
+		return copyFile(ctx, src, dst, style)
 	}
 	// dstPath := dst
 	lastPath := src[strings.LastIndex(src, "/")+1:]
@@ -323,24 +360,38 @@ func CopyDir(src string, dst string, style string) error {
 	if err = os.MkdirAll(dst, srcinfo.Mode()); err != nil {
 		return err
 	}
+	if info, err := os.Stat(dst); err == nil {
+		if key, ok := fileKey(info); ok {
+			made[key] = true
+		}
+	}
 	if fds, err = ioutil.ReadDir(src); err != nil {
 		return err
 	}
 	for _, fd := range fds {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		srcfp := path.Join(src, fd.Name())
 		dstfp := dst // path.Join(dst, fd.Name())
 
+		if key, ok := fileKey(fd); ok && fd.IsDir() && made[key] {
+			return fmt.Errorf("%s is a folder this copy made: it would copy into itself", srcfp)
+		}
 		if fd.IsDir() {
-			if err = CopyDir(srcfp, dstfp, style); err != nil {
-				fmt.Println(err)
-			}
+			err = copyDir(ctx, srcfp, dstfp, style, made)
 		} else {
-			if err = CopyFile(srcfp, dstfp, style); err != nil {
-				fmt.Println(err)
-			}
+			err = copyFile(ctx, srcfp, dstfp, style)
+		}
+		if errors.Is(err, ErrNotRegular) { // skipped: the copy goes on, and says so at its end
+			skipped = err
+			continue
+		}
+		if err != nil {
+			return err
 		}
 	}
-	return nil
+	return skipped
 }
 
 func WriteToPath(data []byte, path, name string) error {
