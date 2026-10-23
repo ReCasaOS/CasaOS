@@ -212,12 +212,14 @@ func CopyFile(src, dst, style string) error {
 		dst += "/"
 	}
 	dst += lastPath
-	if Exists(dst) {
+	if dstinfo, err := os.Stat(dst); err == nil {
 		if style == "skip" {
 			return nil
-		} else {
-			os.Remove(dst)
 		}
+		if srcinfo, err := os.Stat(src); err == nil && os.SameFile(srcinfo, dstinfo) {
+			return fmt.Errorf("%s is %s itself", dst, src)
+		}
+		os.Remove(dst)
 	}
 
 	if srcfd, err = os.Open(src); err != nil {

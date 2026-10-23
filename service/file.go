@@ -38,6 +38,8 @@ var FileQueueLock sync.Mutex
 // fileMoveRename is how a move is first tried, a var for the tests that make it cross two disks.
 var fileMoveRename = os.Rename
 
+var errSamePath = errors.New("the destination is the source or holds it")
+
 type reader struct {
 	ctx context.Context
 	r   io.Reader
@@ -95,36 +97,52 @@ func FileOperate(k string) {
 	}
 
 	temp := list.(model.FileOperate)
-	if temp.ProcessedSize > 0 {
-		return
+	// fail logs every failure and keeps the first one's code for the notifier
+	fail := func(from string, err error) {
+		logger.Error("file "+temp.Type+" failed", zap.String("from", from), zap.String("to", temp.To), zap.Error(err))
+		switch {
+		case temp.Error != "":
+		case errors.Is(err, errSamePath):
+			temp.Error = "same_path"
+		case errors.Is(err, file.ErrHoldsMountPoint):
+			temp.Error = "mount_point"
+		default:
+			temp.Error = temp.Type + "_failed"
+		}
 	}
 	for i := 0; i < len(temp.Item); i++ {
 		v := temp.Item[i]
+		target := temp.To + "/" + v.From[strings.LastIndex(v.From, "/")+1:]
+		if file.Overlap(v.From, temp.To) { // the route refuses these: never remove or overwrite the source
+			fail(v.From, errSamePath)
+			continue
+		}
 		if temp.Type == "move" {
-			lastPath := v.From[strings.LastIndex(v.From, "/")+1:]
-			if !file.CheckNotExist(temp.To + "/" + lastPath) {
+			if !file.CheckNotExist(target) {
 				if temp.Style == "skip" {
 					temp.Item[i].Finished = true
 					continue
-				} else {
-					os.RemoveAll(temp.To + "/" + lastPath)
+				}
+				if err := file.RemoveAllNoCross(target); err != nil {
+					fail(v.From, err)
+					continue
 				}
 			}
 			// a rename on the same disk; on another one a copy, and the source is removed only once all of it is copied
-			err := fileMoveRename(v.From, temp.To+"/"+lastPath)
+			err := fileMoveRename(v.From, target)
 			if errors.Is(err, syscall.EXDEV) {
 				if err = file.CopyDir(v.From, temp.To, temp.Style); err == nil {
-					err = os.RemoveAll(v.From)
+					err = file.RemoveAllNoCross(v.From)
 				} else {
-					os.RemoveAll(temp.To + "/" + lastPath)
+					file.RemoveAllNoCross(target)
 				}
 			}
 			if err != nil {
-				logger.Error("file move error", zap.Error(err))
+				fail(v.From, err)
 			}
 		} else if temp.Type == "copy" {
 			if err := file.CopyDir(v.From, temp.To, temp.Style); err != nil {
-				logger.Error("file copy error", zap.Error(err))
+				fail(v.From, err)
 			}
 		}
 	}
@@ -177,9 +195,10 @@ func CheckFileStatus() {
 			}
 			temp.ProcessedSize = total
 			FileQueueLock.Lock()
-			if current, ok := FileQueue.Load(v); ok { // still queued; and a task FileOperate has finished stays finished
-				temp.Finished = temp.Finished || current.(model.FileOperate).Finished
-				FileQueue.Store(v, temp)
+			if current, ok := FileQueue.Load(v); ok { // still queued: only the progress, FileOperate's outcome stays
+				task := current.(model.FileOperate)
+				task.Item, task.ProcessedSize = temp.Item, temp.ProcessedSize
+				FileQueue.Store(v, task)
 			}
 			FileQueueLock.Unlock()
 		}

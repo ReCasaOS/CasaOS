@@ -1,6 +1,7 @@
 package file
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -12,6 +13,17 @@ import (
 // own state files.
 func WriteFileAtomic(path string, data []byte) error {
 	return writeFileAtomic(path, data, nil)
+}
+
+// WriteFileAtomicFrom is WriteFileAtomic for the content read from r, the new file made perm.
+func WriteFileAtomicFrom(path string, r io.Reader, perm os.FileMode) error {
+	return writeFileAtomic(path, nil, func(tmp *os.File) error {
+		if err := tmp.Chmod(perm); err != nil {
+			return err
+		}
+		_, err := io.Copy(tmp, r)
+		return err
+	})
 }
 
 // writeFileAtomic is WriteFileAtomic, prepare (when given) run on the temporary file first.

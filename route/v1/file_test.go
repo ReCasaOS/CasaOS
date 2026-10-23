@@ -33,6 +33,13 @@ type fakeFileRepository struct {
 
 func (f fakeFileRepository) Peer() service.PeerService    { return f.peers }
 func (f fakeFileRepository) Notify() service.NotifyServer { return fakeNotify{} }
+func (f fakeFileRepository) Connections() service.ConnectionsService {
+	return fakeConnections{}
+}
+
+type fakeConnections struct{ service.ConnectionsService }
+
+func (fakeConnections) GetConnectionsList() []model2.ConnectionsDBModel { return nil }
 
 type fakeNotify struct{ service.NotifyServer }
 
@@ -139,8 +146,8 @@ func TestOperateRefusesADestinationThatIsASourceOrInsideOne(t *testing.T) {
 			if err := PostOperateFileOrDir(echo.New().NewContext(req, rec)); err != nil {
 				t.Fatal(err)
 			}
-			if got := resultCode(t, rec); got != common_err.SOURCE_DES_SAME {
-				t.Errorf("answer %d, want %d (source and destination the same)", got, common_err.SOURCE_DES_SAME)
+			if got := resultCode(t, rec); got != common_err.SOURCE_DES_SAME || rec.Code != http.StatusConflict {
+				t.Errorf("answer %d (HTTP %d), want %d (source and destination the same, HTTP 409)", got, rec.Code, common_err.SOURCE_DES_SAME)
 			}
 			if len(service.OpStrArr) != 0 {
 				t.Errorf("the task was queued: %v", service.OpStrArr)
@@ -149,22 +156,86 @@ func TestOperateRefusesADestinationThatIsASourceOrInsideOne(t *testing.T) {
 	}
 }
 
-func TestIsSameOrInsideGoesByWholeNames(t *testing.T) {
-	for _, c := range []struct {
-		path, dir string
-		want      bool
-	}{
-		{"/DATA/Photo", "/DATA/Photo", true},
-		{"/DATA/Photo/2024", "/DATA/Photo", true},
-		{"/DATA/Photo2", "/DATA/Photo", false},
-		{"/DATA", "/DATA/Photo", false},
-		{"/DATA/..Photo", "/DATA", true},
-		{"/DATA", "/", true},
-		{"DATA/Photo", "/DATA", true}, // cannot be compared: refused
+func postOperate(t *testing.T, op model.FileOperate) *httptest.ResponseRecorder {
+	t.Helper()
+	t.Cleanup(func() {
+		service.FileQueueLock.Lock()
+		service.OpStrArr = nil
+		service.FileQueue.Range(func(k, _ interface{}) bool {
+			service.FileQueue.Delete(k)
+			return true
+		})
+		service.FileQueueLock.Unlock()
+	})
+	body, _ := json.Marshal(op)
+	req := httptest.NewRequest(http.MethodPost, "/v1/batch/task", bytes.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	if err := PostOperateFileOrDir(echo.New().NewContext(req, rec)); err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+// The entry a paste writes is to/<name of the source>: it must not be the source's own folder.
+func TestOperateRefusesAPasteWhoseEntryHoldsTheSource(t *testing.T) {
+	useFakeFileService(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Downloads", "Movies", "Movies"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Photos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, op := range map[string]model.FileOperate{
+		"Movies/Movies pasted in Downloads": {Type: "move", Style: "overwrite", To: root + "/Downloads", Item: []model.FileItem{{From: root + "/Downloads/Movies/Movies"}}},
+		"into a link to its own folder":     {Type: "copy", Style: "overwrite", To: root + "/link", Item: []model.FileItem{{From: root + "/Photos"}}},
 	} {
-		if got := isSameOrInside(c.path, c.dir); got != c.want {
-			t.Errorf("isSameOrInside(%q, %q) = %v, want %v", c.path, c.dir, got, c.want)
-		}
+		t.Run(name, func(t *testing.T) {
+			rec := postOperate(t, op)
+			if got := resultCode(t, rec); got != common_err.SOURCE_DES_SAME {
+				t.Errorf("answer %d (HTTP %d), want %d", got, rec.Code, common_err.SOURCE_DES_SAME)
+			}
+		})
+	}
+}
+
+func mountForTest(t *testing.T, source, target, fstype string, flags uintptr) {
+	t.Helper()
+	if err := syscall.Mount(source, target, fstype, flags, ""); err != nil {
+		t.Skipf("cannot mount here: %v", err)
+	}
+	t.Cleanup(func() { syscall.Unmount(target, syscall.MNT_DETACH) })
+}
+
+func TestDeletingAFolderThatHoldsAMountedDiskDeletesNothing(t *testing.T) {
+	useFakeFileService(t)
+	folder := filepath.Join(t.TempDir(), "folder")
+	usb := filepath.Join(folder, "usb")
+	if err := os.MkdirAll(usb, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mountForTest(t, "tmpfs", usb, "tmpfs", 0)
+	if err := os.WriteFile(filepath.Join(usb, "keep.txt"), []byte("k"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal([]string{folder})
+	req := httptest.NewRequest(http.MethodDelete, "/v1/file/delete", bytes.NewReader(body))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+
+	if err := DeleteFile(echo.New().NewContext(req, rec)); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resultCode(t, rec); got != common_err.MOUNTED_DIRECTIORIES {
+		t.Errorf("answer %d, want %d (a mounted directory)", got, common_err.MOUNTED_DIRECTIORIES)
+	}
+	if _, err := os.Stat(filepath.Join(usb, "keep.txt")); err != nil {
+		t.Errorf("the mounted disk lost keep.txt: %v", err)
 	}
 }
 
@@ -282,6 +353,10 @@ func TestASingleChunkUploadReplacesTheWholeFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("an older and longer file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.Stat(filepath.Join(dir, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 	for field, value := range map[string]string{"path": dir, "relativePath": "a.txt", "filename": "a.txt", "totalChunks": "1", "chunkNumber": "1"} {
@@ -300,6 +375,62 @@ func TestASingleChunkUploadReplacesTheWholeFile(t *testing.T) {
 
 	if got, err := os.ReadFile(filepath.Join(dir, "a.txt")); err != nil || string(got) != "new" {
 		t.Errorf("the file holds %q (%v), want new", got, err)
+	}
+	if after, err := os.Stat(filepath.Join(dir, "a.txt")); err == nil && os.SameFile(before, after) {
+		t.Error("the file was written in place: an upload cut short leaves it half written")
+	}
+}
+
+func TestAnUploadWithoutAFileLeavesTheFileAlone(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("precious"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	for field, value := range map[string]string{"path": dir, "relativePath": "a.txt", "filename": "a.txt", "totalChunks": "1", "chunkNumber": "1"} {
+		form.WriteField(field, value)
+	}
+	form.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/upload", &body)
+	req.Header.Set(echo.HeaderContentType, form.FormDataContentType())
+	rec := httptest.NewRecorder()
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("the handler panicked: %v", r)
+			}
+		}()
+		PostFileUpload(echo.New().NewContext(req, rec))
+	}()
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("HTTP %d, want 400", rec.Code)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "a.txt")); string(got) != "precious" {
+		t.Errorf("the file now holds %q", got)
+	}
+}
+
+// A file with several names (a hard link, as a single-file volume of an app may be) is written in place, so that every name sees the change.
+func TestSavingAFileWithHardLinksWritesItInPlace(t *testing.T) {
+	dir := t.TempDir()
+	path, other := filepath.Join(dir, "a.conf"), filepath.Join(dir, "b.conf")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path, other); err != nil {
+		t.Fatal(err)
+	}
+
+	putFileContent(t, path, "new")
+
+	if got, _ := os.ReadFile(other); string(got) != "new" {
+		t.Errorf("the other name holds %q, want new", got)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode() != 0o640 {
+		t.Errorf("mode %v (%v), want -rw-r-----", info.Mode(), err)
 	}
 }
 

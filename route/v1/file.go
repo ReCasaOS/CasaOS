@@ -2,6 +2,7 @@ package v1
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -480,7 +481,11 @@ func GetFileUpload(ctx echo.Context) error {
 // @Success 200 {string} string "ok"
 // @Router /file/upload [post]
 func PostFileUpload(ctx echo.Context) error {
-	f, _, _ := ctx.Request().FormFile("file")
+	f, _, err := ctx.Request().FormFile("file")
+	if err != nil {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS), Data: err.Error()})
+	}
+	defer f.Close()
 	relative := ctx.FormValue("relativePath")
 	fileName := ctx.FormValue("filename")
 	totalChunks, _ := strconv.Atoi(utils.DefaultPostForm(ctx, "totalChunks", "0"))
@@ -552,15 +557,8 @@ func PostFileUpload(ctx echo.Context) error {
 			}()
 		}
 	} else {
-		out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-		if err != nil {
-			logger.Error("error when trying to open `"+path+"` for creation", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
-		}
-
-		defer out.Close()
-
-		if _, err := io.Copy(out, f); err != nil { // recommend to use https://github.com/iceber/iouring-go for faster copy
+		// a temporary file renamed into place: an upload cut short leaves the old file whole
+		if err := file.WriteFileAtomicFrom(path, f, 0o644); err != nil {
 			logger.Error("error when trying to write to `"+path+"`", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 		}
@@ -643,9 +641,9 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 	list.To = filepath.Clean(list.To)
 	for i := range list.Item {
 		list.Item[i].From = filepath.Clean(list.Item[i].From)
-		// into its own folder (or onto itself) the copy never ends and the move removes both
-		if list.To == filepath.Dir(list.Item[i].From) || isSameOrInside(list.To, list.Item[i].From) {
-			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SOURCE_DES_SAME, Message: common_err.GetMsg(common_err.SOURCE_DES_SAME)})
+		// onto itself, into itself or over its own folder: the copy never ends, the overwrite and the move remove the source
+		if file.Overlap(list.Item[i].From, list.To) {
+			return ctx.JSON(http.StatusConflict, model.Result{Success: common_err.SOURCE_DES_SAME, Message: common_err.GetMsg(common_err.SOURCE_DES_SAME)})
 		}
 	}
 
@@ -685,12 +683,6 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
 
-// isSameOrInside reports whether path is dir or under it, by whole names: /DATA/Photo2 is not inside /DATA/Photo. Paths it cannot compare count as inside.
-func isSameOrInside(path, dir string) bool {
-	rel, err := filepath.Rel(dir, path)
-	return err != nil || (rel != ".." && !strings.HasPrefix(rel, "../"))
-}
-
 // @Summary delete file
 // @Produce  application/json
 // @Accept  application/json
@@ -716,7 +708,10 @@ func DeleteFile(ctx echo.Context) error {
 	}
 
 	for _, v := range paths {
-		err := os.RemoveAll(v)
+		err := file.RemoveAllNoCross(v)
+		if errors.Is(err, file.ErrHoldsMountPoint) {
+			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.MOUNTED_DIRECTIORIES, Message: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES), Data: err.Error()})
+		}
 		if err != nil {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_DELETE_ERROR, Message: common_err.GetMsg(common_err.FILE_DELETE_ERROR), Data: err})
 		}

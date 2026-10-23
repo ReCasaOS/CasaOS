@@ -19,4 +19,5 @@ type File struct {
 	Id             string `json:"id"`
 	To             string `json:"to"`
 	Type           string `json:"type"`
+	Error          string `json:"error,omitempty"` // a short code when the task stopped on an error (Status FAILED)
 }

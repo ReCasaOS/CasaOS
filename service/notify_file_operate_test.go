@@ -67,7 +67,7 @@ func TestTheNotifierRemovesTheFinishedTaskNotTheRunningOne(t *testing.T) {
 	events := useMessageBus(t, true)
 	useFileQueue(t, []string{"running", "done"}, map[string]model.FileOperate{
 		"running": {Type: "copy", TotalSize: 10, ProcessedSize: 5},
-		"done":    {Type: "copy", TotalSize: 10, ProcessedSize: 10},
+		"done":    {Type: "copy", TotalSize: 10, ProcessedSize: 10, Finished: true},
 	})
 
 	NewNotifyService(nil).SendFileOperateNotify(true)
@@ -91,7 +91,7 @@ func TestTheNotifierRemovesTheFinishedTaskNotTheRunningOne(t *testing.T) {
 func TestTheNotifierStartsTheNextTaskOnceTheRunningOneIsDone(t *testing.T) {
 	useMessageBus(t, true)
 	useFileQueue(t, []string{"done", "next"}, map[string]model.FileOperate{
-		"done": {Type: "copy", TotalSize: 10, ProcessedSize: 10},
+		"done": {Type: "copy", TotalSize: 10, ProcessedSize: 10, Finished: true},
 		"next": {Type: "copy", TotalSize: 1, To: t.TempDir(), Item: []model.FileItem{{From: filepath.Join(t.TempDir(), "missing")}}},
 	})
 
@@ -131,11 +131,52 @@ func TestTheNotifierKeepsGoingWhenTheMessageBusIsDown(t *testing.T) {
 	NewNotifyService(nil).SendFileOperateNotify(true) // nothing queued
 
 	useFileQueue(t, []string{"done"}, map[string]model.FileOperate{
-		"done": {Type: "copy", TotalSize: 10, ProcessedSize: 10},
+		"done": {Type: "copy", TotalSize: 10, ProcessedSize: 10, Finished: true},
 	})
 	NewNotifyService(nil).SendFileOperateNotify(true)
 
 	if len(OpStrArr) != 0 || queuedTask("done") {
 		t.Errorf("the finished task is still queued (%v)", OpStrArr)
+	}
+}
+
+// A task whose destination already has all its size (what CheckFileStatus counts) has not necessarily run: it ends when its operation says so.
+func TestTheNotifierWaitsForTheOperationNotForTheSizes(t *testing.T) {
+	useMessageBus(t, true)
+	useFileQueue(t, []string{"counted"}, map[string]model.FileOperate{
+		"counted": {Type: "copy", TotalSize: 10, ProcessedSize: 10},
+	})
+
+	NewNotifyService(nil).SendFileOperateNotify(true)
+
+	if !queuedTask("counted") {
+		t.Error("the task was taken out of the queue before its operation ended")
+	}
+}
+
+func TestTheNotifierReportsAFailedTaskAsFailed(t *testing.T) {
+	events := useMessageBus(t, true)
+	root := t.TempDir()
+	src := filepath.Join(root, "Photos")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing"), filepath.Join(src, "broken.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	useFileQueue(t, []string{"failing"}, map[string]model.FileOperate{
+		"failing": {Type: "copy", TotalSize: 1, To: t.TempDir(), Item: []model.FileItem{{From: src}}},
+	})
+	FileOperate("failing")
+
+	NewNotifyService(nil).SendFileOperateNotify(true)
+
+	select {
+	case event := <-events:
+		if !strings.Contains(event, `\"status\":\"FAILED\"`) || !strings.Contains(event, `\"error\":\"copy_failed\"`) || !strings.Contains(event, `\"finished\":true`) {
+			t.Errorf("published %s, want the task finished, FAILED, with the error copy_failed", event)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("nothing was published")
 	}
 }

@@ -130,3 +130,113 @@ func TestAMoveAcrossDisksKeepsTheSourceWhenTheCopyFails(t *testing.T) {
 		t.Errorf("the half copy is still there (%v)", err)
 	}
 }
+
+// mountForTest mounts source on target for the test, or skips it where the tests may not mount.
+func mountForTest(t *testing.T, source, target, fstype string, flags uintptr) {
+	t.Helper()
+	if err := syscall.Mount(source, target, fstype, flags, ""); err != nil {
+		t.Skipf("cannot mount here: %v", err)
+	}
+	t.Cleanup(func() { syscall.Unmount(target, syscall.MNT_DETACH) })
+}
+
+// Cut Downloads/Movies/Movies, go up to Downloads and paste (overwrite is the default): the entry the move writes, Downloads/Movies, holds the source.
+func TestAMoveIntoAFolderWhoseEntryHoldsTheSourceRemovesNothing(t *testing.T) {
+	root := t.TempDir()
+	outer := filepath.Join(root, "Downloads", "Movies")
+	writeOperateFile(t, filepath.Join(outer, "Movies", "a.mkv"), "a")
+	writeOperateFile(t, filepath.Join(outer, "other.mkv"), "o")
+
+	runOperation(t, move(filepath.Join(outer, "Movies"), filepath.Join(root, "Downloads")))
+
+	for _, p := range []string{filepath.Join(outer, "Movies", "a.mkv"), filepath.Join(outer, "other.mkv")} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("lost: %v", err)
+		}
+	}
+}
+
+func TestAMoveOrCopyIntoALinkToTheSourceFolderRemovesNothing(t *testing.T) {
+	for _, kind := range []string{"move", "copy"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			src := filepath.Join(root, "Photos")
+			writeOperateFile(t, filepath.Join(src, "a.jpg"), "a")
+			writeOperateFile(t, filepath.Join(src, "b.jpg"), "b")
+			link := filepath.Join(root, "link")
+			if err := os.Symlink(root, link); err != nil {
+				t.Fatal(err)
+			}
+
+			runOperation(t, model.FileOperate{Type: kind, Item: []model.FileItem{{From: src}}, To: link, Style: "overwrite"})
+
+			for _, name := range []string{"a.jpg", "b.jpg"} {
+				if got, err := os.ReadFile(filepath.Join(src, name)); err != nil || len(got) != 1 {
+					t.Errorf("lost %s: %q, %v", name, got, err)
+				}
+			}
+		})
+	}
+}
+
+// A bind mount of the source's folder is the same folder under another name, which no path comparison sees.
+func TestAMoveOrCopyIntoABindMountOfTheSourceFolderRemovesNothing(t *testing.T) {
+	for _, kind := range []string{"move", "copy"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			src := filepath.Join(root, "data", "Photos")
+			writeOperateFile(t, filepath.Join(src, "a.jpg"), "a")
+			other := filepath.Join(root, "other")
+			if err := os.Mkdir(other, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			mountForTest(t, filepath.Join(root, "data"), other, "", syscall.MS_BIND)
+
+			runOperation(t, model.FileOperate{Type: kind, Item: []model.FileItem{{From: src}}, To: other, Style: "overwrite"})
+
+			if got, err := os.ReadFile(filepath.Join(src, "a.jpg")); err != nil || string(got) != "a" {
+				t.Errorf("lost a.jpg: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+// The folder a move overwrites holds a mounted disk: the files on that disk are not the folder's to remove.
+func TestAMoveDoesNotEmptyADiskMountedInTheFolderItOverwrites(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Photos")
+	writeOperateFile(t, filepath.Join(src, "a.jpg"), "a")
+	to := filepath.Join(root, "Archive")
+	usb := filepath.Join(to, "Photos", "usb")
+	if err := os.MkdirAll(usb, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mountForTest(t, "tmpfs", usb, "tmpfs", 0)
+	writeOperateFile(t, filepath.Join(usb, "keep.jpg"), "k")
+
+	runOperation(t, move(src, to))
+
+	if _, err := os.Stat(filepath.Join(usb, "keep.jpg")); err != nil {
+		t.Errorf("the mounted disk lost keep.jpg: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(src, "a.jpg")); err != nil {
+		t.Errorf("the source lost a.jpg: %v", err)
+	}
+}
+
+// The progress of a waiting task counts what is already at its destination: that does not mean it ran.
+func TestAQueuedTaskWhoseProgressWasCountedStillRuns(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "a.jpg")
+	writeOperateFile(t, src, "a")
+	to := filepath.Join(root, "Archive")
+	if err := os.Mkdir(to, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	runOperation(t, model.FileOperate{Type: "copy", Item: []model.FileItem{{From: src}}, To: to, Style: "overwrite", TotalSize: 1, ProcessedSize: 1})
+
+	if got, err := os.ReadFile(filepath.Join(to, "a.jpg")); err != nil || string(got) != "a" {
+		t.Errorf("not copied: %q, %v", got, err)
+	}
+}

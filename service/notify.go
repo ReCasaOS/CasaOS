@@ -123,9 +123,13 @@ func fileOperateTasks() (list []notify.File, queued bool) {
 		} else {
 			task.Status = "PROCESSING"
 		}
-		if temp.Finished || temp.ProcessedSize >= temp.TotalSize {
+		if temp.Finished { // its operation ended: what is already at the destination says nothing of that
 			task.Finished = true
 			task.Status = "FINISHED"
+			if temp.Error != "" {
+				task.Status = "FAILED"
+				task.Error = temp.Error
+			}
 			FileQueue.Delete(v)
 			list = append(list, task)
 			continue
