@@ -203,10 +203,17 @@ func (h *Hub) raiseAs(a alert, wait bool) bool {
 		h.mu.Unlock()
 		return true
 	}
+	// a resolved alert past its six hours holds nothing back: forget it, or the map keeps every key the box ever had
+	for key, r := range h.sent {
+		if r.resolved && now.Sub(r.at) >= dedupeWindow {
+			delete(h.sent, key)
+		}
+	}
 	h.sent[a.key] = &record{at: now}
 	h.mu.Unlock()
 	sentence := a.sentence
-	if previous != nil && previous.repeats > 0 {
+	// the clock alone says the day only within one: days later "since 06:00" would read as this morning
+	if previous != nil && previous.repeats > 0 && now.Sub(previous.at) < 24*time.Hour {
 		sentence += fmt.Sprintf(" It happened %d times since %s.", previous.repeats+1, previous.at.Format("15:04"))
 	}
 	if !wait {

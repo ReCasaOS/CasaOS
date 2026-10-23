@@ -379,3 +379,41 @@ func TestShoutrrrValidatesURLs(t *testing.T) {
 		}
 	}
 }
+
+// The count says since when only within a day: days later, "since 06:00" would read as this morning.
+func TestTheCountSaysSinceWhenOnlyWithinADay(t *testing.T) {
+	h, o, now := newHub(t)
+
+	raise(h, crashed)
+	*now = now.Add(time.Hour)
+	raise(h, crashed)
+	*now = now.Add(3 * 24 * time.Hour)
+	raise(h, crashed)
+
+	want := []string{"immich stopped unexpectedly.\nhttp://192.168.1.20", "immich stopped unexpectedly.\nhttp://192.168.1.20"}
+	if got := o.texts(phone); !reflect.DeepEqual(got, want) {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+}
+
+// A resolved alert past its six hours holds nothing back any more: the next raise forgets it, so that
+// the memory does not keep every key the box ever had. One not resolved stays, its resolution may come.
+func TestAResolvedRecordPastSixHoursIsForgotten(t *testing.T) {
+	h, _, now := newHub(t)
+	open := alert{key: "app:immich:install", category: Apps, sentence: "Installing immich failed."}
+
+	raise(h, crashed)
+	raise(h, open)
+	*now = now.Add(20 * time.Minute)
+	resolve(h, alert{key: crashed.key, category: Apps, sentence: "Resolved: immich runs normally again."})
+	*now = now.Add(6 * time.Hour)
+	raise(h, alert{key: "disk:WD-1:smart", category: Disks, sentence: "Disk sdb fails its SMART check."})
+
+	h.mu.Lock()
+	_, resolvedKept := h.sent[crashed.key]
+	_, openKept := h.sent[open.key]
+	h.mu.Unlock()
+	if resolvedKept || !openKept {
+		t.Fatalf("resolved kept: %v, open kept: %v; want only the open one kept", resolvedKept, openKept)
+	}
+}
