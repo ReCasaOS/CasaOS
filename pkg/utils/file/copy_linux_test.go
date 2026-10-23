@@ -5,8 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -280,5 +283,58 @@ func TestOverlapResolvesTheLinksOfADestinationToBe(t *testing.T) {
 	}
 	if Overlap(filepath.Join(root, "Photos", "sub"), filepath.Join(root, "elsewhere", "new")) {
 		t.Error("Overlap(Photos/sub, a destination to be elsewhere) = true")
+	}
+}
+
+// The copy of a file over an older one is cancelled: the older one stays as it was, whole.
+func TestACancelledOverwriteKeepsTheOldFile(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(src, "a.txt") // the copy waits at its open until the test writes to it
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "dst")
+	if err := os.MkdirAll(filepath.Join(dst, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dst, "src", "a.txt"), "the old content")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- CopyDirContext(ctx, src, dst, "overwrite") }()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		buf := make([]byte, 1<<20)
+		if strings.Contains(string(buf[:runtime.Stack(buf, true)]), "file.copyFile(") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the copy never reached a.txt")
+		}
+	}
+
+	cancel()
+	writer, err := os.OpenFile(fifo, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Write([]byte("new"))
+	writer.Close()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("CopyDirContext() = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the copy did not stop")
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "src", "a.txt")); err != nil || string(got) != "the old content" {
+		t.Errorf("the old file holds %q (%v), want it as it was", got, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dst, "src")); len(entries) != 1 {
+		t.Errorf("%d files in the destination, want the old one alone", len(entries))
 	}
 }

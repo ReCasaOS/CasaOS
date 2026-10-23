@@ -222,30 +222,38 @@ func copyFile(ctx context.Context, src, dst, style string) error {
 	if err != nil {
 		return err
 	}
-	if dstErr == nil {
-		if os.SameFile(srcinfo, dstinfo) {
-			return fmt.Errorf("%s is %s itself", dst, src)
-		}
-		os.Remove(dst)
+	if dstErr == nil && os.SameFile(srcinfo, dstinfo) {
+		return fmt.Errorf("%s is %s itself", dst, src)
 	}
 
-	dstfd, err := os.Create(dst)
+	// into a file of its own, renamed over the old copy once whole: a cancel or an error leaves the old copy as it was
+	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+lastPath+"-*")
 	if err != nil {
 		return err
 	}
-	defer dstfd.Close()
-
-	for { // by parts, to see ctx between them; each part is still copied by the kernel
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if _, err := io.CopyN(dstfd, srcfd, 64<<20); err == io.EOF {
+	defer os.Remove(tmp.Name()) // nothing left to remove once renamed
+	// by parts, to see ctx between them; each part is still copied by the kernel
+	for {
+		if err = ctx.Err(); err != nil {
 			break
-		} else if err != nil {
-			return err
+		}
+		if _, err = io.CopyN(tmp, srcfd, 64<<20); err != nil {
+			break
 		}
 	}
-	return os.Chmod(dst, srcinfo.Mode())
+	if err == io.EOF {
+		err = tmp.Chmod(srcinfo.Mode())
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if dstErr == nil && dstinfo.IsDir() {
+		os.Remove(dst) // an empty folder of the same name gives way, as it did
+	}
+	return os.Rename(tmp.Name(), dst)
 }
 
 /**

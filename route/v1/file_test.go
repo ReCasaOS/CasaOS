@@ -454,6 +454,20 @@ func TestASingleChunkUploadOverAFileWithHardLinksWritesItInPlace(t *testing.T) {
 	}
 }
 
+// An upload onto a link that leads nowhere is a new file there, as it was.
+func TestASingleChunkUploadOntoALinkToNothingWritesANewFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "a.conf")); err != nil {
+		t.Fatal(err)
+	}
+
+	postSingleChunk(t, dir, "a.conf", "new")
+
+	if got, err := os.ReadFile(filepath.Join(dir, "a.conf")); err != nil || string(got) != "new" {
+		t.Errorf("a.conf holds %q (%v), want new", got, err)
+	}
+}
+
 // waitUntil fails the test when done is still false a few seconds on.
 func waitUntil(t *testing.T, what string, done func() bool) {
 	t.Helper()

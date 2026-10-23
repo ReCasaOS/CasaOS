@@ -558,8 +558,8 @@ func PostFileUpload(ctx echo.Context) error {
 		}
 	} else {
 		// a temporary file renamed into place: an upload cut short leaves the old file whole
-		if _, statErr := os.Lstat(path); statErr == nil {
-			err = file.ReplaceFileFrom(path, f) // an existing file keeps its mode, its owner and its other names
+		if _, statErr := os.Stat(path); statErr == nil {
+			err = file.ReplaceFileFrom(path, f) // an existing file keeps its mode, its owner and its other names; a link to nothing is replaced
 		} else {
 			err = file.WriteFileAtomicFrom(path, f, 0o644)
 		}

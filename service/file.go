@@ -35,7 +35,7 @@ var OpStrArr []string
 // FileQueueLock guards FileQueue and OpStrArr together (a task is in FileQueue while its id is in OpStrArr), and fileOperateCancels.
 var FileQueueLock sync.Mutex
 
-// fileOperateCancels stops the operation of a running task, by its id.
+// fileOperateCancels stops the operation of a running task, by its id: the queue runs one at a time, and starts none while one is in it.
 var fileOperateCancels = map[string]context.CancelFunc{}
 
 // fileMoveRename is how a move is first tried, a var for the tests that make it cross two disks.
@@ -93,20 +93,37 @@ func (w *writer) Write(p []byte) (n int, err error) {
 	}
 }
 
+// FileOperate runs the queued task k; the queue runs its tasks through ExecOpFile.
 func FileOperate(k string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	FileQueueLock.Lock()
-	list, ok := FileQueue.Load(k)
-	if ok {
-		fileOperateCancels[k] = cancel
-	}
+	fileOperateCancels[k] = cancel
 	FileQueueLock.Unlock()
+	fileOperate(ctx, k)
+}
+
+// fileOperate runs the task k, registered in fileOperateCancels with the cancel of ctx; once it has stopped, the next task starts.
+func fileOperate(ctx context.Context, k string) {
+	finished := false
+	var temp model.FileOperate
+	defer func() {
+		FileQueueLock.Lock()
+		if cancel := fileOperateCancels[k]; cancel != nil {
+			cancel()
+		}
+		delete(fileOperateCancels, k)
+		if _, ok := FileQueue.Load(k); ok && finished { // a task cancelled meanwhile stays out of the queue
+			FileQueue.Store(k, temp)
+		}
+		FileQueueLock.Unlock()
+		ExecOpFile()
+	}()
+	list, ok := FileQueue.Load(k)
 	if !ok {
 		return
 	}
 
-	temp := list.(model.FileOperate)
+	temp = list.(model.FileOperate)
 	// fail logs every failure and keeps the first one's code for the notifier
 	fail := func(from string, err error) {
 		if ctx.Err() != nil {
@@ -158,7 +175,8 @@ func FileOperate(k string) {
 				fail(v.From, err)
 			}
 		} else if temp.Type == "copy" {
-			existed := !file.CheckNotExist(target)
+			_, statErr := os.Lstat(target) // a link to nothing there is there too
+			existed := statErr == nil
 			if err := file.CopyDirContext(ctx, v.From, temp.To, temp.Style); err != nil {
 				if ctx.Err() != nil && !existed {
 					file.RemoveAllNoCross(target) // the half copy of a cancelled task
@@ -168,15 +186,10 @@ func FileOperate(k string) {
 		}
 	}
 	temp.Finished = true
-	FileQueueLock.Lock()
-	defer FileQueueLock.Unlock()
-	delete(fileOperateCancels, k)
-	if _, ok := FileQueue.Load(k); ok { // a task cancelled meanwhile stays out of the queue
-		FileQueue.Store(k, temp)
-	}
+	finished = true
 }
 
-// CancelFileOperate takes the task id ("0": every task) out of the queue and stops its operation; when that was the running one, the next one starts.
+// CancelFileOperate takes the task id ("0": every task) out of the queue and stops its operation; the next task starts once that operation has stopped.
 func CancelFileOperate(id string) {
 	FileQueueLock.Lock()
 	defer FileQueueLock.Unlock()
@@ -205,12 +218,21 @@ func CancelFileOperate(id string) {
 	}
 }
 
+// ExecOpFile starts the task at the head of the queue, unless an operation is still in it (a cancelled one may still be stopping: two at once could write
+// into the same folder) or that task has already run.
 func ExecOpFile() {
 	FileQueueLock.Lock()
 	defer FileQueueLock.Unlock()
-	if len(OpStrArr) > 0 {
-		go FileOperate(OpStrArr[0])
+	if len(OpStrArr) == 0 || len(fileOperateCancels) > 0 {
+		return
 	}
+	k := OpStrArr[0]
+	if task, ok := FileQueue.Load(k); !ok || task.(model.FileOperate).Finished {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	fileOperateCancels[k] = cancel // before the goroutine: no second start in between
+	go fileOperate(ctx, k)
 }
 
 // file move or copy and send notify
