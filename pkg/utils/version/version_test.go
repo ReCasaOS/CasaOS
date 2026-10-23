@@ -29,6 +29,10 @@ func TestIsVersionNewer(t *testing.T) {
 		{name: "the candidate of the next release", latest: "v0.5.31-rc1", current: "0.5.30", want: true},
 		{name: "a build is the release", latest: "v0.5.30+2", current: "0.5.30", want: false},
 		{name: "numbers, not text", latest: "v0.5.100", current: "0.5.99", want: true},
+		{name: "the next candidate", latest: "v0.5.30-rc2", current: "0.5.30-rc1", want: true},
+		{name: "the tenth candidate after the second", latest: "v0.5.30-rc10", current: "0.5.30-rc2", want: true},
+		{name: "an earlier candidate", latest: "v0.5.30-rc1", current: "0.5.30-rc2", want: false},
+		{name: "a candidate after a beta", latest: "v0.5.30-rc1", current: "0.5.30-beta3", want: true},
 	}
 
 	for _, test := range tests {
