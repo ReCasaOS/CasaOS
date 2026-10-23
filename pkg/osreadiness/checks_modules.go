@@ -19,6 +19,9 @@ func init() {
 // modulesDir is where the installer puts the manifest of each module it installed: <name>.json.
 const modulesDir = "/etc/casaos/modules"
 
+// stateDir is where the installer keeps what it put down of each module besides the manifest: <name>.files, <name>.dirs, <name>.version.
+const stateDir = "/var/lib/casaos/modules"
+
 // maxModules is how many manifests are read; a folder with more is a folder that cannot be told.
 const maxModules = 32
 
@@ -35,14 +38,11 @@ const (
 )
 
 // checkModules refuses an upgrade of a machine that has a module of ReCasaOS installed, and names the module, until the module has said what it needs around the upgrade and the engine does
-// it. The manifest is read through the seam, checked against fixed patterns, and never run: a file that cannot be read or does not pass is a refusal that names the file, and not a module
-// that is left out.
+// it. The manifest is read through the seam, checked against fixed patterns, and never run: a file that cannot be read or does not pass, or a module that has lists and no manifest, is a
+// refusal that names it (invalid), and not a module that is left out.
 func checkModules(ctx context.Context, p Probe) Result {
 	entries, err := p.ReadDir(ctx, modulesDir)
-	if isNotExist(err) {
-		return pass()
-	}
-	if err != nil {
+	if err != nil && !isNotExist(err) {
 		return unknown(err)
 	}
 	var files []string
@@ -51,10 +51,23 @@ func checkModules(ctx context.Context, p Probe) Result {
 			files = append(files, entry)
 		}
 	}
-	if len(files) == 0 {
+	// a module whose install or remove stopped half way has its lists or its version and no manifest: it is on the box all the same, and cannot be told
+	state, err := p.ReadDir(ctx, stateDir)
+	if err != nil && !isNotExist(err) {
+		return unknown(err)
+	}
+	var half []string
+	for _, entry := range state {
+		for _, suffix := range []string{".files", ".dirs", ".version"} {
+			if stem, ok := strings.CutSuffix(entry, suffix); ok && !slices.Contains(files, stem+".json") && !slices.Contains(half, stem) {
+				half = append(half, stem)
+			}
+		}
+	}
+	if len(files)+len(half) == 0 {
 		return pass()
 	}
-	if len(files) > maxModules {
+	if len(files)+len(half) > maxModules {
 		return unknownWith(ReasonTooLarge)
 	}
 	var modules, broken, reasons []string
@@ -63,18 +76,23 @@ func checkModules(ctx context.Context, p Probe) Result {
 			reasons = append(reasons, reason)
 		}
 	}
+	invalid := func(stem string) {
+		// the name is the file's stem when it is one, and "unnamed" when it is not a name that the report may repeat
+		if token(stem, 32) == "" {
+			stem = "unnamed"
+		}
+		if !slices.Contains(broken, stem) {
+			broken = append(broken, stem)
+		}
+		say(moduleInvalid)
+	}
+	for _, stem := range half {
+		invalid(stem)
+	}
 	for _, file := range files {
 		manifest, err := readModule(ctx, p, file)
 		if err != nil {
-			// the name is the file's stem when it is one, and "unnamed" when it is not a name that the report may repeat
-			stem := strings.TrimSuffix(file, ".json")
-			if token(stem, 32) == "" {
-				stem = "unnamed"
-			}
-			if !slices.Contains(broken, stem) {
-				broken = append(broken, stem)
-			}
-			say(moduleInvalid)
+			invalid(strings.TrimSuffix(file, ".json"))
 			continue
 		}
 		modules = append(modules, manifest.Name)

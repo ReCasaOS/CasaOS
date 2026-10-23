@@ -43,6 +43,24 @@ func withLock(env Env, write func(env Env) error) error {
 	return write(env)
 }
 
+// LockHeld says whether a run of the assistant holds its lock, a run started by hand included, which has no unit to be seen by: the lock is tried, not waited for, and given back at
+// once. A box on which no run ever made the file of the lock has none held, and the look does not make it.
+func LockHeld(env Env) (bool, error) {
+	env = env.withDefaults()
+	if _, err := os.Lstat(env.Roots.lock()); errors.Is(err, fs.ErrNotExist) || isNotDir(err) {
+		return false, nil
+	}
+	release, err := env.Host.Lock(env.Roots.lock())
+	switch {
+	case err == nil:
+		release()
+		return false, nil
+	case errors.Is(err, ErrLockHeld):
+		return true, nil
+	}
+	return false, err
+}
+
 // Queue replaces the log of the module called name with the first line of the job whose nonce this is, and whose kind (KindInstall or KindRemove) is said in it: the log is the job's from
 // here on, and a unit that is started next keeps that line, replaces the rest and carries on with the same nonce. It does not wait for the lock (ErrLockHeld when a run has it).
 func Queue(env Env, name, nonce, kind string, at time.Time) error {

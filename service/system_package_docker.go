@@ -9,6 +9,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
+	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 )
 
 // Docker is not part of the System packages update. Upgrading docker-ce or containerd.io
@@ -65,7 +66,7 @@ var systemMaintenanceUnits = []string{common.UPDATE_UNIT + ".service", systemPac
 
 // maintenanceBusy says whether the box is being changed by something else than the unit
 // named in except (the caller's own, which it checks in its own way): another of the units
-// above is active, an operating system upgrade is open (its flag is there, or cannot be read), or, on a host that has dpkg, a package manager holds its lock. Systemd
+// above is active, an operating system upgrade is open (its flag is there, or cannot be read), a run of the module assistant holds its lock, or, on a host that has dpkg, a package manager holds its lock. Systemd
 // not answering is not busy: a refusal that cannot be explained helps nobody.
 func (u *systemPackageUpdater) maintenanceBusy(ctx context.Context, except string) (string, bool) {
 	reason, busy, _ := u.maintenanceState(ctx, except, u.command)
@@ -115,6 +116,12 @@ func (u *systemPackageUpdater) maintenanceState(ctx context.Context, except stri
 	}
 	if support := u.support(); !support.supported {
 		return "", false, errors.New(support.reason)
+	}
+	// a run of the module assistant started by hand has no unit: its lock says it
+	if held, err := modulecmd.LockHeld(u.moduleWorld()); err != nil {
+		return "", false, err
+	} else if held {
+		return "a run of the module assistant holds its lock", true, nil
 	}
 	locked, err := state()
 	if err != nil {
