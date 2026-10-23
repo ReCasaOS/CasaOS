@@ -89,11 +89,11 @@ func TestAnInstallOverAnInterruptedDpkgFinishesItBeforeApt(t *testing.T) {
 	}
 	var got []string
 	for _, l := range f.runner.lines() {
-		if strings.HasPrefix(l, "dpkg") || strings.HasPrefix(l, "apt-get install") {
+		if strings.HasPrefix(l, "dpkg") || strings.HasPrefix(l, "apt-get install") || strings.HasPrefix(l, "apt-get --download-only") {
 			got = append(got, strings.Join(strings.Fields(l)[:2], " "))
 		}
 	}
-	if want := []string{"dpkg --audit", "dpkg --audit", "dpkg --configure", "dpkg --audit", "apt-get install"}; !slices.Equal(got, want) {
+	if want := []string{"dpkg --audit", "dpkg --audit", "dpkg --configure", "dpkg --audit", "apt-get --download-only", "apt-get install"}; !slices.Equal(got, want) {
 		t.Errorf("commands: %q", got)
 	}
 	if !slices.Contains(f.lines(), "dpkg_repaired: qemu-utils libvirt-clients") {
@@ -106,8 +106,8 @@ func TestAnInstallOverAnInterruptedDpkgFinishesItBeforeApt(t *testing.T) {
 			t.Errorf("dpkg --configure -a ran without %s: %s", want, env)
 		}
 	}
-	if c.Timeout != configureTimeout || c.Stdout == nil {
-		t.Errorf("the repair: timeout %v, its output in the log: %v", c.Timeout, c.Stdout != nil)
+	if c.Stdout == nil {
+		t.Error("the repair: its output is not in the log")
 	}
 	if a := f.runner.last["dpkg --audit"]; a.Timeout <= 0 || a.Stdout != nil {
 		t.Errorf("the audit: %+v", a)
@@ -281,5 +281,52 @@ func TestAnInstallEndedWhileTheRepairIsCheckedIsInterrupted(t *testing.T) {
 	}
 	if code := f.main(ctx, "install", testName, "--yes"); code != ExitFailed || f.resultCode() != "failed packages interrupted" {
 		t.Fatalf("exit %d, %q:\n%s", code, f.resultCode(), f.out)
+	}
+}
+
+// The timer of the assistant never ends apt-get or dpkg while dpkg may be at work: the download, which changes nothing, has its time; the install and the repair of dpkg have none, and
+// a stop that is asked for still asks them to finish (Cmd.Finish). A slow mirror and a slow postinst are not a reason to leave packages unpacked or half-configured.
+func TestALongDownloadThenALongInstallAreNotEndedByATimer(t *testing.T) {
+	f := newFixture(t)
+	f.runner.takes["apt-get --download-only install"] = aptTimeout - time.Minute
+	f.runner.takes["apt-get install"] = 3 * aptTimeout
+	if code := f.install("--yes"); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	var apt []string
+	for _, l := range f.runner.lines() {
+		if strings.HasPrefix(l, "apt-get") && !strings.Contains(l, " -s ") {
+			apt = append(apt, l)
+		}
+	}
+	if len(apt) != 2 || !strings.HasPrefix(apt[0], "apt-get --download-only install -y ") || apt[1] != strings.Replace(apt[0], "--download-only ", "", 1) {
+		t.Fatalf("apt-get: %q", apt)
+	}
+	download, install := f.runner.last[apt[0]], f.runner.last[apt[1]]
+	if download.Timeout != aptTimeout || install.Timeout != 0 || install.Finish != aptFinish {
+		t.Errorf("download: timeout %v; install: timeout %v, finish %v", download.Timeout, install.Timeout, install.Finish)
+	}
+}
+
+func TestADownloadLongerThanItsTimeEndsTheStepBeforeDpkgRuns(t *testing.T) {
+	f := newFixture(t)
+	f.runner.takes["apt-get --download-only install"] = aptTimeout + time.Minute
+	if code := f.install("--yes"); code != ExitFailed || f.resultCode() != "failed packages packages_failed" {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if f.runner.called("apt-get", "install") != 0 {
+		t.Error("apt-get installed after a download that did not end")
+	}
+}
+
+func TestTheRepairOfDpkgIsNotEndedByATimer(t *testing.T) {
+	f := newFixture(t)
+	f.runner.audits = []string{auditText, auditText, ""}
+	f.runner.takes["dpkg --configure"] = time.Hour
+	if code := f.install("--yes"); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, f.out)
+	}
+	if c := f.runner.last["dpkg --configure -a --force-confold"]; c.Timeout != 0 || c.Finish != aptFinish {
+		t.Errorf("dpkg --configure -a: timeout %v, finish %v", c.Timeout, c.Finish)
 	}
 }

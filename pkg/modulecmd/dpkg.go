@@ -15,8 +15,7 @@ import (
 // the packages that are in that state; it reads the status file, takes no lock and writes nothing, and ends with status 0 whether it lists any or not.
 
 const (
-	auditTimeout     = time.Minute
-	configureTimeout = 10 * time.Minute
+	auditTimeout = time.Minute
 	// maxAuditNames is the most packages of an audit that are kept (and shown).
 	maxAuditNames = 50
 )
@@ -68,7 +67,7 @@ func (in *install) dpkgBroken(err error) *stepFailure {
 }
 
 // repairDpkg makes dpkg fit for apt before the packages are installed: when the audit lists packages, `dpkg --configure -a` finishes them (the same options as the install: no question,
-// the configuration files that are there kept), and the audit is made again. It says what it found and did in the log. The packages the audit
+// the configuration files that are there kept; no timer ends it, and a stop that is asked for gives it the time apt-get has to finish), and the audit is made again. It says what it found and did in the log. The packages the audit
 // still lists are CodeDpkgBroken, and an end of the run by its context is CodeInterrupted. A dpkg that cannot be asked (no dpkg, or an audit that gave no answer) is not a
 // reason to stop here: apt says what it finds.
 func (in *install) repairDpkg() *stepFailure {
@@ -86,7 +85,7 @@ func (in *install) repairDpkg() *stepFailure {
 	}
 	in.say("dpkg was interrupted: %s; running dpkg --configure -a", strings.Join(names, " "))
 	out, err := in.env.Runner.Run(in.ctx, Cmd{
-		Argv: []string{"dpkg", "--configure", "-a", "--force-confold"}, Env: childEnv(in.env), Stdout: in.toolWriter(), Timeout: configureTimeout,
+		Argv: []string{"dpkg", "--configure", "-a", "--force-confold"}, Env: childEnv(in.env), Stdout: in.toolWriter(), Finish: aptFinish,
 	})
 	if in.ctx.Err() != nil {
 		return &stepFailure{CodeInterrupted, in.ctx.Err()}

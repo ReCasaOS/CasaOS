@@ -105,6 +105,7 @@ func TestAnInstallDoesTheStepsInOrderAndLeavesTheModuleOnTheBox(t *testing.T) {
 		}
 	}
 	wantCmds := []string{
+		"apt-get --download-only install -y -q --no-install-recommends --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 libvirt-clients qemu-utils",
 		"apt-get install -y -q --no-install-recommends --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 libvirt-clients qemu-utils",
 		"systemctl daemon-reload", "systemctl enable --now " + testUnit,
 	}
