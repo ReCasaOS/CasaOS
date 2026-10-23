@@ -19,10 +19,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS-Common/utils/systemctl"
 	"github.com/labstack/echo/v4"
-	"go.uber.org/zap"
 
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/samba"
@@ -339,6 +337,10 @@ func PostSambaConnectionsCreate(ctx echo.Context) error {
 	if connection.Username == "" || connection.Host == "" {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CHARACTER_LIMIT, Message: common_err.GetMsg(common_err.CHARACTER_LIMIT)})
 	}
+	// what the mount would refuse is refused now, before the server is asked or anything is saved
+	if _, err := samba.MountOptions(connection.Username, connection.Password, connection.Port); err != nil {
+		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS), Data: err.Error()})
+	}
 
 	// if ok, _ := regexp.MatchString(`^[\w@#*.]{4,30}$`, connection.Password); !ok {
 	// 	return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CHARACTER_LIMIT, Message: common_err.GetMsg(common_err.CHARACTER_LIMIT)})
@@ -397,23 +399,16 @@ func DeleteSambaConnections(ctx echo.Context) error {
 	if connection.Username == "" {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.Record_NOT_EXIST, Message: common_err.GetMsg(common_err.Record_NOT_EXIST)})
 	}
-	mountPointList, err := samba.GetSambaSharesList(connection.Host, connection.Port, connection.Username, connection.Password)
-	// mountPointList, err := service.MyService.System().GetDirPath(connection.MountPoint)
-	if err != nil {
+	// what is mounted is read from the connection's folder, not asked of the server: a server that is
+	// off, or whose password changed, made the connection impossible to delete
+	folder := connection.MountPoint
+	if folder == "" {
+		folder = "/mnt/" + connection.Host
+	}
+	if err := service.UnmountShares(folder); err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 	}
-	baseHostPath := "/mnt/" + connection.Host
-	for _, v := range mountPointList {
-		if service.IsMounted(baseHostPath + "/" + v) {
-			err := service.MyService.Connections().UnmountSmaba(baseHostPath + "/" + v)
-			if err != nil {
-				logger.Error("unmount smaba error", zap.Error(err), zap.Any("path", baseHostPath+"/"+v))
-				return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
-			}
-		}
-		_ = service.RemoveMountPoint(baseHostPath + "/" + v) // empty and unmounted only
-	}
-	_ = service.RemoveMountPoint(connection.MountPoint) // the host's folder, once empty
+	_ = service.RemoveMountPoint(folder) // once empty
 	service.MyService.Connections().DeleteConnection(id)
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: id})
 }

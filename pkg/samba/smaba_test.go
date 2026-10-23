@@ -68,6 +68,10 @@ func TestTheMountOptionsCarryThePort(t *testing.T) {
 	if got, err := MountOptions("user", "secret", ""); err != nil || got != "username=user,password=secret" {
 		t.Errorf("without a port: got %q, %v", got, err)
 	}
+	// written as a number: the kernel reads "0445" as octal
+	if got, err := MountOptions("user", "secret", "0445"); err != nil || got != "username=user,password=secret,port=445" {
+		t.Errorf("0445: got %q, %v", got, err)
+	}
 }
 
 // A password reaches the mount whole, whatever commas it holds: the kernel splits the options at each

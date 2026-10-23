@@ -85,16 +85,17 @@ func InitNetworkMount() {
 		}
 		baseHostPath := "/mnt/" + connection.Host
 
-		if err := unmountShares(baseHostPath); err != nil {
-			logger.Error("get mount point err", zap.Any("err", err))
-			continue
+		if err := service.UnmountShares(baseHostPath); err != nil {
+			logger.Error("some samba shares of a host did not unmount", zap.Error(err), zap.String("host", connection.Host))
 		}
 
 		file.IsNotExistMkDir(baseHostPath)
 		for _, v := range directories {
 			mountPoint := baseHostPath + "/" + v
 			file.IsNotExistMkDir(mountPoint)
-			service.MyService.Connections().MountSmaba(connection.Username, connection.Host, v, connection.Port, mountPoint, connection.Password)
+			if err := service.MyService.Connections().MountSmaba(connection.Username, connection.Host, v, connection.Port, mountPoint, connection.Password); err != nil {
+				logger.Error("cannot mount a samba share", zap.Error(err), zap.String("path", mountPoint))
+			}
 		}
 		connection.Directories = strings.Join(directories, ",")
 		service.MyService.Connections().UpdateConnection(&connection)
@@ -103,26 +104,6 @@ func InitNetworkMount() {
 	if err != nil {
 		logger.Error("mount storage err", zap.Any("err", err))
 	}
-}
-
-// unmountShares unmounts what was mounted in the folder of a host, and removes the mount points left
-// empty and unmounted. A share that does not unmount keeps its folder and what is in it: with the share
-// still mounted, those files are the server's.
-func unmountShares(baseHostPath string) error {
-	mountPointList, err := service.MyService.System().GetDirPath(baseHostPath)
-	if err != nil {
-		return err
-	}
-	for _, v := range mountPointList {
-		if err := service.MyService.Connections().UnmountSmaba(v.Path); err != nil {
-			logger.Error("cannot unmount a samba share, its folder is kept", zap.Error(err), zap.String("path", v.Path))
-			continue
-		}
-		if err := service.RemoveMountPoint(v.Path); err != nil {
-			logger.Info("the folder of a samba share is kept", zap.Error(err), zap.String("path", v.Path))
-		}
-	}
-	return nil
 }
 
 func InitZerotier() {

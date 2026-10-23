@@ -11,14 +11,20 @@
 package service
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"syscall"
 
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/pkg/samba"
 	"github.com/ReCasaOS/CasaOS/service/model"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 	"github.com/moby/sys/mount"
 	"github.com/moby/sys/mountinfo"
+	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	"gorm.io/gorm"
 )
@@ -103,6 +109,35 @@ func RemoveMountPoint(dir string) error {
 		return fmt.Errorf("%s is still a mount point", dir)
 	}
 	return syscall.Rmdir(dir)
+}
+
+// UnmountShares unmounts what is mounted in dir, the folder of a samba host, and removes the mount points
+// left empty and unmounted. A share that does not unmount keeps its folder and what is in it: with the
+// share still mounted, those files are the server's. It goes through all of them and returns the first
+// unmount error; a folder that does not exist has nothing mounted in it.
+func UnmountShares(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if err := MyService.Connections().UnmountSmaba(path); err != nil {
+			logger.Error("cannot unmount a samba share, its folder is kept", zap.Error(err), zap.String("path", path))
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		if err := RemoveMountPoint(path); err != nil {
+			logger.Info("the folder of a samba share is kept", zap.Error(err), zap.String("path", path))
+		}
+	}
+	return first
 }
 
 // isMountPoint compares the folder's device with its parent's, or reads /proc/self/mountinfo; a var, so

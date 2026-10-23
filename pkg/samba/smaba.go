@@ -101,10 +101,11 @@ func MountOptions(username, password, port string) (string, error) {
 	}
 	options := "username=" + username + ",password=" + strings.ReplaceAll(password, ",", ",,")
 	if port != "" {
-		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		n, err := strconv.ParseUint(port, 10, 16)
+		if err != nil {
 			return "", fmt.Errorf("the port %q is not a number", port)
 		}
-		options += ",port=" + port
+		options += ",port=" + strconv.FormatUint(n, 10) // the kernel reads "0445" as octal
 	}
 	return options, nil
 }
