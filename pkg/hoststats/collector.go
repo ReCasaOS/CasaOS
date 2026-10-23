@@ -2,9 +2,7 @@
 package hoststats
 
 import (
-	"path"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/pkg/stats"
@@ -56,8 +54,12 @@ func (c *Collector) Sample(r Reading) stats.Sample {
 	if r.MemTotal > 0 {
 		s["alert/mem_high"] = float64(r.MemUsed) / float64(r.MemTotal) * 100
 	}
-	for _, v := range keptVolumes(r.Volumes) {
-		s["fs/free_percent:"+v.MountPoint] = float64(v.Size-v.Used) / float64(v.Size) * 100
+	// the root filesystem only: a series per mount point ever seen used up the store's slots for good,
+	// and the disks alerts watch every storage
+	for _, v := range r.Volumes {
+		if v.MountPoint == "/" && v.Size > 0 && v.Used <= v.Size {
+			s["fs/free_percent:/"] = float64(v.Size-v.Used) / float64(v.Size) * 100
+		}
 	}
 
 	if p := c.prev; c.hasPrev {
@@ -94,12 +96,10 @@ func (c *Collector) Sample(r Reading) stats.Sample {
 }
 
 // The store allows 48 series per item and never frees one: 12 fixed keys,
-// 3 per interface and 1 per mount point, so at most 12 + 8*3 + 12 = 48.
+// 3 per interface and 1 for the root filesystem, so at most 12 + 8*3 + 1 = 37.
 const (
 	maxNets    = 8
-	maxMounts  = 12
 	maxKeyLen  = 63
-	fsKeyPref  = "fs/free_percent:"
 	netKeyLong = "network/dropped:"
 )
 
@@ -116,35 +116,6 @@ func keptNets(nets map[string]NetCounters) []string {
 		names = names[:maxNets]
 	}
 	return names
-}
-
-// keptVolumes returns the volumes that get a series: sorted by mount point, first maxMounts.
-func keptVolumes(vols []Volume) []Volume {
-	var out []Volume
-	for _, v := range vols {
-		if v.MountPoint != "" && len(fsKeyPref)+len(v.MountPoint) <= maxKeyLen &&
-			v.Size > 0 && v.Used <= v.Size && realVolume(v) {
-			out = append(out, v)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].MountPoint < out[j].MountPoint })
-	if len(out) > maxMounts {
-		out = out[:maxMounts]
-	}
-	return out
-}
-
-var pseudoRoots = []string{"/proc", "/sys", "/dev", "/run", "/snap", "/var/lib/docker", "/var/lib/containers"}
-
-// realVolume is false for pseudo and container mount points.
-func realVolume(v Volume) bool {
-	mp := path.Clean(v.MountPoint)
-	for _, root := range pseudoRoots {
-		if mp == root || strings.HasPrefix(mp, root+"/") {
-			return false
-		}
-	}
-	return true
 }
 
 // wholeDisks keeps the names isPhysical accepts, in order.

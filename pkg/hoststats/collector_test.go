@@ -18,7 +18,7 @@ func reading(at time.Time, mut func(*Reading)) Reading {
 		MemTotal: 1000, MemUsed: 500, MemCached: 100, SwapUsed: 10,
 		Nets:    map[string]NetCounters{"eth0": {}},
 		Disk:    &DiskCounters{},
-		Volumes: []Volume{{"/DATA", 1000, 250}},
+		Volumes: []Volume{{"/", 1000, 250}},
 	}
 	if mut != nil {
 		mut(&r)
@@ -40,7 +40,7 @@ func TestCPUIsPercentOfOneCoreSummedOverCores(t *testing.T) {
 func TestTheFirstReadingHasOnlyWhatNeedsNoPreviousOne(t *testing.T) {
 	var c Collector
 	s := c.Sample(reading(t0, nil))
-	for _, k := range []string{"memory/rss", "memory/cache", "memory/swap", "memory/limit", "alert/mem_high", "cpu/vcpus", "fs/free_percent:/DATA"} {
+	for _, k := range []string{"memory/rss", "memory/cache", "memory/swap", "memory/limit", "alert/mem_high", "cpu/vcpus", "fs/free_percent:/"} {
 		if !has(s, k) {
 			t.Errorf("missing %s", k)
 		}
@@ -143,27 +143,26 @@ func TestAnInterfaceThatDisappearsLeavesNoKey(t *testing.T) {
 	}
 }
 
-func TestFilesystemFreePercent(t *testing.T) {
+// Only the root filesystem gets a series: the store never frees one, and every mount point ever seen
+// took one of the 48 for good. The disks alerts watch every storage.
+func TestOnlyTheRootFilesystemIsRecorded(t *testing.T) {
 	var c Collector
 	s := c.Sample(reading(t0, func(r *Reading) {
-		r.Volumes = []Volume{
-			{"/DATA", 1000, 250}, {"/zero", 0, 0}, {"/over", 100, 200},
-			{"/proc", 100, 1}, {"/sys/fs/cgroup", 100, 1}, {"/dev/shm", 100, 1},
-			{"/run/user/1000", 100, 1}, {"/snap/core/1", 100, 1},
-			{"/var/lib/docker/overlay2/x/merged", 100, 1},
-		}
+		r.Volumes = []Volume{{"/DATA", 1000, 500}, {"/", 1000, 250}, {"/media/usb", 100, 1}, {"/mnt/192.168.1.5/Photos", 100, 1}}
 	}))
-	if s["fs/free_percent:/DATA"] != 75 {
-		t.Fatalf("got %v", s)
-	}
-	n := 0
+	var fs []string
 	for k := range s {
-		if len(k) > 16 && k[:16] == "fs/free_percent:" {
-			n++
+		if strings.HasPrefix(k, "fs/") {
+			fs = append(fs, k)
 		}
 	}
-	if n != 1 {
-		t.Fatalf("got %v", s)
+	if len(fs) != 1 || s["fs/free_percent:/"] != 75 {
+		t.Fatalf("got %v = %v", fs, s["fs/free_percent:/"])
+	}
+	for _, root := range []Volume{{"/", 0, 0}, {"/", 100, 200}} {
+		if s := c.Sample(reading(t0, func(r *Reading) { r.Volumes = []Volume{root} })); has(s, "fs/free_percent:/") {
+			t.Errorf("%+v: got %v", root, s["fs/free_percent:/"])
+		}
 	}
 }
 
@@ -171,7 +170,7 @@ func TestUnreadableDiskAndVolumesGiveNoKeysButTheRestRemains(t *testing.T) {
 	var c Collector
 	c.Sample(reading(t0, func(r *Reading) { r.Disk, r.Volumes = nil, nil }))
 	s := c.Sample(reading(t0.Add(time.Second), func(r *Reading) { r.Disk, r.Volumes = nil, nil; r.CPU = CPUTimes{1, 4} }))
-	if has(s, "disk/read") || has(s, "fs/free_percent:/DATA") || !has(s, "memory/rss") || !has(s, "cpu/total") {
+	if has(s, "disk/read") || has(s, "fs/free_percent:/") || !has(s, "memory/rss") || !has(s, "cpu/total") {
 		t.Fatalf("got %v", s)
 	}
 }
@@ -206,7 +205,7 @@ func TestAtMostEightInterfacesSortedAndLongNamesSkipped(t *testing.T) {
 	}
 }
 
-func TestAtMostTwelveMountsAndTheWorstCaseStaysUnder48Series(t *testing.T) {
+func TestTheWorstCaseStaysUnder48Series(t *testing.T) {
 	nets := map[string]NetCounters{}
 	for i := 0; i < 20; i++ {
 		nets[fmt.Sprintf("n%02d", i)] = NetCounters{}
@@ -215,7 +214,7 @@ func TestAtMostTwelveMountsAndTheWorstCaseStaysUnder48Series(t *testing.T) {
 	for i := 29; i >= 0; i-- {
 		vols = append(vols, Volume{fmt.Sprintf("/m%02d", i), 100, 1})
 	}
-	vols = append(vols, Volume{"/" + strings.Repeat("l", 48), 100, 1})
+	vols = append(vols, Volume{"/", 100, 1}, Volume{"/" + strings.Repeat("l", 48), 100, 1})
 	var c Collector
 	mut := func(r *Reading) {
 		r.Nets, r.Volumes = nets, vols
@@ -236,30 +235,11 @@ func TestAtMostTwelveMountsAndTheWorstCaseStaysUnder48Series(t *testing.T) {
 			t.Errorf("key too long: %s", k)
 		}
 	}
-	if fs != 12 || !has(s, "fs/free_percent:/m00") || has(s, "fs/free_percent:/m12") {
+	if fs != 1 || !has(s, "fs/free_percent:/") {
 		t.Fatalf("got %d mounts", fs)
 	}
-	if len(s) > 48 || len(s) != 12+24+12 {
+	if len(s) > 48 || len(s) != 12+24+1 {
 		t.Fatalf("series = %d", len(s))
-	}
-}
-
-func TestEmptyMountPointIsSkipped(t *testing.T) {
-	var c Collector
-	s := c.Sample(reading(t0, func(r *Reading) { r.Volumes = []Volume{{"", 100, 1}} }))
-	if has(s, "fs/free_percent:") {
-		t.Fatalf("got %v", s)
-	}
-}
-
-func TestMountPointsAreCleanedBeforeTheExclusionRule(t *testing.T) {
-	for _, mp := range []string{"//proc", "/proc/../proc/x", "/var/lib/../lib/docker/x"} {
-		if realVolume(Volume{MountPoint: mp}) {
-			t.Errorf("%s should be excluded", mp)
-		}
-	}
-	if !realVolume(Volume{MountPoint: "/x/../DATA"}) {
-		t.Error("/DATA should be kept")
 	}
 }
 
