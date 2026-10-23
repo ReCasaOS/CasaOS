@@ -25,9 +25,11 @@ func (h *Hub) Handle(name string, properties map[string]string) {
 }
 
 // isMutedResource says whether an event of resourceEvents is one a busy box
-// (a Docker update, an OS upgrade) makes up: a high CPU or memory, not a crash.
+// (a Docker update, an OS upgrade) makes up: a high CPU or memory firing, not a
+// crash. A resolution is never one: resolve sends only for an alert that was
+// sent, and dropping it would leave that alert open on the phone for good.
 func isMutedResource(name string, p map[string]string) bool {
-	return slices.Contains(resourceEvents, name) && (p["situation"] == "cpu_high" || p["situation"] == "mem_high")
+	return name == "resource:alert-firing" && (p["situation"] == "cpu_high" || p["situation"] == "mem_high")
 }
 
 // fromResource is the alert of one resource event, and whether it resolves the
