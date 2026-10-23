@@ -69,15 +69,18 @@ func InitInfo() {
 	file.WriteToFullPath(by, config.AppInfo.DBPath+"/baseinfo.conf", 0o666)
 }
 
+// networkMountDelay is how long the remount of the samba connections waits after the start; a var, so tests can shorten it.
+var networkMountDelay = 10 * time.Second
+
 func InitNetworkMount() {
-	time.Sleep(time.Second * 10)
+	time.Sleep(networkMountDelay)
 	connections := service.MyService.Connections().GetConnectionsList()
 	for _, v := range connections {
 		connection := service.MyService.Connections().GetConnectionByID(fmt.Sprint(v.ID))
 		directories, err := samba.GetSambaSharesList(connection.Host, connection.Port, connection.Username, connection.Password)
 		if err != nil {
-			service.MyService.Connections().DeleteConnection(fmt.Sprint(connection.ID))
-			logger.Error("mount samba err", zap.Any("err", err), zap.Any("info", connection))
+			// kept, with its password: the server may only be off or slow at this start
+			logger.Error("cannot read the shares of a samba connection, kept for the next start", zap.Error(err), zap.Uint("id", connection.ID), zap.String("host", connection.Host))
 			continue
 		}
 		baseHostPath := "/mnt/" + connection.Host
