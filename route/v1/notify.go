@@ -10,7 +10,7 @@ import (
 )
 
 func PostNotifyMessage(ctx echo.Context) error {
-	name := ctx.Param("name")
+	name := ctx.Param("path") // the route is /v1/notify/:path
 	message := make(map[string]interface{})
 	if err := ctx.Bind(&message); err != nil {
 		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: err.Error()})

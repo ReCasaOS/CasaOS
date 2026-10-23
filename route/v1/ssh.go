@@ -15,7 +15,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
-	"golang.org/x/crypto/ssh"
 
 	modelCommon "github.com/ReCasaOS/CasaOS-Common/model"
 )
@@ -53,37 +52,36 @@ func WsSsh(ctx echo.Context) error {
 	userName := ctx.QueryParam("username")
 	password := ctx.QueryParam("password")
 	port := ctx.QueryParam("port")
-	wsConn, _ := upgrader.Upgrade(ctx.Response().Writer, ctx.Request(), nil)
+	wsConn, err := upgrader.Upgrade(ctx.Response().Writer, ctx.Request(), nil)
+	if err != nil {
+		return nil // the upgrader has answered the request
+	}
 	logBuff := new(bytes.Buffer)
 
 	quitChan := make(chan bool, 3)
-	// user := ""
-	// password := ""
-	var login int = 1
 	cols, _ := strconv.Atoi(utils.DefaultQuery(ctx, "cols", "200"))
 	rows, _ := strconv.Atoi(utils.DefaultQuery(ctx, "rows", "32"))
-	var client *ssh.Client
-	for login != 0 {
-
-		var err error
-		if userName == "" || password == "" || port == "" {
-			wsConn.WriteMessage(websocket.TextMessage, []byte("username or password or port is empty"))
-		}
-		client, err = sshHelper.NewSshClient(userName, password, port)
-
-		if err != nil && client == nil {
-			wsConn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
-			wsConn.WriteMessage(websocket.TextMessage, []byte("\r\n\x1b[0m"))
-		} else {
-			login = 0
-		}
-
+	// One attempt: the browser asks again if it wants to. Retrying at once looped forever, after the browser had gone too.
+	if userName == "" || password == "" || port == "" {
+		wsConn.WriteMessage(websocket.TextMessage, []byte("username or password or port is empty"))
+		wsConn.Close()
+		return nil
 	}
-	if client != nil {
-		defer client.Close()
+	client, err := sshHelper.NewSshClient(userName, password, port)
+	if err != nil {
+		wsConn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
+		wsConn.WriteMessage(websocket.TextMessage, []byte("\r\n\x1b[0m"))
+		wsConn.Close()
+		return nil
 	}
+	defer client.Close()
 
-	ssConn, _ := sshHelper.NewSshConn(cols, rows, client)
+	ssConn, err := sshHelper.NewSshConn(cols, rows, client)
+	if err != nil {
+		wsConn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
+		wsConn.Close()
+		return nil
+	}
 	defer ssConn.Close()
 
 	go ssConn.ReceiveWsMsg(wsConn, logBuff, quitChan)

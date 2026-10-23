@@ -567,6 +567,10 @@ func PutSystemState(ctx echo.Context) error {
 // @Router /app/getport [get]
 func GetPort(ctx echo.Context) error {
 	t := utils.DefaultQuery(ctx, "type", "tcp")
+	// any other type is never available, and the loop below never ended
+	if t != "tcp" && t != "udp" {
+		return ctx.JSON(http.StatusBadRequest, &model.Result{Success: common_err.INVALID_PARAMS, Message: "type must be tcp or udp"})
+	}
 	var p int
 	ok := true
 	for ok {
