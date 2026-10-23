@@ -11,11 +11,16 @@
 package service
 
 import (
+	"errors"
+	"time"
+
 	"github.com/ReCasaOS/CasaOS-Common/external"
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/codegen/message_bus"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/gorilla/websocket"
 	"github.com/patrickmn/go-cache"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -48,7 +53,14 @@ type Repository interface {
 func NewService(db *gorm.DB, RuntimePath string) Repository {
 	gatewayManagement, err := external.NewManagementService(RuntimePath)
 	if err != nil && len(RuntimePath) > 0 {
-		panic(err)
+		// the gateway restarts, or is late at boot: wait for it rather than die
+		err = RetryGateway(func() (err error) {
+			gatewayManagement, err = external.NewManagementService(RuntimePath)
+			return err
+		})
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	return &store{
@@ -144,4 +156,28 @@ func (c *store) MessageBus() *message_bus.ClientWithResponses {
 	}, message_bus.WithRequestEditorFn(external.InternalRequestEditor(config.CommonInfo.RuntimePath)))
 
 	return client
+}
+
+// startWait is how long after the process started the core waits, at start, for the gateway (its first
+// look, its routes) and the message bus (the event types), all of them together.
+const startWait = 2 * time.Minute
+
+// StartDeadline is when those waits end: nothing starts after it, so that the start stays inside the
+// unit's TimeoutStartSec (service_test.go adds up what may still end after it). A var, so that tests
+// can move it.
+var StartDeadline = time.Now().Add(startWait)
+
+// RetryGateway calls try until it succeeds, waiting 1 s, then twice as long each time up to 15 s, and
+// gives up with try's last error rather than begin a try after StartDeadline; then systemd restarts the
+// core.
+func RetryGateway(try func() error) error {
+	err := errors.New("the start's deadline for the gateway has passed")
+	for wait := time.Second; time.Now().Before(StartDeadline); wait = min(2*wait, 15*time.Second) {
+		if err = try(); err == nil || time.Now().Add(wait).After(StartDeadline) {
+			return err
+		}
+		logger.Info("the gateway does not answer, trying again", zap.Error(err), zap.Duration("in", wait))
+		time.Sleep(wait)
+	}
+	return err
 }

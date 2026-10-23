@@ -379,3 +379,48 @@ func TestShoutrrrValidatesURLs(t *testing.T) {
 		}
 	}
 }
+
+// The count says since when only within a day: days later, "since 06:00" would read as this morning.
+func TestTheCountSaysSinceWhenOnlyWithinADay(t *testing.T) {
+	h, o, now := newHub(t)
+
+	raise(h, crashed)
+	*now = now.Add(time.Hour)
+	raise(h, crashed)
+	*now = now.Add(3 * 24 * time.Hour)
+	raise(h, crashed)
+
+	want := []string{"immich stopped unexpectedly.\nhttp://192.168.1.20", "immich stopped unexpectedly.\nhttp://192.168.1.20"}
+	if got := o.texts(phone); !reflect.DeepEqual(got, want) {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+}
+
+// A resolved alert is forgotten by the next raise a day after it was sent, so that the memory does not
+// keep every key the box ever had; within the day it stays, the count's "since" needs it. One not
+// resolved stays, its resolution may come.
+func TestAResolvedRecordIsForgottenAfterADay(t *testing.T) {
+	h, _, now := newHub(t)
+	open := alert{key: "app:immich:install", category: Apps, sentence: "Installing immich failed."}
+
+	raise(h, crashed)
+	raise(h, open)
+	*now = now.Add(20 * time.Minute)
+	resolve(h, alert{key: crashed.key, category: Apps, sentence: "Resolved: immich runs normally again."})
+	kept := func(key string) bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		_, ok := h.sent[key]
+		return ok
+	}
+	*now = now.Add(6 * time.Hour)
+	raise(h, alert{key: "disk:WD-1:smart", category: Disks, sentence: "Disk sdb fails its SMART check."})
+	if !kept(crashed.key) {
+		t.Fatal("a resolved alert sent less than a day ago is forgotten")
+	}
+	*now = now.Add(18 * time.Hour)
+	raise(h, alert{key: "disk:WD-2:smart", category: Disks, sentence: "Disk sdc fails its SMART check."})
+	if kept(crashed.key) || !kept(open.key) {
+		t.Fatalf("resolved kept: %v, open kept: %v; want only the open one kept", kept(crashed.key), kept(open.key))
+	}
+}

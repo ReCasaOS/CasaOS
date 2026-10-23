@@ -48,6 +48,9 @@ import (
 const (
 	// dedupeWindow is how long an alert already sent stays quiet.
 	dedupeWindow = 6 * time.Hour
+	// sinceWindow is how long the count of an alert that came back says since when, and how long a
+	// resolved record is kept for it.
+	sinceWindow = 24 * time.Hour
 	// sendTimeout bounds each channel's send.
 	sendTimeout = 15 * time.Second
 )
@@ -203,10 +206,17 @@ func (h *Hub) raiseAs(a alert, wait bool) bool {
 		h.mu.Unlock()
 		return true
 	}
+	// a resolved alert a day old holds nothing back and no count needs it: forget it, or the map keeps every key the box ever had
+	for key, r := range h.sent {
+		if r.resolved && now.Sub(r.at) >= sinceWindow {
+			delete(h.sent, key)
+		}
+	}
 	h.sent[a.key] = &record{at: now}
 	h.mu.Unlock()
 	sentence := a.sentence
-	if previous != nil && previous.repeats > 0 {
+	// the clock alone says the day only within one: days later "since 06:00" would read as this morning
+	if previous != nil && previous.repeats > 0 && now.Sub(previous.at) < sinceWindow {
 		sentence += fmt.Sprintf(" It happened %d times since %s.", previous.repeats+1, previous.at.Format("15:04"))
 	}
 	if !wait {

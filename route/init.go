@@ -69,35 +69,33 @@ func InitInfo() {
 	file.WriteToFullPath(by, config.AppInfo.DBPath+"/baseinfo.conf", 0o666)
 }
 
+// networkMountDelay is how long the remount of the samba connections waits after the start; a var, so tests can shorten it.
+var networkMountDelay = 10 * time.Second
+
 func InitNetworkMount() {
-	time.Sleep(time.Second * 10)
+	time.Sleep(networkMountDelay)
 	connections := service.MyService.Connections().GetConnectionsList()
 	for _, v := range connections {
 		connection := service.MyService.Connections().GetConnectionByID(fmt.Sprint(v.ID))
 		directories, err := samba.GetSambaSharesList(connection.Host, connection.Port, connection.Username, connection.Password)
 		if err != nil {
-			service.MyService.Connections().DeleteConnection(fmt.Sprint(connection.ID))
-			logger.Error("mount samba err", zap.Any("err", err), zap.Any("info", connection))
+			// kept, with its password: the server may only be off or slow at this start
+			logger.Error("cannot read the shares of a samba connection, kept for the next start", zap.Error(err), zap.Uint("id", connection.ID), zap.String("host", connection.Host))
 			continue
 		}
 		baseHostPath := "/mnt/" + connection.Host
 
-		mountPointList, err := service.MyService.System().GetDirPath(baseHostPath)
-		if err != nil {
-			logger.Error("get mount point err", zap.Any("err", err))
-			continue
+		if err := service.UnmountShares(baseHostPath); err != nil {
+			logger.Error("some samba shares of a host did not unmount", zap.Error(err), zap.String("host", connection.Host))
 		}
-		for _, v := range mountPointList {
-			service.MyService.Connections().UnmountSmaba(v.Path)
-		}
-
-		os.RemoveAll(baseHostPath)
 
 		file.IsNotExistMkDir(baseHostPath)
 		for _, v := range directories {
 			mountPoint := baseHostPath + "/" + v
 			file.IsNotExistMkDir(mountPoint)
-			service.MyService.Connections().MountSmaba(connection.Username, connection.Host, v, connection.Port, mountPoint, connection.Password)
+			if err := service.MyService.Connections().MountSmaba(connection.Username, connection.Host, v, connection.Port, mountPoint, connection.Password); err != nil {
+				logger.Error("cannot mount a samba share", zap.Error(err), zap.String("path", mountPoint))
+			}
 		}
 		connection.Directories = strings.Join(directories, ",")
 		service.MyService.Connections().UpdateConnection(&connection)
@@ -107,6 +105,7 @@ func InitNetworkMount() {
 		logger.Error("mount storage err", zap.Any("err", err))
 	}
 }
+
 func InitZerotier() {
 	v1.CheckNetwork()
 }

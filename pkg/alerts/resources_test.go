@@ -182,3 +182,24 @@ func TestCPUAndMemoryAlertsAreDroppedWhileMutedButAVMCrashIsNot(t *testing.T) {
 		t.Fatalf("sent %q, want the crash", got)
 	}
 }
+
+// A firing sent before the box got busy is resolved once, by the event that may come while it is
+// busy: dropping that one would leave the alert open on the phone for good. resolve sends only for
+// an alert that was sent, so nothing made up by the busy box goes out.
+func TestAResolutionIsDeliveredWhileMuted(t *testing.T) {
+	h, o, _ := newHub(t)
+	muted := false
+	h.Muted = func() bool { return muted }
+	p := resourceProps("host", "host", "nas", "cpu_high", "value", "95")
+
+	h.Handle(firing, p)
+	h.sending.Wait()
+	muted = true
+	h.Handle(resolved, p)
+	h.Handle(resolved, resourceProps("host", "host", "nas", "mem_high"))
+	h.sending.Wait()
+
+	if got := o.texts(phone); len(got) != 2 || got[1] != "Resolved: nas: CPU is back to normal.\nhttp://192.168.1.20" {
+		t.Fatalf("sent %q, want the firing and its resolution only", got)
+	}
+}

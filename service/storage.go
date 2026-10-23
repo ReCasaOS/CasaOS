@@ -1,8 +1,6 @@
 package service
 
 import (
-	"io/ioutil"
-
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/httper"
@@ -31,10 +29,8 @@ func (s *storageStruct) MountStorage(mountPoint, fs string) error {
 func (s *storageStruct) UnmountStorage(mountPoint string) error {
 	err := httper.Unmount(mountPoint)
 	if err == nil {
-		dir, _ := ioutil.ReadDir(mountPoint)
-
-		if len(dir) == 0 {
-			file.RMDir(mountPoint)
+		if err := RemoveMountPoint(mountPoint); err != nil {
+			logger.Info("the folder of an unmounted storage is kept", zap.Error(err), zap.String("path", mountPoint))
 		}
 		return nil
 	}

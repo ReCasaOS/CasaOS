@@ -11,11 +11,20 @@
 package service
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"syscall"
 
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS/pkg/samba"
 	"github.com/ReCasaOS/CasaOS/service/model"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 	"github.com/moby/sys/mount"
+	"github.com/moby/sys/mountinfo"
+	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	"gorm.io/gorm"
 )
@@ -63,12 +72,16 @@ func (s *connectionsStruct) DeleteConnection(id string) {
 }
 
 func (s *connectionsStruct) MountSmaba(username, host, directory, port, mountPoint, password string) error {
-	err := unix.Mount(
+	options, err := samba.MountOptions(username, password, port)
+	if err != nil {
+		return err
+	}
+	err = unix.Mount(
 		fmt.Sprintf("//%s/%s", host, directory),
 		mountPoint,
 		"cifs",
 		unix.MS_NOATIME|unix.MS_NODEV|unix.MS_NOSUID,
-		fmt.Sprintf("username=%s,password=%s", username, password),
+		options,
 	)
 	return err
 	// str := command2.ExecResultStr("source " + config.AppInfo.ShellPath + "/helper.sh ;MountCIFS " + username + " " + host + " " + directory + " " + port + " " + mountPoint + " " + password)
@@ -82,3 +95,51 @@ func (s *connectionsStruct) UnmountSmaba(mountPoint string) error {
 func NewConnectionsService(db *gorm.DB) ConnectionsService {
 	return &connectionsStruct{db: db}
 }
+
+// RemoveMountPoint removes the folder a filesystem was mounted on, after its unmount: only when it is no
+// longer a mount point, and only when it is an empty folder (rmdir, never a file, never what is inside).
+// What a mount that is still there holds (busy, or its unmount failed) is never touched: on a network
+// share those files are the server's.
+func RemoveMountPoint(dir string) error {
+	mounted, err := isMountPoint(dir)
+	if err != nil {
+		return err
+	}
+	if mounted {
+		return fmt.Errorf("%s is still a mount point", dir)
+	}
+	return syscall.Rmdir(dir)
+}
+
+// UnmountShares unmounts what is mounted in dir, the folder of a samba host, and removes the mount points
+// left empty and unmounted. A share that does not unmount keeps its folder and what is in it: with the
+// share still mounted, those files are the server's. It goes through all of them and returns the first
+// unmount error; a folder that does not exist has nothing mounted in it.
+func UnmountShares(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if err := MyService.Connections().UnmountSmaba(path); err != nil {
+			logger.Error("cannot unmount a samba share, its folder is kept", zap.Error(err), zap.String("path", path))
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		if err := RemoveMountPoint(path); err != nil {
+			logger.Info("the folder of a samba share is kept", zap.Error(err), zap.String("path", path))
+		}
+	}
+	return first
+}
+
+// isMountPoint compares the folder's device with its parent's, or reads /proc/self/mountinfo; a var, so
+// that tests can say a folder is still mounted.
+var isMountPoint = mountinfo.Mounted
