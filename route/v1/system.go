@@ -22,8 +22,6 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 	"github.com/ReCasaOS/CasaOS/service"
-	model2 "github.com/ReCasaOS/CasaOS/service/model"
-	"github.com/ReCasaOS/CasaOS/types"
 	"github.com/labstack/echo/v4"
 	"github.com/tidwall/gjson"
 )
@@ -37,16 +35,6 @@ import (
 // @Router /sys/version/check [get]
 func GetSystemCheckVersion(ctx echo.Context) error {
 	need, latestVersion := version.IsNeedUpdate(service.MyService.Casa().GetCasaosVersion())
-	if need {
-		installLog := model2.AppNotify{}
-		installLog.State = 0
-		installLog.Message = "New version " + latestVersion.Version + " is ready, ready to upgrade"
-		installLog.Type = types.NOTIFY_TYPE_NEED_CONFIRM
-		installLog.CreatedAt = strconv.FormatInt(time.Now().Unix(), 10)
-		installLog.UpdatedAt = strconv.FormatInt(time.Now().Unix(), 10)
-		installLog.Name = "CasaOS System"
-		service.MyService.Notify().AddLog(installLog)
-	}
 	data := make(map[string]interface{}, 3)
 	data["need_update"] = need
 	data["version"] = latestVersion
