@@ -44,12 +44,25 @@ func useMessageBus(t *testing.T, up bool) <-chan string {
 // useFileQueue puts tasks in the copy and move queue, ids in their order.
 func useFileQueue(t *testing.T, ids []string, tasks map[string]model.FileOperate) {
 	t.Helper()
+	FileQueueLock.Lock()
 	previous := OpStrArr
 	OpStrArr = ids
 	for id, task := range tasks {
 		FileQueue.Store(id, task)
 	}
+	FileQueueLock.Unlock()
 	t.Cleanup(func() {
+		// an operation the test started may still be ending in its own goroutine: let it, then reset under the lock it reads with
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			FileQueueLock.Lock()
+			idle := len(fileOperateCancels) == 0
+			FileQueueLock.Unlock()
+			if idle {
+				break
+			}
+		}
+		FileQueueLock.Lock()
+		defer FileQueueLock.Unlock()
 		OpStrArr = previous
 		FileQueue.Range(func(k, _ interface{}) bool {
 			FileQueue.Delete(k)
