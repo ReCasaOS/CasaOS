@@ -105,7 +105,8 @@ func TestAnInstallDoesTheStepsInOrderAndLeavesTheModuleOnTheBox(t *testing.T) {
 		}
 	}
 	wantCmds := []string{
-		"apt-get install -y -q --no-install-recommends --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 libvirt-clients qemu-utils",
+		"apt-get --download-only install -y -q --no-install-recommends --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 libvirt-clients qemu-utils",
+		"apt-get install --no-download -y -q --no-install-recommends --no-remove -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confold -o DPkg::Lock::Timeout=120 libvirt-clients qemu-utils",
 		"systemctl daemon-reload", "systemctl enable --now " + testUnit,
 	}
 	if !slices.Equal(cmds, wantCmds) {
@@ -727,5 +728,19 @@ func TestAnInstallEndedWhileAptWorksSaysDpkgMayNeedConfiguring(t *testing.T) {
 	}
 	if code := f.main(ctx, "install", testName, "--yes"); code != ExitFailed || strings.Contains(f.out.String(), hint) {
 		t.Errorf("interrupted at the units: %d\n%s", code, f.out)
+	}
+}
+
+// The core looks at the lock of the assistant by taking it for an instant (LockHeld): a run tries the lock three times, 50 ms apart, before it says busy
+func TestARunThatFindsTheLockTakenForAnInstantTriesAgain(t *testing.T) {
+	f := newFixture(t)
+	f.host.held = 2
+	if code := f.install("--yes"); code != ExitOK {
+		t.Fatalf("taken twice: exit %d:\n%s", code, f.out)
+	}
+	f = newFixture(t)
+	f.host.held = 3
+	if code := f.install("--yes"); code != ExitRefused || !strings.Contains(f.out.String(), "busy") || f.host.lockCalls != 3 {
+		t.Fatalf("taken three times: exit %d, %d tries:\n%s", code, f.host.lockCalls, f.out)
 	}
 }

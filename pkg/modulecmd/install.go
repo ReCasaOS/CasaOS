@@ -62,7 +62,7 @@ const (
 	undoDone               = "rolled_back"
 	undoIncomplete         = "rollback_incomplete"
 	undoLeft               = UndoRolledBackWithLeft
-	aptTimeout             = 30 * time.Minute
+	aptTimeout             = 30 * time.Minute // the download of the packages; the install has none
 	systemctlTimeout       = 2 * time.Minute
 	routeWait              = 60 * time.Second
 	routeEvery             = 2 * time.Second
@@ -212,7 +212,7 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 		}
 		asked = plan.PlanID
 	}
-	release, err := env.Host.Lock(env.Roots.lock())
+	release, err := takeLock(env)
 	switch {
 	case errors.Is(err, ErrLockHeld):
 		return refuseEarly(env, c.name, CodeBusy)
@@ -395,18 +395,27 @@ func (in *install) stepPackages() *stepFailure {
 	if f := in.repairDpkg(); f != nil {
 		return f
 	}
-	tail := &tailWriter{Writer: in.toolWriter()}
-	in.aptStarted = true
-	out, err := in.env.Runner.Run(in.ctx, Cmd{Argv: argv, Env: childEnv(in.env), Stdout: tail, Timeout: aptTimeout, Finish: aptFinish})
-	switch {
-	case err != nil:
-		return in.fail(CodePackagesFailed, err)
-	case out.ExitCode != 0 && strings.Contains(string(tail.tail), heldChangedText):
-		return in.fail(CodeHeldPackage, fmt.Errorf("apt-get ended with status %d", out.ExitCode))
-	case out.ExitCode != 0:
-		return in.fail(CodePackagesFailed, fmt.Errorf("apt-get ended with status %d", out.ExitCode))
+	apt := func(c Cmd) *stepFailure {
+		tail := &tailWriter{Writer: in.toolWriter()}
+		c.Env, c.Stdout = childEnv(in.env), tail
+		out, err := in.env.Runner.Run(in.ctx, c)
+		switch {
+		case err != nil:
+			return in.fail(CodePackagesFailed, err)
+		case out.ExitCode != 0 && strings.Contains(string(tail.tail), heldChangedText):
+			return in.fail(CodeHeldPackage, fmt.Errorf("apt-get ended with status %d", out.ExitCode))
+		case out.ExitCode != 0:
+			return in.fail(CodePackagesFailed, fmt.Errorf("apt-get ended with status %d", out.ExitCode))
+		}
+		return nil
 	}
-	return nil
+	// the download changes nothing and is ended by its timer; the install runs dpkg, which no timer ends: only a stop that is asked for, and then apt-get is asked to finish
+	if f := apt(Cmd{Argv: slices.Insert(slices.Clone(argv), 1, "--download-only"), Timeout: aptTimeout}); f != nil {
+		return f
+	}
+	in.aptStarted = true
+	// --no-download: what the download did not fetch (the mirror changed between the two) fails here, before dpkg, and is never fetched with no timer
+	return apt(Cmd{Argv: slices.Insert(slices.Clone(argv), 2, "--no-download"), Finish: aptFinish})
 }
 
 func (in *install) archivePath() string { return in.env.Roots.tmp() + "/" + archiveName }

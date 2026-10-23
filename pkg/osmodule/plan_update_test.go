@@ -8,6 +8,41 @@ import (
 	"testing"
 )
 
+// Pre-releases of one release are ordered among themselves, by their dot-separated identifiers (the numbers in them as numbers, a number before letters, fewer before more), and all
+// come before the release; a build is its release.
+func TestVersionsAreOrderedWithTheirPreReleases(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want int
+	}{
+		{"0.5.30-rc1", "0.5.30-rc2", -1},
+		{"0.5.30-rc2", "0.5.30-rc10", -1},
+		{"0.5.30-rc10", "0.5.30-rc2", 1},
+		{"0.5.30-beta", "0.5.30-rc", -1},
+		{"0.5.30-beta.2", "0.5.30-beta.11", -1},
+		{"0.5.30-beta.2", "0.5.30-rc.1", -1},
+		{"0.5.30-rc", "0.5.30-rc.1", -1},
+		{"0.5.30-1", "0.5.30-alpha", -1},
+		{"0.5.30-rc1", "0.5.30", -1},
+		{"0.5.30", "0.5.30-rc1", 1},
+		{"v0.5.30-rc2", "0.5.30-rc2", 0},
+		{"0.5.30-rc2+7", "0.5.30-rc2", 0},
+		{"0.5.30+7", "0.5.30", 0},
+		{"0.5.30-rc9", "0.5.31-rc1", -1},
+		{"0.5.30-rc01", "0.5.30-rc1", 0},
+	} {
+		got, ok := CompareVersions(c.a, c.b)
+		if !ok || got != c.want {
+			t.Errorf("CompareVersions(%q, %q) = %d, %v; want %d", c.a, c.b, got, ok, c.want)
+		}
+	}
+	for _, s := range []string{"", "0.5", "0.5.30.1", "latest", "0.5.30-", "0.5.30-rc 1"} {
+		if _, ok := CompareVersions(s, "0.5.30"); ok {
+			t.Errorf("%q is taken for a version", s)
+		}
+	}
+}
+
 func TestTagsAreComparedAsNumbers(t *testing.T) {
 	for _, c := range []struct {
 		a, b string

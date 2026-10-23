@@ -108,7 +108,7 @@ func runUpdate(ctx context.Context, env Env, c command) (code int) {
 		}
 		asked = plan.PlanID
 	}
-	release, err := env.Host.Lock(env.Roots.lock())
+	release, err := takeLock(env)
 	switch {
 	case errors.Is(err, ErrLockHeld):
 		return refuseEarly(env, c.name, CodeBusy)

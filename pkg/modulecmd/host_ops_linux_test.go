@@ -429,3 +429,30 @@ func atoi(s string) int {
 	}
 	return n
 }
+
+// LockHeld sees a run that holds the lock, and does not keep the lock it looked at
+func TestLockHeldSaysWhetherARunHoldsTheLockAndKeepsNothing(t *testing.T) {
+	env := Env{Roots: Roots{Prefix: t.TempDir()}, Host: newHost()}
+	if held, err := LockHeld(env); held || err != nil {
+		t.Fatalf("no folder of the lock: %v, %v", held, err)
+	}
+	if err := os.MkdirAll(env.Roots.state(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	release, err := env.Host.Lock(env.Roots.lock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held, err := LockHeld(env); !held || err != nil {
+		t.Errorf("a run holds it: %v, %v", held, err)
+	}
+	release()
+	if held, err := LockHeld(env); held || err != nil {
+		t.Errorf("nobody holds it: %v, %v", held, err)
+	}
+	again, err := env.Host.Lock(env.Roots.lock())
+	if err != nil {
+		t.Fatalf("the look kept the lock: %v", err)
+	}
+	again()
+}

@@ -30,8 +30,9 @@ type Files = osreadiness.Probe
 // how it ended. A command that ran and failed is not an error: it is an ExitCode that is not 0.
 type Output = osreadiness.Output
 
-// Sandbox is the only thing the plan writes with and runs commands with. Its production implementation lives in
-// service/. It owes the rules below, and the fake of the tests records that they are kept.
+// Sandbox is the only thing the plan writes with and runs commands with. Its production implementations are DirSandbox with
+// the Run of service/ (the plan of an upgrade) or of pkg/modulecmd/ (the plan of a module). It owes the rules below, and the
+// fake of the tests records that they are kept.
 type Sandbox interface {
 	// MakeDir makes the private directory of this plan (owned by the user the core runs as; os.MkdirTemp makes it 0700, and it
 	// is opened to be searched, 0711, and no more: apt drops to its own user, _apt, to fetch, and that user has to walk down to
@@ -58,9 +59,11 @@ const (
 	SandboxParent = "/var/tmp"
 	// SandboxPrefix starts the name of a sandbox directory.
 	SandboxPrefix = "casaos-os-plan."
-	// StaleAfter is how old a sandbox directory is before the core, at its start, removes it as left behind by a core that
-	// did not get to remove it.
-	StaleAfter = 10 * time.Minute
+	// StaleAfter is how old a sandbox directory is before a sweep removes it as left behind (SweepStale): the core's at its
+	// start, and the one a plan of a module makes before its own directory. Both callers make their directories with the one
+	// prefix, so it is longer than either lives: the job of the plan of an upgrade has 20 minutes, a plan of a module two
+	// simulations of SolverTimeout.
+	StaleAfter = time.Hour
 )
 
 // The bounds of a plan.

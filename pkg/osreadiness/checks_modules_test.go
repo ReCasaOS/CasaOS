@@ -44,6 +44,23 @@ func TestAModuleStandsInTheWayOfTheUpgradeAndIsNamed(t *testing.T) {
 			f.set(modulesDir+"/virt.json", virtModule)
 			f.set(modulesDir+"/zeta.json", strings.NewReplacer(`"name":"virt"`, `"name":"zeta"`).Replace(withoutUpgrade(virtModule)))
 		}, severity: Refuse, data: D{"modules": []string{"virt", "zeta"}, "reasons": []string{"calls_not_run_yet", "no_os_upgrade"}}},
+		// what an install puts down besides the manifest (the lists, the version): a module whose install or remove stopped half way is still on the box
+		{name: "a module that has its list of files and no manifest", setup: func(f *fakeProbe) { f.set(stateDir+"/virt.files", "casaos-module-files 1\n") },
+			severity: Refuse, data: D{"modules": []string{}, "invalid": []string{"virt"}, "reasons": []string{"invalid"}}},
+		{name: "a module that has its version and no manifest", setup: func(f *fakeProbe) { f.set(stateDir+"/virt.version", "v0.1.0\n") },
+			severity: Refuse, data: D{"modules": []string{}, "invalid": []string{"virt"}, "reasons": []string{"invalid"}}},
+		{name: "a module that has its list of directories and no manifest", setup: func(f *fakeProbe) { f.set(stateDir+"/virt.dirs", "") },
+			severity: Refuse, data: D{"modules": []string{}, "invalid": []string{"virt"}, "reasons": []string{"invalid"}}},
+		{name: "a module with its manifest and its lists is one module", setup: func(f *fakeProbe) {
+			f.set(modulesDir+"/virt.json", virtModule)
+			f.set(stateDir+"/virt.files", "casaos-module-files 1\n")
+			f.set(stateDir+"/virt.version", "v0.1.0\n")
+		}, severity: Refuse, data: D{"modules": []string{"virt"}, "reasons": []string{"calls_not_run_yet"}}},
+		{name: "the lock and the temporary folder of the assistant are no module", setup: func(f *fakeProbe) {
+			f.set(stateDir+"/.lock", "123\n")
+			f.set(stateDir+"/tmp/archive.tar", "x")
+		}, severity: OK},
+		{name: "a folder of the lists that cannot be read", setup: func(f *fakeProbe) { f.fail(stateDir, fs.ErrPermission) }, severity: Refuse, unknown: ReasonUnreadable},
 		{name: "more manifests than are read", setup: func(f *fakeProbe) {
 			for i := 0; i < 33; i++ {
 				f.set(modulesDir+"/m"+strings.Repeat("a", i%20+1)+string(rune('a'+i/20))+".json", virtModule)

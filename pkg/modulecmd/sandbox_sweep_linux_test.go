@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"golang.org/x/sys/unix"
 )
 
@@ -75,7 +76,7 @@ func TestTheSandboxesOfPlansThatWereKilledAreRemovedByTheNextOne(t *testing.T) {
 		others = append(others, plantSandbox(t, parent, name, 5*time.Hour, 0o711))
 	}
 
-	removed, err := sweepStaleSandboxes(parent, time.Now(), time.Hour)
+	removed, err := osplan.SweepStale(parent, time.Now(), time.Hour, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +95,14 @@ func TestTheSandboxesOfPlansThatWereKilledAreRemovedByTheNextOne(t *testing.T) {
 		}
 	}
 	// nothing is wrong with a parent that is not there, and a second sweep has nothing to do
-	if removed, err := sweepStaleSandboxes(filepath.Join(parent, "none"), time.Now(), time.Hour); removed != nil || err != nil {
+	if removed, err := osplan.SweepStale(filepath.Join(parent, "none"), time.Now(), time.Hour, nil); removed != nil || err != nil {
 		t.Errorf("no parent: %v, %v", removed, err)
 	}
-	if removed, err := sweepStaleSandboxes(parent, time.Now(), time.Hour); err != nil || len(removed) != 0 {
+	if removed, err := osplan.SweepStale(parent, time.Now(), time.Hour, nil); err != nil || len(removed) != 0 {
 		t.Errorf("a second time: %v, %v", removed, err)
 	}
 	// a moment later the one that was young is old
-	if removed, err := sweepStaleSandboxes(parent, time.Now().Add(2*time.Minute), time.Hour); err != nil || !slices.Equal(removed, []string{young}) {
+	if removed, err := osplan.SweepStale(parent, time.Now().Add(2*time.Minute), time.Hour, nil); err != nil || !slices.Equal(removed, []string{young}) {
 		t.Errorf("later: %v, %v", removed, err)
 	}
 }
@@ -116,7 +117,7 @@ func TestASandboxOfAnotherUserIsLeftAlone(t *testing.T) {
 	if err := os.Chown(p, 65534, 65534); err != nil {
 		t.Fatal(err)
 	}
-	if removed, err := sweepStaleSandboxes(parent, time.Now(), time.Hour); err != nil || len(removed) != 0 || !exists(p) {
+	if removed, err := osplan.SweepStale(parent, time.Now(), time.Hour, nil); err != nil || len(removed) != 0 || !exists(p) {
 		t.Errorf("removed %v, %v", removed, err)
 	}
 }
@@ -168,7 +169,7 @@ func TestAMountPointNamedLikeASandboxIsLeftAlone(t *testing.T) {
 	if err := os.Chtimes(p, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if removed, err := sweepStaleSandboxes(parent, time.Now(), time.Hour); err != nil || len(removed) != 0 || !exists(inside) {
+	if removed, err := osplan.SweepStale(parent, time.Now(), time.Hour, nil); err != nil || len(removed) != 0 || !exists(inside) {
 		t.Errorf("removed %v, %v; the file is there: %v", removed, err, exists(inside))
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/osrun"
 	"go.uber.org/zap"
 )
@@ -35,11 +36,22 @@ func (s *systemService) osUpgradeStartRun(ctx context.Context, probe osReadiness
 	runID := spec.Meta.RunID
 	unit := s.osUpgradeUnitNow()
 	var previous *osUpgradeRun
-	err := withOSUpgradeLock(func() (err error) {
-		previous, err = s.osUpgradeOpenRun(spec, nonce, busyState, unit)
-		return err
+	opened := false
+	// the flag goes up under the lock of the module assistant, which a run of it takes before it looks for the flag: the run sees the flag, or this sees the run
+	err := modulecmd.HoldLock(s.systemPackageUpdater().moduleWorld(), func() error {
+		opened = true
+		return withOSUpgradeLock(func() (err error) {
+			previous, err = s.osUpgradeOpenRun(spec, nonce, busyState, unit)
+			return err
+		})
 	})
-	if err != nil {
+	switch {
+	case !opened && errors.Is(err, modulecmd.ErrLockHeld):
+		return OSUpgradeStatus{}, refuseUpgrade(OSUpgradeBusy, "something else is changing the packages of the machine", map[string]any{"reason": "a run of the module assistant holds its lock"})
+	case err != nil && !opened:
+		logger.Error("the lock of the module assistant could not be taken for the start of an upgrade", zap.Error(err))
+		return OSUpgradeStatus{}, refuseUpgrade(OSUpgradeBusy, "whether something else is changing the packages could not be seen", map[string]any{"reason": "unknown"})
+	case err != nil:
 		return OSUpgradeStatus{}, err
 	}
 

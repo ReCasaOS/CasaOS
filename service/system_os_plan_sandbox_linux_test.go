@@ -141,11 +141,11 @@ func TestRemoveSandboxDirTakesOnlyTheNameOfOne(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(victim, "sub"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := removeSandboxDir(parent, name); err == nil {
-			t.Errorf("removeSandboxDir(%q) took the name of a sandbox directory", name)
+		if err := osplan.RemoveSandboxDir(parent, name); err == nil {
+			t.Errorf("RemoveSandboxDir(%q) took the name of a sandbox directory", name)
 		}
 		if _, err := os.Stat(victim); err != nil {
-			t.Errorf("removeSandboxDir(%q) removed what is not a sandbox directory: %v", name, err)
+			t.Errorf("RemoveSandboxDir(%q) removed what is not a sandbox directory: %v", name, err)
 		}
 	}
 	// a plain file with the name of one is not a directory
@@ -153,14 +153,14 @@ func TestRemoveSandboxDirTakesOnlyTheNameOfOne(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeSandboxDir(parent, "casaos-os-plan.77"); err == nil {
+	if err := osplan.RemoveSandboxDir(parent, "casaos-os-plan.77"); err == nil {
 		t.Error("a file was taken for a directory")
 	}
 	if _, err := os.Stat(file); err != nil {
 		t.Errorf("the file was removed: %v", err)
 	}
 	// one that is not there is removed already
-	if err := removeSandboxDir(parent, "casaos-os-plan.78"); err != nil {
+	if err := osplan.RemoveSandboxDir(parent, "casaos-os-plan.78"); err != nil {
 		t.Errorf("a directory that is not there: %v", err)
 	}
 }
@@ -332,9 +332,9 @@ func TestTheStaleDirectoriesAreRemovedAtTheStartAndNothingElse(t *testing.T) {
 		age(t, p, old)
 		return p
 	}
-	stale := mkdir("casaos-os-plan.12345", 11*time.Minute)
-	stale2 := mkdir("casaos-os-plan.abcDEF9", 3*time.Hour)
-	young := mkdir("casaos-os-plan.777", 9*time.Minute)
+	stale := mkdir("casaos-os-plan.12345", osplan.StaleAfter+time.Minute)
+	stale2 := mkdir("casaos-os-plan.abcDEF9", 3*osplan.StaleAfter)
+	young := mkdir("casaos-os-plan.777", osplan.StaleAfter-time.Minute)
 	fresh := mkdir("casaos-os-plan.888", 0)
 	other := mkdir("casaos-os-plan", 5*time.Hour)      // no suffix
 	other2 := mkdir("casaos-os-plan.", 5*time.Hour)    // an empty suffix
@@ -773,54 +773,6 @@ func TestTheTmpDirectoryIsOpenWhateverTheUmaskIs(t *testing.T) {
 	}
 }
 
-// statInfo is a file as the system describes it to the sweep: its owner and its device are the ones given.
-type statInfo struct {
-	mode     fs.FileMode
-	uid, dev uint64
-	noStat   bool
-}
-
-func (statInfo) Name() string        { return "casaos-os-plan.1" }
-func (statInfo) Size() int64         { return 0 }
-func (s statInfo) Mode() fs.FileMode { return s.mode }
-func (statInfo) ModTime() time.Time  { return time.Time{} }
-func (s statInfo) IsDir() bool       { return s.mode.IsDir() }
-func (s statInfo) Sys() any {
-	if s.noStat {
-		return nil
-	}
-	st := &syscall.Stat_t{}
-	st.Uid, st.Dev = uint32(s.uid), s.dev
-	return st
-}
-
-func TestADirectoryIsTheCoresOnlyIfItsOwnerItsModeAndItsDeviceSayIt(t *testing.T) {
-	euid := uint64(os.Geteuid())
-	parent := statInfo{mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0, dev: 7}
-	for _, tc := range []struct {
-		name string
-		info statInfo
-		why  string
-	}{
-		{"the core's own, as it makes it", statInfo{mode: fs.ModeDir | 0o711, uid: euid, dev: 7}, ""},
-		{"the core's own, 0700", statInfo{mode: fs.ModeDir | 0o700, uid: euid, dev: 7}, ""},
-		{"another user's", statInfo{mode: fs.ModeDir | 0o711, uid: euid + 1, dev: 7}, "it belongs to another user"},
-		{"writable by the group", statInfo{mode: fs.ModeDir | 0o771, uid: euid, dev: 7}, "others may write in it"},
-		{"writable by anyone", statInfo{mode: fs.ModeDir | 0o717, uid: euid, dev: 7}, "others may write in it"},
-		{"writable by anyone, with the sticky bit", statInfo{mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: euid, dev: 7}, "others may write in it"},
-		{"on another file system", statInfo{mode: fs.ModeDir | 0o711, uid: euid, dev: 8}, "it is on another file system than /var/tmp"},
-		{"of nobody the system can say", statInfo{mode: fs.ModeDir | 0o711, noStat: true}, "who owns it, and where it is, cannot be seen"},
-	} {
-		if got := notTheCores(tc.info, parent); got != tc.why {
-			t.Errorf("%s: %q, want %q", tc.name, got, tc.why)
-		}
-	}
-	// the parent that the system cannot say anything of is no parent to compare with
-	if got := notTheCores(statInfo{mode: fs.ModeDir | 0o711, uid: euid, dev: 0}, statInfo{noStat: true}); got != "who owns it, and where it is, cannot be seen" {
-		t.Errorf("a parent that cannot be seen: %q", got)
-	}
-}
-
 // The sweep leaves alone, and says so in the log, a directory that has the name of a plan's but is not one the core made: made by
 // somebody else, writable by others, on another file system.
 func TestTheSweepLeavesAloneADirectoryThatIsNotTheCores(t *testing.T) {
@@ -855,80 +807,26 @@ func TestTheSweepLeavesAloneADirectoryThatIsNotTheCores(t *testing.T) {
 			t.Errorf("the log does not say that %s was left alone:\n%s", kept, log.String())
 		}
 	}
-
-	// a directory that is another user's, as far as the core knows who it is
-	other := mk("casaos-os-plan.4", 0o711)
-	real := osPlanEUID
-	osPlanEUID = func() int { return os.Geteuid() + 1 }
-	defer func() { osPlanEUID = real }()
-	removed, err = sweepStaleSandboxes(parent, time.Now(), osplan.StaleAfter)
-	if err != nil || len(removed) != 0 {
-		t.Errorf("removed = %v, %v: a directory of another user was removed", removed, err)
-	}
-	if _, err := os.Lstat(other); err != nil {
-		t.Errorf("%s was removed: %v", other, err)
-	}
-	if !strings.Contains(log.String(), "belongs to another user") {
-		t.Errorf("the log does not say why:\n%s", log.String())
-	}
 }
 
-// ---- a removal that fails -----------------------------------------------------------------------------------------------------
-
-// A removal that fails is tried once more after a moment, and said in the log; what is still there after the second try is said
-// by LeftBehind, for the state of the job. The directory is removed once: the function that removes it is safe to call again.
-func TestADirectoryThatCannotBeRemovedIsTriedOnceMoreAndSaid(t *testing.T) {
-	realRemove, realWait := removeOSPlanDir, osPlanRetryAfter
-	defer func() { removeOSPlanDir, osPlanRetryAfter = realRemove, realWait }()
-	osPlanRetryAfter = 5 * time.Millisecond
-	for _, tc := range []struct {
-		name     string
-		failures int
-		calls    int
-		left     bool
-		logs     []string
-	}{
-		{"it goes the first time", 0, 1, false, nil},
-		{"it goes the second time", 1, 2, false, []string{"trying once more"}},
-		{"it does not go", 2, 2, true, []string{"trying once more", "left for a later start"}},
-		{"it does not go, and is not tried a third time", 10, 2, true, []string{"left for a later start"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			log := captureLog(t)
-			sb2 := &osPlanSandbox{}
-			dir2, remove, err := sb2.MakeDir()
-			if err != nil {
-				t.Skipf("no sandbox directory here: %v", err)
-			}
-			calls := 0
-			removeOSPlanDir = func(parent, name string) error {
-				calls++
-				if calls <= tc.failures {
-					return errors.New("device or resource busy")
-				}
-				return realRemove(parent, name)
-			}
-			remove()
-			remove()
-			if calls != tc.calls {
-				t.Errorf("the removal was tried %d times, want %d", calls, tc.calls)
-			}
-			if got := sb2.LeftBehind(); (got != "") != tc.left || (tc.left && got != dir2) {
-				t.Errorf("LeftBehind() = %q, want %v for %s", got, tc.left, dir2)
-			}
-			for _, want := range tc.logs {
-				if !strings.Contains(log.String(), want) || !strings.Contains(log.String(), "device or resource busy") {
-					t.Errorf("the log does not say %q and why:\n%s", want, log.String())
-				}
-			}
-			if len(tc.logs) == 0 && strings.Contains(log.String(), "could not be removed") {
-				t.Errorf("a removal that went is in the log as one that did not:\n%s", log.String())
-			}
-			// whatever happened, the real directory goes at the end of the test
-			removeOSPlanDir = realRemove
-			if err := realRemove(osplan.SandboxParent, filepath.Base(dir2)); err != nil {
-				t.Error(err)
-			}
-		})
+// The plan of a module makes its directory with the one prefix, and sweeps the stale ones with osplan.StaleAfter before it does:
+// a plan of an upgrade that is at work, for as long as its job may last, is younger than that, and is not swept from under it.
+// A removal that fails is said in the core's log.
+func TestAPlanOfAnUpgradeAtWorkIsNotSweptByAPlanOfAModule(t *testing.T) {
+	if osPlanJobTimeout >= osplan.StaleAfter {
+		t.Errorf("the job of a plan has %v: a sweep after %v may remove the directory of one that is at work", osPlanJobTimeout, osplan.StaleAfter)
+	}
+	parent := t.TempDir()
+	live := filepath.Join(parent, "casaos-os-plan.7")
+	if err := os.Mkdir(live, 0o711); err != nil {
+		t.Fatal(err)
+	}
+	age(t, live, osPlanJobTimeout)
+	if removed, err := osplan.SweepStale(parent, time.Now(), osplan.StaleAfter, nil); err != nil || len(removed) != 0 {
+		t.Errorf("removed %v, %v", removed, err)
+	}
+	sb, _ := madeSandbox(t)
+	if sb.Log == nil {
+		t.Error("a removal that fails would not be said in the core's log")
 	}
 }

@@ -14,7 +14,7 @@ import (
 //	fail-<verb>           the verb ends with status 1
 //	block-<verb>          the next such verb removes it, makes reached-<verb> and waits for half a minute (or for the signal that ends it)
 //	systemctl.log, apt-get.log   the commands, one to a line
-//	apt-installed         the arguments of the installs
+//	apt-installed         the arguments of the installs (a download, --download-only, ends before fail-apt and block-apt: they are about dpkg)
 //	sim.txt, est.txt      what apt-get says of the simulation and of the estimate
 const systemctlStub = `#!/bin/sh
 root="${0%/usr/bin/systemctl}"
@@ -48,6 +48,7 @@ for a in "$@"; do
   case "$a" in
   -s) if [ -e "$state/block-sim" ]; then : > "$state/reached-sim"; sleep 30; fi; cat "$state/sim.txt"; exit 0 ;;
   --print-uris) cat "$state/est.txt"; exit 0 ;;
+  --download-only) exit 0 ;;
   esac
 done
 if [ -e "$state/fail-apt" ]; then printf '%s\n' "E: Sub-process /usr/bin/dpkg returned an error code (1)"; exit 100; fi

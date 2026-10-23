@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -91,29 +92,89 @@ func UpdatePlanID(name, installed, tag, archiveSHA256, osID, osVersion string, t
 	return "m1-" + hex.EncodeToString(sum[:])[:32]
 }
 
-// CompareTags compares two tags (v<major>.<minor>.<patch>) as numbers: -1, 0 or 1. ok is false when either is not a tag. The numbers are compared as digits (no overflow, however long).
+// CompareTags compares two tags (v<major>.<minor>.<patch>) with CompareVersions: -1, 0 or 1. ok is false when either is not a tag.
 func CompareTags(a, b string) (c int, ok bool) {
-	pa, okA := tagParts(a)
-	pb, okB := tagParts(b)
-	if !okA || !okB {
+	if !tagRe.MatchString(a) || !tagRe.MatchString(b) {
 		return 0, false
 	}
-	for i := range pa {
-		if c := cmp.Or(cmp.Compare(len(pa[i]), len(pb[i])), strings.Compare(pa[i], pb[i])); c != 0 {
+	return CompareVersions(a, b)
+}
+
+// comparableRe is a version: three numbers, a "v" before them or not, then a pre-release ("-rc1", which may end with a build) or a build ("+5").
+var comparableRe = regexp.MustCompile(`^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.+-]{1,40})|\+[0-9A-Za-z.+-]{1,40})?$`)
+
+// CompareVersions compares two versions (comparableRe), the one comparison of versions of the core: the numbers as numbers (as digits: no overflow, however long), then the
+// pre-releases of one release among themselves (comparePre) and all of them before the release ("0.5.23-rc1" < "0.5.23-rc2" < "0.5.23"); a build is its release: -1, 0 or 1. ok is
+// false when either is not a version.
+func CompareVersions(a, b string) (c int, ok bool) {
+	ma, mb := comparableRe.FindStringSubmatch(a), comparableRe.FindStringSubmatch(b)
+	if ma == nil || mb == nil {
+		return 0, false
+	}
+	for i := 1; i <= 3; i++ {
+		if c := compareDigits(ma[i], mb[i]); c != 0 {
 			return c, true
 		}
 	}
-	return 0, true
+	pa, _, _ := strings.Cut(ma[4], "+")
+	pb, _, _ := strings.Cut(mb[4], "+")
+	switch {
+	case pa == pb:
+		return 0, true
+	case pa == "":
+		return 1, true
+	case pb == "":
+		return -1, true
+	}
+	return comparePre(pa, pb), true
 }
 
-func tagParts(s string) (parts [3]string, ok bool) {
-	if !tagRe.MatchString(s) {
-		return parts, false
+// compareDigits compares two runs of digits as numbers, however long.
+func compareDigits(x, y string) int {
+	x, y = strings.TrimLeft(x, "0"), strings.TrimLeft(y, "0")
+	return cmp.Or(cmp.Compare(len(x), len(y)), strings.Compare(x, y))
+}
+
+// comparePre orders two pre-releases as semantic versioning does, by their dot-separated identifiers, and the one with fewer first when all of its own are equal ("rc" < "rc.1"); an
+// identifier is read as runs of digits, compared as numbers, and runs of other characters, compared as text, digits before text, so that "rc2" < "rc10" and "beta" < "rc".
+func comparePre(a, b string) int {
+	x, y := strings.Split(a, "."), strings.Split(b, ".")
+	for i := range min(len(x), len(y)) {
+		if c := compareIdentifier(x[i], y[i]); c != 0 {
+			return c
+		}
 	}
-	for i, p := range strings.Split(s[1:], ".") {
-		parts[i] = strings.TrimLeft(p, "0")
+	return cmp.Compare(len(x), len(y))
+}
+
+func compareIdentifier(a, b string) int {
+	digit := func(c byte) bool { return c >= '0' && c <= '9' }
+	run := func(s string) string {
+		n := 1
+		for n < len(s) && digit(s[n]) == digit(s[0]) {
+			n++
+		}
+		return s[:n]
 	}
-	return parts, true
+	for a != "" && b != "" {
+		ra, rb := run(a), run(b)
+		var c int
+		switch da, db := digit(ra[0]), digit(rb[0]); {
+		case da && db:
+			c = compareDigits(ra, rb)
+		case da:
+			c = -1
+		case db:
+			c = 1
+		default:
+			c = strings.Compare(ra, rb)
+		}
+		if c != 0 {
+			return c
+		}
+		a, b = a[len(ra):], b[len(rb):]
+	}
+	return cmp.Compare(len(a), len(b))
 }
 
 // diff is the names of a that are not in b.

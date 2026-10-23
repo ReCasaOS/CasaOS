@@ -343,6 +343,8 @@ type hostOverride struct {
 	dpkg      func([]string) (bool, error)
 	wrapDest  func(osmodule.Destination) osmodule.Destination
 	lockCalls int
+	// held is how many of the first tries of the lock find it taken (ErrLockHeld), as the core's look at it, held for an instant, makes them
+	held int
 }
 
 func (h *hostOverride) FreeBytes(p string) (int64, error) { return h.free(p) }
@@ -359,7 +361,13 @@ func (h *hostOverride) NewDest(prefix string) osmodule.Destination {
 	}
 	return d
 }
-func (h *hostOverride) Lock(p string) (func(), error) { h.lockCalls++; return h.Host.Lock(p) }
+func (h *hostOverride) Lock(p string) (func(), error) {
+	h.lockCalls++
+	if h.lockCalls <= h.held {
+		return nil, ErrLockHeld
+	}
+	return h.Host.Lock(p)
+}
 
 // fakeRunner runs nothing: it answers for systemctl and apt-get from a table, keeps what systemd would (which units are enabled and so active), and records every command.
 type fakeRunner struct {
@@ -386,10 +394,12 @@ type fakeRunner struct {
 	audits []string
 	// last is the last command that was run for each command line (its environment, its Finish)
 	last map[string]Cmd
+	// takes maps the start of a command to how long it would run: a command given a Timeout shorter than that is ended by it (context.DeadlineExceeded), as the real runner ends it
+	takes map[string]time.Duration
 }
 
 func newFakeRunner() *fakeRunner {
-	return &fakeRunner{enabled: map[string]bool{}, stopped: map[string]bool{}, fail: map[string]int{}, text: map[string]string{}, said: map[string]string{}, errs: map[string]error{}}
+	return &fakeRunner{enabled: map[string]bool{}, stopped: map[string]bool{}, fail: map[string]int{}, text: map[string]string{}, said: map[string]string{}, errs: map[string]error{}, takes: map[string]time.Duration{}}
 }
 
 func (r *fakeRunner) Run(ctx context.Context, c Cmd) (Output, error) {
@@ -416,6 +426,11 @@ func (r *fakeRunner) Run(ctx context.Context, c Cmd) (Output, error) {
 	for prefix, err := range r.errs {
 		if strings.HasPrefix(cmd, prefix) {
 			return Output{}, err
+		}
+	}
+	for prefix, d := range r.takes {
+		if strings.HasPrefix(cmd, prefix) && c.Timeout > 0 && d > c.Timeout {
+			return Output{}, context.DeadlineExceeded
 		}
 	}
 	for prefix, code := range r.fail {

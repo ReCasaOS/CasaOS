@@ -160,3 +160,55 @@ func TestTheStartsOfTheOtherChangesWaitForAJobOfAModule(t *testing.T) {
 		t.Errorf("the update of Docker: %v, started = %v", err, started)
 	}
 }
+
+// A run of the module assistant started by hand (`casaos module install` in a terminal) has no unit, and holds the assistant's lock for as long as it works: every change of the box sees it
+// and keeps away, the start of the upgrade of the operating system among them. The lock is looked at, not kept: the run that wants it next is not refused for the look.
+func TestARunOfTheAssistantByHandKeepsEveryOtherChangeOfTheBoxAway(t *testing.T) {
+	ctx := context.Background()
+	b := newModuleBox(t)
+	b.write("/var/lib/casaos/modules/.keep", "")
+	lock := b.env.Roots.Path("/var/lib/casaos/modules/.lock")
+	release, err := b.env.Host.Lock(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason, busy := b.updater.maintenanceBusy(ctx, "")
+	if !busy || !strings.Contains(reason, "module assistant") {
+		t.Errorf("maintenanceBusy() = %q, %v", reason, busy)
+	}
+	probe := osReadinessProbe{updater: b.updater, except: systemOSUpgradeUnit, command: func(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
+		out, err := b.updater.command(ctx, name, args...)
+		return out, false, err
+	}}
+	if _, busy, err := probe.MaintenanceBusy(ctx); !busy || err != nil {
+		t.Errorf("the start of the upgrade: busy = %v, err = %v", busy, err)
+	}
+	release()
+	if reason, busy := b.updater.maintenanceBusy(ctx, ""); busy {
+		t.Errorf("maintenanceBusy() = %q once the run has ended", reason)
+	}
+	again, err := b.env.Host.Lock(lock)
+	if err != nil {
+		t.Fatalf("the lock is kept by the look: %v", err)
+	}
+	again()
+}
+
+// A lock of the assistant that cannot be looked at does not hide dpkg's: a package manager that holds dpkg's lock is busy, and the error is said only when nothing is seen busy.
+func TestALockOfTheAssistantThatCannotBeLookedAtDoesNotHideDpkgs(t *testing.T) {
+	ctx := context.Background()
+	b := newModuleBox(t)
+	b.write("/var/lib/casaos/modules/.lock/in-the-way", "")
+	b.mu.Lock()
+	b.dpkg = true
+	b.mu.Unlock()
+	if reason, busy := b.updater.maintenanceBusy(ctx, ""); !busy || !strings.Contains(reason, "dpkg") {
+		t.Errorf("maintenanceBusy() = %q, %v", reason, busy)
+	}
+	b.mu.Lock()
+	b.dpkg = false
+	b.mu.Unlock()
+	if _, busy, err := b.updater.maintenanceState(ctx, "", b.updater.command); busy || err == nil {
+		t.Errorf("nothing busy and a lock that cannot be looked at: busy = %v, err = %v", busy, err)
+	}
+}
