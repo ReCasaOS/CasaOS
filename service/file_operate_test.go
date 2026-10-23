@@ -240,3 +240,51 @@ func TestAQueuedTaskWhoseProgressWasCountedStillRuns(t *testing.T) {
 		t.Errorf("not copied: %q, %v", got, err)
 	}
 }
+
+// The destination does not exist yet, and a link on its way leads into the source: the copy would go into itself until the disk is full.
+func TestACopyThroughALinkIntoTheSourceWritesNothingThere(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Photos")
+	writeOperateFile(t, filepath.Join(src, "a.jpg"), "a")
+	if err := os.Mkdir(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(src, "sub"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	runOperation(t, model.FileOperate{Type: "copy", Item: []model.FileItem{{From: src}}, To: filepath.Join(root, "link", "new"), Style: "overwrite"})
+
+	if _, err := os.Lstat(filepath.Join(src, "sub", "new")); !os.IsNotExist(err) {
+		t.Errorf("the copy wrote into its source (%v)", err)
+	}
+}
+
+// Across disks a folder is copied before its source is removed: when the source holds a mounted disk it cannot be removed, so it is not copied either.
+func TestAMoveAcrossDisksOfAFolderHoldingAMountedDiskCopiesNothing(t *testing.T) {
+	acrossDisks(t)
+	root := t.TempDir()
+	src := filepath.Join(root, "Photos")
+	writeOperateFile(t, filepath.Join(src, "a.jpg"), "a")
+	usb := filepath.Join(src, "usb")
+	if err := os.Mkdir(usb, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mountForTest(t, "tmpfs", usb, "tmpfs", 0)
+	writeOperateFile(t, filepath.Join(usb, "keep.jpg"), "k")
+	to := filepath.Join(root, "other-disk")
+	if err := os.Mkdir(to, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	runOperation(t, move(src, to))
+
+	if _, err := os.Lstat(filepath.Join(to, "Photos")); !os.IsNotExist(err) {
+		t.Errorf("a copy was left at the destination (%v)", err)
+	}
+	for _, p := range []string{filepath.Join(src, "a.jpg"), filepath.Join(usb, "keep.jpg")} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("lost: %v", err)
+		}
+	}
+}

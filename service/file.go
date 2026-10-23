@@ -32,8 +32,11 @@ var FileQueue sync.Map
 
 var OpStrArr []string
 
-// FileQueueLock guards FileQueue and OpStrArr together: a task is in FileQueue while its id is in OpStrArr.
+// FileQueueLock guards FileQueue and OpStrArr together (a task is in FileQueue while its id is in OpStrArr), and fileOperateCancels.
 var FileQueueLock sync.Mutex
+
+// fileOperateCancels stops the operation of a running task, by its id.
+var fileOperateCancels = map[string]context.CancelFunc{}
 
 // fileMoveRename is how a move is first tried, a var for the tests that make it cross two disks.
 var fileMoveRename = os.Rename
@@ -91,7 +94,14 @@ func (w *writer) Write(p []byte) (n int, err error) {
 }
 
 func FileOperate(k string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	FileQueueLock.Lock()
 	list, ok := FileQueue.Load(k)
+	if ok {
+		fileOperateCancels[k] = cancel
+	}
+	FileQueueLock.Unlock()
 	if !ok {
 		return
 	}
@@ -99,6 +109,10 @@ func FileOperate(k string) {
 	temp := list.(model.FileOperate)
 	// fail logs every failure and keeps the first one's code for the notifier
 	fail := func(from string, err error) {
+		if ctx.Err() != nil {
+			logger.Info("file "+temp.Type+" cancelled", zap.String("from", from), zap.String("to", temp.To))
+			return
+		}
 		logger.Error("file "+temp.Type+" failed", zap.String("from", from), zap.String("to", temp.To), zap.Error(err))
 		switch {
 		case temp.Error != "":
@@ -110,7 +124,7 @@ func FileOperate(k string) {
 			temp.Error = temp.Type + "_failed"
 		}
 	}
-	for i := 0; i < len(temp.Item); i++ {
+	for i := 0; i < len(temp.Item) && ctx.Err() == nil; i++ {
 		v := temp.Item[i]
 		target := temp.To + "/" + v.From[strings.LastIndex(v.From, "/")+1:]
 		if file.Overlap(v.From, temp.To) { // the route refuses these: never remove or overwrite the source
@@ -131,17 +145,24 @@ func FileOperate(k string) {
 			// a rename on the same disk; on another one a copy, and the source is removed only once all of it is copied
 			err := fileMoveRename(v.From, target)
 			if errors.Is(err, syscall.EXDEV) {
-				if err = file.CopyDir(v.From, temp.To, temp.Style); err == nil {
-					err = file.RemoveAllNoCross(v.From)
-				} else {
-					file.RemoveAllNoCross(target)
+				// a disk mounted in the source stops its removal: then it is not copied either, rather than left whole in two places
+				if err = file.CheckNoMountPoint(v.From); err == nil {
+					if err = file.CopyDirContext(ctx, v.From, temp.To, temp.Style); err == nil {
+						err = file.RemoveAllNoCross(v.From)
+					} else {
+						file.RemoveAllNoCross(target)
+					}
 				}
 			}
 			if err != nil {
 				fail(v.From, err)
 			}
 		} else if temp.Type == "copy" {
-			if err := file.CopyDir(v.From, temp.To, temp.Style); err != nil {
+			existed := !file.CheckNotExist(target)
+			if err := file.CopyDirContext(ctx, v.From, temp.To, temp.Style); err != nil {
+				if ctx.Err() != nil && !existed {
+					file.RemoveAllNoCross(target) // the half copy of a cancelled task
+				}
 				fail(v.From, err)
 			}
 		}
@@ -149,8 +170,38 @@ func FileOperate(k string) {
 	temp.Finished = true
 	FileQueueLock.Lock()
 	defer FileQueueLock.Unlock()
+	delete(fileOperateCancels, k)
 	if _, ok := FileQueue.Load(k); ok { // a task cancelled meanwhile stays out of the queue
 		FileQueue.Store(k, temp)
+	}
+}
+
+// CancelFileOperate takes the task id ("0": every task) out of the queue and stops its operation; when that was the running one, the next one starts.
+func CancelFileOperate(id string) {
+	FileQueueLock.Lock()
+	defer FileQueueLock.Unlock()
+	running := ""
+	if len(OpStrArr) > 0 {
+		running = OpStrArr[0]
+	}
+	waiting := []string{}
+	for _, v := range OpStrArr {
+		if id != "0" && v != id {
+			waiting = append(waiting, v)
+		}
+	}
+	OpStrArr = waiting
+	FileQueue.Range(func(k, _ interface{}) bool {
+		if id == "0" || k == id {
+			FileQueue.Delete(k)
+			if cancel := fileOperateCancels[k.(string)]; cancel != nil {
+				cancel()
+			}
+		}
+		return true
+	})
+	if len(OpStrArr) > 0 && OpStrArr[0] != running {
+		go ExecOpFile()
 	}
 }
 

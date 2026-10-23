@@ -558,7 +558,12 @@ func PostFileUpload(ctx echo.Context) error {
 		}
 	} else {
 		// a temporary file renamed into place: an upload cut short leaves the old file whole
-		if err := file.WriteFileAtomicFrom(path, f, 0o644); err != nil {
+		if _, statErr := os.Lstat(path); statErr == nil {
+			err = file.ReplaceFileFrom(path, f) // an existing file keeps its mode, its owner and its other names
+		} else {
+			err = file.WriteFileAtomicFrom(path, f, 0o644)
+		}
+		if err != nil {
 			logger.Error("error when trying to write to `"+path+"`", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 		}
@@ -782,27 +787,7 @@ func GetFileImage(ctx echo.Context) error {
 }
 
 func DeleteOperateFileOrDir(ctx echo.Context) error {
-	id := ctx.Param("id")
-	service.FileQueueLock.Lock()
-	if id == "0" {
-		service.FileQueue.Range(func(k, _ interface{}) bool {
-			service.FileQueue.Delete(k)
-			return true
-		})
-		service.OpStrArr = []string{}
-	} else {
-
-		service.FileQueue.Delete(id)
-		tempList := []string{}
-		for _, v := range service.OpStrArr {
-			if v != id {
-				tempList = append(tempList, v)
-			}
-		}
-		service.OpStrArr = tempList
-
-	}
-	service.FileQueueLock.Unlock()
+	service.CancelFileOperate(ctx.Param("id"))
 
 	go service.MyService.Notify().SendFileOperateNotify(true)
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})

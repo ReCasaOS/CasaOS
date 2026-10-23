@@ -19,6 +19,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
+	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/ReCasaOS/CasaOS/service"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 	"github.com/gorilla/websocket"
@@ -348,6 +349,28 @@ func TestSavingAFileKeepsItsOwner(t *testing.T) {
 	}
 }
 
+// postSingleChunk uploads content as dir/name in one chunk.
+func postSingleChunk(t *testing.T, dir, name, content string) {
+	t.Helper()
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	for field, value := range map[string]string{"path": dir, "relativePath": name, "filename": name, "totalChunks": "1", "chunkNumber": "1"} {
+		form.WriteField(field, value)
+	}
+	part, _ := form.CreateFormFile("file", name)
+	part.Write([]byte(content))
+	form.Close()
+	req := httptest.NewRequest(http.MethodPost, "/v1/file/upload", &body)
+	req.Header.Set(echo.HeaderContentType, form.FormDataContentType())
+	rec := httptest.NewRecorder()
+	if err := PostFileUpload(echo.New().NewContext(req, rec)); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestASingleChunkUploadReplacesTheWholeFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("an older and longer file"), 0o644); err != nil {
@@ -357,21 +380,8 @@ func TestASingleChunkUploadReplacesTheWholeFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var body bytes.Buffer
-	form := multipart.NewWriter(&body)
-	for field, value := range map[string]string{"path": dir, "relativePath": "a.txt", "filename": "a.txt", "totalChunks": "1", "chunkNumber": "1"} {
-		form.WriteField(field, value)
-	}
-	part, _ := form.CreateFormFile("file", "a.txt")
-	part.Write([]byte("new"))
-	form.Close()
-	req := httptest.NewRequest(http.MethodPost, "/v1/file/upload", &body)
-	req.Header.Set(echo.HeaderContentType, form.FormDataContentType())
-	rec := httptest.NewRecorder()
 
-	if err := PostFileUpload(echo.New().NewContext(req, rec)); err != nil {
-		t.Fatal(err)
-	}
+	postSingleChunk(t, dir, "a.txt", "new")
 
 	if got, err := os.ReadFile(filepath.Join(dir, "a.txt")); err != nil || string(got) != "new" {
 		t.Errorf("the file holds %q (%v), want new", got, err)
@@ -379,6 +389,139 @@ func TestASingleChunkUploadReplacesTheWholeFile(t *testing.T) {
 	if after, err := os.Stat(filepath.Join(dir, "a.txt")); err == nil && os.SameFile(before, after) {
 		t.Error("the file was written in place: an upload cut short leaves it half written")
 	}
+}
+
+func TestASingleChunkUploadOverAFileKeepsItsModeAndOwner(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.conf")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := os.Geteuid() == 0 // only root can give the file to someone else
+	if root {
+		if err := os.Chown(path, 1000, 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	postSingleChunk(t, dir, "a.conf", "new")
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode() != 0o600 {
+		t.Errorf("mode %v, want -rw-------", info.Mode())
+	}
+	if st := info.Sys().(*syscall.Stat_t); root && (st.Uid != 1000 || st.Gid != 1000) {
+		t.Errorf("owner %d:%d, want 1000:1000", st.Uid, st.Gid)
+	}
+}
+
+func TestASingleChunkUploadThroughALinkWritesItsTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.conf")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link.conf")); err != nil {
+		t.Fatal(err)
+	}
+
+	postSingleChunk(t, dir, "link.conf", "new")
+
+	if info, err := os.Lstat(filepath.Join(dir, "link.conf")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link is no longer a link (%v)", err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "new" {
+		t.Errorf("the target holds %q, want new", got)
+	}
+}
+
+func TestASingleChunkUploadOverAFileWithHardLinksWritesItInPlace(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.conf"), []byte("an older and longer content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(dir, "a.conf"), filepath.Join(dir, "b.conf")); err != nil {
+		t.Fatal(err)
+	}
+
+	postSingleChunk(t, dir, "a.conf", "new")
+
+	if got, _ := os.ReadFile(filepath.Join(dir, "b.conf")); string(got) != "new" {
+		t.Errorf("the other name holds %q, want new", got)
+	}
+}
+
+// waitUntil fails the test when done is still false a few seconds on.
+func waitUntil(t *testing.T, what string, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatalf("still waiting: %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCancellingTheRunningTaskStopsItsCopyAndRunsTheNext(t *testing.T) {
+	useFakeFileService(t)
+	root := t.TempDir()
+	src := filepath.Join(root, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{filepath.Join(src, "a.txt"): "a", filepath.Join(src, "c.txt"): "c", filepath.Join(root, "n.txt"): "n"} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the copy waits at b.fifo until the test writes to it: it is running there when the test cancels it
+	fifo := filepath.Join(src, "b.fifo")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	headTo, nextTo := filepath.Join(root, "head"), filepath.Join(root, "next")
+	for _, dir := range []string{headTo, nextTo} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		service.FileQueueLock.Lock()
+		service.OpStrArr = nil
+		service.FileQueue.Range(func(k, _ interface{}) bool {
+			service.FileQueue.Delete(k)
+			return true
+		})
+		service.FileQueueLock.Unlock()
+	})
+	service.FileQueueLock.Lock()
+	service.FileQueue.Store("head", model.FileOperate{Type: "copy", Style: "overwrite", To: headTo, TotalSize: 3, Item: []model.FileItem{{From: src}}})
+	service.FileQueue.Store("next", model.FileOperate{Type: "copy", Style: "overwrite", To: nextTo, TotalSize: 1, Item: []model.FileItem{{From: filepath.Join(root, "n.txt")}}})
+	service.OpStrArr = []string{"head", "next"}
+	service.FileQueueLock.Unlock()
+	service.ExecOpFile()
+	waitUntil(t, "the running copy reaches b.fifo", func() bool { return file.Exists(filepath.Join(headTo, "src", "a.txt")) })
+
+	req := httptest.NewRequest(http.MethodDelete, "/v1/batch/head/task", nil)
+	c := echo.New().NewContext(req, httptest.NewRecorder())
+	c.SetParamNames("id")
+	c.SetParamValues("head")
+	if err := DeleteOperateFileOrDir(c); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := os.OpenFile(fifo, os.O_RDWR, 0) // never blocks, and lets the copy's open of b.fifo return
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Write([]byte("b"))
+	writer.Close()
+
+	waitUntil(t, "the next task runs", func() bool { return file.Exists(filepath.Join(nextTo, "n.txt")) })
+	waitUntil(t, "the cancelled copy stops and its half copy goes", func() bool { return !file.Exists(filepath.Join(headTo, "src")) })
 }
 
 func TestAnUploadWithoutAFileLeavesTheFileAlone(t *testing.T) {

@@ -17,7 +17,7 @@ func Overlap(from, to string) bool {
 	realFrom := filepath.Join(realPath(filepath.Dir(from)), filepath.Base(from))
 	realTo := realPath(to)
 	target := filepath.Join(realTo, filepath.Base(from))
-	return isSameOrInside(realTo, realFrom) || isSameOrInside(realFrom, target) || holds(target, from) || holds(from, to)
+	return isSameOrInside(realTo, realFrom) || isSameOrInside(realFrom, target) || holds(target, realFrom) || holds(realFrom, realTo)
 }
 
 // holds reports whether dir exists and is path or one of its parents, as a file.
@@ -36,12 +36,16 @@ func holds(dir, path string) bool {
 	}
 }
 
-// realPath is path with its links resolved, or only cleaned when it does not exist.
+// realPath is path with its links resolved; when it does not exist, those of its deepest parent that does.
 func realPath(path string) string {
+	path = filepath.Clean(path)
 	if real, err := filepath.EvalSymlinks(path); err == nil {
 		return real
 	}
-	return filepath.Clean(path)
+	if parent := filepath.Dir(path); parent != path {
+		return filepath.Join(realPath(parent), filepath.Base(path))
+	}
+	return path
 }
 
 // isSameOrInside reports whether path is dir or under it, by whole names: /DATA/Photo2 is not inside /DATA/Photo. Paths it cannot compare count as inside.
@@ -68,25 +72,31 @@ var mountPointsUnder = func(dir string) ([]string, error) {
 
 // RemoveAllNoCross is os.RemoveAll that never goes into a mounted disk or share: when one is mounted at path or under it, it removes nothing.
 func RemoveAllNoCross(path string) error {
+	if err := CheckNoMountPoint(path); err != nil {
+		return err
+	}
+	return os.RemoveAll(path)
+}
+
+// CheckNoMountPoint is the rule of RemoveAllNoCross: ErrHoldsMountPoint when a disk or a share is mounted at the folder path or under it.
+func CheckNoMountPoint(path string) error {
 	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
+	if os.IsNotExist(err) || (err == nil && !info.IsDir()) { // missing, or a file or a link: nothing mounted to go into
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if info.IsDir() { // a link is removed, not followed
-		real, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return err
-		}
-		points, err := mountPointsUnder(real)
-		if err != nil {
-			return err
-		}
-		if len(points) > 0 {
-			return fmt.Errorf("%s: %w (%s)", path, ErrHoldsMountPoint, points[0])
-		}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
 	}
-	return os.RemoveAll(path)
+	points, err := mountPointsUnder(real)
+	if err != nil {
+		return err
+	}
+	if len(points) > 0 {
+		return fmt.Errorf("%s: %w (%s)", path, ErrHoldsMountPoint, points[0])
+	}
+	return nil
 }

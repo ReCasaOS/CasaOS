@@ -1,6 +1,7 @@
 package file
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -200,5 +201,84 @@ func TestOverlapSeesThroughLinks(t *testing.T) {
 	}
 	if Overlap(filepath.Join(root, "Photos", "2024"), filepath.Join(root, "up")) {
 		t.Error("Overlap(Photos/2024, a link to the folder above Photos) = true")
+	}
+}
+
+func TestCopyDirKeepsTheOldCopyWhenTheSourceCannotBeRead(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Photos")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing"), filepath.Join(src, "a.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "backup")
+	if err := os.MkdirAll(filepath.Join(dst, "Photos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dst, "Photos", "a.jpg"), "old")
+
+	if err := CopyDir(src, dst, "overwrite"); err == nil {
+		t.Error("CopyDir() = nil, want the error of a.jpg")
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "Photos", "a.jpg")); err != nil || string(got) != "old" {
+		t.Errorf("the old copy holds %q (%v), want old", got, err)
+	}
+}
+
+// A link on the way to the destination leads into the source: the copy meets the folder it made and stops there.
+func TestCopyDirNeverCopiesIntoItself(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "Photos")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(src, "a.jpg"), "a")
+	if err := os.Symlink(filepath.Join(src, "sub"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CopyDir(src, filepath.Join(root, "link", "new"), "overwrite"); err == nil {
+		t.Error("CopyDir() = nil, want an error: the copy goes into itself")
+	}
+	if Exists(filepath.Join(src, "sub", "new", "Photos", "sub", "new", "Photos")) {
+		t.Error("the copy went on into what it had copied")
+	}
+}
+
+func TestCopyDirContextStopsWhenCancelled(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "Photos")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(src, "a.jpg"), "a")
+	dst := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := CopyDirContext(ctx, src, dst, "overwrite"); !errors.Is(err, context.Canceled) {
+		t.Errorf("CopyDirContext() = %v, want context.Canceled", err)
+	}
+	if Exists(filepath.Join(dst, "Photos", "a.jpg")) {
+		t.Error("a.jpg was copied after the cancel")
+	}
+}
+
+// The destination does not exist yet: the links of its deepest folder that does are resolved.
+func TestOverlapResolvesTheLinksOfADestinationToBe(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Photos", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "Photos", "sub"), filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	if !Overlap(filepath.Join(root, "Photos"), filepath.Join(root, "link", "new", "deeper")) {
+		t.Error("Overlap(Photos, link-into-Photos/new/deeper) = false: the copy goes into itself")
+	}
+	if Overlap(filepath.Join(root, "Photos", "sub"), filepath.Join(root, "elsewhere", "new")) {
+		t.Error("Overlap(Photos/sub, a destination to be elsewhere) = true")
 	}
 }
