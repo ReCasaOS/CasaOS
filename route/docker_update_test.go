@@ -69,7 +69,9 @@ func TestHeaderTokenOnly(t *testing.T) {
 		{"the refresh token, and the query besides", "token", "token=abc", claimsOf("refresh"), true, http.StatusUnauthorized},
 		{"claims that are no claims", "token", "", "owner", true, http.StatusUnauthorized},
 		{"claims that are a nil pointer", "token", "", (*jwt.Claims)(nil), true, http.StatusUnauthorized},
-		{"an issuer that is only like it", "token", "", claimsOf("Refresh"), true, http.StatusOK},
+		{"an issuer that is only like it", "token", "", claimsOf("Refresh"), true, http.StatusUnauthorized},
+		{"no issuer", "token", "", claimsOf(""), true, http.StatusUnauthorized},
+		{"another issuer", "token", "", claimsOf("other"), true, http.StatusUnauthorized},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ReCasaOS/CasaOS-Common/utils/jwt"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/labstack/echo/v4"
@@ -118,6 +120,32 @@ func TestTheFileOfV3TakesTheAccessTokenAndNotTheRefreshToken(t *testing.T) {
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v3/file?"+url.Values{"token": {c.token}, "path": {path}}.Encode(), nil))
 		if recorder.Code != c.want || (c.want == http.StatusOK && recorder.Body.String() != "hello") {
 			t.Errorf("%s: status = %d, body = %q; want %d", c.name, recorder.Code, recorder.Body, c.want)
+		}
+	}
+}
+
+// Only the access token the user service mints (issuer "casaos") opens the core: a token signed with the same key and any
+// other issuer, or none, is refused, wherever it is parsed.
+func TestOnlyTheAccessIssuerIsTaken(t *testing.T) {
+	system := &fakeUpdateSystem{}
+	theTokensOfTheTests(t, system)
+	private, _ := signingKeys(t)
+	e, file := InitV1Router(), InitFile()
+	for _, issuer := range []string{"", "other", "Casaos"} {
+		token, err := jwt.GenerateToken("owner", private, 1, issuer, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := callWith(e, tokenCase{method: http.MethodGet, target: "/v1/sys/docker/update/status", auth: token}); got != http.StatusUnauthorized {
+			t.Errorf("issuer %q, v1 GET: status = %d, want 401", issuer, got)
+		}
+		if got := callWith(e, tokenCase{method: http.MethodGet, target: "/v1/sys/docker/update/status?token=" + token}); got != http.StatusUnauthorized {
+			t.Errorf("issuer %q, v1 GET with the query: status = %d, want 401", issuer, got)
+		}
+		recorder := httptest.NewRecorder()
+		file.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v3/file?"+url.Values{"token": {token}, "path": {"/etc/hostname"}}.Encode(), nil))
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("issuer %q, /v3/file: status = %d, want 401", issuer, recorder.Code)
 		}
 	}
 }

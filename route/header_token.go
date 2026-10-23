@@ -11,14 +11,14 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// refreshIssuer is the issuer of the long-lived token that only gets a new access token.
-const refreshIssuer = "refresh"
+// accessIssuer is the issuer of the access token the user service mints (CasaOS-Common jwt.GetAccessToken). The refresh
+// token ("refresh"), which lives for a week, only gets a new access token; no other issuer is expected.
+const accessIssuer = "casaos"
 
-// accessClaims are the claims of a valid access token. The refresh token, which lives for a week, is for the user
-// service's refresh and nothing here.
+// accessClaims are the claims of a valid access token, and of nothing else signed with the same key.
 func accessClaims(token string) (*jwt.Claims, error) {
 	valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(config.CommonInfo.RuntimePath) })
-	if err != nil || !valid || claims.Issuer == refreshIssuer {
+	if err != nil || !valid || claims.Issuer != accessIssuer {
 		return nil, echo.ErrUnauthorized
 	}
 	return claims, nil
@@ -38,9 +38,9 @@ func lookupToken(ctx echo.Context) ([]string, error) {
 }
 
 // headerTokenOnly is the middleware of a route that stops every container on the box. The group
-// takes ?token= on a GET, which a log, a history or a Referer can leak, and refuses the refresh
-// token (lookupToken, accessClaims). This route wants the access token in the header, whatever
-// the group would take.
+// takes ?token= on a GET, which a log, a history or a Referer can leak, and only the access token
+// (lookupToken, accessClaims). This route wants the access token in the header, whatever the
+// group would take.
 //
 // It runs after the group's JWT check, which puts the token's claims in the context. A request
 // that has none is one of the box's own services (skipJWT), which the group let in on the secret
@@ -54,8 +54,8 @@ func headerTokenOnly(next echo.HandlerFunc) echo.HandlerFunc {
 		case nil:
 			// no claims: an internal request
 		case *jwt.Claims:
-			if claims == nil || claims.Issuer == refreshIssuer {
-				return unauthorized(ctx, "a refresh token cannot do this")
+			if claims == nil || claims.Issuer != accessIssuer {
+				return unauthorized(ctx, "only the access token can do this")
 			}
 		default:
 			return unauthorized(ctx, "the token is not understood")

@@ -43,6 +43,12 @@ func PostSshLogin(ctx echo.Context) error {
 	return ctx.JSON(common_err.SUCCESS, modelCommon.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
 }
 
+// closeWith ends the socket with a close frame that says why, which the browser can show instead of a bare 1006.
+func closeWith(wsConn *websocket.Conn, reason string) {
+	_ = wsConn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason), time.Now().Add(time.Second))
+	wsConn.Close()
+}
+
 func WsSsh(ctx echo.Context) error {
 	_, e := exec.LookPath("ssh")
 	if e != nil {
@@ -64,14 +70,14 @@ func WsSsh(ctx echo.Context) error {
 	// One attempt: the browser asks again if it wants to. Retrying at once looped forever, after the browser had gone too.
 	if userName == "" || password == "" || port == "" {
 		wsConn.WriteMessage(websocket.TextMessage, []byte("username or password or port is empty"))
-		wsConn.Close()
+		closeWith(wsConn, "username, password or port is empty")
 		return nil
 	}
 	client, err := sshHelper.NewSshClient(userName, password, port)
 	if err != nil {
 		wsConn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
 		wsConn.WriteMessage(websocket.TextMessage, []byte("\r\n\x1b[0m"))
-		wsConn.Close()
+		closeWith(wsConn, "ssh login failed")
 		return nil
 	}
 	defer client.Close()
@@ -79,7 +85,7 @@ func WsSsh(ctx echo.Context) error {
 	ssConn, err := sshHelper.NewSshConn(cols, rows, client)
 	if err != nil {
 		wsConn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
-		wsConn.Close()
+		closeWith(wsConn, "ssh session failed")
 		return nil
 	}
 	defer ssConn.Close()

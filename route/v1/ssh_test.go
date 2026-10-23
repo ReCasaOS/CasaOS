@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"errors"
 	"net"
 	"net/http/httptest"
 	"os"
@@ -51,7 +52,13 @@ func TestWsSshEndsAtTheFirstFailedLogin(t *testing.T) {
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		messages := 0
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				// a close frame with the reason, not a bare drop (1006) that the browser cannot explain
+				var closed *websocket.CloseError
+				if !errors.As(err, &closed) || closed.Code == websocket.CloseAbnormalClosure || closed.Text == "" {
+					t.Errorf("%s: the socket ended with %v, want a close frame with a reason", query, err)
+				}
 				break
 			}
 			if messages++; messages > 10 {
