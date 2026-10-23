@@ -193,6 +193,7 @@ func TestAResolutionIsDeliveredWhileMuted(t *testing.T) {
 	p := resourceProps("host", "host", "nas", "cpu_high", "value", "95")
 
 	h.Handle(firing, p)
+	h.sending.Wait()
 	muted = true
 	h.Handle(resolved, p)
 	h.Handle(resolved, resourceProps("host", "host", "nas", "mem_high"))
