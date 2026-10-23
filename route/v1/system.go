@@ -316,43 +316,6 @@ func GetCasaOSPort(ctx echo.Context) error {
 		})
 }
 
-// @Summary edit casaos server port
-// @Produce  application/json
-// @Accept application/json
-// @Tags sys
-// @Security ApiKeyAuth
-// @Param port json string true "port"
-// @Success 200 {string} string "ok"
-// @Router /sys/port [put]
-func PutCasaOSPort(ctx echo.Context) error {
-	json := make(map[string]string)
-	ctx.Bind(&json)
-	portStr := json["port"]
-	portNumber, err := strconv.Atoi(portStr)
-	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR,
-			model.Result{
-				Success: common_err.SERVICE_ERROR,
-				Message: err.Error(),
-			})
-	}
-
-	isAvailable := port.IsPortAvailable(portNumber, "tcp")
-	if !isAvailable {
-		return ctx.JSON(common_err.SERVICE_ERROR,
-			model.Result{
-				Success: common_err.PORT_IS_OCCUPIED,
-				Message: common_err.GetMsg(common_err.PORT_IS_OCCUPIED),
-			})
-	}
-	service.MyService.System().UpSystemPort(strconv.Itoa(portNumber))
-	return ctx.JSON(common_err.SUCCESS,
-		model.Result{
-			Success: common_err.SUCCESS,
-			Message: common_err.GetMsg(common_err.SUCCESS),
-		})
-}
-
 // exitCore ends the core: os.Exit, and a test's own in its place.
 var exitCore = os.Exit
 

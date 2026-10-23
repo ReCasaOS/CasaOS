@@ -291,19 +291,6 @@ func main() {
 		}
 		stopHostStats.Store(&stop)
 	}
-	go func() {
-		time.Sleep(time.Second * 2)
-		// v0.3.6
-		if config.ServerInfo.HttpPort != "" {
-			changePort := model.ChangePortRequest{}
-			changePort.Port = config.ServerInfo.HttpPort
-			err := service.MyService.Gateway().ChangePort(&changePort)
-			if err == nil {
-				config.Cfg.Section("server").Key("HttpPort").SetValue("")
-				config.Cfg.SaveTo(config.SystemConfigInfo.ConfigPath)
-			}
-		}
-	}()
 
 	urlFilePath := filepath.Join(config.CommonInfo.RuntimePath, "casaos.url")
 	if err := file.CreateFileAndWriteContent(urlFilePath, "http://"+listener.Addr().String()); err != nil {
