@@ -2,6 +2,8 @@ package samba
 
 import (
 	"net"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,10 +62,52 @@ func TestASharedNameThatLeavesTheHostsFolderIsSkipped(t *testing.T) {
 
 // The port of the connection reaches the mount, which went to 445 whatever the connection said.
 func TestTheMountOptionsCarryThePort(t *testing.T) {
-	if got, want := MountOptions("user", "secret", "4450"), "username=user,password=secret,port=4450"; got != want {
-		t.Errorf("got %q, want %q", got, want)
+	if got, err := MountOptions("user", "secret", "4450"); err != nil || got != "username=user,password=secret,port=4450" {
+		t.Errorf("got %q, %v", got, err)
 	}
-	if got, want := MountOptions("user", "secret", ""), "username=user,password=secret"; got != want {
-		t.Errorf("without a port: got %q, want %q", got, want)
+	if got, err := MountOptions("user", "secret", ""); err != nil || got != "username=user,password=secret" {
+		t.Errorf("without a port: got %q, %v", got, err)
 	}
+}
+
+// A password reaches the mount whole, whatever commas it holds: the kernel splits the options at each
+// comma, and the password "se,cret,uid=0" mounted the share as root's with the password "se". A user name
+// or a port that would add an option is refused.
+func TestAPasswordCannotAddAMountOption(t *testing.T) {
+	for _, password := range []string{"se,cret,uid=0", ",uid=0", "a,,b,", "x=y"} {
+		options, err := MountOptions("user", password, "445")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := splitLikeTheKernel(options), map[string]string{"username": "user", "password": password, "port": "445"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%q: the kernel reads %v from %q", password, got, options)
+		}
+	}
+	for _, bad := range [][2]string{{"user,uid=0", "445"}, {"user\nuid=0", "445"}, {"user\x00", "445"}, {"user", "445,uid=0"}, {"user", "smb"}} {
+		if options, err := MountOptions(bad[0], "secret", bad[1]); err == nil {
+			t.Errorf("user %q, port %q: %q", bad[0], bad[1], options)
+		}
+	}
+}
+
+// splitLikeTheKernel reads mount options the way the cifs module does: split at each comma, a doubled
+// comma being a comma within the value (smb3_fs_context_parse_monolithic; the older parser did the same
+// for the password).
+func splitLikeTheKernel(options string) map[string]string {
+	got := map[string]string{}
+	tokens := strings.Split(options, ",")
+	for i := 0; i < len(tokens); i++ {
+		option := tokens[i]
+		for i+2 < len(tokens) && tokens[i+1] == "" {
+			option += "," + tokens[i+2]
+			i += 2
+		}
+		if i+2 == len(tokens) && tokens[i+1] == "" { // a doubled comma at the very end
+			option += ","
+			i++
+		}
+		key, value, _ := strings.Cut(option, "=")
+		got[key] = value
+	}
+	return got
 }

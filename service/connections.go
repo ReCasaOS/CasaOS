@@ -66,12 +66,16 @@ func (s *connectionsStruct) DeleteConnection(id string) {
 }
 
 func (s *connectionsStruct) MountSmaba(username, host, directory, port, mountPoint, password string) error {
-	err := unix.Mount(
+	options, err := samba.MountOptions(username, password, port)
+	if err != nil {
+		return err
+	}
+	err = unix.Mount(
 		fmt.Sprintf("//%s/%s", host, directory),
 		mountPoint,
 		"cifs",
 		unix.MS_NOATIME|unix.MS_NODEV|unix.MS_NOSUID,
-		samba.MountOptions(username, password, port),
+		options,
 	)
 	return err
 	// str := command2.ExecResultStr("source " + config.AppInfo.ShellPath + "/helper.sh ;MountCIFS " + username + " " + host + " " + directory + " " + port + " " + mountPoint + " " + password)

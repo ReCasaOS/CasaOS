@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,10 +92,19 @@ func unsafeShare(name string) bool {
 }
 
 // MountOptions are the options of the CIFS mount of a share: the credentials, and the connection's port.
-func MountOptions(username, password, port string) string {
-	options := fmt.Sprintf("username=%s,password=%s", username, password)
+// The kernel splits them at each comma and reads ",," as a comma within the password, the escape that
+// mount.cifs itself uses, so a password may hold any comma. A user name or a port cannot be escaped that
+// way: one that holds a separator is refused, and so is a port that is not a number.
+func MountOptions(username, password, port string) (string, error) {
+	if strings.ContainsAny(username, ",\r\n\x00") {
+		return "", errors.New("the user name holds a comma or a line break")
+	}
+	options := "username=" + username + ",password=" + strings.ReplaceAll(password, ",", ",,")
 	if port != "" {
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return "", fmt.Errorf("the port %q is not a number", port)
+		}
 		options += ",port=" + port
 	}
-	return options
+	return options, nil
 }
