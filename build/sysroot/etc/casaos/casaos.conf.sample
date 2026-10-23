@@ -18,5 +18,8 @@ Token =
 USBAutoMount =
 UpdateUrl = https://github.com/ReCasaOS/CasaOS-Install/releases/latest/download/install.sh
 UpdateVersionUrl = https://github.com/ReCasaOS/CasaOS-Install/releases/latest/download/version.json
+; managed: CasaOS writes /etc/samba/smb.conf; external: the host owns it and
+; includes /etc/samba/smb.casa.conf, the only file CasaOS then writes
+SambaMainConfig = managed
 
 [system]

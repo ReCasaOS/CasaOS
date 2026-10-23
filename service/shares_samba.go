@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ReCasaOS/CasaOS/pkg/config"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 )
 
@@ -95,6 +96,43 @@ func validateSambaConfig() error {
 	return nil
 }
 
+// SambaMainConfigExternal: the host owns smb.conf ([server] SambaMainConfig =
+// external), e.g. an image-built system where it is read-only. CasaOS then
+// never writes it (no first-share template, no guest-mapping flip) and manages
+// only smb.casa.conf, which the host's smb.conf has to include.
+func SambaMainConfigExternal() bool {
+	return strings.EqualFold(strings.TrimSpace(config.ServerInfo.SambaMainConfig), "external")
+}
+
+var ErrSambaIncludeMissing = errors.New("smb.conf is owned by the host ([server] SambaMainConfig = external) but does not include " + sambaShareConfigFile)
+
+// includesShareConfig: smb.conf has an `include = /etc/samba/smb.casa.conf` line.
+func includesShareConfig(mainConfig []byte) bool {
+	for _, line := range strings.Split(string(mainConfig), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "include") && strings.TrimSpace(value) == sambaShareConfigFile {
+			return true
+		}
+	}
+	return false
+}
+
+// checkExternalMainConfig: in external mode, the host's smb.conf must include
+// smb.casa.conf, or every share CasaOS writes is silently ignored.
+func checkExternalMainConfig() error {
+	if !SambaMainConfigExternal() {
+		return nil
+	}
+	content, err := os.ReadFile(sambaConfigFile)
+	if err != nil {
+		return fmt.Errorf("read the host's smb.conf: %w", err)
+	}
+	if !includesShareConfig(content) {
+		return ErrSambaIncludeMissing
+	}
+	return nil
+}
+
 var ErrTimeMachineUnsupported = errors.New("Time Machine needs Samba's vfs_fruit module (package samba-vfs-modules on Debian and Ubuntu)")
 
 // ValidateTimeMachineSupport checks that smbd can load the module a Time
@@ -145,6 +183,11 @@ func ValidateTimeMachineSupport() error {
 // which the setting can reach an existing installation, and regenerating the
 // whole file would discard the hand edits the upstream issue thread is full of.
 func syncGuestMapping(hasProtectedShare bool) (bool, error) {
+	// external: the host's smb.conf, the host's guest mapping
+	if SambaMainConfigExternal() {
+		return false, nil
+	}
+
 	content, err := os.ReadFile(sambaConfigFile)
 	if err != nil {
 		return false, err

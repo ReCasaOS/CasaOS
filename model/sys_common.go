@@ -26,6 +26,10 @@ type ServerModel struct {
 	USBAutoMount     string
 	UpdateUrl        string
 	UpdateVersionUrl string
+	// SambaMainConfig: "managed" (default) → CasaOS writes /etc/samba/smb.conf;
+	// "external" → the host owns smb.conf (it must include smb.casa.conf),
+	// CasaOS writes only smb.casa.conf
+	SambaMainConfig string
 }
 
 // 服务配置

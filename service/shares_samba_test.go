@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ReCasaOS/CasaOS/pkg/config"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 )
 
@@ -133,5 +134,37 @@ func TestSambaSectionTimeMachine(t *testing.T) {
 				t.Errorf("plain section (username %q) contains %q:\n%s", share.Username, unwanted, section)
 			}
 		}
+	}
+}
+
+func TestIncludesShareConfig(t *testing.T) {
+	for _, c := range []struct {
+		config string
+		want   bool
+	}{
+		{"[global]\n   include = /etc/samba/smb.casa.conf\n", true},
+		{"[global]\ninclude=/etc/samba/smb.casa.conf", true},
+		{"[global]\n\tInclude =  /etc/samba/smb.casa.conf  \n", true},
+		{"[global]\n# include = /etc/samba/smb.casa.conf\n", false},
+		{"[global]\ninclude = /etc/samba/other.conf\n", false},
+		{"", false},
+	} {
+		if got := includesShareConfig([]byte(c.config)); got != c.want {
+			t.Errorf("includesShareConfig(%q) = %v, want %v", c.config, got, c.want)
+		}
+	}
+}
+
+// external: CasaOS never writes smb.conf (no template, no guest-mapping flip)
+func TestExternalMainConfigIsNeverWritten(t *testing.T) {
+	previous := config.ServerInfo.SambaMainConfig
+	config.ServerInfo.SambaMainConfig = "external"
+	t.Cleanup(func() { config.ServerInfo.SambaMainConfig = previous })
+
+	if (&sharesStruct{}).initSambaConfig() {
+		t.Error("initSambaConfig wrote smb.conf in external mode")
+	}
+	if changed, err := syncGuestMapping(true); changed || err != nil {
+		t.Errorf("syncGuestMapping in external mode = %v, %v; want false, nil", changed, err)
 	}
 }
