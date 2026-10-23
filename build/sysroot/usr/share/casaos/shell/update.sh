@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 ###
  # @Author:  LinkLeong link@icewhale.com
  # @Date: 2022-06-30 10:08:33
