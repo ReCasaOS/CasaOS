@@ -242,9 +242,11 @@ func main() {
 		route.V3FilePath,
 	}
 	for _, apiPath := range routers {
-		err = service.MyService.Gateway().CreateRoute(&model.Route{
-			Path:   apiPath,
-			Target: "http://" + listener.Addr().String(),
+		err = service.RetryGateway(func() error {
+			return service.MyService.Gateway().CreateRoute(&model.Route{
+				Path:   apiPath,
+				Target: "http://" + listener.Addr().String(),
+			})
 		})
 		if err != nil {
 			fmt.Println("err", err)
@@ -254,7 +256,9 @@ func main() {
 
 	// register at message bus
 	for i := 0; i < 10; i++ {
-		response, err := service.MyService.MessageBus().RegisterEventTypesWithResponse(context.Background(), common.EventTypes)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		response, err := service.MyService.MessageBus().RegisterEventTypesWithResponse(ctx, common.EventTypes)
+		cancel()
 		if err != nil {
 			logger.Error("error when trying to register one or more event types - some event type will not be discoverable", zap.Error(err))
 		}

@@ -11,11 +11,15 @@
 package service
 
 import (
+	"time"
+
 	"github.com/ReCasaOS/CasaOS-Common/external"
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/codegen/message_bus"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/gorilla/websocket"
 	"github.com/patrickmn/go-cache"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -48,7 +52,14 @@ type Repository interface {
 func NewService(db *gorm.DB, RuntimePath string) Repository {
 	gatewayManagement, err := external.NewManagementService(RuntimePath)
 	if err != nil && len(RuntimePath) > 0 {
-		panic(err)
+		// the gateway restarts, or is late at boot: wait for it rather than die
+		err = RetryGateway(func() (err error) {
+			gatewayManagement, err = external.NewManagementService(RuntimePath)
+			return err
+		})
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	return &store{
@@ -144,4 +155,22 @@ func (c *store) MessageBus() *message_bus.ClientWithResponses {
 	}, message_bus.WithRequestEditorFn(external.InternalRequestEditor(config.CommonInfo.RuntimePath)))
 
 	return client
+}
+
+// gatewayWait is how long the core waits for a gateway that does not answer before it gives up and
+// lets systemd restart it. A var, so tests can shorten it.
+var gatewayWait = 2 * time.Minute
+
+// RetryGateway calls try until it succeeds or gatewayWait has passed, waiting 1 s, then twice as long
+// each time up to 15 s, and returns try's last error.
+func RetryGateway(try func() error) error {
+	deadline := time.Now().Add(gatewayWait)
+	for wait := time.Second; ; wait = min(2*wait, 15*time.Second) {
+		err := try()
+		if err == nil || time.Now().Add(wait).After(deadline) {
+			return err
+		}
+		logger.Info("the gateway does not answer, trying again", zap.Error(err), zap.Duration("in", wait))
+		time.Sleep(wait)
+	}
 }
