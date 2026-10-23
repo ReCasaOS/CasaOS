@@ -1,13 +1,11 @@
 package route
 
 import (
-	"crypto/ecdsa"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
-	"github.com/ReCasaOS/CasaOS-Common/utils/jwt"
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	v1 "github.com/ReCasaOS/CasaOS/route/v1"
@@ -80,23 +78,16 @@ func InitV1Router() http.Handler {
 			return skipJWT(c.RealIP(), c.Request().Header.Get(echo.HeaderAuthorization))
 		},
 		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
-			valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(config.CommonInfo.RuntimePath) })
-			if err != nil || !valid {
-				return nil, echo.ErrUnauthorized
+			claims, err := accessClaims(token)
+			if err != nil {
+				return nil, err
 			}
 
 			c.Request().Header.Set("user_id", strconv.Itoa(claims.ID))
 
 			return claims, nil
 		},
-		TokenLookupFuncs: []echo_middleware.ValuesExtractor{
-			func(ctx echo.Context) ([]string, error) {
-				if len(ctx.Request().Header.Get(echo.HeaderAuthorization)) > 0 {
-					return []string{ctx.Request().Header.Get(echo.HeaderAuthorization)}, nil
-				}
-				return []string{ctx.QueryParam("token")}, nil
-			},
-		},
+		TokenLookupFuncs: []echo_middleware.ValuesExtractor{lookupToken},
 	}))
 	{
 
@@ -134,7 +125,7 @@ func InitV1Router() http.Handler {
 			v1SysGroup.POST("/os/upgrade/ack", v1.AckSystemOSUpgrade, headerTokenOnly)
 			v1SysGroup.POST("/os/upgrade/beta", v1.SetSystemOSUpgradeBeta, headerTokenOnly)
 
-			v1SysGroup.POST("/update", v1.SystemUpdate)
+			v1SysGroup.POST("/update", v1.SystemUpdate, headerTokenOnly)
 			v1SysGroup.GET("/packages", v1.GetSystemPackageUpdates)
 			v1SysGroup.POST("/packages/update", v1.StartSystemPackageUpdate)
 			v1SysGroup.GET("/packages/update/status", v1.GetSystemPackageUpdateStatus)
@@ -189,7 +180,7 @@ func InitV1Router() http.Handler {
 			v1SysGroup.PUT("/telemetry", v1.PutTelemetry)
 			// Automatic updates: their switch, window and state (settings).
 			v1SysGroup.GET("/autoupdate", v1.GetAutoUpdate)
-			v1SysGroup.PUT("/autoupdate", v1.PutAutoUpdate)
+			v1SysGroup.PUT("/autoupdate", v1.PutAutoUpdate, headerTokenOnly)
 			// Push alerts: their channels, categories and disk threshold, and a
 			// test message (settings).
 			v1SysGroup.GET("/alerts", v1.GetAlerts)

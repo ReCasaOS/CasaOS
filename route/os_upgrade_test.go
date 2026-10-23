@@ -233,7 +233,7 @@ func TestWhatActsOnTheUpgradeTakesTheAccessTokenInTheHeaderAndNoOther(t *testing
 	}{
 		{"the access token in the header", "status", access, http.StatusOK},
 		{"the access token in the query", "status?token=" + access, "", http.StatusOK},
-		{"the refresh token in the header: the group takes it, as it takes it for the plan's status", "status", refresh, http.StatusOK},
+		{"the refresh token in the header: the group refuses it too", "status", refresh, http.StatusUnauthorized},
 		{"nothing", "status", "", http.StatusUnauthorized},
 	} {
 		if got := call(http.MethodGet, base+c.target, "", c.auth, ""); got != c.want {
