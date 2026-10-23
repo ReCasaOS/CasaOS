@@ -12,11 +12,13 @@ package service
 
 import (
 	"fmt"
+	"syscall"
 
 	"github.com/ReCasaOS/CasaOS/pkg/samba"
 	"github.com/ReCasaOS/CasaOS/service/model"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 	"github.com/moby/sys/mount"
+	"github.com/moby/sys/mountinfo"
 	"golang.org/x/sys/unix"
 	"gorm.io/gorm"
 )
@@ -83,3 +85,22 @@ func (s *connectionsStruct) UnmountSmaba(mountPoint string) error {
 func NewConnectionsService(db *gorm.DB) ConnectionsService {
 	return &connectionsStruct{db: db}
 }
+
+// RemoveMountPoint removes the folder a filesystem was mounted on, after its unmount: only when it is no
+// longer a mount point, and only when it is an empty folder (rmdir, never a file, never what is inside).
+// What a mount that is still there holds (busy, or its unmount failed) is never touched: on a network
+// share those files are the server's.
+func RemoveMountPoint(dir string) error {
+	mounted, err := isMountPoint(dir)
+	if err != nil {
+		return err
+	}
+	if mounted {
+		return fmt.Errorf("%s is still a mount point", dir)
+	}
+	return syscall.Rmdir(dir)
+}
+
+// isMountPoint compares the folder's device with its parent's, or reads /proc/self/mountinfo; a var, so
+// that tests can say a folder is still mounted.
+var isMountPoint = mountinfo.Mounted

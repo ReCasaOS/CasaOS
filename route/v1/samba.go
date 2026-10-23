@@ -12,7 +12,6 @@ package v1
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"os/user"
@@ -412,11 +411,9 @@ func DeleteSambaConnections(ctx echo.Context) error {
 				return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 			}
 		}
+		_ = service.RemoveMountPoint(baseHostPath + "/" + v) // empty and unmounted only
 	}
-	dir, _ := ioutil.ReadDir(connection.MountPoint)
-	if len(dir) == 0 {
-		os.RemoveAll(connection.MountPoint)
-	}
+	_ = service.RemoveMountPoint(connection.MountPoint) // the host's folder, once empty
 	service.MyService.Connections().DeleteConnection(id)
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: id})
 }

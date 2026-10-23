@@ -85,16 +85,10 @@ func InitNetworkMount() {
 		}
 		baseHostPath := "/mnt/" + connection.Host
 
-		mountPointList, err := service.MyService.System().GetDirPath(baseHostPath)
-		if err != nil {
+		if err := unmountShares(baseHostPath); err != nil {
 			logger.Error("get mount point err", zap.Any("err", err))
 			continue
 		}
-		for _, v := range mountPointList {
-			service.MyService.Connections().UnmountSmaba(v.Path)
-		}
-
-		os.RemoveAll(baseHostPath)
 
 		file.IsNotExistMkDir(baseHostPath)
 		for _, v := range directories {
@@ -110,6 +104,27 @@ func InitNetworkMount() {
 		logger.Error("mount storage err", zap.Any("err", err))
 	}
 }
+
+// unmountShares unmounts what was mounted in the folder of a host, and removes the mount points left
+// empty and unmounted. A share that does not unmount keeps its folder and what is in it: with the share
+// still mounted, those files are the server's.
+func unmountShares(baseHostPath string) error {
+	mountPointList, err := service.MyService.System().GetDirPath(baseHostPath)
+	if err != nil {
+		return err
+	}
+	for _, v := range mountPointList {
+		if err := service.MyService.Connections().UnmountSmaba(v.Path); err != nil {
+			logger.Error("cannot unmount a samba share, its folder is kept", zap.Error(err), zap.String("path", v.Path))
+			continue
+		}
+		if err := service.RemoveMountPoint(v.Path); err != nil {
+			logger.Info("the folder of a samba share is kept", zap.Error(err), zap.String("path", v.Path))
+		}
+	}
+	return nil
+}
+
 func InitZerotier() {
 	v1.CheckNetwork()
 }

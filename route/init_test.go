@@ -1,11 +1,16 @@
 package route
 
 import (
+	"errors"
 	"net"
+	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/service"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 )
@@ -17,11 +22,35 @@ type fakeMountRepository struct {
 
 func (f fakeMountRepository) Connections() service.ConnectionsService { return f.connections }
 func (f fakeMountRepository) Storage() service.StorageService         { return fakeStorage{} }
+func (f fakeMountRepository) System() service.SystemService           { return fakeSystem{} }
+
+// fakeSystem lists a folder the way the service does.
+type fakeSystem struct{ service.SystemService }
+
+func (fakeSystem) GetDirPath(dir string) ([]model.Path, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var paths []model.Path
+	for _, e := range entries {
+		paths = append(paths, model.Path{Name: e.Name(), Path: filepath.Join(dir, e.Name()), IsDir: e.IsDir()})
+	}
+	return paths, nil
+}
 
 type fakeConnections struct {
 	service.ConnectionsService
 	row     model2.ConnectionsDBModel
 	deleted []string
+	busy    []string // the mount points whose unmount fails
+}
+
+func (f *fakeConnections) UnmountSmaba(path string) error {
+	if slices.Contains(f.busy, path) {
+		return errors.New("device or resource busy")
+	}
+	return nil
 }
 
 func (f *fakeConnections) GetConnectionsList() []model2.ConnectionsDBModel {
@@ -53,5 +82,42 @@ func TestAConnectionWhoseSharesCannotBeReadAtBootIsKept(t *testing.T) {
 
 	if len(connections.deleted) != 0 {
 		t.Fatalf("deleted %v", connections.deleted)
+	}
+}
+
+// Before the shares of a host are mounted again, what was mounted in its folder is unmounted. A share
+// that does not unmount keeps its folder and its files: with the share still mounted they are the
+// server's, and the whole folder of the host was removed. A folder that is not empty stays too; one left
+// empty and unmounted is removed.
+func TestAShareThatDoesNotUnmountKeepsItsFiles(t *testing.T) {
+	logger.LogInitConsoleOnly()
+	host := t.TempDir()
+	busy, full, old := filepath.Join(host, "Photos"), filepath.Join(host, "Music"), filepath.Join(host, "Old")
+	for _, dir := range []string{busy, full, old} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := []string{filepath.Join(busy, "a.jpg"), filepath.Join(full, "b.mp3")}
+	for _, name := range files {
+		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous := service.MyService
+	service.MyService = fakeMountRepository{connections: &fakeConnections{busy: []string{busy}}}
+	t.Cleanup(func() { service.MyService = previous })
+
+	if err := unmountShares(host); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range files {
+		if _, err := os.Stat(name); err != nil {
+			t.Errorf("%s is gone: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("the empty unmounted folder is still there: %v", err)
 	}
 }
