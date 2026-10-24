@@ -17,7 +17,13 @@ func Open(paths []string) (*Roots, error) {
 }
 
 // Unavailable: every root (none can be checked here).
-func (r *Roots) Unavailable() []string { return r.Paths() }
+func (r *Roots) Unavailable() map[string]error {
+	problems := map[string]error{}
+	for _, root := range r.Paths() {
+		problems[root] = ErrUnsupported
+	}
+	return problems
+}
 
 func (r *Roots) Check(path string) (string, error) {
 	if !r.Confined() {

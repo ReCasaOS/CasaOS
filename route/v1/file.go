@@ -592,7 +592,12 @@ func PostFileUpload(ctx echo.Context) error {
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 		}
 
-		out, err := os.OpenFile(tempDir+chunkNumber, os.O_WRONLY|os.O_CREATE, 0o644)
+		// the chunk itself: a link planted at its name is neither followed out (fileroots) nor
+		// written through inside the root (O_NOFOLLOW)
+		if err := managedTemp(tempDir + chunkNumber); err != nil {
+			return outsideRoots(ctx, err)
+		}
+		out, err := os.OpenFile(tempDir+chunkNumber, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|file.NoFollow, 0o644)
 		if err != nil {
 			logger.Error("error when trying to open `"+tempDir+chunkNumber+"` for creation", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
@@ -727,6 +732,13 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 		return outsideRoots(ctx, err)
 	}
 	for i := range list.Item {
+		// a move takes the entry away: never a root (or a folder above one), as a delete or a rename
+		if list.Type == "move" {
+			entry := list.Item[i].From
+			if err := managedEntry(&entry); err != nil {
+				return outsideRoots(ctx, err)
+			}
+		}
 		if err := managed(&list.Item[i].From); err != nil {
 			return outsideRoots(ctx, err)
 		}

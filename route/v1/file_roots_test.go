@@ -16,6 +16,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
+	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/ReCasaOS/CasaOS/service"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 	"github.com/labstack/echo/v4"
@@ -286,5 +287,72 @@ func TestAMissingRootIsRefusedWithItsReason(t *testing.T) {
 	reason, _ := result.Data.(string)
 	if rec.Code != http.StatusForbidden || reason == "" || reason != result.Message {
 		t.Errorf("read below a missing root: %d %s, want 403 with the reason in message and data", rec.Code, rec.Body.String())
+	}
+}
+
+// the chunks themselves: a link planted at a chunk's name is not written through, out of the
+// root (403) or inside it (the file it points to stays as it was)
+func TestAChunkIsNotWrittenThroughALink(t *testing.T) {
+	data, secret := confinedBox(t)
+	chunks := filepath.Join(data, "Media", ".temp", file.GetHashByContent([]byte("big.iso"))+"2")
+	if err := os.MkdirAll(chunks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	upload := func() int {
+		var body bytes.Buffer
+		w := multipart.NewWriter(&body)
+		for k, v := range map[string]string{"path": data + "/Media", "relativePath": "big.iso", "filename": "big.iso", "chunkNumber": "1", "totalChunks": "2"} {
+			_ = w.WriteField(k, v)
+		}
+		part, _ := w.CreateFormFile("file", "big.iso")
+		_, _ = part.Write([]byte("chunk"))
+		_ = w.Close()
+		req := httptest.NewRequest(http.MethodPost, "/v1/file/upload", &body)
+		req.Header.Set(echo.HeaderContentType, w.FormDataContentType())
+		rec := httptest.NewRecorder()
+		if err := PostFileUpload(echo.New().NewContext(req, rec)); err != nil {
+			t.Fatal(err)
+		}
+		return rec.Code
+	}
+
+	// dangling, out of the root
+	if err := os.Symlink(secret+"/planted", chunks+"/1"); err != nil {
+		t.Fatal(err)
+	}
+	if code := upload(); code != http.StatusForbidden {
+		t.Errorf("chunk through a dangling link out: %d, want 403", code)
+	}
+	if _, err := os.Lstat(secret + "/planted"); err == nil {
+		t.Error("the chunk was written out of the root")
+	}
+
+	// inside the root, onto another file
+	_ = os.Remove(chunks + "/1")
+	if err := os.Symlink("../../a.txt", chunks+"/1"); err != nil {
+		t.Fatal(err)
+	}
+	upload()
+	if b, _ := os.ReadFile(data + "/Media/a.txt"); string(b) != "x" {
+		t.Errorf("the file the link points to was written: %q", b)
+	}
+}
+
+// a move takes the entry away: a root is not moved, as it is not deleted or renamed (two roots:
+// one moved into the other)
+func TestARootIsNotMoved(t *testing.T) {
+	data, _ := confinedBox(t)
+	other := filepath.Join(filepath.Dir(data), "other")
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roots, err := fileroots.Open([]string{data, other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileroots.Default = roots // confinedBox puts the previous one back
+	rec := call(t, PostOperateFileOrDir, http.MethodPost, "/v1/batch/task", model.FileOperate{Type: "move", To: other, Item: []model.FileItem{{From: data}}})
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("move a root: %d %s, want 403", rec.Code, rec.Body.String())
 	}
 }

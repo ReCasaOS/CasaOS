@@ -34,6 +34,9 @@ var (
 	// ErrRootUnavailable: the root cannot be opened now (not mounted yet, gone,
 	// replaced by a symlink).
 	ErrRootUnavailable = errors.New("the managed file root is not available")
+	// ErrRootNotReal: the root is a symlink, or spelled through one; roots are
+	// spelled as their real path
+	ErrRootNotReal = errors.New("the managed file root is spelled through a symlink: use its real path")
 	// ErrRoot: a root itself, or a folder above one, is not deleted or renamed.
 	ErrRoot = errors.New("a managed file root is not deleted or renamed")
 )

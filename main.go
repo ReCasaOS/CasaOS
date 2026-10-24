@@ -102,8 +102,8 @@ func init() {
 		logger.Error("the managed file roots are not usable: the file API refuses every path", zap.Error(err))
 		fileroots.Default = fileroots.Refusing(err)
 	} else {
-		for _, root := range fileroots.Default.Unavailable() {
-			logger.Warn("a managed file root is not available yet: its paths are refused until it is", zap.String("root", root))
+		for root, problem := range fileroots.Default.Unavailable() {
+			logger.Warn("a managed file root cannot be opened: its paths are refused until it can", zap.String("root", root), zap.Error(problem))
 		}
 	}
 

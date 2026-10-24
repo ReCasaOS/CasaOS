@@ -39,18 +39,20 @@ func Open(paths []string) (*Roots, error) {
 	return &Roots{paths: paths}, nil
 }
 
-// Unavailable: the roots that cannot be opened now (for a warning at start).
-func (r *Roots) Unavailable() []string {
-	missing := []string{}
+// Unavailable: the roots that cannot be opened now, with why (for a warning at
+// start): ErrRootUnavailable, and ErrRootNotReal too for one spelled through a
+// symlink.
+func (r *Roots) Unavailable() map[string]error {
+	problems := map[string]error{}
 	for _, root := range r.Paths() {
 		fd, err := openRoot(root)
 		if err != nil {
-			missing = append(missing, root)
+			problems[root] = err
 			continue
 		}
 		_ = unix.Close(fd)
 	}
-	return missing
+	return problems
 }
 
 // openRoot: the root as a directory, spelled as its real path (no symlink
@@ -60,7 +62,10 @@ func openRoot(root string) (int, error) {
 		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
 		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, unix.ELOOP):
+		return -1, fmt.Errorf("%w: %w: %s", ErrRootUnavailable, ErrRootNotReal, root)
+	case err != nil:
 		return -1, fmt.Errorf("%w: %s: %v", ErrRootUnavailable, root, err)
 	}
 	return fd, nil

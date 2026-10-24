@@ -72,3 +72,29 @@ func TestCopyDirUnconfinedFollowsLinks(t *testing.T) {
 		t.Errorf("link: %q %v", b, err)
 	}
 }
+
+// a link at a chunk's name (one not yet uploaded) is not read into the uploaded file
+func TestSpliceReadsNoLink(t *testing.T) {
+	dir, out := t.TempDir(), filepath.Join(t.TempDir(), "big.iso")
+	writeTestFile(t, filepath.Join(dir, "1"), "one")
+	secret := filepath.Join(t.TempDir(), "secret")
+	writeTestFile(t, secret, "secret")
+	if err := os.Symlink(secret, filepath.Join(dir, "2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := SpliceFiles(dir, out, 2, 1); err == nil {
+		t.Error("SpliceFiles read through a link")
+	}
+	if b, _ := os.ReadFile(out); string(b) == "onesecret" {
+		t.Error("the secret is in the uploaded file")
+	}
+
+	_ = os.Remove(filepath.Join(dir, "2"))
+	writeTestFile(t, filepath.Join(dir, "2"), "two")
+	if err := SpliceFiles(dir, out, 2, 1); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(out); string(b) != "onetwo" {
+		t.Errorf("spliced: %q", b)
+	}
+}

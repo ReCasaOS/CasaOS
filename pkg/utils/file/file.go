@@ -437,6 +437,22 @@ func WriteToFullPath(data []byte, fullPath string, perm fs.FileMode) error {
 }
 
 // 最终拼接
+// appendChunk copies the regular file at name (not a link) to w.
+func appendChunk(w io.Writer, name string) error {
+	chunk, err := os.OpenFile(name, os.O_RDONLY|NoFollow, 0)
+	if err != nil {
+		return err
+	}
+	defer chunk.Close()
+	if info, err := chunk.Stat(); err != nil {
+		return err
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s: %w", name, ErrNotRegular)
+	}
+	_, err = io.Copy(w, chunk) // recommend to use https://github.com/iceber/iouring-go for faster write
+	return err
+}
+
 func SpliceFiles(dir, path string, length int, startPoint int) error {
 	fullPath := path
 
@@ -456,11 +472,9 @@ func SpliceFiles(dir, path string, length int, startPoint int) error {
 	// todo: here should have a goroutine to remove each partial file after it is read, to save disk space
 
 	for i := 0; i < length+startPoint-1; i++ {
-		data, err := ioutil.ReadFile(dir + "/" + strconv.Itoa(i+startPoint))
-		if err != nil {
-			return err
-		}
-		if _, err := bufferedWriter.Write(data); err != nil { // recommend to use https://github.com/iceber/iouring-go for faster write
+		// a chunk is a file the upload wrote, never a link planted at its name (read through, it
+		// would bring what it points to into the uploaded file)
+		if err := appendChunk(bufferedWriter, dir+"/"+strconv.Itoa(i+startPoint)); err != nil {
 			return err
 		}
 	}

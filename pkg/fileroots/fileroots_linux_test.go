@@ -123,8 +123,10 @@ func TestARootIsOpenedOnEveryCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v, want the roots taken (checked later)", err)
 	}
-	if got, want := roots.Unavailable(), []string{base + "/link", base + "/disk"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("Unavailable = %v, want %v", got, want)
+	problems := roots.Unavailable()
+	if len(problems) != 2 || !errors.Is(problems[base+"/link"], ErrRootNotReal) ||
+		!errors.Is(problems[base+"/disk"], ErrRootUnavailable) || errors.Is(problems[base+"/disk"], ErrRootNotReal) {
+		t.Errorf("Unavailable = %v: want the link as not real, the disk as not there", problems)
 	}
 	for _, path := range []string{base + "/link/x", base + "/disk/x", base + "/disk"} {
 		if _, err := roots.Check(path); !errors.Is(err, ErrRootUnavailable) {
