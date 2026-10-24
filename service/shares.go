@@ -11,9 +11,11 @@
 package service
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/command"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -40,12 +42,25 @@ type SharesService interface {
 
 type sharesStruct struct {
 	db *gorm.DB
+
+	// mu serialises share changes: config write + smbd refresh + DB commit. The
+	// shares to close are derived from the file before/after, so an interleaved
+	// edit could skip closing a share whose access was narrowed.
+	mu sync.Mutex
+
+	// restartSMBD restarts smbd; reloadSMBD reloads it, then closes the named
+	// shares (shares_refresh.go). Tests replace both; nil reloadSMBD → restart.
+	restartSMBD func() error
+	reloadSMBD  func(closeShares []string) error
 }
 
 func (s *sharesStruct) DeleteShareByPath(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.db.Where("path LIKE ?", path+"%").Delete(&model.SharesDBModel{})
 
-	return s.UpdateConfigFile()
+	return s.updateConfigFile()
 }
 
 func (s *sharesStruct) GetSharesByName(name string) (shares []model2.SharesDBModel) {
@@ -65,7 +80,10 @@ func (s *sharesStruct) GetSharesList() (shares []model2.SharesDBModel) {
 }
 
 func (s *sharesStruct) CreateShare(share model2.SharesDBModel) error {
-	s.InitSambaConfig()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	mainWritten := s.initSambaConfig()
 
 	// Write and validate the configuration this share would produce before the
 	// row is committed. Inserting first would leave an unusable row behind when
@@ -74,7 +92,7 @@ func (s *sharesStruct) CreateShare(share model2.SharesDBModel) error {
 	shares := []model2.SharesDBModel{}
 	s.db.Find(&shares)
 
-	if err := s.applyConfig(append(shares, share)); err != nil {
+	if err := s.applyConfig(append(shares, share), mainWritten); err != nil {
 		return err
 	}
 
@@ -97,6 +115,9 @@ func (s *sharesStruct) GetShareByID(id string) (share model2.SharesDBModel, foun
 // changed, so a rejected result leaves the share exactly as it was rather than
 // half converted.
 func (s *sharesStruct) UpdateShare(id string, username string, timeMachine bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	shares := []model2.SharesDBModel{}
 	s.db.Find(&shares)
 
@@ -108,7 +129,7 @@ func (s *sharesStruct) UpdateShare(id string, username string, timeMachine bool)
 		}
 	}
 
-	if err := s.applyConfig(shares); err != nil {
+	if err := s.applyConfig(shares, false); err != nil {
 		return err
 	}
 
@@ -119,21 +140,33 @@ func (s *sharesStruct) UpdateShare(id string, username string, timeMachine bool)
 }
 
 func (s *sharesStruct) DeleteShare(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.db.Where("id= ?", id).Delete(&model.SharesDBModel{})
 
-	return s.UpdateConfigFile()
+	return s.updateConfigFile()
 }
 
 func (s *sharesStruct) UpdateConfigFile() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.updateConfigFile()
+}
+
+func (s *sharesStruct) updateConfigFile() error {
 	shares := []model2.SharesDBModel{}
 	s.db.Find(&shares)
 
-	return s.applyConfig(shares)
+	return s.applyConfig(shares, false)
 }
 
-// applyConfig writes the share configuration, has Samba check it, and restarts
-// smbd only once it has been accepted.
-func (s *sharesStruct) applyConfig(shares []model2.SharesDBModel) error {
+// applyConfig writes the share configuration, has Samba check it, and has smbd
+// take it only once it has been accepted: a restart when smb.conf changed
+// (mainChanged, or the guest mapping flipped here), otherwise a reload
+// (refreshSamba).
+func (s *sharesStruct) applyConfig(shares []model2.SharesDBModel, mainChanged bool) error {
 	configStr := ""
 	hasProtectedShare := false
 
@@ -145,8 +178,10 @@ func (s *sharesStruct) applyConfig(shares []model2.SharesDBModel) error {
 		}
 	}
 
-	if err := syncGuestMapping(hasProtectedShare); err != nil {
+	if mappingChanged, err := syncGuestMapping(hasProtectedShare); err != nil {
 		logger.Error("failed to update the samba guest mapping", zap.Error(err))
+	} else if mappingChanged {
+		mainChanged = true
 	}
 
 	previous, previousErr := os.ReadFile(sambaShareConfigFile)
@@ -170,19 +205,39 @@ func (s *sharesStruct) applyConfig(shares []model2.SharesDBModel) error {
 		return err
 	}
 
-	// restart samba
-	command.OnlyExec("source " + config.AppInfo.ShellPath + "/helper.sh ;RestartSMBD")
+	if previousErr != nil {
+		previous = nil
+	}
+	if err := s.refreshSamba(mainChanged, previous, []byte(configStr)); err != nil {
+		logger.Error("failed to apply the share configuration to smbd", zap.Error(err))
+	}
 
 	return nil
 }
 
+func restartSambaService() error {
+	if output, err := command.OnlyExec("source " + config.AppInfo.ShellPath + "/helper.sh ;RestartSMBD"); err != nil {
+		return fmt.Errorf("restart samba: %w: %s", err, strings.TrimSpace(output))
+	}
+	return nil
+}
+
 func (s *sharesStruct) InitSambaConfig() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.initSambaConfig()
+}
+
+// initSambaConfig writes CasaOS' smb.conf where there is none of CasaOS';
+// reports whether it did.
+func (s *sharesStruct) initSambaConfig() bool {
 	if file.Exists(sambaConfigFile) {
 		str := file.ReadLine(1, sambaConfigFile)
 		if strings.Contains(str, "# Copyright (c) 2021-2022 CasaOS Inc. All rights reserved.") {
 			// The guest mapping of an already-configured host is kept in step by
 			// applyConfig, which knows whether any share is actually protected.
-			return
+			return false
 		}
 		file.MoveFile("/etc/samba/smb.conf", "/etc/samba/smb.conf.bak")
 		smbConf := ""
@@ -236,9 +291,15 @@ func (s *sharesStruct) InitSambaConfig() {
    map to guest = never
    include=/etc/samba/smb.casa.conf`
 		file.WriteToPath([]byte(smbConf), "/etc/samba", "smb.conf")
+		return true
 	}
+	return false
 }
 
 func NewSharesService(db *gorm.DB) SharesService {
-	return &sharesStruct{db: db}
+	return &sharesStruct{
+		db:          db,
+		restartSMBD: restartSambaService,
+		reloadSMBD:  reloadSambaService,
+	}
 }

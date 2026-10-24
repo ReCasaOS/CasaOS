@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # copy to /casaOS/util/shell path
 # chmod 755
