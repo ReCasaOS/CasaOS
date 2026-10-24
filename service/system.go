@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/command"
@@ -23,8 +24,6 @@ import (
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
-	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
-	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
@@ -112,16 +111,8 @@ type SystemService interface {
 	// go of it less than ten minutes ago. SetOSUpgradeNotifier sets what tells the owner of what became of an upgrade.
 	OSUpgradeMuted() bool
 	SetOSUpgradeNotifier(notify func(key, sentence string))
-	// ListSystemModules is the modules of this release with what the box says of each; StartSystemModuleInstall and StartSystemModuleRemove start the unit that installs or removes one
-	// (an *ModuleRefusal says why not), PlanSystemModule says what installing it would do and GetSystemModuleStatus how the job of the module is going.
-	ListSystemModules() (modulecmd.ListResult, error)
-	PlanSystemModule(name string) (osmodule.PlanResult, error)
-	StartSystemModuleInstall(ctx context.Context, name, planID string) (SystemModuleStatus, error)
-	StartSystemModuleRemove(ctx context.Context, name string) (SystemModuleStatus, error)
-	// PlanSystemModuleUpdate and StartSystemModuleUpdate are the plan and the start for the update of a module that is installed, to the tag the catalogue names.
-	PlanSystemModuleUpdate(name string) (osmodule.PlanResult, error)
-	StartSystemModuleUpdate(ctx context.Context, name, planID string) (SystemModuleStatus, error)
-	GetSystemModuleStatus(name string) (SystemModuleStatus, error)
+	// The modules (system_module_provider.go): the module assistant's, or the system image's ([server] ImageManaged).
+	ModuleProvider
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()
@@ -154,6 +145,9 @@ type SystemService interface {
 }
 type systemService struct {
 	packageUpdates *systemPackageUpdater
+	// imageModules is the module provider of an image-built host, made on first use
+	imageModules     *imageModules
+	imageModulesOnce sync.Once
 	// osPlan is the job that makes the plan of the upgrade of the operating system.
 	osPlan osPlanJob
 	// osUpgrade is what the core keeps in memory of the upgrade that it runs: its loop, and nothing that the upgrade is.

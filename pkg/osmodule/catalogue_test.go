@@ -324,3 +324,32 @@ func TestTheAddressOfAnArchiveIsBoundedAtFiveHundredAndTwelveBytes(t *testing.T)
 		}
 	}
 }
+
+// a module of the system image: source image and no assets; an archive keeps its assets, and a source that is neither is refused
+func TestAModuleOfTheImageHasNoAssets(t *testing.T) {
+	image := catalogueWith(t, "modules.0.assets", "")
+	var doc map[string]any
+	_ = json.Unmarshal([]byte(image), &doc)
+	doc["modules"].([]any)[0].(map[string]any)["source"] = SourceImage
+	raw, _ := json.Marshal(doc)
+	c, err := ParseCatalogue(raw)
+	if err != nil {
+		t.Fatalf("a module of the image: %v", err)
+	}
+	if e, _ := c.Find("virt"); e.Source != SourceImage {
+		t.Errorf("source = %q", e.Source)
+	}
+	for name, c := range map[string]struct{ path, literal, field string }{
+		"an image module with assets": {"modules.0.source", `"image"`, "modules.0.assets"},
+		"another source":              {"modules.0.source", `"url"`, "modules.0.source"},
+	} {
+		_, err := ParseCatalogue([]byte(catalogueWith(t, c.path, c.literal)))
+		var bad *Invalid
+		if !errors.As(err, &bad) || bad.Field != c.field || bad.Reason != ReasonValue {
+			t.Errorf("%s: %v, want %s %s", name, err, c.field, ReasonValue)
+		}
+	}
+	if _, err := ParseCatalogue([]byte(catalogueWith(t, "modules.0.assets", ""))); err == nil {
+		t.Error("an archive module without assets")
+	}
+}
