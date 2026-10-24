@@ -91,14 +91,20 @@ func init() {
 		*dbFlag = config.AppInfo.DBPath + "/db"
 	}
 
-	// [file] ManagementRoots: set but not usable → no start (fail closed, never silently unconfined)
+	// [file] ManagementRoots. Not usable → the file API refuses every path (fail
+	// closed, never silently unconfined; the dashboard still starts). A root not
+	// there yet (disk not mounted) → its paths refused until it is.
 	roots, err := fileroots.Parse(config.FileSettingInfo.ManagementRoots)
 	if err == nil {
 		fileroots.Default, err = fileroots.Open(roots)
 	}
 	if err != nil {
-		logger.Error("the managed file roots cannot be opened", zap.Error(err))
-		os.Exit(1)
+		logger.Error("the managed file roots are not usable: the file API refuses every path", zap.Error(err))
+		fileroots.Default = fileroots.Refusing(err)
+	} else {
+		for _, root := range fileroots.Default.Unavailable() {
+			logger.Warn("a managed file root is not available yet: its paths are refused until it is", zap.String("root", root))
+		}
 	}
 
 	sqliteDB = sqlite.GetDb(*dbFlag)

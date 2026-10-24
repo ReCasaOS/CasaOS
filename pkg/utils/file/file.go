@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 )
 
 // GetSize get the file size
@@ -204,6 +206,11 @@ func ReadFullFile(path string) []byte {
 // ErrNotRegular is the error of a copy that skipped what is not a regular file.
 var ErrNotRegular = errors.New("not a regular file: skipped")
 
+// ErrLinkOutside is the error of a copy that skipped a link inside the copied
+// folder that leads out of [file] ManagementRoots (copying it would bring what
+// it points to inside).
+var ErrLinkOutside = errors.New("a link out of the managed file roots: skipped")
+
 // tempPattern names the temporary files of copies and saves: short, so that the name of the file they become (up to 255 bytes) does not matter.
 const tempPattern = ".casaos-*"
 
@@ -378,12 +385,19 @@ func copyDir(ctx context.Context, src, dst, style string, made map[[2]uint64]boo
 		if key, ok := fileKey(fd); ok && fd.IsDir() && made[key] {
 			return fmt.Errorf("%s is a folder this copy made: it would copy into itself", srcfp)
 		}
+		// a link is copied as what it points to: only where that stays below the roots
+		if fd.Mode()&os.ModeSymlink != 0 {
+			if _, err := fileroots.Default.Check(srcfp); err != nil {
+				skipped = fmt.Errorf("%s: %w", srcfp, ErrLinkOutside)
+				continue
+			}
+		}
 		if fd.IsDir() {
 			err = copyDir(ctx, srcfp, dstfp, style, made)
 		} else {
 			err = copyFile(ctx, srcfp, dstfp, style)
 		}
-		if errors.Is(err, ErrNotRegular) { // skipped: the copy goes on, and says so at its end
+		if errors.Is(err, ErrNotRegular) || errors.Is(err, ErrLinkOutside) { // skipped: the copy goes on, and says so at its end
 			skipped = err
 			continue
 		}

@@ -1,5 +1,11 @@
 //go:build linux
 
+// SPDX-License-Identifier: Apache-2.0
+//
+// Derived from EdmundFu-233/ReCasaOS pkg/filesecurity (managed roots),
+// Copyright 2026 EdmundFu-233, Apache License 2.0. Changed: reduced to the
+// path check (no descriptor-relative operations), roots opened per check.
+
 package fileroots
 
 import (
@@ -12,51 +18,71 @@ import (
 
 const resolve = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS
 
-// Open pins the roots: each must exist, be a directory, and be spelled as its
-// real path (no symlink anywhere in it). No roots: unconfined.
+// Open takes the roots (Parse) and makes sure the kernel has openat2. The roots
+// are not opened here but on every check: one mounted later (a disk, a USB
+// stick) is the one checked, and one missing now is refused until it is there
+// (Unavailable). No roots: unconfined.
 func Open(paths []string) (*Roots, error) {
-	r := &Roots{paths: paths, fds: map[string]int{}}
-	for _, root := range paths {
-		fd, err := unix.Openat2(unix.AT_FDCWD, root, &unix.OpenHow{
-			Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
-			Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
-		})
-		if err != nil {
-			r.Close()
-			if errors.Is(err, unix.ENOSYS) {
-				return nil, ErrUnsupported
-			}
-			return nil, fmt.Errorf("%w: %s: %v", ErrInvalidRoot, root, err)
-		}
-		r.fds[root] = fd
+	if len(paths) == 0 {
+		return &Roots{}, nil
 	}
-	return r, nil
+	fd, err := unix.Openat2(unix.AT_FDCWD, "/", &unix.OpenHow{
+		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_NO_MAGICLINKS,
+	})
+	if errors.Is(err, unix.ENOSYS) {
+		return nil, ErrUnsupported
+	}
+	if err == nil {
+		_ = unix.Close(fd)
+	}
+	return &Roots{paths: paths}, nil
 }
 
-// Close releases the pinned roots.
-func (r *Roots) Close() {
-	if r == nil {
-		return
-	}
-	for root, fd := range r.fds {
+// Unavailable: the roots that cannot be opened now (for a warning at start).
+func (r *Roots) Unavailable() []string {
+	missing := []string{}
+	for _, root := range r.Paths() {
+		fd, err := openRoot(root)
+		if err != nil {
+			missing = append(missing, root)
+			continue
+		}
 		_ = unix.Close(fd)
-		delete(r.fds, root)
 	}
+	return missing
+}
+
+// openRoot: the root as a directory, spelled as its real path (no symlink
+// anywhere in it).
+func openRoot(root string) (int, error) {
+	fd, err := unix.Openat2(unix.AT_FDCWD, root, &unix.OpenHow{
+		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
+	if err != nil {
+		return -1, fmt.Errorf("%w: %s: %v", ErrRootUnavailable, root, err)
+	}
+	return fd, nil
 }
 
 // Check returns the canonical spelling of a client path that resolves below
-// its root, symlinks followed and kept beneath. A path that does not exist yet
-// (an upload, a new folder, a rename's target) is checked through its nearest
-// existing ancestor; a dangling link on the way is refused (writing through
-// it could land anywhere). Relative links that stay below the root are
-// followed; absolute links are refused, even to inside (RESOLVE_BENEATH).
-// Unconfined: the path as given.
+// its root, symlinks followed and kept beneath. The root is opened for the
+// check: not there (not mounted yet), or a symlink now → ErrRootUnavailable. A
+// path that does not exist yet (an upload, a new folder, a rename's target) is
+// checked through its nearest existing ancestor; a dangling link on the way is
+// refused (writing through it could land anywhere). Relative links that stay
+// below the root are followed; absolute links are refused, even to inside
+// (RESOLVE_BENEATH). Unconfined: the path as given.
 //
 // It is a check before the operation: a component swapped for a symlink
 // between the check and the operation is not caught here.
 func (r *Roots) Check(path string) (string, error) {
 	if !r.Confined() {
 		return path, nil
+	}
+	if r.refused != nil {
+		return "", r.refused
 	}
 	clean, err := canonical(path)
 	if err != nil {
@@ -66,7 +92,11 @@ func (r *Roots) Check(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fd := r.fds[root]
+	fd, err := openRoot(root)
+	if err != nil {
+		return "", err
+	}
+	defer unix.Close(fd)
 	for relative != "." {
 		err := probe(fd, relative, 0)
 		if err == nil {

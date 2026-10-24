@@ -93,8 +93,8 @@ func GetFilerContent(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
-	if managed(&filePath) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&filePath); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	if !file.Exists(filePath) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
@@ -128,8 +128,8 @@ func GetLocalFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
-	if managed(&path) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	if !file.Exists(path) {
 		return ctx.JSON(http.StatusOK, model.Result{
@@ -162,8 +162,8 @@ func GetDownloadFile(ctx echo.Context) error {
 	}
 	list := strings.Split(files, ",")
 	for i := range list {
-		if managed(&list[i]) != nil {
-			return outsideRoots(ctx)
+		if err := managed(&list[i]); err != nil {
+			return outsideRoots(ctx, err)
 		}
 	}
 	for _, v := range list {
@@ -235,8 +235,8 @@ func GetDownloadSingleFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
-	if managed(&filePath) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&filePath); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	fileName := path.Base(filePath)
 	// c.Header("Content-Disposition", "inline")
@@ -293,8 +293,10 @@ func DirPath(ctx echo.Context) error {
 	req.Validate()
 	// a directory above the roots ("/" for the dashboard's Root) lists only the way down to them
 	ancestor := fileroots.Default.IsAncestor(req.Path)
-	if !ancestor && managed(&req.Path) != nil {
-		return outsideRoots(ctx)
+	if !ancestor {
+		if err := managed(&req.Path); err != nil {
+			return outsideRoots(ctx, err)
+		}
 	}
 	info, err := service.MyService.System().GetDirPath(req.Path)
 	if err != nil {
@@ -407,8 +409,8 @@ func RenamePath(ctx echo.Context) error {
 	if len(op) == 0 || len(np) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
-	if managed(&op, &np) != nil {
-		return outsideRoots(ctx)
+	if err := managedEntry(&op, &np); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	mounted := service.IsMounted(op)
 	if mounted {
@@ -435,8 +437,8 @@ func MkdirAll(ctx echo.Context) error {
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
-	if managed(&path) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
@@ -463,8 +465,8 @@ func PostCreateFile(ctx echo.Context) error {
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
-	if managed(&path) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
@@ -491,8 +493,8 @@ func GetFileUpload(ctx echo.Context) error {
 	totalChunks, _ := strconv.Atoi(utils.DefaultQuery(ctx, "totalChunks", "0"))
 	path := ctx.QueryParam("path")
 	target := path + "/" + relative
-	if managed(&path, &target) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&path, &target); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	dirPath := ""
 	hash := file.GetHashByContent([]byte(fileName))
@@ -507,6 +509,12 @@ func GetFileUpload(ctx echo.Context) error {
 	if fileName != relative {
 		dirPath = strings.TrimSuffix(relative, fileName)
 		tempDir += dirPath
+	}
+	// the chunks' folder: a `.temp` link planted in the folder must not lead out
+	if err := managedTemp(tempDir); err != nil {
+		return outsideRoots(ctx, err)
+	}
+	if dirPath != "" {
 		file.MkDir(path + "/" + dirPath)
 	}
 	tempDir += chunk
@@ -546,14 +554,20 @@ func PostFileUpload(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
 	target := path + "/" + relative
-	if managed(&path, &target) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&path, &target); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	tempDir := filepath.Join(path, ".temp", hash+strconv.Itoa(totalChunks)) + "/"
 
 	if fileName != relative {
 		dirPath = strings.TrimSuffix(relative, fileName)
 		tempDir += dirPath
+	}
+	// the chunks' folder: a `.temp` link planted in the folder must not lead out
+	if err := managedTemp(tempDir); err != nil {
+		return outsideRoots(ctx, err)
+	}
+	if dirPath != "" {
 		if err := file.MkDir(path + "/" + dirPath); err != nil {
 			logger.Error("error when trying to create `"+path+"/"+dirPath+"`", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
@@ -668,8 +682,8 @@ func PostFileOctet(ctx echo.Context) error {
 		//
 		//os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
 		target := file_header["path"] + "/" + file_header["filename"]
-		if managed(&target) != nil {
-			return outsideRoots(ctx)
+		if err := managed(&target); err != nil {
+			return outsideRoots(ctx, err)
 		}
 		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE, 0o644)
 		if err != nil {
@@ -709,12 +723,12 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 	if len(list.Item) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
-	if managed(&list.To) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&list.To); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	for i := range list.Item {
-		if managed(&list.Item[i].From) != nil {
-			return outsideRoots(ctx)
+		if err := managed(&list.Item[i].From); err != nil {
+			return outsideRoots(ctx, err)
 		}
 	}
 	list.To = filepath.Clean(list.To)
@@ -780,8 +794,8 @@ func DeleteFile(ctx echo.Context) error {
 
 	//	paths := strings.Split(path, ",")
 	for i := range paths {
-		if managed(&paths[i]) != nil {
-			return outsideRoots(ctx)
+		if err := managedEntry(&paths[i]); err != nil {
+			return outsideRoots(ctx, err)
 		}
 	}
 	for _, v := range paths {
@@ -819,8 +833,8 @@ func PutFileContent(ctx echo.Context) error {
 
 	// path := ctx.FormValue("path")
 	// content := ctx.FormValue("content")
-	if managed(&fi.FilePath) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&fi.FilePath); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	if !file.Exists(fi.FilePath) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
@@ -845,8 +859,8 @@ func PutFileContent(ctx echo.Context) error {
 func GetFileImage(ctx echo.Context) error {
 	t := ctx.QueryParam("type")
 	path := ctx.QueryParam("path")
-	if managed(&path) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	if !file.Exists(path) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
@@ -882,8 +896,8 @@ func GetSize(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
-	if managed(&path) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	size, err := file.GetFileOrDirSize(path)
 	if err != nil {
@@ -896,8 +910,8 @@ func GetFileCount(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
-	if managed(&path) != nil {
-		return outsideRoots(ctx)
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	list, err := ioutil.ReadDir(path)
 	if err != nil {

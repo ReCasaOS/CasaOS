@@ -32,7 +32,7 @@ func TestTheFileOfV3StaysInItsRoots(t *testing.T) {
 	}
 	previous := fileroots.Default
 	fileroots.Default = roots
-	t.Cleanup(func() { fileroots.Default = previous; roots.Close() })
+	t.Cleanup(func() { fileroots.Default = previous })
 
 	handler := InitFile()
 	for path, want := range map[string]int{data + "/note.txt": http.StatusOK, secret + "/key": http.StatusForbidden, data + "/../secret/key": http.StatusForbidden} {

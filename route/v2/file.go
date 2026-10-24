@@ -38,10 +38,12 @@ func (c *CasaOS) CheckUploadChunk(ctx echo.Context, params codegen.CheckUploadCh
 func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 	path := ctx.FormValue("path")
 	relativePath := ctx.FormValue("relativePath")
-	// [file] ManagementRoots: the folder and the file it lands in (pkg/fileroots)
-	target := path + "/" + relativePath
-	if fileroots.Default.CheckEach(&path, &target) != nil {
-		return ctx.JSON(http.StatusForbidden, map[string]string{"message": fileroots.ErrOutside.Error()})
+	// [file] ManagementRoots: the folder, the file it lands in and the `.tmp`
+	// it is written to first (pkg/fileroots)
+	target, temp := path+"/"+relativePath, path+"/"+relativePath+".tmp"
+	if err := fileroots.Default.CheckEach(&path, &target, &temp); err != nil {
+		// message and data, as the v1 file API answers (the dashboard shows data)
+		return ctx.JSON(http.StatusForbidden, map[string]string{"message": err.Error(), "data": err.Error()})
 	}
 
 	// handle the request

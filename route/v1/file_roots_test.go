@@ -48,6 +48,13 @@ func (fakeListing) MkdirAll(path string) (int, error) {
 	return common_err.SUCCESS, nil
 }
 
+func (fakeListing) RenameFile(oldF, newF string) (int, error) {
+	if err := os.Rename(oldF, newF); err != nil {
+		return common_err.SERVICE_ERROR, err
+	}
+	return common_err.SUCCESS, nil
+}
+
 type fakeNoShares struct{ service.SharesService }
 
 func (fakeNoShares) GetSharesList() []model2.SharesDBModel { return nil }
@@ -81,7 +88,7 @@ func confinedBox(t *testing.T) (data, secret string) {
 	fileroots.Default = roots
 	original := service.MyService
 	service.MyService = fakeRootsRepository{fakeFileRepository{peers: &fakePeers{peers: map[string]model2.PeerDriveDBModel{}}}}
-	t.Cleanup(func() { fileroots.Default, service.MyService = previous, original; roots.Close() })
+	t.Cleanup(func() { fileroots.Default, service.MyService = previous, original })
 	return data, secret
 }
 
@@ -200,5 +207,84 @@ func TestAboveTheRootsOnlyTheWayDownIsListed(t *testing.T) {
 	}
 	if len(names) != 1 || names[0] != "data" {
 		t.Fatalf("listing %s = %v, want only [data]", parent, names)
+	}
+}
+
+// delete and rename work on the entry: a link that leads out is removed or
+// renamed as a link; a root is neither
+func TestDeleteAndRenameTakeTheEntryNotTheRoot(t *testing.T) {
+	data, secret := confinedBox(t)
+	status := func(rec *httptest.ResponseRecorder) int {
+		t.Helper()
+		var result model.Result
+		_ = json.Unmarshal(rec.Body.Bytes(), &result)
+		if rec.Code != http.StatusOK {
+			return rec.Code
+		}
+		return result.Success
+	}
+	if got := status(call(t, RenamePath, http.MethodPut, "/v1/file/name", map[string]string{"old_path": data + "/escape", "new_path": data + "/escape2"})); got != common_err.SUCCESS {
+		t.Errorf("rename a link out: %d, want success", got)
+	}
+	if got := status(call(t, DeleteFile, http.MethodDelete, "/v1/batch", []string{data + "/escape2"})); got != common_err.SUCCESS {
+		t.Errorf("delete a link out: %d, want success", got)
+	}
+	if _, err := os.Lstat(data + "/escape2"); err == nil {
+		t.Error("the link is still there")
+	}
+	if _, err := os.Stat(secret + "/key"); err != nil {
+		t.Errorf("deleting the link removed what it led to: %v", err)
+	}
+
+	if err := os.Symlink("../secret", data+"/out"); err != nil {
+		t.Fatal(err)
+	}
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"delete the root":        call(t, DeleteFile, http.MethodDelete, "/v1/batch", []string{data}),
+		"delete above the root":  call(t, DeleteFile, http.MethodDelete, "/v1/batch", []string{filepath.Dir(data)}),
+		"rename the root":        call(t, RenamePath, http.MethodPut, "/v1/file/name", map[string]string{"old_path": data, "new_path": data + "2"}),
+		"rename onto the root":   call(t, RenamePath, http.MethodPut, "/v1/file/name", map[string]string{"old_path": data + "/Media", "new_path": data}),
+		"delete in a folder out": call(t, DeleteFile, http.MethodDelete, "/v1/batch", []string{data + "/out/key"}),
+	} {
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: %d %s, want 403", name, rec.Code, rec.Body.String())
+		}
+	}
+	if _, err := os.Stat(data + "/Media/a.txt"); err != nil {
+		t.Errorf("the root lost its content: %v", err)
+	}
+}
+
+// the chunks of an upload go to <folder>/.temp: a link planted there must not
+// take them out
+func TestAnUploadsChunksStayInTheRoot(t *testing.T) {
+	data, secret := confinedBox(t)
+	if err := os.Symlink("../secret", data+"/Media/.temp"); err != nil {
+		t.Fatal(err)
+	}
+	query := "/v1/file/upload?" + url.Values{"path": {data + "/Media"}, "relativePath": {"big.iso"}, "filename": {"big.iso"}, "chunkNumber": {"1"}, "totalChunks": {"2"}}.Encode()
+	if rec := call(t, GetFileUpload, http.MethodGet, query, nil); rec.Code != http.StatusForbidden {
+		t.Errorf("chunk check through a planted .temp: %d %s, want 403", rec.Code, rec.Body.String())
+	}
+	entries, _ := os.ReadDir(secret)
+	if len(entries) != 1 {
+		t.Errorf("something was made outside: %v", entries)
+	}
+}
+
+// a root not there (disk not mounted yet): 403 with the reason, no exit
+func TestAMissingRootIsRefusedWithItsReason(t *testing.T) {
+	data, _ := confinedBox(t)
+	if err := os.Rename(data, data+".unmounted"); err != nil {
+		t.Fatal(err)
+	}
+	rec := call(t, GetFilerContent, http.MethodGet, "/v1/file/content?path="+q(data+"/Media/a.txt"), nil)
+	var result model.Result
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	reason, _ := result.Data.(string)
+	if rec.Code != http.StatusForbidden || reason == "" || reason != result.Message {
+		t.Errorf("read below a missing root: %d %s, want 403 with the reason in message and data", rec.Code, rec.Body.String())
 	}
 }

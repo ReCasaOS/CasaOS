@@ -24,4 +24,6 @@ UpdateVersionUrl = https://github.com/ReCasaOS/CasaOS-Install/releases/latest/do
 [file]
 ; directories the file API may browse, read, write and delete in, comma-separated
 ; (e.g. /DATA,/mnt,/media); empty: anywhere on the machine
+; a root not mounted yet: its paths answer 403 until it is; an invalid value: every path 403
+; first install, "apps on /": creating /var/lib/docker gets 403 unless it is below a root
 ManagementRoots =
