@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 )
 
 // GetSize get the file size
@@ -204,6 +206,11 @@ func ReadFullFile(path string) []byte {
 // ErrNotRegular is the error of a copy that skipped what is not a regular file.
 var ErrNotRegular = errors.New("not a regular file: skipped")
 
+// ErrLinkOutside is the error of a copy that skipped a link inside the copied
+// folder that leads out of [file] ManagementRoots (copying it would bring what
+// it points to inside).
+var ErrLinkOutside = errors.New("a link out of the managed file roots: skipped")
+
 // tempPattern names the temporary files of copies and saves: short, so that the name of the file they become (up to 255 bytes) does not matter.
 const tempPattern = ".casaos-*"
 
@@ -378,12 +385,19 @@ func copyDir(ctx context.Context, src, dst, style string, made map[[2]uint64]boo
 		if key, ok := fileKey(fd); ok && fd.IsDir() && made[key] {
 			return fmt.Errorf("%s is a folder this copy made: it would copy into itself", srcfp)
 		}
+		// a link is copied as what it points to: only where that stays below the roots
+		if fd.Mode()&os.ModeSymlink != 0 {
+			if _, err := fileroots.Default.Check(srcfp); err != nil {
+				skipped = fmt.Errorf("%s: %w", srcfp, ErrLinkOutside)
+				continue
+			}
+		}
 		if fd.IsDir() {
 			err = copyDir(ctx, srcfp, dstfp, style, made)
 		} else {
 			err = copyFile(ctx, srcfp, dstfp, style)
 		}
-		if errors.Is(err, ErrNotRegular) { // skipped: the copy goes on, and says so at its end
+		if errors.Is(err, ErrNotRegular) || errors.Is(err, ErrLinkOutside) { // skipped: the copy goes on, and says so at its end
 			skipped = err
 			continue
 		}
@@ -423,6 +437,22 @@ func WriteToFullPath(data []byte, fullPath string, perm fs.FileMode) error {
 }
 
 // 最终拼接
+// appendChunk copies the regular file at name (not a link) to w.
+func appendChunk(w io.Writer, name string) error {
+	chunk, err := os.OpenFile(name, os.O_RDONLY|NoFollow, 0)
+	if err != nil {
+		return err
+	}
+	defer chunk.Close()
+	if info, err := chunk.Stat(); err != nil {
+		return err
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s: %w", name, ErrNotRegular)
+	}
+	_, err = io.Copy(w, chunk) // recommend to use https://github.com/iceber/iouring-go for faster write
+	return err
+}
+
 func SpliceFiles(dir, path string, length int, startPoint int) error {
 	fullPath := path
 
@@ -442,11 +472,9 @@ func SpliceFiles(dir, path string, length int, startPoint int) error {
 	// todo: here should have a goroutine to remove each partial file after it is read, to save disk space
 
 	for i := 0; i < length+startPoint-1; i++ {
-		data, err := ioutil.ReadFile(dir + "/" + strconv.Itoa(i+startPoint))
-		if err != nil {
-			return err
-		}
-		if _, err := bufferedWriter.Write(data); err != nil { // recommend to use https://github.com/iceber/iouring-go for faster write
+		// a chunk is a file the upload wrote, never a link planted at its name (read through, it
+		// would bring what it points to into the uploaded file)
+		if err := appendChunk(bufferedWriter, dir+"/"+strconv.Itoa(i+startPoint)); err != nil {
 			return err
 		}
 	}

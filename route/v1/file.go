@@ -21,6 +21,7 @@ import (
 	cfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/model"
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/robfig/cron/v3"
@@ -92,6 +93,9 @@ func GetFilerContent(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	if err := managed(&filePath); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	if !file.Exists(filePath) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
 			Success: common_err.FILE_DOES_NOT_EXIST,
@@ -124,6 +128,9 @@ func GetLocalFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	if !file.Exists(path) {
 		return ctx.JSON(http.StatusOK, model.Result{
 			Success: common_err.FILE_DOES_NOT_EXIST,
@@ -154,6 +161,11 @@ func GetDownloadFile(ctx echo.Context) error {
 		})
 	}
 	list := strings.Split(files, ",")
+	for i := range list {
+		if err := managed(&list[i]); err != nil {
+			return outsideRoots(ctx, err)
+		}
+	}
 	for _, v := range list {
 		if !file.Exists(v) {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{
@@ -223,6 +235,9 @@ func GetDownloadSingleFile(ctx echo.Context) error {
 			Message: common_err.GetMsg(common_err.INVALID_PARAMS),
 		})
 	}
+	if err := managed(&filePath); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	fileName := path.Base(filePath)
 	// c.Header("Content-Disposition", "inline")
 	ctx.Request().Header.Add("Content-Disposition", "attachment; filename*=utf-8''"+url2.PathEscape(fileName))
@@ -276,9 +291,25 @@ func DirPath(ctx echo.Context) error {
 	path := ctx.QueryParam("path")
 	req.Path = path
 	req.Validate()
+	// a directory above the roots ("/" for the dashboard's Root) lists only the way down to them
+	ancestor := fileroots.Default.IsAncestor(req.Path)
+	if !ancestor {
+		if err := managed(&req.Path); err != nil {
+			return outsideRoots(ctx, err)
+		}
+	}
 	info, err := service.MyService.System().GetDirPath(req.Path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
+	}
+	if ancestor {
+		way := info[:0]
+		for _, entry := range info {
+			if fileroots.Default.Leads(req.Path, filepath.Base(entry.Path)) {
+				way = append(way, entry)
+			}
+		}
+		info = way
 	}
 	shares := service.MyService.Shares().GetSharesList()
 	sharesMap := make(map[string]string)
@@ -378,6 +409,9 @@ func RenamePath(ctx echo.Context) error {
 	if len(op) == 0 || len(np) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if err := managedEntry(&op, &np); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	mounted := service.IsMounted(op)
 	if mounted {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.MOUNTED_DIRECTIORIES, Message: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES), Data: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES)})
@@ -402,6 +436,9 @@ func MkdirAll(ctx echo.Context) error {
 	var code int
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
 	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
@@ -428,6 +465,9 @@ func PostCreateFile(ctx echo.Context) error {
 	if len(path) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	// decodedPath, err := url.QueryUnescape(path)
 	// if err != nil {
 	// 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
@@ -452,6 +492,10 @@ func GetFileUpload(ctx echo.Context) error {
 	chunkNumber := ctx.QueryParam("chunkNumber")
 	totalChunks, _ := strconv.Atoi(utils.DefaultQuery(ctx, "totalChunks", "0"))
 	path := ctx.QueryParam("path")
+	target := path + "/" + relative
+	if err := managed(&path, &target); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	dirPath := ""
 	hash := file.GetHashByContent([]byte(fileName))
 	if file.Exists(path + "/" + relative) {
@@ -465,6 +509,12 @@ func GetFileUpload(ctx echo.Context) error {
 	if fileName != relative {
 		dirPath = strings.TrimSuffix(relative, fileName)
 		tempDir += dirPath
+	}
+	// the chunks' folder: a `.temp` link planted in the folder must not lead out
+	if err := managedTemp(tempDir); err != nil {
+		return outsideRoots(ctx, err)
+	}
+	if dirPath != "" {
 		file.MkDir(path + "/" + dirPath)
 	}
 	tempDir += chunk
@@ -503,11 +553,21 @@ func PostFileUpload(ctx echo.Context) error {
 		logger.Error("path should not be empty")
 		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
 	}
+	target := path + "/" + relative
+	if err := managed(&path, &target); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	tempDir := filepath.Join(path, ".temp", hash+strconv.Itoa(totalChunks)) + "/"
 
 	if fileName != relative {
 		dirPath = strings.TrimSuffix(relative, fileName)
 		tempDir += dirPath
+	}
+	// the chunks' folder: a `.temp` link planted in the folder must not lead out
+	if err := managedTemp(tempDir); err != nil {
+		return outsideRoots(ctx, err)
+	}
+	if dirPath != "" {
 		if err := file.MkDir(path + "/" + dirPath); err != nil {
 			logger.Error("error when trying to create `"+path+"/"+dirPath+"`", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
@@ -532,7 +592,12 @@ func PostFileUpload(ctx echo.Context) error {
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 		}
 
-		out, err := os.OpenFile(tempDir+chunkNumber, os.O_WRONLY|os.O_CREATE, 0o644)
+		// the chunk itself: a link planted at its name is neither followed out (fileroots) nor
+		// written through inside the root (O_NOFOLLOW)
+		if err := managedTemp(tempDir + chunkNumber); err != nil {
+			return outsideRoots(ctx, err)
+		}
+		out, err := os.OpenFile(tempDir+chunkNumber, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|file.NoFollow, 0o644)
 		if err != nil {
 			logger.Error("error when trying to open `"+tempDir+chunkNumber+"` for creation", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
@@ -621,7 +686,11 @@ func PostFileOctet(ctx echo.Context) error {
 		log.Printf("file :%s\n", file_header)
 		//
 		//os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
-		f, err := os.OpenFile(file_header["path"]+"/"+file_header["filename"], os.O_WRONLY|os.O_CREATE, 0o644)
+		target := file_header["path"] + "/" + file_header["filename"]
+		if err := managed(&target); err != nil {
+			return outsideRoots(ctx, err)
+		}
+		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE, 0o644)
 		if err != nil {
 			log.Printf("create file fail:%v\n", err)
 		}
@@ -658,6 +727,21 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 
 	if len(list.Item) == 0 {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+	if err := managed(&list.To); err != nil {
+		return outsideRoots(ctx, err)
+	}
+	for i := range list.Item {
+		// a move takes the entry away: never a root (or a folder above one), as a delete or a rename
+		if list.Type == "move" {
+			entry := list.Item[i].From
+			if err := managedEntry(&entry); err != nil {
+				return outsideRoots(ctx, err)
+			}
+		}
+		if err := managed(&list.Item[i].From); err != nil {
+			return outsideRoots(ctx, err)
+		}
 	}
 	list.To = filepath.Clean(list.To)
 	for i := range list.Item {
@@ -721,6 +805,11 @@ func DeleteFile(ctx echo.Context) error {
 	//	path := ctx.QueryParam("path")
 
 	//	paths := strings.Split(path, ",")
+	for i := range paths {
+		if err := managedEntry(&paths[i]); err != nil {
+			return outsideRoots(ctx, err)
+		}
+	}
 	for _, v := range paths {
 		mounted := service.IsMounted(v)
 		if mounted {
@@ -756,6 +845,9 @@ func PutFileContent(ctx echo.Context) error {
 
 	// path := ctx.FormValue("path")
 	// content := ctx.FormValue("content")
+	if err := managed(&fi.FilePath); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	if !file.Exists(fi.FilePath) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
@@ -779,6 +871,9 @@ func PutFileContent(ctx echo.Context) error {
 func GetFileImage(ctx echo.Context) error {
 	t := ctx.QueryParam("type")
 	path := ctx.QueryParam("path")
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	if !file.Exists(path) {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.FILE_ALREADY_EXISTS, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
@@ -813,6 +908,9 @@ func GetSize(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	size, err := file.GetFileOrDirSize(path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
@@ -824,6 +922,9 @@ func GetFileCount(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
+	if err := managed(&path); err != nil {
+		return outsideRoots(ctx, err)
+	}
 	list, err := ioutil.ReadDir(path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})

@@ -1,6 +1,7 @@
 package route
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"path"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/codegen"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	v2Route "github.com/ReCasaOS/CasaOS/route/v2"
@@ -152,6 +154,13 @@ func InitFile() http.Handler {
 			return
 		}
 		filePath := r.URL.Query().Get("path")
+		// [file] ManagementRoots (pkg/fileroots)
+		if err := fileroots.Default.CheckEach(&filePath); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": err.Error(), "data": err.Error()})
+			return
+		}
 		fileName := path.Base(filePath)
 		w.Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
 		http.ServeFile(w, r, filePath)

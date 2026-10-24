@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`[file] ManagementRoots` confines the file API** (opt-in; empty = unchanged). Comma-separated directories, e.g. `/DATA,/media`.
+  - every file route: path spelled once (`..`, `//` refused), resolved below its root with `openat2(RESOLVE_BENEATH)`: no `..` or symlink out; 403 otherwise, reason in `data`
+  - root opened on every check: a disk mounted later is the one checked; a root missing (not mounted yet) → its paths 403 until it is; an unusable setting → every path 403 (no exit, the dashboard starts)
+  - delete/rename take the entry (its folder is checked): a link that leads out is removed as a link; a root, or a folder above one, is neither deleted nor renamed
+  - copy: a link inside the copied folder that leads out is skipped (`outside_roots`)
+  - "/" (the dashboard's Root) lists only the way down to the roots
+  - first install, "apps on /": the step that creates `/var/lib/docker` through the file API gets 403 unless that path is below a root
+  - check before the operation (path-based), not descriptor-relative operations
+  - ported from EdmundFu-233/ReCasaOS `pkg/filesecurity` (Apache-2.0)
+
 ## [0.4.54] - 2026-09-15
 
 ### Fixed
