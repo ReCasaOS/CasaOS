@@ -40,8 +40,9 @@ func GetSambaStatus(ctx echo.Context) error {
 		})
 	}
 
-	needInit := true
-	if file.Exists("/etc/samba/smb.conf") {
+	// external: smb.conf is the host's, CasaOS never initialises it
+	needInit := !service.SambaMainConfigExternal()
+	if needInit && file.Exists("/etc/samba/smb.conf") {
 		str := file.ReadLine(1, "/etc/samba/smb.conf")
 		if strings.Contains(str, "# Copyright (c) 2021-2022 CasaOS Inc. All rights reserved.") {
 			needInit = false

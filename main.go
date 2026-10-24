@@ -134,6 +134,14 @@ func main() {
 	}
 	go stopThePlanWhenTheCoreIsToldToStop()
 
+	// smb.conf owned by the host: smb.casa.conf is regenerated from the share
+	// database at every start (an image-built host may start with a fresh /etc)
+	if service.SambaMainConfigExternal() {
+		if err := service.MyService.Shares().UpdateConfigFile(); err != nil {
+			logger.Error("the share configuration could not be regenerated", zap.Error(err))
+		}
+	}
+
 	// The installer's --no-telemetry leaves a marker: fold it into
 	// telemetry.json before the API serves and before the first check. If it
 	// cannot be folded, the checks do not start: an opt-out is never lost.
