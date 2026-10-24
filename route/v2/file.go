@@ -1,11 +1,13 @@
 package v2
 
 import (
-	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/ReCasaOS/CasaOS/codegen"
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
+	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/labstack/echo/v4"
 )
 
@@ -85,6 +87,9 @@ func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 		fileName,
 		bin,
 	)
+	if errors.Is(err, service.ErrInvalidChunk) {
+		return ctx.JSON(http.StatusBadRequest, err.Error())
+	}
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, err)
 	}

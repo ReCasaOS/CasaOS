@@ -499,13 +499,17 @@ func GetFileUpload(ctx echo.Context) error {
 	if file.Exists(path + "/" + relative) {
 		return ctx.JSON(http.StatusConflict, model.Result{Success: http.StatusConflict, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
+	chunk, ok := chunkName(chunkNumber, totalChunks)
+	if !ok {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS), Data: "chunkNumber must be a number from 1 to totalChunks"})
+	}
 	tempDir := filepath.Join(path, ".temp", hash+strconv.Itoa(totalChunks)) + "/"
 	if fileName != relative {
 		dirPath = strings.TrimSuffix(relative, fileName)
 		tempDir += dirPath
 		file.MkDir(path + "/" + dirPath)
 	}
-	tempDir += chunkNumber
+	tempDir += chunk
 	if !file.CheckNotExist(tempDir) {
 		return ctx.JSON(200, model.Result{Success: 200, Message: common_err.GetMsg(common_err.FILE_ALREADY_EXISTS)})
 	}
@@ -558,14 +562,17 @@ func PostFileUpload(ctx echo.Context) error {
 
 	path += "/" + relative
 
-	if !file.CheckNotExist(tempDir + chunkNumber) {
-		if err := file.RMDir(tempDir + chunkNumber); err != nil {
-			logger.Error("error when trying to remove existing `"+tempDir+chunkNumber+"`", zap.Error(err))
-			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
-		}
-	}
-
 	if totalChunks > 1 {
+		chunkNumber, ok := chunkName(chunkNumber, totalChunks)
+		if !ok {
+			return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS), Data: "chunkNumber must be a number from 1 to totalChunks"})
+		}
+		if !file.CheckNotExist(tempDir + chunkNumber) {
+			if err := file.RMDir(tempDir + chunkNumber); err != nil {
+				logger.Error("error when trying to remove existing `"+tempDir+chunkNumber+"`", zap.Error(err))
+				return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+			}
+		}
 		if err := file.IsNotExistMkDir(tempDir); err != nil {
 			logger.Error("error when trying to create `"+tempDir+"`", zap.Error(err))
 			return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
@@ -615,6 +622,15 @@ func PostFileUpload(ctx echo.Context) error {
 		}
 	}
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
+}
+
+// chunkName is a chunk's file name in the upload's temporary folder: only a number from 1 to totalChunks, so it never leads out of it
+func chunkName(raw string, totalChunks int) (string, bool) {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > totalChunks {
+		return "", false
+	}
+	return strconv.Itoa(n), true
 }
 
 func PostFileOctet(ctx echo.Context) error {
