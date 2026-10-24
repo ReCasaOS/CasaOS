@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -647,4 +648,50 @@ func TestManyWebSocketClientsComingAndGoingAtOnce(t *testing.T) {
 
 	waitForNoGoroutineIn(t, "(*Client).writePump")
 	waitForNoGoroutineIn(t, "(*Client).readPump")
+}
+
+// A chunk number is only a number from 1 to totalChunks: a path in it would write, or delete, outside the upload's folder.
+func TestAChunkNumberThatIsNotAChunkIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "sub")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, chunk := range []string{"../../../victim", "", "0", "3", "1/../../../../victim"} {
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		for field, value := range map[string]string{"path": target, "relativePath": "a.txt", "filename": "a.txt", "totalChunks": "2", "chunkNumber": chunk} {
+			form.WriteField(field, value)
+		}
+		part, _ := form.CreateFormFile("file", "a.txt")
+		part.Write([]byte("evil"))
+		form.Close()
+		req := httptest.NewRequest(http.MethodPost, "/v1/file/upload", &body)
+		req.Header.Set(echo.HeaderContentType, form.FormDataContentType())
+		rec := httptest.NewRecorder()
+		if err := PostFileUpload(echo.New().NewContext(req, rec)); err != nil {
+			t.Fatal(err)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST chunkNumber %q: HTTP %d, want 400", chunk, rec.Code)
+		}
+
+		query := url.Values{"path": {target}, "relativePath": {"a.txt"}, "filename": {"a.txt"}, "totalChunks": {"2"}, "chunkNumber": {chunk}}
+		rec = httptest.NewRecorder()
+		if err := GetFileUpload(echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/v1/file/upload?"+query.Encode(), nil), rec)); err != nil {
+			t.Fatal(err)
+		}
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("GET chunkNumber %q: HTTP %d, want 400", chunk, rec.Code)
+		}
+	}
+
+	if got, err := os.ReadFile(victim); err != nil || string(got) != "keep me" {
+		t.Errorf("the file outside holds %q (%v), want it untouched", got, err)
+	}
 }
