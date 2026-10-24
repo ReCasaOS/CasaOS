@@ -18,5 +18,10 @@ Token =
 USBAutoMount =
 UpdateUrl = https://github.com/ReCasaOS/CasaOS-Install/releases/latest/download/install.sh
 UpdateVersionUrl = https://github.com/ReCasaOS/CasaOS-Install/releases/latest/download/version.json
+; true: the system image owns updates, packages, the OS upgrade and modules;
+; the core offers no update, package or OS upgrade, and modules come from the image
+ImageManaged = false
+; the catalogue of the modules of the image (ImageManaged); empty: /usr/share/casaos/modules/catalogue.json
+ModuleCatalogue =
 
 [system]

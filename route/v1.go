@@ -98,46 +98,12 @@ func InitV1Router() http.Handler {
 			// It sat outside the group, readable by anyone on the network.
 			v1SysGroup.GET("/debug", v1.GetSystemConfigDebug)
 			v1SysGroup.GET("/version", v1.GetSystemCheckVersion) // version/check
-			// The operating system and how long its security updates last: it only reads.
-			v1SysGroup.GET("/os", v1.GetSystemOS)
-			// Whether this machine could be upgraded to the next release, and why not: a report, that
-			// only reads the machine. It takes up to twenty seconds.
-			v1SysGroup.GET("/os/readiness", v1.GetSystemOSReadiness)
-			// The plan of the upgrade to the next release: what apt would do, planned in a sandbox with the
-			// machine unchanged. Starting one runs apt-get update against a temporary copy of the sources, as
-			// the update of Docker runs apt: the token goes in the header, and is not the refresh token. The
-			// runbook has the lines of the box's own sources as the files have them (a URL's password among
-			// them): the same. The plan itself is read-only and takes what the group takes.
-			v1SysGroup.POST("/os/upgrade/plan", v1.StartSystemOSPlan, headerTokenOnly)
-			v1SysGroup.GET("/os/upgrade/plan", v1.GetSystemOSPlan)
-			v1SysGroup.GET("/os/upgrade/runbook", v1.GetSystemOSRunbook, headerTokenOnly)
-			// The upgrade itself, which the plan prepares. Its status is read-only and takes what the group takes; every call that
-			// acts, or that switches the feature, takes the access token in the header and no other, as the plan's start does, and
-			// the runbook of the run that is open (?run=current) is the same route as the plan's: it holds the owner's sources. All
-			// of them but the refresh, the start and the switch work with the feature off, so that a machine that is half upgraded is never
-			// trapped behind it.
-			v1SysGroup.GET("/os/upgrade/status", v1.GetSystemOSUpgradeStatus)
-			v1SysGroup.POST("/os/upgrade/refresh", v1.StartSystemOSUpgradeRefresh, headerTokenOnly)
-			v1SysGroup.POST("/os/upgrade/start", v1.StartSystemOSUpgrade, headerTokenOnly)
-			v1SysGroup.POST("/os/upgrade/reboot", v1.RebootSystemOSUpgrade, headerTokenOnly)
-			v1SysGroup.POST("/os/upgrade/resume", v1.ResumeSystemOSUpgrade, headerTokenOnly)
-			v1SysGroup.POST("/os/upgrade/abort", v1.AbortSystemOSUpgrade, headerTokenOnly)
-			v1SysGroup.POST("/os/upgrade/ack", v1.AckSystemOSUpgrade, headerTokenOnly)
-			v1SysGroup.POST("/os/upgrade/beta", v1.SetSystemOSUpgradeBeta, headerTokenOnly)
-
-			v1SysGroup.POST("/update", v1.SystemUpdate, headerTokenOnly)
-			v1SysGroup.GET("/packages", v1.GetSystemPackageUpdates)
-			v1SysGroup.POST("/packages/update", v1.StartSystemPackageUpdate)
-			v1SysGroup.GET("/packages/update/status", v1.GetSystemPackageUpdateStatus)
-			v1SysGroup.GET("/docker/containers", v1.GetSystemDockerContainers)
-			// Updating Docker stops every container: the token goes in the header, and is not the
-			// refresh token. The status is read-only and takes what the group takes.
-			v1SysGroup.POST("/docker/update", v1.StartDockerUpdate, headerTokenOnly)
-			v1SysGroup.GET("/docker/update/status", v1.GetDockerUpdateStatus)
+			registerHostManagement(v1SysGroup)
 
 			// The modules of this release: what can be installed, and the install and the remove, which start a unit as root and so take
 			// the access token in the header and no other, as the upgrade's calls do. The list and the status are read-only and take what
-			// the group takes. The name in the address is checked before anything else.
+			// the group takes. The name in the address is checked before anything else. On an image-managed host the system image's
+			// modules (service.ModuleProvider).
 			v1SysGroup.GET("/modules", v1.GetSystemModules)
 			v1SysGroup.POST("/modules/:name/plan", v1.PlanSystemModule, headerTokenOnly)
 			v1SysGroup.POST("/modules/:name/install", v1.InstallSystemModule, headerTokenOnly)
@@ -153,8 +119,6 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/logs", v1.GetCasaOSErrorLogs) // error/logs
 			// v1SysGroup.GET("/widget/config", v1.GetWidgetConfig)//delete
 			// v1SysGroup.POST("/widget/config", v1.PostSetWidgetConfig)//delete
-
-			v1SysGroup.POST("/stop", v1.PostKillCasaOS)
 
 			v1SysGroup.GET("/utilization", v1.GetSystemUtilization)
 			// v1SysGroup.GET("/cpu", v1.GetSystemCupInfo)
@@ -178,9 +142,6 @@ func InitV1Router() http.Handler {
 			// sent, and the switch (dashboard notice and settings).
 			v1SysGroup.GET("/telemetry", v1.GetTelemetry)
 			v1SysGroup.PUT("/telemetry", v1.PutTelemetry)
-			// Automatic updates: their switch, window and state (settings).
-			v1SysGroup.GET("/autoupdate", v1.GetAutoUpdate)
-			v1SysGroup.PUT("/autoupdate", v1.PutAutoUpdate, headerTokenOnly)
 			// Push alerts: their channels, categories and disk threshold, and a
 			// test message (settings).
 			v1SysGroup.GET("/alerts", v1.GetAlerts)
@@ -296,4 +257,59 @@ func InitV1Router() http.Handler {
 	}
 
 	return e
+}
+
+// registerHostManagement: what changes the host itself — the OS upgrade, the
+// release update and automatic updates, apt and Docker packages, the core's own
+// stop. An image-managed host ([server] ImageManaged) gets none of these routes:
+// 404, as from a core without the feature, so the dashboard shows none of it
+// (its rows appear only where the core answers). Modules are not here: their
+// routes stay, answered by the image's provider (service.ModuleProvider).
+func registerHostManagement(v1SysGroup *echo.Group) {
+	if config.ServerInfo.ImageManaged {
+		return
+	}
+
+	// The operating system and how long its security updates last: it only reads.
+	v1SysGroup.GET("/os", v1.GetSystemOS)
+	// Whether this machine could be upgraded to the next release, and why not: a report, that
+	// only reads the machine. It takes up to twenty seconds.
+	v1SysGroup.GET("/os/readiness", v1.GetSystemOSReadiness)
+	// The plan of the upgrade to the next release: what apt would do, planned in a sandbox with the
+	// machine unchanged. Starting one runs apt-get update against a temporary copy of the sources, as
+	// the update of Docker runs apt: the token goes in the header, and is not the refresh token. The
+	// runbook has the lines of the box's own sources as the files have them (a URL's password among
+	// them): the same. The plan itself is read-only and takes what the group takes.
+	v1SysGroup.POST("/os/upgrade/plan", v1.StartSystemOSPlan, headerTokenOnly)
+	v1SysGroup.GET("/os/upgrade/plan", v1.GetSystemOSPlan)
+	v1SysGroup.GET("/os/upgrade/runbook", v1.GetSystemOSRunbook, headerTokenOnly)
+	// The upgrade itself, which the plan prepares. Its status is read-only and takes what the group takes; every call that
+	// acts, or that switches the feature, takes the access token in the header and no other, as the plan's start does, and
+	// the runbook of the run that is open (?run=current) is the same route as the plan's: it holds the owner's sources. All
+	// of them but the refresh, the start and the switch work with the feature off, so that a machine that is half upgraded is never
+	// trapped behind it.
+	v1SysGroup.GET("/os/upgrade/status", v1.GetSystemOSUpgradeStatus)
+	v1SysGroup.POST("/os/upgrade/refresh", v1.StartSystemOSUpgradeRefresh, headerTokenOnly)
+	v1SysGroup.POST("/os/upgrade/start", v1.StartSystemOSUpgrade, headerTokenOnly)
+	v1SysGroup.POST("/os/upgrade/reboot", v1.RebootSystemOSUpgrade, headerTokenOnly)
+	v1SysGroup.POST("/os/upgrade/resume", v1.ResumeSystemOSUpgrade, headerTokenOnly)
+	v1SysGroup.POST("/os/upgrade/abort", v1.AbortSystemOSUpgrade, headerTokenOnly)
+	v1SysGroup.POST("/os/upgrade/ack", v1.AckSystemOSUpgrade, headerTokenOnly)
+	v1SysGroup.POST("/os/upgrade/beta", v1.SetSystemOSUpgradeBeta, headerTokenOnly)
+
+	v1SysGroup.POST("/update", v1.SystemUpdate, headerTokenOnly)
+	v1SysGroup.GET("/packages", v1.GetSystemPackageUpdates)
+	v1SysGroup.POST("/packages/update", v1.StartSystemPackageUpdate)
+	v1SysGroup.GET("/packages/update/status", v1.GetSystemPackageUpdateStatus)
+	v1SysGroup.GET("/docker/containers", v1.GetSystemDockerContainers)
+	// Updating Docker stops every container: the token goes in the header, and is not the
+	// refresh token. The status is read-only and takes what the group takes.
+	v1SysGroup.POST("/docker/update", v1.StartDockerUpdate, headerTokenOnly)
+	v1SysGroup.GET("/docker/update/status", v1.GetDockerUpdateStatus)
+
+	v1SysGroup.POST("/stop", v1.PostKillCasaOS)
+
+	// Automatic updates: their switch, window and state (settings).
+	v1SysGroup.GET("/autoupdate", v1.GetAutoUpdate)
+	v1SysGroup.PUT("/autoupdate", v1.PutAutoUpdate, headerTokenOnly)
 }
