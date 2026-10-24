@@ -32,6 +32,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/autoupdate"
 	"github.com/ReCasaOS/CasaOS/pkg/cache"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"github.com/ReCasaOS/CasaOS/pkg/hoststats"
 	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
@@ -88,6 +89,22 @@ func init() {
 	logger.LogInit(config.AppInfo.LogPath, config.AppInfo.LogSaveName, config.AppInfo.LogFileExt)
 	if len(*dbFlag) == 0 {
 		*dbFlag = config.AppInfo.DBPath + "/db"
+	}
+
+	// [file] ManagementRoots. Not usable → the file API refuses every path (fail
+	// closed, never silently unconfined; the dashboard still starts). A root not
+	// there yet (disk not mounted) → its paths refused until it is.
+	roots, err := fileroots.Parse(config.FileSettingInfo.ManagementRoots)
+	if err == nil {
+		fileroots.Default, err = fileroots.Open(roots)
+	}
+	if err != nil {
+		logger.Error("the managed file roots are not usable: the file API refuses every path", zap.Error(err))
+		fileroots.Default = fileroots.Refusing(err)
+	} else {
+		for root, problem := range fileroots.Default.Unavailable() {
+			logger.Warn("a managed file root cannot be opened: its paths are refused until it can", zap.String("root", root), zap.Error(problem))
+		}
 	}
 
 	sqliteDB = sqlite.GetDb(*dbFlag)

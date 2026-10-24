@@ -60,7 +60,7 @@ Relative to upstream, through alvins82's fork and then here. The full list per r
 - **Apps** — The `docker-compose.yml` of an installed app is editable from its settings, with validation before apply. Apps open inside CasaOS or in a new tab, per app. System package updates run from the dashboard.
 - **Storage** — External disks form the merged `/DATA` while the system disk stays out of it; volumes can be renamed; merge mounts are restored across reboots and slow disks.
 - **Network** — The gateway serves HTTPS with a certificate you supply.
-- **Security** — Routes that act as root on the host require a token even from loopback. The dashboard no longer sends a machine fingerprint to a third party, and the core no longer carries the helper and configuration entries that pointed at IceWhale's `api.casaos.io`. The install-time migration script no longer geo-locates the host either: it asked `ipconfig.io`, then `ifconfig.io`, for the country on every install and every upgrade in order to pick a download mirror. Migration tools come from GitHub, and the domain is a constant rather than a setting: what it points at is downloaded and run as root without verification.
+- **Security** — Routes that act as root on the host require a token even from loopback. Optionally, `[file] ManagementRoots` confines the file manager to the directories it names (see CHANGELOG). The dashboard no longer sends a machine fingerprint to a third party, and the core no longer carries the helper and configuration entries that pointed at IceWhale's `api.casaos.io`. The install-time migration script no longer geo-locates the host either: it asked `ipconfig.io`, then `ifconfig.io`, for the country on every install and every upgrade in order to pick a download mirror. Migration tools come from GitHub, and the domain is a constant rather than a setting: what it points at is downloaded and run as root without verification.
 - **Updater** — Update discovery and installation follow this distribution's releases rather than IceWhale's frozen bundle, in the binary, in the shipped configuration samples, and in the setup script that writes the running host's configuration.
 - **Platform** — Docker 29 and Ubuntu 26 support; every component is built and released from CI, with digests published alongside.
 - **Packaging** — The Go module is `github.com/ReCasaOS/CasaOS`, built against the forked `github.com/ReCasaOS/CasaOS-Common`, so log lines, stack traces and `go version -m` on the shipped binary name this distribution instead of IceWhale.
@@ -181,6 +181,8 @@ CasaOS is the work of IceWhale and its contributors. Their copyright notices are
 <!-- prettier-ignore-end -->
 
 <!-- ALL-CONTRIBUTORS-LIST:END -->
+
+The file-root confinement (`pkg/fileroots`) is derived from [EdmundFu-233/ReCasaOS](https://github.com/EdmundFu-233/ReCasaOS) `pkg/filesecurity`, Apache License 2.0.
 
 ## Licence
 

@@ -150,6 +150,8 @@ func fileOperate(ctx context.Context, k string) {
 			temp.Error = "mount_point"
 		case errors.Is(err, file.ErrNotRegular):
 			temp.Error = "not_regular"
+		case errors.Is(err, file.ErrLinkOutside):
+			temp.Error = "outside_roots"
 		default:
 			temp.Error = temp.Type + "_failed"
 		}

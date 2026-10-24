@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/ReCasaOS/CasaOS/codegen"
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/labstack/echo/v4"
 )
@@ -36,6 +37,14 @@ func (c *CasaOS) CheckUploadChunk(ctx echo.Context, params codegen.CheckUploadCh
 
 func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 	path := ctx.FormValue("path")
+	relativePath := ctx.FormValue("relativePath")
+	// [file] ManagementRoots: the folder, the file it lands in and the `.tmp`
+	// it is written to first (pkg/fileroots)
+	target, temp := path+"/"+relativePath, path+"/"+relativePath+".tmp"
+	if err := fileroots.Default.CheckEach(&path, &target, &temp); err != nil {
+		// message and data, as the v1 file API answers (the dashboard shows data)
+		return ctx.JSON(http.StatusForbidden, map[string]string{"message": err.Error(), "data": err.Error()})
+	}
 
 	// handle the request
 	chunkNumber, err := strconv.ParseInt(ctx.FormValue("chunkNumber"), 10, 64)
@@ -61,7 +70,6 @@ func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 
 	identifier := ctx.FormValue("identifier")
 	fileName := ctx.FormValue("filename")
-	relativePath := ctx.FormValue("relativePath")
 	bin, err := ctx.FormFile("file")
 
 	if err != nil {
