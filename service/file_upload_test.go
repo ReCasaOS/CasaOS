@@ -2,11 +2,13 @@ package service
 
 import (
 	"bytes"
+	"errors"
 	"mime/multipart"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"testing"
+	"time"
 )
 
 // uploadChunk is a chunk as the route hands it over.
@@ -97,5 +99,49 @@ func TestAnUploadThatCannotBeRenamedLeavesTheOthersWorking(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "b.txt")); err != nil || string(got) != "abc" {
 		t.Errorf("b.txt holds %q (%v), want abc", got, err)
+	}
+}
+
+// A chunk outside 1..totalChunks, or a chunk count unlike the first chunk's, is refused and leaves the other uploads working.
+func TestAChunkOutsideItsUploadIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	uploads := NewFileUploadService()
+
+	if err := uploads.UploadFile(nil, dir, 1, 3, 3, 2, 6, "a-6", "a.txt", "a.txt", uploadChunk(t, "abc")); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ number, size, total, totalSize int64 }{
+		{3, 3, 2, 6}, {0, 3, 2, 6}, {-1, 3, 2, 6}, {1, 3, 0, 6}, {1, 0, 2, 6}, {1, 3, 2, -1},
+		{1, 1, 1 << 50, 1 << 60}, // more than the table may hold
+		{1, 3, 4, 6},             // more chunks than the size has
+	} {
+		if err := uploads.UploadFile(nil, dir, c.number, c.size, 3, c.total, c.totalSize, "b-6", "b.txt", "b.txt", uploadChunk(t, "xyz")); !errors.Is(err, ErrInvalidChunk) {
+			t.Errorf("chunk %d of %d (size %d, total %d): %v, want ErrInvalidChunk", c.number, c.total, c.size, c.totalSize, err)
+		}
+	}
+	if err := uploads.UploadFile(nil, dir, 3, 3, 3, 3, 6, "a-6", "a.txt", "a.txt", uploadChunk(t, "xyz")); !errors.Is(err, ErrInvalidChunk) {
+		t.Errorf("a chunk count unlike the first chunk's: %v, want ErrInvalidChunk", err)
+	}
+	if err := uploads.UploadFile(nil, dir, 1, 1<<20, 0, 1, 0, "e-0", "empty.txt", "empty.txt", uploadChunk(t, "")); err != nil {
+		t.Errorf("an empty file, as the dashboard sends it: %v", err)
+	}
+	if err := uploads.TestChunk(nil, "a-6", 5); !errors.Is(err, ErrInvalidChunk) {
+		t.Errorf("testing chunk 5 of 2: %v, want ErrInvalidChunk", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- uploads.UploadFile(nil, dir, 2, 3, 3, 2, 6, "a-6", "a.txt", "a.txt", uploadChunk(t, "def"))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the uploads stayed locked after a refused chunk")
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "a.txt")); err != nil || string(got) != "abcdef" {
+		t.Errorf("a.txt holds %q (%v), want abcdef", got, err)
 	}
 }
