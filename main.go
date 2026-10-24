@@ -164,7 +164,10 @@ func main() {
 	// hear from automatic updates how each attempt ended: set before those
 	// settle the attempt that restarted the core.
 	alerts.Default.Address = dashboardAddress
-	alerts.Default.Latest = func() string { return service.MyService.Casa().GetCasaosVersion().Version }
+	// image-managed: no release to look up, no OS support to report (the image owns both)
+	if !config.ServerInfo.ImageManaged {
+		alerts.Default.Latest = func() string { return service.MyService.Casa().GetCasaosVersion().Version }
+	}
 	alerts.Default.AutoUpdates = func() bool { return autoupdate.Default.Status().Enabled }
 	autoupdate.Default.Notify = alerts.Default.AutoUpdate
 	// The update of Docker stops every container, and each app's watch says so: those events are
@@ -186,7 +189,9 @@ func main() {
 	// An operating system whose security updates are about to end, or have ended, is told once for
 	// each state: the alerts look at what the dashboard's badge reads, five minutes after the start
 	// and every day.
-	alerts.Default.OSSupport = service.MyService.System().GetSystemOS
+	if !config.ServerInfo.ImageManaged {
+		alerts.Default.OSSupport = service.MyService.System().GetSystemOS
+	}
 	go alerts.Default.Run(context.Background())
 	// Automatic updates start the button's own update, read the button's own
 	// version.json, and settle an update that restarted the core before checking.
@@ -212,7 +217,9 @@ func main() {
 		}
 		return apps, nil
 	})
-	go autoupdate.Default.Run(context.Background())
+	if !config.ServerInfo.ImageManaged {
+		go autoupdate.Default.Run(context.Background())
+	}
 	v1Router := route.InitV1Router()
 
 	v2Router := route.InitV2Router()

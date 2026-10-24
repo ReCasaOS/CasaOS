@@ -71,35 +71,6 @@ type SystemModuleStatus struct {
 	Status modulecmd.StatusResult `json:"status"`
 }
 
-func (s *systemService) ListSystemModules() (modulecmd.ListResult, error) {
-	return s.systemPackageUpdater().listModules()
-}
-
-func (s *systemService) PlanSystemModule(name string) (osmodule.PlanResult, error) {
-	return s.systemPackageUpdater().planModule(name)
-}
-
-func (s *systemService) StartSystemModuleInstall(ctx context.Context, name, planID string) (SystemModuleStatus, error) {
-	return s.systemPackageUpdater().startModuleInstall(ctx, name, planID)
-}
-
-// PlanSystemModuleUpdate and StartSystemModuleUpdate are PlanSystemModule and StartSystemModuleInstall for the update of a module that is installed to the tag the catalogue names.
-func (s *systemService) PlanSystemModuleUpdate(name string) (osmodule.PlanResult, error) {
-	return s.systemPackageUpdater().planModuleMode(name, moduleVerbUpdate)
-}
-
-func (s *systemService) StartSystemModuleUpdate(ctx context.Context, name, planID string) (SystemModuleStatus, error) {
-	return s.systemPackageUpdater().startModulePlanned(ctx, moduleVerbUpdate, name, planID)
-}
-
-func (s *systemService) StartSystemModuleRemove(ctx context.Context, name string) (SystemModuleStatus, error) {
-	return s.systemPackageUpdater().startModuleRemove(ctx, name)
-}
-
-func (s *systemService) GetSystemModuleStatus(name string) (SystemModuleStatus, error) {
-	return s.systemPackageUpdater().moduleStatus(name)
-}
-
 // moduleWorld is the world that the module assistant is run in when the core runs it in its own process: the box's. A field of the updater, for the tests.
 func (u *systemPackageUpdater) moduleWorld() modulecmd.Env {
 	if u.moduleEnv != nil {

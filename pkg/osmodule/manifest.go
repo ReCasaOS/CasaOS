@@ -86,6 +86,8 @@ const (
 	ReasonValue      = "value"
 	ReasonMissing    = "missing"
 	ReasonTooMany    = "too_many"
+	// ReasonImageOnly: a module of the system image (source image), which only the image provider of the core ([server] ImageManaged) starts; the module assistant installs archives
+	ReasonImageOnly = "image_only"
 )
 
 func invalid(field, reason string) error { return &Invalid{Field: field, Reason: reason} }

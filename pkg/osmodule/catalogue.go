@@ -30,6 +30,13 @@ const (
 	TierCommunity = "community"
 )
 
+// the sources of a module: an archive the box downloads (the default, no source), or the system image that has the module already (an image-built host, [server] ImageManaged: the
+// image provider of the core starts and stops its unit, and the module assistant refuses such an entry)
+const (
+	SourceArchive = ""
+	SourceImage   = "image"
+)
+
 // A Catalogue is the list of the modules a release of ReCasaOS can install.
 type Catalogue struct {
 	Schema  int     `json:"schema"`
@@ -39,12 +46,15 @@ type Catalogue struct {
 // An Entry is a module at a version: where its release is (the repository, the tag and the commit it was built from), the archive of each architecture with the sha256 it must have, and
 // the manifest of the module, which the archive holds too: the box needs it before it has the archive (to say whether the system is supported, which packages the module needs, what to show
 // of it), and the release build that writes the catalogue reads it from the archive, so that the two are the same text.
+//
+// Source is SourceImage for a module the system image has: no assets then (nothing is downloaded), the rest as for an archive.
 type Entry struct {
 	Name      string   `json:"name"`
 	Component string   `json:"component"`
 	Tier      string   `json:"tier"`
 	Tag       string   `json:"tag"`
 	Commit    string   `json:"commit"`
+	Source    string   `json:"source,omitempty"`
 	Assets    Assets   `json:"assets"`
 	Manifest  Manifest `json:"manifest"`
 }
@@ -114,8 +124,18 @@ func (e Entry) validate(at string) error {
 			return invalid(at+"."+c.field, ReasonValue)
 		}
 	}
-	if e.Assets.AMD64 == nil && e.Assets.ARM64 == nil {
-		return invalid(at+".assets", ReasonMissing)
+	switch e.Source {
+	case SourceImage:
+		// in the image: nothing to download
+		if e.Assets.AMD64 != nil || e.Assets.ARM64 != nil {
+			return invalid(at+".assets", ReasonValue)
+		}
+	case SourceArchive:
+		if e.Assets.AMD64 == nil && e.Assets.ARM64 == nil {
+			return invalid(at+".assets", ReasonMissing)
+		}
+	default:
+		return invalid(at+".source", ReasonValue)
 	}
 	for _, a := range []struct {
 		arch  string

@@ -26,6 +26,13 @@ type ServerModel struct {
 	USBAutoMount     string
 	UpdateUrl        string
 	UpdateVersionUrl string
+	// ImageManaged: the system image owns updates, packages, the OS upgrade and
+	// modules (e.g. NixOS, A/B images); modules come from the image provider,
+	// the rest is not offered
+	ImageManaged bool
+	// ModuleCatalogue: the catalogue the image provider reads (modules of the
+	// image, source "image"); empty: /usr/share/casaos/modules/catalogue.json
+	ModuleCatalogue string
 }
 
 // 服务配置
