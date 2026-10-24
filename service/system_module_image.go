@@ -182,9 +182,7 @@ func (m *imageModules) plan(name, verb string) (osmodule.PlanResult, osmodule.En
 	check(osmodule.CheckInstalled, !m.enabled(name), "")
 	unit := found && m.unitLoaded(entry.Manifest.Unit)
 	check(imageModuleCheckUnit, unit, map[bool]string{true: entry.Manifest.Unit, false: "the unit of the module is not in the image"}[unit])
-	m.mu.Lock()
-	busy := m.busy
-	m.mu.Unlock()
+	busy := m.running()
 	check(osmodule.CheckBusy, busy == "", map[bool]string{true: "", false: "a job of the module " + busy + " is running"}[busy == ""])
 	plan.PlanID = osmodule.PlanID(name, entry.Tag, "", "image", "", nil)
 	return plan, entry, nil
@@ -231,6 +229,10 @@ func (m *imageModules) StartSystemModuleRemove(ctx context.Context, name string)
 	if !osmodule.ValidName(name) {
 		return SystemModuleStatus{}, badModuleRequest("name")
 	}
+	// a job at work first: its flag may not be written yet
+	if busy := m.running(); busy != "" {
+		return SystemModuleStatus{}, busyModule("A job of the module "+busy+" is running.", "a job of the module "+busy+" is running")
+	}
 	if !m.enabled(name) {
 		return SystemModuleStatus{}, refuseModule(ModuleNotInstalled, "There is nothing of this module to remove.", nil)
 	}
@@ -239,6 +241,13 @@ func (m *imageModules) StartSystemModuleRemove(ctx context.Context, name string)
 	return m.start(name, modulecmd.KindRemove, func(ctx context.Context, job *modulecmd.Job) {
 		m.remove(ctx, job, entry, found)
 	})
+}
+
+// running is the module whose job runs, "" when none.
+func (m *imageModules) running() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.busy
 }
 
 // start runs the job in a goroutine, one at a time, and gives it as it begins.
