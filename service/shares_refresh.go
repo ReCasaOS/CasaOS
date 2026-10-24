@@ -10,6 +10,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"go.uber.org/zap"
 )
 
 // smbd refresh per change level:
@@ -102,6 +105,7 @@ func (s *sharesStruct) refreshSamba(mainChanged bool, before, after []byte) erro
 	if reloadErr == nil {
 		return nil
 	}
+	logger.Error("failed to reload smbd, restarting it", zap.Error(reloadErr))
 	if err := s.restartSMBD(); err != nil {
 		return errors.Join(fmt.Errorf("reload samba: %w", reloadErr), err)
 	}

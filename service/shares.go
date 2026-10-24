@@ -11,9 +11,11 @@
 package service
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/command"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -41,6 +43,11 @@ type SharesService interface {
 type sharesStruct struct {
 	db *gorm.DB
 
+	// mu serialises share changes: config write + smbd refresh + DB commit. The
+	// shares to close are derived from the file before/after, so an interleaved
+	// edit could skip closing a share whose access was narrowed.
+	mu sync.Mutex
+
 	// restartSMBD restarts smbd; reloadSMBD reloads it, then closes the named
 	// shares (shares_refresh.go). Tests replace both; nil reloadSMBD → restart.
 	restartSMBD func() error
@@ -48,9 +55,12 @@ type sharesStruct struct {
 }
 
 func (s *sharesStruct) DeleteShareByPath(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.db.Where("path LIKE ?", path+"%").Delete(&model.SharesDBModel{})
 
-	return s.UpdateConfigFile()
+	return s.updateConfigFile()
 }
 
 func (s *sharesStruct) GetSharesByName(name string) (shares []model2.SharesDBModel) {
@@ -70,6 +80,9 @@ func (s *sharesStruct) GetSharesList() (shares []model2.SharesDBModel) {
 }
 
 func (s *sharesStruct) CreateShare(share model2.SharesDBModel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	mainWritten := s.initSambaConfig()
 
 	// Write and validate the configuration this share would produce before the
@@ -102,6 +115,9 @@ func (s *sharesStruct) GetShareByID(id string) (share model2.SharesDBModel, foun
 // changed, so a rejected result leaves the share exactly as it was rather than
 // half converted.
 func (s *sharesStruct) UpdateShare(id string, username string, timeMachine bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	shares := []model2.SharesDBModel{}
 	s.db.Find(&shares)
 
@@ -124,12 +140,22 @@ func (s *sharesStruct) UpdateShare(id string, username string, timeMachine bool)
 }
 
 func (s *sharesStruct) DeleteShare(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.db.Where("id= ?", id).Delete(&model.SharesDBModel{})
 
-	return s.UpdateConfigFile()
+	return s.updateConfigFile()
 }
 
 func (s *sharesStruct) UpdateConfigFile() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.updateConfigFile()
+}
+
+func (s *sharesStruct) updateConfigFile() error {
 	shares := []model2.SharesDBModel{}
 	s.db.Find(&shares)
 
@@ -190,11 +216,16 @@ func (s *sharesStruct) applyConfig(shares []model2.SharesDBModel, mainChanged bo
 }
 
 func restartSambaService() error {
-	command.OnlyExec("source " + config.AppInfo.ShellPath + "/helper.sh ;RestartSMBD")
+	if output, err := command.OnlyExec("source " + config.AppInfo.ShellPath + "/helper.sh ;RestartSMBD"); err != nil {
+		return fmt.Errorf("restart samba: %w: %s", err, strings.TrimSpace(output))
+	}
 	return nil
 }
 
 func (s *sharesStruct) InitSambaConfig() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.initSambaConfig()
 }
 
