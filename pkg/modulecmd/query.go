@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,12 @@ func loadCatalogue(env Env) catalogueState {
 	}
 	if err != nil {
 		return catalogueState{err: catalogueInvalid}
+	}
+	// a module of the system image is not one to download: the catalogue of an image-built host, read by the wrong provider
+	for i, e := range cat.Modules {
+		if e.Source == osmodule.SourceImage {
+			return catalogueState{err: catalogueInvalid, detail: "modules." + strconv.Itoa(i) + ".source " + osmodule.ReasonImageOnly}
+		}
 	}
 	return catalogueState{cat: cat, ok: true}
 }

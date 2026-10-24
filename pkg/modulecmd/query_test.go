@@ -112,6 +112,8 @@ func TestListWithoutAGoodCatalogueSaysSoAndStillShowsWhatIsInstalled(t *testing.
 		"a bad schema": {func() { f.writeFile(pathCatalogue, `{"schema":2,"modules":[]}`) }, "invalid", "schema "},
 		"too large":    {func() { f.writeFile(pathCatalogue, strings.Repeat(" ", osmodule.MaxCatalogueBytes+1)) }, "invalid", "catalogue too_large"},
 		"a directory":  {func() { _ = os.Remove(f.path(pathCatalogue)); _ = os.Mkdir(f.path(pathCatalogue), 0o755) }, "unreadable", ""},
+		// the catalogue of an image-built host: the assistant downloads archives, it does not misread these
+		"a module of the image": {func() { imageCatalogue(f) }, "invalid", "modules.0.source image_only"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c.setup()
@@ -136,6 +138,14 @@ func TestListWithoutAGoodCatalogueSaysSoAndStillShowsWhatIsInstalled(t *testing.
 }
 
 func str(v any) string { s, _ := v.(string); return s }
+
+// imageCatalogue writes the catalogue of the fixture with its module a module of the system image (source image, no assets).
+func imageCatalogue(f *fixture) {
+	_ = os.RemoveAll(f.path(pathCatalogue))
+	e := f.entry
+	e.Source, e.Assets = osmodule.SourceImage, osmodule.Assets{}
+	f.writeCatalogue(osmodule.Catalogue{Schema: 1, Modules: []osmodule.Entry{e}})
+}
 
 func TestListShowsAManifestThatIsBroken(t *testing.T) {
 	f := newFixture(t)
