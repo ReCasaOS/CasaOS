@@ -144,10 +144,10 @@ func ValidateTimeMachineSupport() error {
 // InitSambaConfig returns early on such hosts, so this is the only route by
 // which the setting can reach an existing installation, and regenerating the
 // whole file would discard the hand edits the upstream issue thread is full of.
-func syncGuestMapping(hasProtectedShare bool) error {
+func syncGuestMapping(hasProtectedShare bool) (bool, error) {
 	content, err := os.ReadFile(sambaConfigFile)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	from, to := "map to guest = never", "map to guest = bad user"
@@ -157,10 +157,10 @@ func syncGuestMapping(hasProtectedShare bool) error {
 
 	updated := strings.ReplaceAll(string(content), from, to)
 	if updated == string(content) {
-		return nil
+		return false, nil
 	}
 
-	return os.WriteFile(sambaConfigFile, []byte(updated), 0o644)
+	return true, os.WriteFile(sambaConfigFile, []byte(updated), 0o644)
 }
 
 // shareRoots are the directories a share may live under.
