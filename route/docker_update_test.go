@@ -185,6 +185,12 @@ func TestTheDockerUpdateStartsOnlyForTheAccessTokenInTheHeader(t *testing.T) {
 		want, started int
 	}{
 		{"the access token in the header", update, access, "", http.StatusOK, 1},
+		{"the access token as Bearer", update, "Bearer " + access, "", http.StatusOK, 1},
+		{"the access token as bearer", update, "bearer " + access, "", http.StatusOK, 1},
+		{"the refresh token as Bearer", update, "Bearer " + refresh, "", http.StatusUnauthorized, 0},
+		{"the access token under another scheme", update, "Basic " + access, "", http.StatusUnauthorized, 0},
+		{"the Bearer scheme alone", update, "Bearer", "", http.StatusUnauthorized, 0},
+		{"the Bearer scheme alone, the access token in the query", update + "?token=" + access, "Bearer", "", http.StatusUnauthorized, 0},
 		{"a service of the box, with the secret", update, secret, "127.0.0.1:4000", http.StatusOK, 1},
 		{"the secret from another host", update, secret, "192.168.1.20:4000", http.StatusUnauthorized, 0},
 		{"the access token in the query", update + "?token=" + access, "", "", http.StatusUnauthorized, 0},
