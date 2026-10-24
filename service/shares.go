@@ -58,6 +58,10 @@ func (s *sharesStruct) DeleteShareByPath(path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// refused before the row goes: a share deleted from the database but still in smb.casa.conf would come back once the include is added
+	if err := checkExternalMainConfig(); err != nil {
+		return err
+	}
 	s.db.Where("path LIKE ?", path+"%").Delete(&model.SharesDBModel{})
 
 	return s.updateConfigFile()
@@ -143,6 +147,9 @@ func (s *sharesStruct) DeleteShare(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := checkExternalMainConfig(); err != nil {
+		return err
+	}
 	s.db.Where("id= ?", id).Delete(&model.SharesDBModel{})
 
 	return s.updateConfigFile()

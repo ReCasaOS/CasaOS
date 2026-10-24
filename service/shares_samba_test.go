@@ -1,10 +1,12 @@
 package service
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
 )
 
@@ -166,5 +168,34 @@ func TestExternalMainConfigIsNeverWritten(t *testing.T) {
 	}
 	if changed, err := syncGuestMapping(true); changed || err != nil {
 		t.Errorf("syncGuestMapping in external mode = %v, %v; want false, nil", changed, err)
+	}
+}
+
+// external with the include missing: a delete is refused before the row goes, or the share would come back once the include is added
+func TestADeleteRefusedForAMissingIncludeKeepsTheShare(t *testing.T) {
+	previous := config.ServerInfo.SambaMainConfig
+	config.ServerInfo.SambaMainConfig = "external"
+	t.Cleanup(func() { config.ServerInfo.SambaMainConfig = previous })
+	if checkExternalMainConfig() == nil {
+		t.Skip("this host's smb.conf includes smb.casa.conf")
+	}
+
+	db := sqlite.GetDb(t.TempDir())
+	share := model2.SharesDBModel{Name: "Media", Path: "/DATA/Media"}
+	if err := db.Create(&share).Error; err != nil {
+		t.Fatal(err)
+	}
+	s := &sharesStruct{db: db}
+
+	if err := s.DeleteShare(strconv.Itoa(int(share.ID))); err == nil {
+		t.Error("DeleteShare succeeded without the include")
+	}
+	if err := s.DeleteShareByPath("/DATA"); err == nil {
+		t.Error("DeleteShareByPath succeeded without the include")
+	}
+	var count int64
+	db.Model(&model2.SharesDBModel{}).Count(&count)
+	if count != 1 {
+		t.Errorf("%d shares left, want the refused one kept", count)
 	}
 }
