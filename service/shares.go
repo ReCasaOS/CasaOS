@@ -58,6 +58,10 @@ func (s *sharesStruct) DeleteShareByPath(path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// refused before the row goes: a share deleted from the database but still in smb.casa.conf would come back once the include is added
+	if err := checkExternalMainConfig(); err != nil {
+		return err
+	}
 	s.db.Where("path LIKE ?", path+"%").Delete(&model.SharesDBModel{})
 
 	return s.updateConfigFile()
@@ -143,6 +147,9 @@ func (s *sharesStruct) DeleteShare(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := checkExternalMainConfig(); err != nil {
+		return err
+	}
 	s.db.Where("id= ?", id).Delete(&model.SharesDBModel{})
 
 	return s.updateConfigFile()
@@ -169,6 +176,10 @@ func (s *sharesStruct) updateConfigFile() error {
 func (s *sharesStruct) applyConfig(shares []model2.SharesDBModel, mainChanged bool) error {
 	configStr := ""
 	hasProtectedShare := false
+
+	if err := checkExternalMainConfig(); err != nil {
+		return err
+	}
 
 	for _, share := range shares {
 		configStr += sambaSection(share)
@@ -232,6 +243,9 @@ func (s *sharesStruct) InitSambaConfig() {
 // initSambaConfig writes CasaOS' smb.conf where there is none of CasaOS';
 // reports whether it did.
 func (s *sharesStruct) initSambaConfig() bool {
+	if SambaMainConfigExternal() {
+		return false
+	}
 	if file.Exists(sambaConfigFile) {
 		str := file.ReadLine(1, sambaConfigFile)
 		if strings.Contains(str, "# Copyright (c) 2021-2022 CasaOS Inc. All rights reserved.") {

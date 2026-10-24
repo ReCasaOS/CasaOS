@@ -56,7 +56,7 @@ sudo casaos-uninstall
 
 Relative to upstream, through alvins82's fork and then here. The full list per release is in [CHANGELOG.md](CHANGELOG.md).
 
-- **Sharing** — Samba shares can be restricted to an account, managed from the dashboard and separate from the CasaOS login; shares convert between guest and account access in place. Upstream shares were world-writable, with files created as root, and Windows 10 and 11 refuse guest SMB entirely. Hosts advertise themselves over mDNS and Windows discovery without SMB1.
+- **Sharing** — Samba shares can be restricted to an account, managed from the dashboard and separate from the CasaOS login; shares convert between guest and account access in place. Upstream shares were world-writable, with files created as root, and Windows 10 and 11 refuse guest SMB entirely. Hosts advertise themselves over mDNS and Windows discovery without SMB1. A host that owns `/etc/samba/smb.conf` itself (configuration management, image-built systems) sets `[server] SambaMainConfig = external` and puts `include = /etc/samba/smb.casa.conf` in its `[global]` section: CasaOS then writes only that file, and refuses a share change while the line is missing.
 - **Apps** — The `docker-compose.yml` of an installed app is editable from its settings, with validation before apply. Apps open inside CasaOS or in a new tab, per app. System package updates run from the dashboard.
 - **Storage** — External disks form the merged `/DATA` while the system disk stays out of it; volumes can be renamed; merge mounts are restored across reboots and slow disks.
 - **Network** — The gateway serves HTTPS with a certificate you supply.
