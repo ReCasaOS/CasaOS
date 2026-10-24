@@ -36,9 +36,9 @@ import (
 func GetSystemCheckVersion(ctx echo.Context) error {
 	data := make(map[string]interface{}, 4)
 	data["current_version"] = version.CurrentVersion()
-	// image-managed: updated with the image, nothing to look up on the network
-	data["image_managed"] = config.ServerInfo.ImageManaged
+	// image-managed: updated with the image, nothing to look up on the network (the field only then: the default answer is as it was)
 	if config.ServerInfo.ImageManaged {
+		data["image_managed"] = true
 		data["need_update"] = false
 		data["version"] = map[string]interface{}{}
 		return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})

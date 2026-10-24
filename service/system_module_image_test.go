@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ type fakeSystemd struct {
 	loaded   map[string]bool
 	active   map[string]bool
 	startErr error
+	stopErr  error
 	hold     chan struct{} // a start waits for it, when set
 	calls    []string
 }
@@ -73,6 +75,9 @@ func (f *fakeSystemd) Run(ctx context.Context, c modulecmd.Cmd) (modulecmd.Outpu
 	case "stop":
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.stopErr != nil {
+			return modulecmd.Output{}, f.stopErr
+		}
 		f.active[unit] = false
 	}
 	return modulecmd.Output{}, nil
@@ -100,6 +105,7 @@ func newTestImageModules(t *testing.T, entries ...string) (*imageModules, *fakeS
 		return systemd.active["casaos-"+strings.TrimPrefix(route, "/v2/")+".service"]
 	}}}
 	m.routeWait, m.routeTick = 2*time.Second, 10*time.Millisecond
+	m.owner = os.Getuid() // the test's catalogue is the test user's
 	return m, systemd
 }
 
@@ -212,7 +218,7 @@ func TestThePlanSaysWhatTheImageDoesNotHave(t *testing.T) {
 		t.Errorf("not in the catalogue: %+v", plan)
 	}
 	systemd.loaded = map[string]bool{}
-	if plan, _ := m.PlanSystemModule("virt"); plan.Refused != imageModuleCheckUnit {
+	if plan, _ := m.PlanSystemModule("virt"); plan.Refused != osmodule.CheckCatalogue {
 		t.Errorf("no unit in the image: %+v", plan)
 	}
 	if _, err := m.PlanSystemModule("../x"); err == nil {
@@ -290,5 +296,117 @@ func TestImageManagedPicksTheImageProvider(t *testing.T) {
 	config.ServerInfo.ModuleCatalogue = "/run/image/catalogue.json"
 	if p, ok := s.modules().(*imageModules); !ok || p.catalogue != "/run/image/catalogue.json" {
 		t.Errorf("image-managed: %T", s.modules())
+	}
+}
+
+// a remove needs the catalogue to know which unit to stop: one that cannot be read refuses, the flag stays
+func TestARemoveWithoutAReadableCatalogueChangesNothing(t *testing.T) {
+	m, systemd := newTestImageModules(t, imageEntry("virt", osmodule.SourceImage))
+	installImageModule(t, m, "virt")
+	if err := os.WriteFile(m.catalogue, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var refusal *ModuleRefusal
+	if _, err := m.StartSystemModuleRemove(context.Background(), "virt"); !errors.As(err, &refusal) || refusal.Code != osmodule.CheckCatalogue {
+		t.Fatalf("remove with an invalid catalogue: %v", err)
+	}
+	if !m.enabled("virt") || !systemd.active["casaos-virt.service"] {
+		t.Error("the flag or the unit changed")
+	}
+	// the entry gone from a catalogue that is read: the flag alone
+	if err := os.WriteFile(m.catalogue, []byte(`{"schema":1,"modules":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.StartSystemModuleRemove(context.Background(), "virt"); err != nil {
+		t.Fatal(err)
+	}
+	m.jobs.Wait()
+	if m.enabled("virt") {
+		t.Error("the flag stayed")
+	}
+}
+
+// the route is waited for with its own deadline, not the unit's
+func TestTheRouteWaitHasItsOwnDeadline(t *testing.T) {
+	m, _ := newTestImageModules(t, imageEntry("virt", osmodule.SourceImage))
+	m.env.Gateway = fakeRoutes{func(string) bool { return false }}
+	m.unitWait, m.routeWait = time.Hour, 50*time.Millisecond
+	began := time.Now()
+	installImageModule(t, m, "virt")
+	if took := time.Since(began); took > 5*time.Second {
+		t.Errorf("the route wait took %v", took)
+	}
+}
+
+// the catalogue says which units root starts: an absolute path to a regular file, owned by root (here: the test user),
+// writable by nobody else; a FIFO does not block the request
+func TestTheCatalogueMustBeSafe(t *testing.T) {
+	m, _ := newTestImageModules(t, imageEntry("virt", osmodule.SourceImage))
+	good := m.catalogue
+	detail := func() string {
+		t.Helper()
+		var list modulecmd.ListResult
+		done := make(chan struct{})
+		go func() { list, _ = m.ListSystemModules(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the list blocked")
+		}
+		return list.Catalogue.Error + " " + list.Catalogue.Detail
+	}
+	m.catalogue = "catalogue.json"
+	if got := detail(); got != "unreadable catalogue path_not_absolute" {
+		t.Errorf("relative: %q", got)
+	}
+	m.catalogue = good
+	if err := os.Chmod(good, 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if got := detail(); got != "unreadable catalogue writable" {
+		t.Errorf("group-writable: %q", got)
+	}
+	_ = os.Chmod(good, 0o644)
+	m.owner = os.Getuid() + 1
+	if got := detail(); got != "unreadable catalogue owner" {
+		t.Errorf("another owner: %q", got)
+	}
+	m.owner = os.Getuid()
+	fifo := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.catalogue = fifo
+	if got := detail(); got != "unreadable catalogue not_regular" {
+		t.Errorf("a FIFO: %q", got)
+	}
+}
+
+// the codes of a job are the module assistant's, which the Modules page says
+func TestTheJobsSpeakTheAssistantsCodes(t *testing.T) {
+	m, systemd := newTestImageModules(t, imageEntry("virt", osmodule.SourceImage))
+	installImageModule(t, m, "virt")
+	systemd.mu.Lock()
+	systemd.stopErr = errors.New("exit status 1")
+	systemd.mu.Unlock()
+	if _, err := m.StartSystemModuleRemove(context.Background(), "virt"); err != nil {
+		t.Fatal(err)
+	}
+	m.jobs.Wait()
+	if got, _ := m.GetSystemModuleStatus("virt"); got.Job.Step != "stop" || got.Job.Code != "unit_not_stopped" {
+		t.Errorf("a unit that does not stop: %+v", got.Job)
+	}
+}
+
+// commands are found through PATH (the unit's), not in the assistant's fixed directories
+func TestTheImageRunnerFindsThroughPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte("#!/bin/sh\necho \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	out, err := imageRunner{}.Run(context.Background(), modulecmd.Cmd{Argv: []string{"systemctl", "is-active", "x.service"}, Timeout: 5 * time.Second})
+	if err != nil || strings.TrimSpace(out.Text) != "is-active x.service" {
+		t.Fatalf("%q %v", out.Text, err)
 	}
 }

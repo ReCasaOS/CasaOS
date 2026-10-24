@@ -7,11 +7,13 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -35,15 +37,19 @@ const (
 	imageModuleCatalogue = "/usr/share/casaos/modules/catalogue.json"
 	// imageModuleState holds <name>.enabled (the flag the unit's condition reads) and <name>.image-job.json
 	imageModuleState = "/var/lib/casaos/modules"
-	// imageModuleCheckUnit is the plan's check that the module's unit is in the image
-	imageModuleCheckUnit = "unit"
 )
+
+// The steps and codes of a job are the module assistant's, so the Modules page says them: install manifest (the flag),
+// start, route; remove stop, manifest (no flag). A unit the image does not have is the catalogue's check (not offered).
 
 type imageModules struct {
 	catalogue string // the catalogue's path
 	state     string // where the flags and the jobs are
-	// env is the module assistant's world for what is used of it: Runner (systemctl), Gateway (the route)
-	env       modulecmd.Env
+	// env: Runner (systemctl, found through PATH: imageRunner) and Gateway (the route), the module
+	// assistant's own for the rest
+	env modulecmd.Env
+	// owner is who must own the catalogue (root): it says which units root starts and stops
+	owner     int
 	now       func() time.Time
 	routeWait time.Duration // how long an install waits for the module's route
 	routeTick time.Duration
@@ -59,8 +65,12 @@ func newImageModules(catalogue string) *imageModules {
 	if catalogue == "" {
 		catalogue = imageModuleCatalogue
 	}
+	env := modulecmd.Production()
+	// the assistant finds systemctl in /usr/sbin, /usr/bin, /sbin, /bin only (an archive must not put one in front of
+	// it); an image-built host has it elsewhere (NixOS: /run/current-system/sw/bin), and nothing is unpacked here
+	env.Runner = imageRunner{}
 	return &imageModules{
-		catalogue: catalogue, state: imageModuleState, env: modulecmd.Production(), now: time.Now,
+		catalogue: catalogue, state: imageModuleState, env: env, owner: 0, now: time.Now,
 		routeWait: time.Minute, routeTick: time.Second, unitWait: 2 * time.Minute, pid: os.Getpid(),
 	}
 }
@@ -82,8 +92,17 @@ func (m *imageModules) enabled(name string) bool {
 }
 
 // load reads the catalogue as the module assistant does (a whole, or nothing and why), with one rule more: every entry is a module of the image.
+//
+// The catalogue says which units root starts and stops: an absolute path to a regular file owned by root and writable by
+// nobody else, else unreadable (with why in Detail). Opened without blocking (a FIFO there would hold the request).
 func (m *imageModules) load() (osmodule.Catalogue, modulecmd.CatalogueInfo) {
-	f, err := os.Open(m.catalogue)
+	unsafe := func(why string) (osmodule.Catalogue, modulecmd.CatalogueInfo) {
+		return osmodule.Catalogue{}, modulecmd.CatalogueInfo{Error: "unreadable", Detail: "catalogue " + why}
+	}
+	if !filepath.IsAbs(m.catalogue) {
+		return unsafe("path_not_absolute")
+	}
+	f, err := os.OpenFile(m.catalogue, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return osmodule.Catalogue{}, modulecmd.CatalogueInfo{Error: "none"}
 	}
@@ -91,6 +110,19 @@ func (m *imageModules) load() (osmodule.Catalogue, modulecmd.CatalogueInfo) {
 		return osmodule.Catalogue{}, modulecmd.CatalogueInfo{Error: "unreadable"}
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return osmodule.Catalogue{}, modulecmd.CatalogueInfo{Error: "unreadable"}
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	switch {
+	case !info.Mode().IsRegular():
+		return unsafe("not_regular")
+	case !ok || int(st.Uid) != m.owner:
+		return unsafe("owner")
+	case info.Mode().Perm()&0o022 != 0:
+		return unsafe("writable")
+	}
 	raw, err := io.ReadAll(io.LimitReader(f, osmodule.MaxCatalogueBytes+1))
 	if err != nil {
 		return osmodule.Catalogue{}, modulecmd.CatalogueInfo{Error: "unreadable"}
@@ -162,28 +194,35 @@ func (m *imageModules) plan(name, verb string) (osmodule.PlanResult, osmodule.En
 		Name: name, Tag: entry.Tag, Tier: entry.Tier, Checks: []osmodule.Check{},
 		Packages: osmodule.PlanPackages{ToInstall: []string{}, ToUpgrade: []string{}, Known: true},
 	}
-	check := func(code string, ok bool, detail string) {
+	// code: the check (the page's CHECKS), refusal: the code it refuses with (its REASONS)
+	check := func(code, refusal string, ok bool, detail string) {
 		plan.Checks = append(plan.Checks, osmodule.Check{Code: code, OK: ok, Detail: detail})
 		if !ok && plan.Refused == "" {
-			plan.Refused = osmodule.Refusal(code)
+			plan.Refused = osmodule.Refusal(refusal)
 		}
 	}
-	check(osmodule.CheckCatalogue, found, map[bool]string{true: "in the image", false: "not in the catalogue of the image"}[found])
+	// offered: in the catalogue, and its unit in the image
+	offered, detail := found, "in the image"
+	switch {
+	case !found:
+		detail = "not in the catalogue of the image"
+	case verb == moduleVerbInstall && !m.unitLoaded(entry.Manifest.Unit):
+		offered, detail = false, "the unit of the module is not in the image"
+	}
+	check(osmodule.CheckCatalogue, osmodule.CheckCatalogue, offered, detail)
 	if verb == moduleVerbUpdate {
 		plan.Mode = osmodule.ModeUpdate
 		installed := m.enabled(name)
-		check(osmodule.RefusedNotInstalled, installed, map[bool]string{true: "installed", false: "not_installed"}[installed])
+		check("installed", osmodule.RefusedNotInstalled, installed, map[bool]string{true: "", false: osmodule.RefusedNotInstalled}[installed])
 		// the image is the release: what it has is the latest there is
-		check(osmodule.RefusedUpToDate, false, "up_to_date")
+		check("newer", osmodule.RefusedUpToDate, false, osmodule.RefusedUpToDate)
 		plan.Update = &osmodule.UpdateInfo{Installed: entry.Tag, Latest: entry.Tag, Added: []string{}, Dropped: []string{}}
 		plan.PlanID = osmodule.UpdatePlanID(name, entry.Tag, entry.Tag, "", "image", "", nil)
 		return plan, entry, nil
 	}
-	check(osmodule.CheckInstalled, !m.enabled(name), "")
-	unit := found && m.unitLoaded(entry.Manifest.Unit)
-	check(imageModuleCheckUnit, unit, map[bool]string{true: entry.Manifest.Unit, false: "the unit of the module is not in the image"}[unit])
+	check(osmodule.CheckInstalled, osmodule.CheckInstalled, !m.enabled(name), "")
 	busy := m.running()
-	check(osmodule.CheckBusy, busy == "", map[bool]string{true: "", false: "a job of the module " + busy + " is running"}[busy == ""])
+	check(osmodule.CheckBusy, osmodule.CheckBusy, busy == "", map[bool]string{true: "", false: "a job of the module " + busy + " is running"}[busy == ""])
 	plan.PlanID = osmodule.PlanID(name, entry.Tag, "", "image", "", nil)
 	return plan, entry, nil
 }
@@ -220,8 +259,8 @@ func (m *imageModules) startPlanned(name, planID, verb string) (SystemModuleStat
 		return SystemModuleStatus{}, refuseModule(ModulePlanChanged, "The plan is no longer the one that was read: read the new plan and confirm again.", nil)
 	}
 	// (an update is always refused above: up_to_date)
-	return m.start(name, modulecmd.KindInstall, func(ctx context.Context, job *modulecmd.Job) {
-		m.install(ctx, job, entry)
+	return m.start(name, modulecmd.KindInstall, func(job *modulecmd.Job) {
+		m.install(job, entry)
 	})
 }
 
@@ -236,10 +275,15 @@ func (m *imageModules) StartSystemModuleRemove(ctx context.Context, name string)
 	if !m.enabled(name) {
 		return SystemModuleStatus{}, refuseModule(ModuleNotInstalled, "There is nothing of this module to remove.", nil)
 	}
-	cat, _ := m.load()
+	// which unit to stop is the catalogue's: one that cannot be read refuses (the unit would keep running with
+	// no flag); only an entry gone from a catalogue that is read is the flag alone
+	cat, info := m.load()
+	if !info.OK {
+		return SystemModuleStatus{}, refuseModule(osmodule.CheckCatalogue, "The catalogue of the system cannot be read ("+info.Error+"), so the service of the module cannot be told. Nothing was changed.", map[string]any{"catalogue": info})
+	}
 	entry, found := cat.Find(name)
-	return m.start(name, modulecmd.KindRemove, func(ctx context.Context, job *modulecmd.Job) {
-		m.remove(ctx, job, entry, found)
+	return m.start(name, modulecmd.KindRemove, func(job *modulecmd.Job) {
+		m.remove(job, entry, found)
 	})
 }
 
@@ -251,7 +295,7 @@ func (m *imageModules) running() string {
 }
 
 // start runs the job in a goroutine, one at a time, and gives it as it begins.
-func (m *imageModules) start(name, kind string, run func(ctx context.Context, job *modulecmd.Job)) (SystemModuleStatus, error) {
+func (m *imageModules) start(name, kind string, run func(job *modulecmd.Job)) (SystemModuleStatus, error) {
 	m.mu.Lock()
 	if m.busy != "" {
 		busy := m.busy
@@ -270,10 +314,8 @@ func (m *imageModules) start(name, kind string, run func(ctx context.Context, jo
 	m.jobs.Add(1)
 	go func() {
 		defer m.jobs.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), m.unitWait+m.routeWait)
-		defer cancel()
 		done := job
-		run(ctx, &done)
+		run(&done)
 		done.EndedAt = m.stamp()
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -285,7 +327,9 @@ func (m *imageModules) start(name, kind string, run func(ctx context.Context, jo
 	return SystemModuleStatus{Job: job, Status: m.status(name)}, nil
 }
 
-func (m *imageModules) install(ctx context.Context, job *modulecmd.Job, entry osmodule.Entry) {
+// install: the flag (step manifest: the module recorded), the unit started (start), its route waited for (route), each
+// with its own deadline.
+func (m *imageModules) install(job *modulecmd.Job, entry osmodule.Entry) {
 	fail := func(step, code string, undo bool) {
 		job.State, job.Step, job.Code = modulecmd.JobFailed, step, code
 		if undo {
@@ -296,18 +340,20 @@ func (m *imageModules) install(ctx context.Context, job *modulecmd.Job, entry os
 		}
 	}
 	if err := os.MkdirAll(m.state, 0o755); err != nil {
-		fail("enable", "enable_failed", false)
+		fail("manifest", "manifest_write_failed", false)
 		return
 	}
 	if err := os.WriteFile(m.flag(entry.Name), nil, 0o644); err != nil {
-		fail("enable", "enable_failed", false)
+		fail("manifest", "manifest_write_failed", false)
 		return
 	}
-	if err := m.systemctl(ctx, "start", entry.Manifest.Unit); err != nil {
+	if err := m.systemctl("start", entry.Manifest.Unit); err != nil {
 		logger.Error("the unit of a module of the image did not start", zap.String("module", entry.Name), zap.Error(err))
 		fail("start", ModuleStartFailed, true)
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), m.routeWait)
+	defer cancel()
 	for {
 		if answers, err := m.env.Gateway.Answers(ctx, entry.Manifest.GatewayRoute); err == nil && answers {
 			job.State, job.Step = modulecmd.JobSucceeded, "done"
@@ -323,16 +369,17 @@ func (m *imageModules) install(ctx context.Context, job *modulecmd.Job, entry os
 	}
 }
 
-func (m *imageModules) remove(ctx context.Context, job *modulecmd.Job, entry osmodule.Entry, found bool) {
+// remove: the unit stopped (step stop), then the flag (manifest: the module forgotten).
+func (m *imageModules) remove(job *modulecmd.Job, entry osmodule.Entry, found bool) {
 	if found {
-		if err := m.systemctl(ctx, "stop", entry.Manifest.Unit); err != nil {
+		if err := m.systemctl("stop", entry.Manifest.Unit); err != nil {
 			logger.Error("the unit of a module of the image did not stop", zap.String("module", entry.Name), zap.Error(err))
-			job.State, job.Step, job.Code = modulecmd.JobFailed, "stop", "stop_failed"
+			job.State, job.Step, job.Code = modulecmd.JobFailed, "stop", "unit_not_stopped"
 			return
 		}
 	}
 	if err := os.Remove(m.flag(job.Name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		job.State, job.Step, job.Code = modulecmd.JobFailed, "disable", "disable_failed"
+		job.State, job.Step, job.Code = modulecmd.JobFailed, "manifest", "remove_incomplete"
 		return
 	}
 	job.State, job.Step = modulecmd.JobSucceeded, "done"
@@ -370,7 +417,11 @@ func (m *imageModules) status(name string) modulecmd.StatusResult {
 
 func (m *imageModules) readJob(name string) modulecmd.Job {
 	idle := modulecmd.Job{Name: name, State: modulecmd.JobIdle, LogTail: []string{}}
+	// under the lock the job's end is written with
+	m.mu.Lock()
+	running := m.busy == name
 	raw, err := os.ReadFile(m.jobFile(name))
+	m.mu.Unlock()
 	if err != nil {
 		return idle
 	}
@@ -378,9 +429,6 @@ func (m *imageModules) readJob(name string) modulecmd.Job {
 	if json.Unmarshal(raw, &saved) != nil || saved.Job.Name != name {
 		return idle
 	}
-	m.mu.Lock()
-	running := m.busy == name
-	m.mu.Unlock()
 	if saved.Job.State == modulecmd.JobRunning && (saved.PID != m.pid || !running) {
 		// a core that restarted in the middle of the job
 		saved.Job.State = modulecmd.JobInterrupted
@@ -408,7 +456,9 @@ func (m *imageModules) writeJob(job modulecmd.Job) error {
 
 func (m *imageModules) stamp() string { return m.now().UTC().Format(time.RFC3339) }
 
-func (m *imageModules) systemctl(ctx context.Context, verb, unit string) error {
+func (m *imageModules) systemctl(verb, unit string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), m.unitWait)
+	defer cancel()
 	_, err := m.env.Runner.Run(ctx, modulecmd.Cmd{Argv: []string{"systemctl", verb, unit}, Timeout: m.unitWait})
 	return err
 }
@@ -427,4 +477,29 @@ func (m *imageModules) unitLoaded(unit string) bool {
 	defer cancel()
 	out, err := m.env.Runner.Run(ctx, modulecmd.Cmd{Argv: []string{"systemctl", "show", "--property=LoadState", "--value", unit}, Timeout: 10 * time.Second})
 	return err == nil && strings.TrimSpace(out.Text) == "loaded"
+}
+
+// imageRunner runs a command found through PATH (the core's unit sets it: the session's tools), bounded by Cmd.Timeout,
+// its output kept up to 64 KiB.
+type imageRunner struct{}
+
+func (imageRunner) Run(ctx context.Context, c modulecmd.Cmd) (modulecmd.Output, error) {
+	if c.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
+		defer cancel()
+	}
+	program, err := exec.LookPath(c.Argv[0])
+	if err != nil {
+		return modulecmd.Output{}, err
+	}
+	cmd := exec.CommandContext(ctx, program, c.Argv[1:]...)
+	out, err := cmd.CombinedOutput()
+	if len(out) > 64<<10 {
+		out = out[len(out)-64<<10:]
+	}
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	return modulecmd.Output{Text: string(out)}, err
 }
