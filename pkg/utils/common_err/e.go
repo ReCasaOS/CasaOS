@@ -52,6 +52,7 @@ const (
 	DIR_NOT_EXISTS       = 60004
 	SOURCE_DES_SAME      = 60005
 	MOUNTED_DIRECTIORIES = 60006
+	TRASH_UNAVAILABLE    = 60007
 
 	//share
 	SHARE_ALREADY_EXISTS      = 70001
@@ -113,6 +114,7 @@ var MsgFlags = map[int]string{
 	FILE_READ_ERROR:      "File read error",
 	FILE_DELETE_ERROR:    "Delete error",
 	MOUNTED_DIRECTIORIES: "The directory is mounted, please unmount it first.",
+	TRASH_UNAVAILABLE:    "Cannot be moved to the trash",
 
 	COMMAND_ERROR_INVALID_OPERATION: "invalid operation",
 }

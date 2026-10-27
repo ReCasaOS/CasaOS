@@ -38,6 +38,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
 	"github.com/ReCasaOS/CasaOS/pkg/telemetry"
+	"github.com/ReCasaOS/CasaOS/pkg/trash"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/ReCasaOS/CasaOS/route"
 	"github.com/ReCasaOS/CasaOS/service"
@@ -248,6 +249,20 @@ func main() {
 
 	crontab := cron.New(cron.WithSeconds())
 	if _, err := crontab.AddFunc("@every 5s", route.SendAllHardwareStatusBySocket); err != nil {
+		logger.Error("add crontab error", zap.Error(err))
+	}
+	// the trash keeps an item thirty days; checked at start and every six hours, for a box that sleeps at night
+	purgeTrash := func() {
+		n, err := trash.Purge(time.Now().Add(-trash.Retention))
+		if err != nil {
+			logger.Error("the trash could not be purged", zap.Error(err))
+		}
+		if n > 0 {
+			logger.Info("removed items deleted more than thirty days ago from the trash", zap.Int("items", n))
+		}
+	}
+	go purgeTrash()
+	if _, err := crontab.AddFunc("@every 6h", purgeTrash); err != nil {
 		logger.Error("add crontab error", zap.Error(err))
 	}
 

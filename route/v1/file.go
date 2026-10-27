@@ -794,6 +794,7 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 // @Tags file
 // @Security ApiKeyAuth
 // @Param body body string true "paths eg ["/a/b/c","/d/e/f"]"
+// @Param to_trash query bool false "move to the trash of each disk instead of deleting"
 // @Success 200 {string} string "ok"
 // @Router /file/delete [delete]
 func DeleteFile(ctx echo.Context) error {
@@ -815,6 +816,9 @@ func DeleteFile(ctx echo.Context) error {
 		if mounted {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.MOUNTED_DIRECTIORIES, Message: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES), Data: common_err.GetMsg(common_err.MOUNTED_DIRECTIORIES)})
 		}
+	}
+	if ctx.QueryParam("to_trash") == "true" {
+		return moveToTrash(ctx, paths)
 	}
 
 	for _, v := range paths {
