@@ -83,6 +83,7 @@ type localStorageFixture struct {
 	mu       sync.Mutex
 	disks    []disk
 	storages []storage
+	raid     []raidArray // nil: a LocalStorage too old to answer
 	down     bool
 }
 
@@ -108,6 +109,8 @@ func newLocalStorage(t *testing.T, runtimePath string) *localStorageFixture {
 			result(w, map[string]any{"disks": f.disks, "avail": []any{}})
 		case r.URL.Path == "/v1/storage" && r.URL.Query().Get("system") == "show":
 			result(w, []any{map[string]any{"disk_name": "all", "children": f.storages}})
+		case r.URL.Path == "/v1/disks/raid" && f.raid != nil:
+			result(w, f.raid)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

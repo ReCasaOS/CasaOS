@@ -162,11 +162,13 @@ func New(root string) *Hub {
 // Run follows the message bus until ctx is done, tells a Docker update that ended
 // or is going on, tells the operating system's support when it is ending or ended
 // (five minutes after the start, then every day), and looks at the disks and for a
-// newer release five minutes after the start, then every hour.
+// newer release five minutes after the start, then every hour, and at the software
+// RAID arrays five minutes after the start, then every five minutes.
 func (h *Hub) Run(ctx context.Context) {
 	go h.followBus(ctx)
 	go h.watchDocker(ctx)
 	go h.watchOSSupport(ctx)
+	go h.watchRAID(ctx)
 	timer := time.NewTimer(5 * time.Minute)
 	defer timer.Stop()
 	for {
