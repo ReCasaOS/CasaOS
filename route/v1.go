@@ -171,6 +171,10 @@ func InitV1Router() http.Handler {
 			// v1FileGroup.GET("/download", v1.UserFileDownloadCommonService)
 			v1FileGroup.GET("/ws", v1.ConnectWebSocket)
 			v1FileGroup.GET("/peers", v1.GetPeers)
+			v1FileGroup.GET("/trash", v1.GetTrash)
+			v1FileGroup.POST("/trash/restore", v1.RestoreTrash)
+			v1FileGroup.DELETE("/trash", v1.DeleteTrash)
+			v1FileGroup.DELETE("/trash/all", v1.EmptyTrash)
 		}
 		v1CloudGroup := v1Group.Group("/cloud")
 		v1CloudGroup.Use()
