@@ -106,6 +106,17 @@ go test ./...
 
 `TestPorts` reads the host's own listening sockets, so it fails in a container that has none.
 
+On Linux, with the other component repositories cloned as siblings of this one (`../CasaOS-Gateway`, `../CasaOS-MessageBus`, `../CasaOS-UserService`, and optionally LocalStorage, AppManagement and UI), a user-writable process stack binds the Gateway at `127.0.0.1:8081` without root and without writing `/etc/casaos`.
+
+```sh
+./dev/stack.sh
+curl -sS http://127.0.0.1:8081/ping
+```
+
+Before the first run, if a sibling repo has no `codegen/` directory, run `go generate ./...` once in CasaOS, CasaOS-UserService, CasaOS-LocalStorage, and CasaOS-AppManagement (that output is gitignored; `stack.sh` does not generate it).
+
+From CasaOS-UI beside this repo, `pnpm dev:stack` starts that script and the Vue dev server. This is not `install.sh`: it uses the host Docker socket, must not run as root, and the file API is confined to `.dev-runtime/data` via ManagementRoots. The dashboard Files panel still opens `/DATA`, so it may return 403 on this stack even though list and upload work under the dev data directory.
+
 Release packages for amd64, arm64 and armv7 are built on a tag by [`.github/workflows/release.yml`](.github/workflows/release.yml), not on a workstation.
 
 ## History
