@@ -14,6 +14,7 @@ import (
 // fakeBox is a machine that answers what the plan asks, and records what it was asked.
 type fakeBox struct {
 	osID, osVersion, arch, version string
+	osFrom                         string
 
 	installed    map[string]Manifest
 	broken       []string
@@ -45,8 +46,11 @@ type fakeBox struct {
 
 func (b *fakeBox) called(name string) bool { return slices.Contains(b.calls, name) }
 
-func (b *fakeBox) OS() (string, string) { b.calls = append(b.calls, "OS"); return b.osID, b.osVersion }
-func (b *fakeBox) Arch() string         { b.calls = append(b.calls, "Arch"); return b.arch }
+func (b *fakeBox) OS() OSRelease {
+	b.calls = append(b.calls, "OS")
+	return OSRelease{ID: b.osID, Version: b.osVersion, From: b.osFrom}
+}
+func (b *fakeBox) Arch() string { b.calls = append(b.calls, "Arch"); return b.arch }
 func (b *fakeBox) ReCasaOSVersion() string {
 	b.calls = append(b.calls, "ReCasaOSVersion")
 	return b.version
@@ -639,7 +643,7 @@ func TestTheChecksOfTheSystemAreTheSameForTheListAndForThePlan(t *testing.T) {
 	if got[0].OK || !got[1].OK || got[2].OK {
 		t.Errorf("%+v", got)
 	}
-	for _, s := range []System{{"debian", "12", "amd64", "0.5.23"}, {"ubuntu", "24.04", "arm64", "0.6.0"}, {"ubuntu", "26.04", "amd64", "v1.0.0"}, {"debian", "13", "arm64", "0.5.23"}} {
+	for _, s := range []System{{OSID: "debian", OSVersion: "12", Arch: "amd64", ReCasaOS: "0.5.23"}, {OSID: "ubuntu", OSVersion: "24.04", Arch: "arm64", ReCasaOS: "0.6.0"}, {OSID: "ubuntu", OSVersion: "26.04", Arch: "amd64", ReCasaOS: "v1.0.0"}, {OSID: "debian", OSVersion: "13", Arch: "arm64", ReCasaOS: "0.5.23"}} {
 		for _, ch := range SystemChecks(e, s) {
 			if !ch.OK {
 				t.Errorf("%+v: %+v", s, ch)
@@ -658,5 +662,40 @@ func TestTheChecksOfTheSystemAreTheSameForTheListAndForThePlan(t *testing.T) {
 		if ch.Code == "arch" && ch.OK {
 			t.Error("arm64 without an archive for it")
 		}
+	}
+}
+
+// A derivative that the box read as the release it is built on passes the os check of that release, and the check says both; the plan is the plan of that release.
+func TestTheOSCheckOfADerivativeSaysTheBoxAsItIs(t *testing.T) {
+	c := virtCatalogue(t)
+	e, _ := c.Find("virt")
+	mint := System{OSID: "ubuntu", OSVersion: "24.04", OSFrom: "linuxmint:22.2, UBUNTU_CODENAME=noble", Arch: "amd64", ReCasaOS: "0.5.23"}
+	if got := SystemChecks(e, mint)[0]; !got.OK || got.Detail != "ubuntu:24.04 (linuxmint:22.2, UBUNTU_CODENAME=noble)" {
+		t.Errorf("%+v", got)
+	}
+	jammy := System{OSID: "ubuntu", OSVersion: "22.04", OSFrom: "linuxmint:21.3, UBUNTU_CODENAME=jammy", Arch: "amd64", ReCasaOS: "0.5.23"}
+	if got := SystemChecks(e, jammy)[0]; got.OK || got.Detail != "unsupported ubuntu:22.04 (linuxmint:21.3, UBUNTU_CODENAME=jammy)" {
+		t.Errorf("%+v", got)
+	}
+	// a Debian or an Ubuntu says nothing when it passes, as before
+	if got := SystemChecks(e, System{OSID: "ubuntu", OSVersion: "24.04", Arch: "amd64", ReCasaOS: "0.5.23"})[0]; !got.OK || got.Detail != "" {
+		t.Errorf("%+v", got)
+	}
+
+	plain := newBox()
+	plain.osID, plain.osVersion = "ubuntu", "24.04"
+	derived := newBox()
+	derived.osID, derived.osVersion, derived.osFrom = "ubuntu", "24.04", "linuxmint:22.2, UBUNTU_CODENAME=noble"
+	p, d := Plan(c, "virt", plain), Plan(c, "virt", derived)
+	if d.Refused != "" || d.PlanID == "" || d.PlanID != p.PlanID {
+		t.Errorf("the plan of the derivative is not the plan of its base: %q %q %q", d.Refused, d.PlanID, p.PlanID)
+	}
+	if d.Checks[1].Code != CheckOS || !d.Checks[1].OK || d.Checks[1].Detail != "ubuntu:24.04 (linuxmint:22.2, UBUNTU_CODENAME=noble)" {
+		t.Errorf("%+v", d.Checks[1])
+	}
+	upd := newUpdBox(t)
+	upd.osID, upd.osVersion, upd.osFrom = "ubuntu", "24.04", "linuxmint:22.2, UBUNTU_CODENAME=noble"
+	if u := PlanUpdate(newer(t), "virt", upd); u.Checks[1].Code != CheckOS || u.Checks[1].Detail != d.Checks[1].Detail {
+		t.Errorf("the update says another os: %+v", u.Checks[1])
 	}
 }

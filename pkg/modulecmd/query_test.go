@@ -91,6 +91,21 @@ func TestListSaysWhyASystemCannotHaveAModule(t *testing.T) {
 	}
 }
 
+// a derivative read as the release it is built on is supported where that release is, and the plan says what the box is
+func TestListAndPlanTakeADerivativeForItsBase(t *testing.T) {
+	f := newFixture(t)
+	f.writeFile("/etc/os-release", mint222)
+	m := f.json("list")["modules"].([]any)[0].(map[string]any)
+	if sys := m["system"].(map[string]any); sys["supported"] != true {
+		t.Errorf("system: %v", sys)
+	}
+	f.writeFile("/etc/os-release", strings.Replace(mint222, "noble", "focal", 1))
+	m = f.json("list")["modules"].([]any)[0].(map[string]any)
+	if sys := m["system"].(map[string]any); sys["supported"] != false || !slices.Equal(anyStrings(sys["reasons"]), []string{"os"}) {
+		t.Errorf("an unknown codename: %v", sys)
+	}
+}
+
 func anyStrings(v any) []string {
 	var out []string
 	for _, s := range v.([]any) {
@@ -443,13 +458,13 @@ func TestTheBoxReadsTheSystemAndTheFilesLists(t *testing.T) {
 		"ID=debian\nVERSION_ID=\"12\n":      {"", ""},
 	} {
 		f.writeFile(pathOSRelease, text)
-		if id, v := bx.OS(); id != want[0] || v != want[1] {
-			t.Errorf("%q: %q %q", text, id, v)
+		if o := bx.OS(); o.ID != want[0] || o.Version != want[1] || o.From != "" {
+			t.Errorf("%q: %+v", text, o)
 		}
 	}
 	_ = os.Remove(f.path(pathOSRelease))
-	if id, v := bx.OS(); id != "" || v != "" {
-		t.Errorf("no file: %q %q", id, v)
+	if o := bx.OS(); o != (osmodule.OSRelease{}) {
+		t.Errorf("no file: %+v", o)
 	}
 	if bx.Arch() != "amd64" || bx.ReCasaOSVersion() != "0.5.29" {
 		t.Errorf("%q %q", bx.Arch(), bx.ReCasaOSVersion())

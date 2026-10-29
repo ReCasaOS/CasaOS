@@ -174,8 +174,8 @@ func List(ctx context.Context, env Env) (ListResult, error) {
 	if err != nil {
 		return res, err
 	}
-	osID, osVersion := bx.OS()
-	sys := osmodule.System{OSID: osID, OSVersion: osVersion, Arch: env.Arch, ReCasaOS: env.Version}
+	osr := bx.OS()
+	sys := osmodule.System{OSID: osr.ID, OSVersion: osr.Version, OSFrom: osr.From, Arch: env.Arch, ReCasaOS: env.Version}
 	listed := map[string]bool{}
 	for _, e := range cs.cat.Modules {
 		m := ListModule{Name: e.Name, Title: e.Manifest.Title, Description: e.Manifest.Description, Tier: e.Tier, Tag: e.Tag, Catalogue: true, System: SystemInfo{Reasons: []string{}}}
