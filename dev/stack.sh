@@ -40,6 +40,9 @@ rm -f "$DEVROOT/run/"*.url "$DEVROOT/run/"*.pid "$DEVROOT/run/internal.secret"
 
 bash "$WRITECONF" "$DEVROOT" "$CASAOS_REPO"
 
+export CASAOS_RCLONE_SOCKET="$DEVROOT/run/rclone.sock"
+export RCLONE_CONFIG="$DEVROOT/lib/rclone.conf"
+
 # cwd $DEVROOT/etc is inside the CasaOS module, so `go run` of a sibling
 # fails with "outside main module". A workspace at DEVROOT is found first.
 gowork_ver=$(go env GOVERSION)
@@ -151,6 +154,32 @@ if [[ -d "$PARENT/CasaOS-LocalStorage" ]]; then
 	fi
 else
 	echo "warning: missing $PARENT/CasaOS-LocalStorage; skipping" >&2
+fi
+
+if command -v rclone >/dev/null 2>&1; then
+	(
+		exec setsid rclone rcd --rc-unix-socket "$DEVROOT/run/rclone.sock" --rc-no-auth --config "$DEVROOT/lib/rclone.conf"
+	) &
+	PIDS+=("$!")
+	rclone_pid="${PIDS[-1]}"
+	rclone_ok=0
+	deadline=$((SECONDS + 120))
+	while (( SECONDS < deadline )); do
+		if ! alive "$rclone_pid"; then
+			echo "warning: rclone exited; continuing" >&2
+			break
+		fi
+		if [[ -S "$DEVROOT/run/rclone.sock" || -e "$DEVROOT/run/rclone.sock" ]]; then
+			rclone_ok=1
+			break
+		fi
+		sleep 0.5
+	done
+	if [[ "$rclone_ok" -eq 0 ]] && alive "$rclone_pid"; then
+		echo "warning: rclone did not create its socket; continuing" >&2
+	fi
+else
+	echo "warning: rclone not on PATH; cloud drives will be empty" >&2
 fi
 
 if [[ -d "$PARENT/CasaOS-AppManagement" ]]; then

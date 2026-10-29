@@ -30,6 +30,22 @@ func managedTemp(tempDir string) error {
 	return managed(&temp)
 }
 
+// GetFileRoots answers the configured [file] ManagementRoots. Empty: the
+// file API is unconfined and the dashboard keeps /DATA.
+func GetFileRoots(ctx echo.Context) error {
+	roots := []string{}
+	if fileroots.Default != nil {
+		if p := fileroots.Default.Paths(); len(p) > 0 {
+			roots = p
+		}
+	}
+	return ctx.JSON(http.StatusOK, model.Result{
+		Success: common_err.SUCCESS,
+		Message: common_err.GetMsg(common_err.SUCCESS),
+		Data:    map[string][]string{"roots": roots},
+	})
+}
+
 // outsideRoots answers a path the file API may not touch; the reason in Data
 // too (the dashboard shows that one).
 func outsideRoots(ctx echo.Context, err error) error {

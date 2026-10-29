@@ -115,7 +115,7 @@ curl -sS http://127.0.0.1:8081/ping
 
 Before the first run, if a sibling repo has no `codegen/` directory, run `go generate ./...` once in CasaOS, CasaOS-UserService, CasaOS-LocalStorage, and CasaOS-AppManagement (that output is gitignored; `stack.sh` does not generate it).
 
-From CasaOS-UI beside this repo, `pnpm dev:stack` starts that script and the Vue dev server. This is not `install.sh`: it uses the host Docker socket, must not run as root, and the file API is confined to `.dev-runtime/data` via ManagementRoots. The dashboard Files panel still opens `/DATA`, so it may return 403 on this stack even though list and upload work under the dev data directory.
+From CasaOS-UI beside this repo, `pnpm dev:stack` starts that script and the Vue dev server. This is not `install.sh`: it uses the host Docker socket, must not run as root, and the file API is confined to `.dev-runtime/data` via ManagementRoots. The dashboard Files panel follows ManagementRoots (the stack's `.dev-runtime/data`). rclone is optional; without it, Locations has no cloud drives.
 
 Release packages for amd64, arm64 and armv7 are built on a tag by [`.github/workflows/release.yml`](.github/workflows/release.yml), not on a workstation.
 

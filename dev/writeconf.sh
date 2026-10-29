@@ -83,6 +83,7 @@ LogSaveName=app-management
 LogFileExt=log
 AppStorePath=$LIB/appstore
 AppsPath=$LIB/apps
+DataPath=$LIB
 
 [server]
 appstore = https://cdn.jsdelivr.net/gh/IceWhaleTech/CasaOS-AppStore@gh-pages/store/main.zip

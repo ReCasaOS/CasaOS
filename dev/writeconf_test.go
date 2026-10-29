@@ -83,4 +83,12 @@ func TestWriteconf(t *testing.T) {
 	if !strings.Contains(string(ls), "EnableMergerFS=false") {
 		t.Errorf("local-storage.conf EnableMergerFS\n%s", ls)
 	}
+
+	am, err := os.ReadFile(filepath.Join(root, "etc", "app-management.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(am), "DataPath="+lib) {
+		t.Errorf("app-management.conf DataPath\n%s", am)
+	}
 }

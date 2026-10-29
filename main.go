@@ -40,6 +40,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/telemetry"
 	"github.com/ReCasaOS/CasaOS/pkg/trash"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
+	"github.com/ReCasaOS/CasaOS/pkg/utils/httper"
 	"github.com/ReCasaOS/CasaOS/route"
 	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/coreos/go-systemd/daemon"
@@ -87,6 +88,7 @@ func init() {
 	println("build date:", date)
 
 	config.InitSetup(*configFlag, _confSample)
+	httper.UseRcloneSocketFromEnv()
 
 	logger.LogInit(config.AppInfo.LogPath, config.AppInfo.LogSaveName, config.AppInfo.LogFileExt)
 	if len(*dbFlag) == 0 {
@@ -403,7 +405,7 @@ var stopHostStats atomic.Pointer[func()]
 // /v1/sys/utilization, the storages the dashboard lists, the alerts and the message bus.
 func hostStatsConfig() hoststats.Config {
 	return hoststats.Config{
-		Dir:   "/var/lib/casaos/stats/core",
+		Dir:   hoststats.DirForDBPath(config.AppInfo.DBPath),
 		Clock: stats.SystemClock{},
 		Source: &hoststats.SystemSource{
 			Interfaces: func() []string { return service.MyService.System().GetNet(true) },
