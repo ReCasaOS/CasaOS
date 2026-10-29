@@ -24,6 +24,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/hwmon"
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
@@ -618,8 +619,10 @@ func GetCPUThermalZone() string {
 
 func (s *systemService) GetCPUTemperature() int {
 	outPut := ""
-	path := GetCPUThermalZone()
-	if len(path) > 0 {
+	// the processor's own chip first, found by its name: hwmon0 is the charger on a laptop, and a box with no thermal zone has nothing else
+	if raw, ok := hwmon.CPUTemperature("/sys/class/hwmon"); ok {
+		outPut = strconv.Itoa(raw)
+	} else if path := GetCPUThermalZone(); len(path) > 0 {
 		outPut = string(file.ReadFullFile(path + "/temp"))
 	} else {
 		outPut = string(file.ReadFullFile("/sys/class/hwmon/hwmon0/temp1_input"))
