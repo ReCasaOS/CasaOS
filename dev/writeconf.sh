@@ -16,7 +16,7 @@ LOG="$DEVROOT/log"
 DATA="$DEVROOT/data"
 WWW="$DEVROOT/www"
 
-mkdir -p "$ETC" "$RUN" "$LIB" "$LOG" "$DATA" "$WWW" "$LIB/db" "$LIB/conf" "$LIB/appstore" "$LIB/apps"
+mkdir -p "$ETC" "$RUN" "$LIB" "$LOG" "$DATA" "$DATA/AppData" "$WWW" "$LIB/db" "$LIB/conf" "$LIB/appstore" "$LIB/apps"
 
 cat >"$ETC/gateway.ini" <<EOF
 [common]
@@ -110,4 +110,63 @@ ImageManaged=false
 
 [file]
 ManagementRoots=$DATA
+EOF
+
+cat >"$LIB/fake-disks.json" <<'EOF'
+{
+  "blockdevices": [
+    {
+      "name": "vda",
+      "path": "/dev/vda",
+      "type": "disk",
+      "tran": "sata",
+      "size": 10737418240,
+      "ro": false,
+      "rm": false,
+      "hotplug": false,
+      "serial": "FAKEVDA",
+      "subsystems": "block:scsi:pci",
+      "children": [
+        {
+          "name": "vda1",
+          "path": "/dev/vda1",
+          "type": "part",
+          "fstype": "ext4",
+          "mountpoint": "/",
+          "size": 10737418240,
+          "uuid": "11111111-1111-1111-1111-111111111111",
+          "fssize": "10737418240",
+          "fsused": "1073741824",
+          "fsavail": "9663676416"
+        }
+      ]
+    },
+    {
+      "name": "vdb",
+      "path": "/dev/vdb",
+      "type": "disk",
+      "tran": "sata",
+      "size": 21474836480,
+      "ro": false,
+      "rm": false,
+      "hotplug": false,
+      "serial": "FAKEVDB",
+      "subsystems": "block:scsi:pci",
+      "children": [
+        {
+          "name": "vdb1",
+          "path": "/dev/vdb1",
+          "type": "part",
+          "fstype": "ext4",
+          "mountpoint": "",
+          "size": 21474836480,
+          "uuid": "22222222-2222-2222-2222-222222222222",
+          "fssize": "21474836480",
+          "fsused": "0",
+          "fsavail": "21474836480"
+        }
+      ]
+    }
+  ]
+}
 EOF

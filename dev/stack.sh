@@ -36,12 +36,16 @@ if [[ "$(http_code http://127.0.0.1:8081/ping)" == "200" ]]; then
 fi
 
 mkdir -p "$DEVROOT/run"
-rm -f "$DEVROOT/run/"*.url "$DEVROOT/run/"*.pid "$DEVROOT/run/internal.secret"
+rm -f "$DEVROOT/run/"*.url "$DEVROOT/run/"*.pid "$DEVROOT/run/internal.secret" "$DEVROOT/run/docker.sock"
 
 bash "$WRITECONF" "$DEVROOT" "$CASAOS_REPO"
 
 export CASAOS_RCLONE_SOCKET="$DEVROOT/run/rclone.sock"
 export RCLONE_CONFIG="$DEVROOT/lib/rclone.conf"
+export DOCKER_HOST="unix://$DEVROOT/run/docker.sock"
+export CASAOS_LSBLK_FILE="$DEVROOT/lib/fake-disks.json"
+export CASAOS_FAKE_STORAGE=1
+export CASAOS_GIT_APPS_DATA="$DEVROOT/data/AppData"
 
 # cwd $DEVROOT/etc is inside the CasaOS module, so `go run` of a sibling
 # fails with "outside main module". A workspace at DEVROOT is found first.
@@ -119,6 +123,25 @@ wait_ping() {
 	stop 1
 }
 
+spawn "$CASAOS_REPO" ./dev/fakedocker -socket "$DEVROOT/run/docker.sock" -data "$DEVROOT/lib/fake-docker"
+fake_pid="${PIDS[-1]}"
+fake_ok=0
+deadline=$((SECONDS + 120))
+while (( SECONDS < deadline )); do
+	if ! alive "$fake_pid"; then
+		echo "warning: fake-docker exited; continuing" >&2
+		break
+	fi
+	if [[ -S "$DEVROOT/run/docker.sock" ]]; then
+		fake_ok=1
+		break
+	fi
+	sleep 0.5
+done
+if [[ "$fake_ok" -eq 0 ]] && alive "$fake_pid"; then
+	echo "warning: fake-docker did not create its socket; continuing" >&2
+fi
+
 spawn "$DEVROOT/etc" "$PARENT/CasaOS-Gateway" -w "$DEVROOT/www"
 REQUIRED+=("${PIDS[-1]}")
 wait_ping "${PIDS[-1]}"
@@ -183,9 +206,6 @@ else
 fi
 
 if [[ -d "$PARENT/CasaOS-AppManagement" ]]; then
-	if [[ ! -S /var/run/docker.sock && -z "${DOCKER_HOST:-}" ]]; then
-		echo "warning: no Docker socket; compose calls will fail" >&2
-	fi
 	spawn "$PARENT/CasaOS-AppManagement" . -c "$DEVROOT/etc/app-management.conf"
 	REQUIRED+=("${PIDS[-1]}")
 	wait_file "$DEVROOT/run/app-management.url" "${PIDS[-1]}" app-management

@@ -1,6 +1,7 @@
 package writeconf_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -90,5 +91,23 @@ func TestWriteconf(t *testing.T) {
 	}
 	if !strings.Contains(string(am), "DataPath="+lib) {
 		t.Errorf("app-management.conf DataPath\n%s", am)
+	}
+
+	appData := filepath.Join(data, "AppData")
+	if fi, err := os.Stat(appData); err != nil || !fi.IsDir() {
+		t.Errorf("data/AppData: %v", err)
+	}
+	disksRaw, err := os.ReadFile(filepath.Join(lib, "fake-disks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disks struct {
+		Blockdevices []map[string]any `json:"blockdevices"`
+	}
+	if err := json.Unmarshal(disksRaw, &disks); err != nil {
+		t.Fatal(err)
+	}
+	if len(disks.Blockdevices) != 2 {
+		t.Fatalf("blockdevices %d", len(disks.Blockdevices))
 	}
 }
