@@ -90,8 +90,9 @@ type AptResult struct {
 
 // A Box is the world, as far as a plan has to ask. Every method reads. An error is never a "no": the plan treats what it cannot read as a reason to refuse.
 type Box interface {
-	// OS is the ID and the VERSION_ID of /etc/os-release ("debian", "12"); empty when they cannot be read.
-	OS() (id, version string)
+	// OS is the system as a module is compared with it: the ID and the VERSION_ID of /etc/os-release ("debian", "12"), or those of the release a derivative is built on; empty when they
+	// cannot be read.
+	OS() OSRelease
 	// Arch is the architecture of the machine as the archives name it ("amd64", "arm64").
 	Arch() string
 	// ReCasaOSVersion is the version of the DISTRIBUTION that is installed ("0.5.29", with or without a v): what the installer writes to /var/lib/casaos/fork-release and
@@ -180,9 +181,25 @@ type PlanArchive struct {
 	Bytes *int64 `json:"bytes,omitempty"`
 }
 
-// A System is what the box says of itself that decides whether a module is for it.
+// An OSRelease is the operating system as a module is compared with it. ID and Version are those of os-release ("debian", "12"), and for a derivative those of the release it is built
+// on, read from a codename of a fixed table; From then says what the box is and the codename that made it that release ("linuxmint:22.2, UBUNTU_CODENAME=noble"), and is empty otherwise.
+type OSRelease struct {
+	ID, Version, From string
+}
+
+// A System is what the box says of itself that decides whether a module is for it. OSFrom is the From of its OSRelease.
 type System struct {
 	OSID, OSVersion, Arch, ReCasaOS string
+	OSFrom                          string
+}
+
+// osWords is the system as the check of the os says it: "debian:12", and for a derivative the box as it is after the release it was read as, "ubuntu:24.04 (linuxmint:22.2,
+// UBUNTU_CODENAME=noble)".
+func osWords(s System) string {
+	if s.OSFrom == "" {
+		return s.OSID + ":" + s.OSVersion
+	}
+	return s.OSID + ":" + s.OSVersion + " (" + s.OSFrom + ")"
 }
 
 // SystemChecks are the three checks that depend on the system only, in the order the plan lists them (os, arch, recasaos): the dashboard shows them for every module in the list, and the
@@ -201,10 +218,23 @@ func SystemChecks(e Entry, s System) []Check {
 		return clip(text)
 	}
 	return []Check{
-		{Code: CheckOS, OK: osOK, Detail: detail(osOK, "unsupported "+s.OSID+":"+s.OSVersion)},
+		// a derivative is said even when it passes: the plan shows the box as it is, and not only the release it was read as
+		{Code: CheckOS, OK: osOK, Detail: osDetail(osOK, s)},
 		{Code: CheckArch, OK: assetOK, Detail: detail(assetOK, "no archive for "+s.Arch)},
 		{Code: CheckReCasaOS, OK: versionOK, Detail: detail(versionOK, releaseWords(s.ReCasaOS, haveOK, e.Manifest.MinReCasaOS))},
 	}
+}
+
+// osDetail is what the check of the os says: nothing for a Debian or an Ubuntu that the module names, the release a derivative was read as and what it is, and "unsupported" before
+// either when the module does not name it.
+func osDetail(ok bool, s System) string {
+	switch {
+	case !ok:
+		return clip("unsupported " + osWords(s))
+	case s.OSFrom != "":
+		return clip(osWords(s))
+	}
+	return ""
 }
 
 // releaseWords is what the check of the release says when it fails: the release that the box has and the one that is needed, or "unknown" for a box whose release is not known (the marker
@@ -247,12 +277,13 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 	}
 	r.Tag, r.Tier = entry.Tag, entry.Tier
 
-	osID, osVersion := box.OS()
+	osr := box.OS()
+	osID, osVersion := osr.ID, osr.Version
 	arch := box.Arch()
 	asset, _ := entry.Asset(arch)
 	r.Archive.URL = asset.URL
 
-	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
+	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, OSFrom: osr.From, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
 	checks = append(checks, installedCheck(box, entry), foreignUnitCheck(box, entry), busyCheck(box), dpkgCheck(box))
 	standing := !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK && !c.skipped })
 
@@ -306,7 +337,8 @@ func sortedCopy(in []string) []string {
 }
 
 // PlanID is the id that binds an install to the plan that was shown: "m1-" and the first 32 hexadecimal digits of the SHA-256 of the module, its tag, the sha256 of the archive for this
-// architecture, the packages to install (sorted) and the operating system, written as a JSON object with its keys in this order so that no two sets of values are the same text.
+// architecture, the packages to install (sorted) and the operating system as the os check compared it (for a derivative, the release it was read as), written as a JSON object with
+// its keys in this order so that no two sets of values are the same text.
 func PlanID(name, tag, archiveSHA256, osID, osVersion string, toInstall []string) string {
 	text, _ := json.Marshal(struct {
 		Name      string   `json:"name"`

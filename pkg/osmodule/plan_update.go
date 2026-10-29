@@ -241,7 +241,8 @@ func PlanUpdate(cat Catalogue, name string, box UpdateBox) PlanResult {
 	}
 	r.Tag, r.Tier = entry.Tag, entry.Tier
 
-	osID, osVersion := box.OS()
+	osr := box.OS()
+	osID, osVersion := osr.ID, osr.Version
 	arch := box.Arch()
 	asset, _ := entry.Asset(arch)
 	r.Archive.URL = asset.URL
@@ -255,7 +256,7 @@ func PlanUpdate(cat Catalogue, name string, box UpdateBox) PlanResult {
 		r.Update.Dropped = diff(PackagesFor(st.Manifest, arch), packages)
 	}
 
-	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
+	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, OSFrom: osr.From, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
 	checks = append(checks, installed, newer, updateUnitCheck(box, entry, st), busyCheck(box), dpkgCheck(box))
 	standing := !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK && !c.skipped })
 

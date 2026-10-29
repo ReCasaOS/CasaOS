@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 )
 
 // What the box says it is, read the way a real box has the file: on Debian and on Ubuntu /etc/os-release is a link to ../usr/lib/os-release.
@@ -97,8 +99,8 @@ func TestTheOSIsReadAsTheFileIsOnARealBox(t *testing.T) {
 			f := newFixture(t)
 			c.set(f)
 			bx := &box{ctx: context.Background(), env: &f.env}
-			if id, v := bx.OS(); id != c.wantID || v != c.wantV {
-				t.Errorf("the box is %q %q, not %q %q", id, v, c.wantID, c.wantV)
+			if o := bx.OS(); o.ID != c.wantID || o.Version != c.wantV {
+				t.Errorf("the box is %q %q, not %q %q", o.ID, o.Version, c.wantID, c.wantV)
 			}
 		})
 	}
@@ -120,5 +122,41 @@ func TestABoxWithTheRealLayoutOfOSReleaseIsNotTurnedAway(t *testing.T) {
 	}
 	if sys, _ := mods[0].(map[string]any)["system"].(map[string]any); sys["supported"] != true {
 		t.Errorf("the system is not supported: %v", sys)
+	}
+}
+
+// Linux Mint 22.2, as its /etc/os-release is (Ubuntu 24.04 underneath)
+const mint222 = "NAME=\"Linux Mint\"\nVERSION=\"22.2 (Zara)\"\nID=linuxmint\nID_LIKE=\"ubuntu debian\"\nPRETTY_NAME=\"Linux Mint 22.2\"\nVERSION_ID=\"22.2\"\nVERSION_CODENAME=zara\nUBUNTU_CODENAME=noble\n"
+
+// A derivative is read as the release it is built on only by a codename of the table, through the nearer of debian and ubuntu that ID_LIKE names; a Debian or an Ubuntu is read as itself.
+func TestADerivativeIsReadAsItsBaseByACodenameOfTheTable(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		text string
+		want osmodule.OSRelease
+	}{
+		{"Linux Mint 22.2", mint222, osmodule.OSRelease{ID: "ubuntu", Version: "24.04", From: "linuxmint:22.2, UBUNTU_CODENAME=noble"}},
+		{"LMDE 6, on Debian 12", "ID=linuxmint\nID_LIKE=debian\nVERSION_ID=6\nDEBIAN_CODENAME=bookworm\n", osmodule.OSRelease{ID: "debian", Version: "12", From: "linuxmint:6, DEBIAN_CODENAME=bookworm"}},
+		{"a derivative of Ubuntu 22.04", "ID=pop\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=\"22.04\"\nUBUNTU_CODENAME=jammy\n", osmodule.OSRelease{ID: "ubuntu", Version: "22.04", From: "pop:22.04, UBUNTU_CODENAME=jammy"}},
+		{"a derivative of Ubuntu 26.04", "ID=zorin\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=19\nUBUNTU_CODENAME=resolute\n", osmodule.OSRelease{ID: "ubuntu", Version: "26.04", From: "zorin:19, UBUNTU_CODENAME=resolute"}},
+		{"a derivative with a codename the table does not know", "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=\"21.3\"\nUBUNTU_CODENAME=focal\n", osmodule.OSRelease{ID: "linuxmint", Version: "21.3"}},
+		{"a codename of the table under the other key", "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=\"22.2\"\nDEBIAN_CODENAME=noble\n", osmodule.OSRelease{ID: "linuxmint", Version: "22.2"}},
+		{"Ubuntu named first and only a Debian codename", "ID=x\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=1\nDEBIAN_CODENAME=trixie\n", osmodule.OSRelease{ID: "x", Version: "1"}},
+		{"no codename", "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=\"22.2\"\n", osmodule.OSRelease{ID: "linuxmint", Version: "22.2"}},
+		{"a codename in capitals", "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=\"22.2\"\nUBUNTU_CODENAME=Noble\n", osmodule.OSRelease{ID: "linuxmint", Version: "22.2"}},
+		{"an ID_LIKE that names neither", "ID=fedora-x\nID_LIKE=\"rhel fedora\"\nVERSION_ID=40\nUBUNTU_CODENAME=noble\n", osmodule.OSRelease{ID: "fedora-x", Version: "40"}},
+		{"no ID_LIKE", "ID=linuxmint\nVERSION_ID=\"22.2\"\nUBUNTU_CODENAME=noble\n", osmodule.OSRelease{ID: "linuxmint", Version: "22.2"}},
+		{"ID_LIKE with a name that only contains ubuntu", "ID=x\nID_LIKE=ubuntu-like\nVERSION_ID=1\nUBUNTU_CODENAME=noble\n", osmodule.OSRelease{ID: "x", Version: "1"}},
+		{"a derivative with no version", "ID=linuxmint\nID_LIKE=\"ubuntu debian\"\nUBUNTU_CODENAME=noble\n", osmodule.OSRelease{}},
+		{"Ubuntu 24.04", "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\nUBUNTU_CODENAME=noble\n", osmodule.OSRelease{ID: "ubuntu", Version: "24.04"}},
+		{"Ubuntu with a codename that does not match its version", "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"20.04\"\nUBUNTU_CODENAME=noble\n", osmodule.OSRelease{ID: "ubuntu", Version: "20.04"}},
+		{"Debian 12", debian12, osmodule.OSRelease{ID: "debian", Version: "12"}},
+		{"Debian 11", "ID=debian\nVERSION_ID=\"11\"\nVERSION_CODENAME=bullseye\n", osmodule.OSRelease{ID: "debian", Version: "11"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseOSRelease([]byte(c.text)); got != c.want {
+				t.Errorf("%+v, not %+v", got, c.want)
+			}
+		})
 	}
 }

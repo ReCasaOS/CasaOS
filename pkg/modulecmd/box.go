@@ -73,8 +73,22 @@ var _ osmodule.Box = (*box)(nil)
 
 var osReleaseValueRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
 
-// parseOSRelease is the ID and the VERSION_ID of an os-release file; empty for one that is missing or whose value is not a plain word.
-func parseOSRelease(raw []byte) (id, version string) {
+// osBases is the table a derivative is read from: the releases of Debian and Ubuntu that the manifests name today, by the codename that os-release gives of the release it is built on
+// (UBUNTU_CODENAME, DEBIAN_CODENAME). It is the one place the core maps a codename to a release; a codename that is not in it is a box that is not read as any release, and the version
+// of the derivative itself (Mint's 22.2) is never taken for one.
+var osBases = map[string]struct {
+	key       string
+	codenames map[string]string
+}{
+	"ubuntu": {"UBUNTU_CODENAME", map[string]string{"jammy": "22.04", "noble": "24.04", "resolute": "26.04"}},
+	"debian": {"DEBIAN_CODENAME", map[string]string{"bookworm": "12", "trixie": "13"}},
+}
+
+// parseOSRelease is the ID and the VERSION_ID of an os-release file; empty for one that is missing or whose value is not a plain word. A box whose ID is neither debian nor ubuntu is read
+// as the release it is built on when the nearer of the two that ID_LIKE names (ID_LIKE lists the closest first) gives a codename of osBases, and is itself otherwise.
+func parseOSRelease(raw []byte) osmodule.OSRelease {
+	var id, version, like string
+	codenames := map[string]string{}
 	for _, line := range strings.Split(string(raw), "\n") {
 		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok {
@@ -88,28 +102,46 @@ func parseOSRelease(raw []byte) (id, version string) {
 			id = value
 		case "VERSION_ID":
 			version = value
+		case "ID_LIKE":
+			like = value
+		case "UBUNTU_CODENAME", "DEBIAN_CODENAME":
+			codenames[key] = value
 		}
 	}
 	if !osReleaseValueRe.MatchString(id) || !osReleaseValueRe.MatchString(version) {
-		return "", ""
+		return osmodule.OSRelease{}
 	}
-	return id, version
+	if _, base := osBases[id]; base {
+		return osmodule.OSRelease{ID: id, Version: version}
+	}
+	for _, name := range strings.Fields(like) {
+		base, ok := osBases[name]
+		if !ok {
+			continue
+		}
+		codename := codenames[base.key]
+		if v, known := base.codenames[codename]; known {
+			return osmodule.OSRelease{ID: name, Version: v, From: id + ":" + version + ", " + base.key + "=" + codename}
+		}
+		break
+	}
+	return osmodule.OSRelease{ID: id, Version: version}
 }
 
-// OS is the ID and the VERSION_ID of the file os-release(5) names: /etc/os-release, which on Debian and Ubuntu is a link to ../usr/lib/os-release, and /usr/lib/os-release when there is
+// OS is the system of the file os-release(5) names (parseOSRelease): /etc/os-release, which on Debian and Ubuntu is a link to ../usr/lib/os-release, and /usr/lib/os-release when there is
 // none in /etc (a link that leads nowhere is none). A file that is there and is not a regular file, or is too large, or does not read, is not looked past: it is a box that cannot be told.
-func (b *box) OS() (string, string) {
+func (b *box) OS() osmodule.OSRelease {
 	for _, p := range []string{pathOSRelease, pathOSReleaseLib} {
 		raw, err := readFollowing(b.env.Roots.Path(p), 64<<10)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return "", ""
+			return osmodule.OSRelease{}
 		}
 		return parseOSRelease(raw)
 	}
-	return "", ""
+	return osmodule.OSRelease{}
 }
 
 // readFollowing reads a file that is a regular file once its links are followed, at most max bytes (more is an error). It is for the files the system itself keeps as links.

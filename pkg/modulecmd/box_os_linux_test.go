@@ -20,8 +20,8 @@ func TestAnOSReleaseThatIsAPipeIsNotWaitedFor(t *testing.T) {
 	}
 	done := make(chan string, 1)
 	go func() {
-		id, v := (&box{ctx: context.Background(), env: &f.env}).OS()
-		done <- id + v
+		o := (&box{ctx: context.Background(), env: &f.env}).OS()
+		done <- o.ID + o.Version
 	}()
 	select {
 	case got := <-done:
