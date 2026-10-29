@@ -2,7 +2,7 @@
 
 Status: approved in conversation on 2026-10-29, section by section.
 
-This is layer C of the three-layer development setup. Layer A is `pnpm dev:mock`. Layer B is `docs/superpowers/specs/2026-10-28-dev-stack-design.md`. Polish is `docs/superpowers/specs/2026-10-29-dev-stack-polish-design.md`. Combined README/CHANGELOG documentation for A+B+polish+C is a later pass, after this layer ships.
+This is layer C of the three-layer development setup. Layer A is `pnpm dev:mock`. Layer B is `docs/superpowers/specs/2026-10-28-dev-stack-design.md`. Polish is `docs/superpowers/specs/2026-10-29-dev-stack-polish-design.md`. Combined README/CHANGELOG documentation for A+B+polish+C is `dev/README.md` and the component READMEs.
 
 ## Goal
 
@@ -172,7 +172,7 @@ PATH stubs live in `t.TempDir()` prepended to `PATH`. No real Docker, `lsblk`, `
 - mergerfs, FUSE, EnableMergerFS=true, relocating LocalStorage `mkdir /DATA`
 - `os-upgrade/busy`, CasaOS `alerts.json` / `fork-release`
 - SelectShareModal `/DATA` (UI leftover from polish)
-- Combined A+B+polish+C README/CHANGELOG (explicitly after this layer)
+- Combined A+B+polish+C README/CHANGELOG (done: `dev/README.md` and the component READMEs)
 - Changing Gateway, ports, UID 0 refusal, or ManagementRoots
 - macOS and Windows
 - New npm packages
