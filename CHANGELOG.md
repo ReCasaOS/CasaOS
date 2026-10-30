@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A local process stack for development.** `./dev/stack.sh` starts the Gateway and the sibling services as the developer, on `127.0.0.1:8081`, with config and state under `.dev-runtime/`. Compose talks to a record-keeping Engine (`dev/fakedocker`) on a unix socket in that tree, not to `/var/run/docker.sock`. Storage lists two fixture disks. The file API is confined to `.dev-runtime/data`. This is not `install.sh`. Commands and limits are in `dev/README.md`.
+- **`GET /v1/file/roots`** returns the directories `[file] ManagementRoots` names, so the dashboard Files panel opens there instead of `/DATA`.
 - **`[file] ManagementRoots` confines the file API** (opt-in; empty = unchanged). Comma-separated directories, e.g. `/DATA,/media`.
   - every file route: path spelled once (`..`, `//` refused), resolved below its root with `openat2(RESOLVE_BENEATH)`: no `..` or symlink out; 403 otherwise, reason in `data`
   - root opened on every check: a disk mounted later is the one checked; a root missing (not mounted yet) → its paths 403 until it is; an unusable setting → every path 403 (no exit, the dashboard starts)
