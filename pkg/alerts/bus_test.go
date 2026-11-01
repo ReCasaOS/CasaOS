@@ -48,6 +48,10 @@ func TestEachEventsAlert(t *testing.T) {
 			"backup:error", map[string]string{"backup:destination": "nas", "backup:kind": "backup"},
 			alert{"backup::nas", Backups, `The backup to "nas" failed.`}, false,
 		},
+		{
+			"backup:check-error", map[string]string{"backup:destination": "nas", "message": "restic exited with 1: pack 1a2b: does not exist\nmore"},
+			alert{"backup-check:nas", Backups, `The restic repository at "nas" does not check out: restic exited with 1: pack 1a2b: does not exist.`}, false,
+		},
 		{"app:install-error", with(immich, "message", "SECRET=hunter2 is invalid"), alert{"app:immich:install", Apps, "Installing Immich failed."}, false},
 		{"app:update-error", with(immich), alert{"app:immich:update", Apps, "Updating Immich failed."}, false},
 		{"app:start-error", with(immich), alert{"app:immich:start", Apps, "Starting Immich failed."}, false},

@@ -60,7 +60,7 @@ var containerEvents = []string{"app:container-died", "app:container-unhealthy", 
 
 // busEvents are the events of AppManagement this package subscribes to.
 func busEvents() []string {
-	names := append([]string{"backup:error"}, containerEvents...)
+	names := append([]string{"backup:error", "backup:check-error"}, containerEvents...)
 	names = append(names, resourceEvents...)
 	for operation := range operations {
 		names = append(names, "app:"+operation+"-error")
@@ -229,6 +229,14 @@ func fromEvent(name string, p map[string]string) (a alert, resolved, ok bool) {
 			sentence += ": " + reason
 		}
 		return alert{key: "backup:" + p["app:name"] + ":" + p["backup:destination"], category: Backups, sentence: sentence + "."}, false, true
+	case "backup:check-error":
+		// a repository kept with restic that does not check out: no app, and not a backup
+		// that failed but the copies that are already there
+		sentence := fmt.Sprintf("The restic repository at %q does not check out", p["backup:destination"])
+		if reason := plain(p["message"]); reason != "" {
+			sentence += ": " + reason
+		}
+		return alert{key: "backup-check:" + p["backup:destination"], category: Backups, sentence: sentence + "."}, false, true
 	case "app:container-died":
 		sentence := app + " stopped unexpectedly" + container
 		if code := p["docker:container:exit-code"]; code != "" {
