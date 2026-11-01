@@ -71,6 +71,8 @@ The long form is in the [installer's README](https://github.com/ReCasaOS/CasaOS-
 
 Bug reports and requests go to [issues on this repository](https://github.com/ReCasaOS/CasaOS/issues), whichever component is involved. A vulnerability is reported privately, as [SECURITY.md](SECURITY.md) says. Pull requests are welcome on any of the component repositories under [ReCasaOS](https://github.com/orgs/ReCasaOS/repositories); each has its own release workflow, and the installer pins them.
 
+What is planned is in the [roadmap](https://github.com/ReCasaOS/CasaOS-Install/blob/main/ROADMAP.md).
+
 If ReCasaOS is useful to you, a [star on GitHub](https://github.com/ReCasaOS/CasaOS) helps other people find it.
 
 The upstream Discord, wiki and website belong to IceWhale and are not run by this distribution.
