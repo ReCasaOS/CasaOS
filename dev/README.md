@@ -75,7 +75,7 @@ SIGINT or SIGTERM on the stack process stops the children. Nothing should still 
 
 **Compose.** `DOCKER_HOST` is `unix://.dev-runtime/run/docker.sock`, always, even if the parent shell pointed at `/var/run/docker.sock`. `dev/fakedocker` is a record-keeping Engine: ping, version, image inspect as present (no pull), compose Up/List/start/stop/Down as records, YAML copied under `.dev-runtime/lib/fake-docker/<project>/`. Bind mounts and networks are recorded, not created on the host. No published ports, no `exec`. Any other Engine path is **501**. AppManagement surfaces that as a compose/install error. If fake-docker fails to start, `DOCKER_HOST` still points at the stack socket; compose fails at the client. There is no fallback to the host daemon.
 
-**Storage.** `CASAOS_LSBLK_FILE` is `.dev-runtime/lib/fake-disks.json`: two SATA disks (`/dev/vda` system, `/dev/vdb` unmounted spare). `CASAOS_FAKE_STORAGE=1` makes `mount`, `umount`, `parted`, `partprobe`, `e2label` and `sfdisk` no-ops. `EnableMergerFS=false`. There is no FUSE and no merge mount. LocalStorage may log `mkdir /DATA` permission denied and continue; that is expected without root.
+**Storage.** `CASAOS_LSBLK_FILE` is `.dev-runtime/lib/fake-disks.json`: two SATA disks (`/dev/vda` system, `/dev/vdb` unmounted spare). `CASAOS_FAKE_STORAGE=1` together with that file makes `mount`, `umount`, `parted`, `partprobe`, `e2label` and `sfdisk` no-ops. Alone, `CASAOS_FAKE_STORAGE=1` does nothing: the real commands still run. `mdadm`, `mkfs` and `wipefs` are not faked, so RAID and format flows fail without root. `EnableMergerFS=false`. There is no FUSE and no merge mount. LocalStorage may log `mkdir /DATA` permission denied and continue; that is expected without root.
 
 **App data.** `CASAOS_GIT_APPS_DATA` is `.dev-runtime/data/AppData`. AppManagement `DataPath` is `.dev-runtime/lib`, so catalogues and installed compose files stay out of `/var/lib/casaos`.
 
@@ -88,7 +88,7 @@ Production defaults do not change when those environment variables and config ke
 | `CASAOS_CONFIG_PATH` | `.dev-runtime/etc` (directory that contains `gateway.ini`) | `/etc/casaos` |
 | `DOCKER_HOST` | `unix://.dev-runtime/run/docker.sock` | the host Docker daemon |
 | `CASAOS_LSBLK_FILE` | `.dev-runtime/lib/fake-disks.json` | host `lsblk` |
-| `CASAOS_FAKE_STORAGE` | `1` | real mount/parted |
+| `CASAOS_FAKE_STORAGE` | `1` (no-ops only with `CASAOS_LSBLK_FILE`) | real mount/parted |
 | `CASAOS_GIT_APPS_DATA` | `.dev-runtime/data/AppData` | `/DATA/AppData` |
 | `CASAOS_RCLONE_SOCKET` | `.dev-runtime/run/rclone.sock` | the packaged rclone socket |
 
