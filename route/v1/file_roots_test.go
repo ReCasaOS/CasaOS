@@ -356,3 +356,50 @@ func TestARootIsNotMoved(t *testing.T) {
 		t.Errorf("move a root: %d %s, want 403", rec.Code, rec.Body.String())
 	}
 }
+
+func TestGetFileRootsConfined(t *testing.T) {
+	data, _ := confinedBox(t)
+	rec := call(t, GetFileRoots, http.MethodGet, "/v1/file/roots", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Success int `json:"success"`
+		Data    struct {
+			Roots []string `json:"roots"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Success != common_err.SUCCESS {
+		t.Fatalf("success %d", result.Success)
+	}
+	if len(result.Data.Roots) != 1 || result.Data.Roots[0] != data {
+		t.Fatalf("roots = %#v, want [%q]", result.Data.Roots, data)
+	}
+}
+
+func TestGetFileRootsUnconfined(t *testing.T) {
+	previous := fileroots.Default
+	fileroots.Default = nil
+	t.Cleanup(func() { fileroots.Default = previous })
+	rec := call(t, GetFileRoots, http.MethodGet, "/v1/file/roots", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Data struct {
+			Roots []string `json:"roots"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Data.Roots == nil {
+		t.Fatal("roots is null, want []")
+	}
+	if len(result.Data.Roots) != 0 {
+		t.Fatalf("roots = %#v, want []", result.Data.Roots)
+	}
+}

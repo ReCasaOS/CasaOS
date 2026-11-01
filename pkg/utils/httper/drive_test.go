@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -76,5 +77,34 @@ func TestTheRepliesOfRcloneAreNotLogged(t *testing.T) {
 	}
 	if !strings.Contains(logged, `"status": 500`) && !strings.Contains(logged, `"status":500`) {
 		t.Errorf("the refused config's status is not logged:\n%s", logged)
+	}
+}
+
+func TestUseRcloneSocketFromEnv(t *testing.T) {
+	previous := rcloneSocket
+	t.Cleanup(func() {
+		rcloneSocket = previous
+	})
+
+	t.Setenv("CASAOS_RCLONE_SOCKET", "")
+	rcloneSocket = "/var/run/rclone/rclone.sock"
+	UseRcloneSocketFromEnv()
+	if rcloneSocket != "/var/run/rclone/rclone.sock" {
+		t.Fatalf("empty env: %q", rcloneSocket)
+	}
+
+	if err := os.Unsetenv("CASAOS_RCLONE_SOCKET"); err != nil {
+		t.Fatal(err)
+	}
+	rcloneSocket = "/var/run/rclone/rclone.sock"
+	UseRcloneSocketFromEnv()
+	if rcloneSocket != "/var/run/rclone/rclone.sock" {
+		t.Fatalf("unset: %q", rcloneSocket)
+	}
+
+	t.Setenv("CASAOS_RCLONE_SOCKET", "/tmp/x.sock")
+	UseRcloneSocketFromEnv()
+	if rcloneSocket != "/tmp/x.sock" {
+		t.Fatalf("set: %q", rcloneSocket)
 	}
 }

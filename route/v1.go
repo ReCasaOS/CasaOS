@@ -175,6 +175,7 @@ func InitV1Router() http.Handler {
 			v1FileGroup.POST("/trash/restore", v1.RestoreTrash)
 			v1FileGroup.DELETE("/trash", v1.DeleteTrash)
 			v1FileGroup.DELETE("/trash/all", v1.EmptyTrash)
+			v1FileGroup.GET("/roots", v1.GetFileRoots)
 		}
 		v1CloudGroup := v1Group.Group("/cloud")
 		v1CloudGroup.Use()

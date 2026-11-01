@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
@@ -46,6 +47,14 @@ var DefaultTimeout = time.Second * 30
 
 // rcloneSocket is rclone's remote control; a test points it elsewhere.
 var rcloneSocket = "/var/run/rclone/rclone.sock"
+
+// UseRcloneSocketFromEnv points rclone's remote control at
+// CASAOS_RCLONE_SOCKET when that env is set and non-empty.
+func UseRcloneSocketFromEnv() {
+	if p, ok := os.LookupEnv("CASAOS_RCLONE_SOCKET"); ok && p != "" {
+		rcloneSocket = p
+	}
+}
 
 func NewRestyClient() *resty.Client {
 	transport := http.Transport{
