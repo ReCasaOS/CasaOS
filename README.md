@@ -1,4 +1,4 @@
-# CasaOS
+# ReCasaOS
 
 > **Not affiliated with IceWhale.**
 > This is an independent, community-maintained distribution of CasaOS. It is not produced, endorsed, sponsored, certified or supported by Shanghai IceWhale Technology Limited or by any of the upstream CasaOS maintainers.
@@ -7,22 +7,21 @@
 >
 > The original project is [IceWhaleTech/CasaOS](https://github.com/IceWhaleTech/CasaOS). Please do not report problems with this distribution to IceWhale — open them at [ReCasaOS/CasaOS/issues](https://github.com/ReCasaOS/CasaOS/issues).
 
-A personal cloud for the home: a dashboard, an app store, Docker apps, files and shares on your own hardware. This repository is the core service of **ReCasaOS**, a maintained release of the project after upstream [IceWhaleTech/CasaOS](https://github.com/IceWhaleTech/CasaOS) stopped shipping in 2025.
+A personal cloud for the home, on your own hardware: a dashboard, an app store, Docker apps, files and shares, backups, alerts, virtual machines. **ReCasaOS** is a maintained release of [CasaOS](https://github.com/IceWhaleTech/CasaOS) after upstream stopped shipping in 2025. It builds on [alvins82's fork](https://github.com/alvins82/CasaOS), which kept CasaOS installable on Docker 29 and Ubuntu 26, and goes on from there. This repository is the core service; the installer, the release pipeline and the long form of what changed live in [CasaOS-Install](https://github.com/ReCasaOS/CasaOS-Install#readme).
 
 <p align="center">
     <a href="https://github.com/ReCasaOS/CasaOS-Install/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ReCasaOS/CasaOS-Install?color=162453&style=flat-square&label=Distribution" /></a>
+    <a href="https://github.com/ReCasaOS/CasaOS/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/ReCasaOS/CasaOS?color=162453&style=flat-square&label=Stars" /></a>
     <a href="https://github.com/ReCasaOS/CasaOS/blob/main/LICENSE"><img alt="Licence" src="https://img.shields.io/github/license/ReCasaOS/CasaOS?color=162453&style=flat-square&label=License" /></a>
     <a href="https://github.com/ReCasaOS/CasaOS/issues"><img alt="Issues" src="https://img.shields.io/github/issues/ReCasaOS/CasaOS?color=162453&style=flat-square&label=Issues" /></a>
     <a href="https://github.com/ReCasaOS/CasaOS/pulls"><img alt="Pull requests" src="https://img.shields.io/github/issues-pr/ReCasaOS/CasaOS?color=162453&style=flat-square&label=PRs" /></a>
     <br/><br/>
-    <kbd>
-      <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="snapshot-dark.jpg">
-          <source media="(prefers-color-scheme: light)" srcset="snapshot-light.jpg">
-          <img alt="CasaOS dashboard" src="snapshot-light.jpg">
-      </picture>
-    </kbd>
+    <img alt="The settings panel, grouped under Display, System and Updates" src="https://raw.githubusercontent.com/ReCasaOS/CasaOS-Install/main/docs/screenshots/settings.png" width="260" />
+    &nbsp;
+    <img alt="Backups: destinations, schedules and history" src="https://raw.githubusercontent.com/ReCasaOS/CasaOS-Install/main/docs/screenshots/backups.png" width="440" />
 </p>
+
+<p align="center"><sub>The dashboard, rendered with sample data.</sub></p>
 
 ## Install
 
@@ -34,17 +33,15 @@ One command for every supported system and architecture; the installer detects b
 
 **Migrating from IceWhale's or alvins82's installer** works the same way, in place, without uninstalling first. The installer stops and restarts the CasaOS services while upgrading, so back up what matters. Afterwards, `cat /var/lib/casaos/fork-release` prints the distribution release installed. Do not use `get.casaos.io/update` after migrating: it installs IceWhale's frozen component bundle over this one.
 
-**If the dashboard reports you are on the latest version and never offers an update**, run the install command once by hand. Up to v0.4.41, four files shipped here still carried the previous fork's release URLs, and one of them rewrote `/etc/casaos/casaos.conf` on every install, so a host installed from this distribution polled a feed whose newest release is older than what it was already running. From CasaOS-Install v0.4.42 onwards, re-running the installer corrects the configuration in place, and the update button follows this distribution on its own afterwards.
-
-Everything the installer downloads is verified against a SHA-256 digest before extraction. What is in each release, and how a release is built, is described in [CasaOS-Install](https://github.com/ReCasaOS/CasaOS-Install#readme).
+Everything the installer downloads is verified against a SHA-256 digest before extraction. A box sends anonymous statistics (which release it runs, how fast it updated, what kind of hardware), on by default; `--no-telemetry` on the install line turns them off, and [what is sent](https://github.com/ReCasaOS/CasaOS-Install#anonymous-statistics) is listed property by property. If the dashboard says you are on the latest version and never offers an update, run the install command once by hand: hosts installed before CasaOS-Install v0.4.42 polled a feed older than what they ran, and re-running the installer corrects it.
 
 ### Compatibility
 
 Architectures: amd64, arm64, armv7.
 
-Tested: Debian 12, Ubuntu Server 20.04 and 26.04, Raspberry Pi OS. Reported working by the community: Elementary 6.1, Armbian 22.04. Not fully tested: Alpine, OpenWrt, Arch.
+Every release is installed from scratch by CI right after it is published, and exercised end to end (apps, backup and restore, storage, alerts), on Ubuntu 22.04 (amd64 and arm64), Ubuntu 24.04 and 26.04, and Debian 12 and 13. Debian 11 is out of support and its security repository still lists packages it no longer serves, so a fresh install would stop at the first one it needs from there: the installer says so and offers to take that repository from archive.debian.org (`--use-debian-archive` answers yes in advance), and CI installs it that way. Reported working by the community, not covered by CI: Raspberry Pi OS, Elementary 6.1, Armbian 22.04. Not fully tested: Alpine, OpenWrt, Arch.
 
-Docker 28 and 29 are tested on every release, and the installer accepts Docker 20 or later (24.0.5 and 20.10.24 were also tried by hand on v0.5.16). The Docker 29 incompatibility that broke the upstream release is fixed here, without the `DOCKER_MIN_API_VERSION` workaround.
+Docker 28 and 29 are tested on every release, and the installer accepts Docker 20 or later (24.0.5 and 20.10.24 were also tried by hand on v0.5.16). The Docker 29 incompatibility that broke the upstream release is fixed here, without the `DOCKER_MIN_API_VERSION` workaround. ReCasaOS never updates Docker behind your back: see [Updating Docker](https://github.com/ReCasaOS/CasaOS-Install#updating-docker).
 
 ### Uninstall
 
@@ -52,29 +49,29 @@ Docker 28 and 29 are tested on every release, and the installer accepts Docker 2
 sudo casaos-uninstall
 ```
 
-## What this distribution changes
+## What ReCasaOS adds to CasaOS
 
-Relative to upstream, through alvins82's fork and then here. The full list per release is in [CHANGELOG.md](CHANGELOG.md).
+- **Apps.** A Compose editor and a `.env` for every app, and your own stacks listed as apps. Deploy an app from a git repository, following a branch or its release tags, with a webhook to redeploy on a push and a rollback when a version does not start. Updates that say what they will do, and opt-in automatic updates at night, never during a backup.
+- **Backups.** Apps and the box itself, to S3, SFTP, FTP, WebDAV, OneDrive, Google Drive, Dropbox or anything else rclone speaks, optionally encrypted, on a schedule with a retention, a history and a restore. A destination can be switched to a [restic](https://restic.net) repository: each backup then costs only what changed, and files keep their owners and permissions.
+- **Alerts.** A notification on your phone or an e-mail (ntfy, Telegram, e-mail, Discord, Gotify, Matrix and more) when a backup fails, a disk fails or fills up, a RAID array loses a disk, an app crashes, a container, a virtual machine or the machine stays above a threshold, or an update pauses. Nothing is sent until you add a channel.
+- **Storage and files.** Software RAID from the Storage manager: its state, an alert when it loses a disk, repair, creation (RAID 0, 1, 5, 6, 10) and RAID 1 to RAID 5. A trash in Files that keeps what you delete for thirty days. Shared folders that ask who can open them, with share accounts managed from the dashboard and Time Machine shares. Merged storage restored across reboots, and SMB discovery over mDNS and Windows Web Service Discovery.
+- **Virtual machines and statistics.** The optional `virt` module creates and runs virtual machines from the dashboard, with the console in the browser. A *Statistics* app shows processor, memory, network, disk and health of every container, every virtual machine and the machine itself, live and over the last 7 days, with resource alerts.
+- **System.** The update button and the *System packages* update follow this distribution, and Docker is left out of the latter until you confirm. Optional modules are installed, updated and removed from the dashboard or with `casaos module`. The dashboard says when your Debian or Ubuntu release has run out of security support, and a wizard moves a Debian 11 machine to Debian 12 (beta, off by default).
+- **Accounts, network and security.** Passwords stored with argon2id and two-factor authentication. Nothing on the message bus without signing in, a refresh token that opens no route, and no trust in the loopback address as an identity. HTTPS on 443 out of the box. Moving files can no longer delete them, and a leaked download link no longer gives write access. The dashboard no longer sends a machine fingerprint to a third party, and the installer no longer asks one where you are.
+- **The dashboard.** Vue 3, a dark theme, a complete French translation, a grouped settings panel, and a home page that fits a phone.
 
-- **Sharing** — Samba shares can be restricted to an account, managed from the dashboard and separate from the CasaOS login; shares convert between guest and account access in place. Upstream shares were world-writable, with files created as root, and Windows 10 and 11 refuse guest SMB entirely. Hosts advertise themselves over mDNS and Windows discovery without SMB1. A host that owns `/etc/samba/smb.conf` itself (configuration management, image-built systems) sets `[server] SambaMainConfig = external` and puts `include = /etc/samba/smb.casa.conf` in its `[global]` section: CasaOS then writes only that file, and refuses a share change while the line is missing.
-- **Apps** — The `docker-compose.yml` of an installed app is editable from its settings, with validation before apply. Apps open inside CasaOS or in a new tab, per app. System package updates run from the dashboard.
-- **Storage** — External disks form the merged `/DATA` while the system disk stays out of it; volumes can be renamed; merge mounts are restored across reboots and slow disks.
-- **Network** — The gateway serves HTTPS with a certificate you supply.
-- **Security** — Routes that act as root on the host require a token even from loopback. Optionally, `[file] ManagementRoots` confines the file manager to the directories it names (see CHANGELOG). The dashboard no longer sends a machine fingerprint to a third party, and the core no longer carries the helper and configuration entries that pointed at IceWhale's `api.casaos.io`. The install-time migration script no longer geo-locates the host either: it asked `ipconfig.io`, then `ifconfig.io`, for the country on every install and every upgrade in order to pick a download mirror. Migration tools come from GitHub, and the domain is a constant rather than a setting: what it points at is downloaded and run as root without verification.
-- **Updater** — Update discovery and installation follow this distribution's releases rather than IceWhale's frozen bundle, in the binary, in the shipped configuration samples, and in the setup script that writes the running host's configuration.
-- **Platform** — Docker 29 and Ubuntu 26 support; every component is built and released from CI, with digests published alongside.
-- **Packaging** — The Go module is `github.com/ReCasaOS/CasaOS`, built against the forked `github.com/ReCasaOS/CasaOS-Common`, so log lines, stack traces and `go version -m` on the shipped binary name this distribution instead of IceWhale.
+The long form is in the [installer's README](https://github.com/ReCasaOS/CasaOS-Install#what-recasaos-adds-to-casaos), and every change, release by release, in its [changelog](https://github.com/ReCasaOS/CasaOS-Install/blob/main/CHANGELOG.md).
 
-## Features
+### Opt-in settings in this repository
 
-- A dashboard designed for the home: no forms, no configuration files to learn
-- An app store with one-click installs — Nextcloud, Home Assistant, AdGuard, Jellyfin, the *arr stack and more — and any Docker image beyond it
-- File management and network shares that need no technical background
-- Widgets for what you care about: resource usage, app status, storage
+- **A host that owns `/etc/samba/smb.conf` itself** (configuration management, image-built systems) sets `[server] SambaMainConfig = external` and puts `include = /etc/samba/smb.casa.conf` in its `[global]` section: CasaOS then writes only that file, and refuses a share change while the line is missing.
+- **`[file] ManagementRoots`** confines the file manager to the directories it names: every path, upload, copy and move is checked, and links that lead out are refused.
 
 ## Community and contributing
 
-Bug reports and requests go to [issues on this repository](https://github.com/ReCasaOS/CasaOS/issues), whichever component is involved. Pull requests are welcome on any of the component repositories under [ReCasaOS](https://github.com/orgs/ReCasaOS/repositories); each has its own release workflow, and the installer pins them.
+Bug reports and requests go to [issues on this repository](https://github.com/ReCasaOS/CasaOS/issues), whichever component is involved. A vulnerability is reported privately, as [SECURITY.md](SECURITY.md) says. Pull requests are welcome on any of the component repositories under [ReCasaOS](https://github.com/orgs/ReCasaOS/repositories); each has its own release workflow, and the installer pins them.
+
+If ReCasaOS is useful to you, a [star on GitHub](https://github.com/ReCasaOS/CasaOS) helps other people find it.
 
 The upstream Discord, wiki and website belong to IceWhale and are not run by this distribution.
 
@@ -84,11 +81,12 @@ The upstream Discord, wiki and website belong to IceWhale and are not run by thi
 |---|---|
 | [CasaOS](https://github.com/ReCasaOS/CasaOS) | this one: system API, files, shares, updater |
 | [CasaOS-UI](https://github.com/ReCasaOS/CasaOS-UI) | the dashboard (a submodule here) |
-| [CasaOS-AppManagement](https://github.com/ReCasaOS/CasaOS-AppManagement) | apps, Compose, the app store client |
-| [CasaOS-Gateway](https://github.com/ReCasaOS/CasaOS-Gateway) | reverse proxy in front of every service |
-| [CasaOS-UserService](https://github.com/ReCasaOS/CasaOS-UserService) | accounts and login |
+| [CasaOS-AppManagement](https://github.com/ReCasaOS/CasaOS-AppManagement) | apps, Compose, git deployments, backups, statistics, the app store client |
+| [CasaOS-Gateway](https://github.com/ReCasaOS/CasaOS-Gateway) | reverse proxy in front of every service, HTTPS |
+| [CasaOS-UserService](https://github.com/ReCasaOS/CasaOS-UserService) | accounts, login, two-factor |
 | [CasaOS-MessageBus](https://github.com/ReCasaOS/CasaOS-MessageBus) | events between services |
-| [CasaOS-LocalStorage](https://github.com/ReCasaOS/CasaOS-LocalStorage) | disks, volumes, merged storage |
+| [CasaOS-LocalStorage](https://github.com/ReCasaOS/CasaOS-LocalStorage) | disks, volumes, merged storage, RAID |
+| [CasaOS-VirtManagement](https://github.com/ReCasaOS/CasaOS-VirtManagement) | virtual machines, the optional `virt` module |
 | [CasaOS-Install](https://github.com/ReCasaOS/CasaOS-Install) | the installer and the release bundle |
 
 ## Development
@@ -97,7 +95,7 @@ This repository builds `casaos`, the core service. Behind the gateway it serves 
 
 Its configuration is `/etc/casaos/casaos.conf`, created on first run from [the sample embedded in the binary](build/sysroot/etc/casaos/casaos.conf.sample). Its database and user data live under `/var/lib/casaos`, its logs under `/var/log/casaos`, and the shell helpers it shells out to under `/usr/share/casaos/shell`. The dashboard is the `UI` submodule and is built separately.
 
-Go 1.21 or newer is the only requirement; the Go build does not need the submodule.
+The only requirement is the Go version in [`go.mod`](go.mod); the Go build does not need the submodule. [DEVELOPING.md](DEVELOPING.md) describes a development environment.
 
 ```sh
 CGO_ENABLED=0 GOOS=linux go build .
