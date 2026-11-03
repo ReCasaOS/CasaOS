@@ -107,9 +107,9 @@ func (f *Fleet) joinKey(st MasterState, self bool) (string, error) {
 	if st.Relay == "" || self {
 		return "", nil
 	}
-	rs, ok := f.loadRelay()
-	if !ok || rs.Relay != st.Relay || rs.FleetID != st.FleetID {
-		return "", errRelayLost
+	rs, err := f.relayFor(context.Background(), st)
+	if err != nil {
+		return "", err
 	}
 	key, _, err := f.RelayAPI.JoinKey(context.Background(), rs.Relay, rs.FleetID, rs.Secret)
 	switch {
@@ -119,6 +119,57 @@ func (f *Fleet) joinKey(st MasterState, self bool) (string, error) {
 		return "", ErrFleetGone
 	}
 	return key, err
+}
+
+// relayFor is relay.json for the relay of st, master.json as it was read; the
+// caller holds relayMu, not mu. relay.json naming another fleet (FleetID
+// included) is a crash between ChangeRelay's two writes, relay.json first:
+// when this box is on relay.json's network, master.json is brought in line as
+// ChangeRelay would have done; otherwise, or with no relay.json, errRelayLost.
+func (f *Fleet) relayFor(ctx context.Context, st MasterState) (RelayState, error) {
+	rs, ok := f.loadRelay()
+	if !ok {
+		return RelayState{}, errRelayLost
+	}
+	if rs.Relay == st.Relay && rs.FleetID == st.FleetID {
+		return rs, nil
+	}
+	if f.Net == nil {
+		return RelayState{}, errRelayLost
+	}
+	ns, err := f.Net.State(ctx)
+	if err != nil || !ns.Connected || ns.Addr == "" || !sameURL(ns.LoginServer, rs.Relay) {
+		return RelayState{}, errRelayLost
+	}
+	info, err := f.Gateway()
+	if err != nil {
+		return RelayState{}, err
+	}
+	port, err := httpsPort(info)
+	if err != nil {
+		return RelayState{}, err
+	}
+	if err := f.moveMaster(rs, ns.Addr, port); err != nil {
+		return RelayState{}, err
+	}
+	f.Log("fleet: master.json followed relay.json after an unfinished relay change; the old fleet idles out at its relay", nil)
+	return rs, nil
+}
+
+// moveMaster points master.json at rs's fleet, this box at addr on its network,
+// and asks every other box for a new code. The caller holds relayMu, not mu.
+func (f *Fleet) moveMaster(rs RelayState, addr, port string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st, on := f.master()
+	if !on {
+		return ErrMasterOff
+	}
+	st.Address, st.Relay, st.FleetID, st.NetAddr = relayAddress(addr, port), rs.Relay, rs.FleetID, addr
+	for i := range st.Boxes {
+		st.Boxes[i].NeedsRecode = !st.Boxes[i].Self // this box's own code names its loopback gateway, not the relay
+	}
+	return f.saveMaster(st)
 }
 
 // removeNode takes a removed box off the relay's private network, best-effort
@@ -192,9 +243,9 @@ func (f *Fleet) ChangeRelay(ctx context.Context, relayURL string) error {
 	if !on || st.Relay == "" {
 		return errors.New("the master does not run over a relay: enable it over one first")
 	}
-	old, ok := f.loadRelay()
-	if !ok || old.Relay != st.Relay || old.FleetID != st.FleetID {
-		return errRelayLost
+	old, err := f.relayFor(ctx, st)
+	if err != nil {
+		return err
 	}
 	creds, err := f.RelayAPI.CreateFleet(ctx, relayURL)
 	if err != nil {
@@ -241,19 +292,7 @@ func (f *Fleet) ChangeRelay(ctx context.Context, relayURL string) error {
 	if err := f.saveRelay(rs); err != nil { // relay.json first: a crash between the two never loses the new secret
 		return lost(err)
 	}
-	f.mu.Lock()
-	st, on = f.master()
-	if on {
-		st.Address, st.Relay, st.FleetID, st.NetAddr = relayAddress(addr, port), relayURL, creds.FleetID, addr
-		for i := range st.Boxes {
-			st.Boxes[i].NeedsRecode = !st.Boxes[i].Self // this box's own code names its loopback gateway, not the relay
-		}
-		err = f.saveMaster(st)
-	} else {
-		err = ErrMasterOff
-	}
-	f.mu.Unlock()
-	if err != nil {
+	if err := f.moveMaster(rs, addr, port); err != nil {
 		return lost(err)
 	}
 	if err := f.RelayAPI.DeleteFleet(bg, old.Relay, old.FleetID, old.Secret); err != nil {

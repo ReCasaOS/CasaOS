@@ -371,3 +371,54 @@ func TestNoSecretOrJoinKeyInLogs(t *testing.T) {
 		}
 	}
 }
+
+// A crash between ChangeRelay's two writes leaves relay.json on the new fleet
+// and master.json on the old one. When this box is on relay.json's network,
+// master.json follows it, as ChangeRelay would have done (M1).
+func TestAdoptsRelayJSONAfterACrashInChangeRelay(t *testing.T) {
+	f, n, _, _ := relayOn(t)
+	box, _, err := f.AddBox("box a", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2 := newFakeRelay(t)
+	if err := f.saveRelay(RelayState{Relay: r2.URL, FleetID: "fl1", Secret: testSecret}); err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	n.after = NetState{Connected: true, Addr: "100.64.0.8", LoginServer: r2.URL}
+	n.mu.Unlock()
+	if err := f.EnableMasterRelay(context.Background(), r2.URL); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := f.MasterStatus()
+	if st.Relay != r2.URL || st.Address != "https://100.64.0.8" || st.NetAddr != "100.64.0.8" || !boxStatus(t, f, box.ID).NeedsRecode {
+		t.Fatalf("%+v", st)
+	}
+	_, code, err := f.AddBox("box b", "", false)
+	if err != nil || code.Relay != r2.URL || r2.count(&r2.creates) != 0 || r2.count(&r2.keys) != 1 {
+		t.Fatalf("%+v %v, creates %d keys %d", code, err, r2.creates, r2.keys)
+	}
+}
+
+// The same relay but another fleet, and this box not on that network: no
+// guessing, and no "already on" either (M2).
+func TestRelayJSONOfAnotherFleetIsLost(t *testing.T) {
+	f, _, r, _ := relayOn(t)
+	if err := f.saveRelay(RelayState{Relay: r.URL, FleetID: "fl2", Secret: testSecret}); err != nil {
+		t.Fatal(err)
+	}
+	master := readFile(t, f.masterPath())
+	if err := f.EnableMasterRelay(context.Background(), r.URL); !errors.Is(err, errRelayLost) {
+		t.Fatalf("got %v", err)
+	}
+	if _, _, err := f.AddBox("box a", "", false); !errors.Is(err, errRelayLost) {
+		t.Fatalf("got %v", err)
+	}
+	if err := f.ChangeRelay(context.Background(), r.URL); !errors.Is(err, errRelayLost) {
+		t.Fatalf("got %v", err)
+	}
+	if readFile(t, f.masterPath()) != master || r.count(&r.creates) != 1 {
+		t.Fatal("master.json changed, or a fleet was created")
+	}
+}

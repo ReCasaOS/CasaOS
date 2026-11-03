@@ -380,10 +380,11 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 		return errMemberElsewhere
 	}
 	if on && st.Relay != "" {
-		switch {
-		case !haveRelay: // never a new fleet over a lost secret: the members are in the old one
-			return errRelayLost
-		case rs.Relay == relayURL && st.Relay == relayURL:
+		cur, err := f.relayFor(ctx, st) // never a new fleet over a lost secret: the members are in the old one
+		if err != nil {
+			return err
+		}
+		if cur.Relay == relayURL {
 			return nil
 		}
 		return errors.New("the master already runs over another relay: change the relay instead")
