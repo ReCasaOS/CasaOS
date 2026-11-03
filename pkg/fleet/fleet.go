@@ -15,9 +15,9 @@ import (
 // Fleet holds both roles of one box. Its func fields are what main wires and
 // tests replace.
 type Fleet struct {
-	Root        string             // "/" on a box; a temp dir in tests
-	RuntimePath func() string      // where internal.secret lives
-	Now         func() time.Time   // the clock
+	Root        string           // "/" on a box; a temp dir in tests
+	RuntimePath func() string    // where internal.secret lives
+	Now         func() time.Time // the clock
 	Log         func(msg string, err error)
 }
 
