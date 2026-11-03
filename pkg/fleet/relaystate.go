@@ -31,7 +31,11 @@ var (
 	// ErrFleetGone: the relay no longer knows the fleet (ErrRelayFleetGone), for instance after a long idle time.
 	ErrFleetGone error = &relayError{"the relay no longer knows this fleet (it deletes idle fleets): enable the master on a relay again by changing the relay (the same one will do), then give each box a new code", ErrRelayFleetGone}
 
-	errRelayLost   = errors.New("relay.json, which holds this fleet's secret, is missing or damaged: disable the master and enable it again")
+	errRelayLost = errors.New("relay.json, which holds this fleet's secret, is missing or damaged: disable the master and enable it again")
+	// errRelayNotUp: relay.json is intact but names another fleet than
+	// master.json, and this box is not on its network (yet), after an
+	// unfinished relay change or a reboot, say.
+	errRelayNotUp  = errors.New("the private network is not up yet; try again in a moment")
 	errLoginServer = errors.New("the relay announces a different login server than its own address; this is not supported yet")
 )
 
@@ -125,7 +129,8 @@ func (f *Fleet) joinKey(st MasterState, self bool) (string, error) {
 // caller holds relayMu, not mu. relay.json naming another fleet (FleetID
 // included) is a crash between ChangeRelay's two writes, relay.json first:
 // when this box is on relay.json's network, master.json is brought in line as
-// ChangeRelay would have done; otherwise, or with no relay.json, errRelayLost.
+// ChangeRelay would have done; otherwise errRelayNotUp. No relay.json, or a
+// damaged one, is errRelayLost.
 func (f *Fleet) relayFor(ctx context.Context, st MasterState) (RelayState, error) {
 	rs, ok := f.loadRelay()
 	if !ok {
@@ -134,12 +139,13 @@ func (f *Fleet) relayFor(ctx context.Context, st MasterState) (RelayState, error
 	if rs.Relay == st.Relay && rs.FleetID == st.FleetID {
 		return rs, nil
 	}
-	if f.Net == nil {
-		return RelayState{}, errRelayLost
+	n, err := f.PrivateNet()
+	if err != nil {
+		return RelayState{}, err
 	}
-	ns, err := f.Net.State(ctx)
+	ns, err := n.State(ctx)
 	if err != nil || !ns.Connected || ns.Addr == "" || !sameURL(ns.LoginServer, rs.Relay) {
-		return RelayState{}, errRelayLost
+		return RelayState{}, errRelayNotUp
 	}
 	info, err := f.Gateway()
 	if err != nil {
@@ -259,7 +265,7 @@ func (f *Fleet) ChangeRelay(ctx context.Context, relayURL string) error {
 			f.Log("fleet: cannot delete the new relay's fleet; the relay removes it on its own once idle", err)
 		}
 	}
-	if !sameURL(creds.LoginServer, relayURL) {
+	if ValidMasterURL(creds.LoginServer) != nil || !sameURL(creds.LoginServer, relayURL) {
 		drop()
 		return errLoginServer
 	}
@@ -280,9 +286,14 @@ func (f *Fleet) ChangeRelay(ctx context.Context, relayURL string) error {
 		if serr := f.saveRelay(old); serr != nil {
 			f.Log("fleet: cannot write relay.json back", serr)
 		}
-		return fmt.Errorf("this box is now off the private network, its boxes cannot reach it: change the relay again: %w", err)
+		const msg = "this box is now off the private network, its boxes cannot reach it: change the relay again: "
+		if errors.Is(err, ErrOtherNetwork) {
+			// not a 409: the dashboard replaces a 409 "another private network" with its own text, dropping the advice
+			return errors.New(msg + err.Error())
+		}
+		return fmt.Errorf(msg+"%w", err)
 	}
-	if err := n.Up(ctx, creds.LoginServer, key, netHostname(hostname)); err != nil {
+	if err := n.Up(ctx, relayURL, key, netHostname(hostname)); err != nil { // our validated address: sameURL as the announced one
 		return lost(err)
 	}
 	addr, err := waitAddr(ctx, n)

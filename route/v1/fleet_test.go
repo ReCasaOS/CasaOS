@@ -597,6 +597,23 @@ func TestPutRelayChangesRelay(t *testing.T) {
 	}
 }
 
+// Another network found once the old one was left: the dashboard replaces a
+// 409 that says "another private network" with its own text, which would drop
+// "change the relay again"; this one is a 400, its whole message shown (M-e).
+func TestChangeRelayOffTheNetworkKeepsItsAdvice(t *testing.T) {
+	_, n, _ := relayFixture(t)
+	if code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil); code != http.StatusOK {
+		t.Fatalf("enable = %d %q", code, res.Message)
+	}
+	n.mu.Lock()
+	n.other = "https://controlplane.tailscale.com"
+	n.mu.Unlock()
+	code, res := callFleet(t, PutFleetRelay, http.MethodPut, "/v1/fleet/relay", `{"relay":"https://relay2.example"}`, nil)
+	if code != http.StatusBadRequest || !strings.Contains(res.Message, "change the relay again") || !strings.Contains(res.Message, "another private network") {
+		t.Fatalf("change = %d %q", code, res.Message)
+	}
+}
+
 func TestGetFleetReportsRelayAndNeedsRecode(t *testing.T) {
 	relayFixture(t)
 	callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil)

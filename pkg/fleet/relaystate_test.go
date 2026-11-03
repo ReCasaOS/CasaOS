@@ -318,6 +318,30 @@ func TestEnableMasterRelayRefusesDifferentLoginServer(t *testing.T) {
 	}
 }
 
+// The login server a relay announces is checked as a master address, and Up
+// gets this box's own validated relay address, never the announced string (M-c).
+func TestAnnouncedLoginServerIsValidated(t *testing.T) {
+	const bad = "https://x@relay.example?y"
+	f, n, r, _ := relayMaster(t)
+	r.set(func(r *fakeRelay) { r.loginServer = bad })
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err == nil || n.called("up") || exists(t, f.relayPath()) || exists(t, f.masterPath()) {
+		t.Fatalf("enable: %v, calls %v", err, n.calls)
+	}
+	r.set(func(r *fakeRelay) { r.loginServer = r.URL + "/" })
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil || !n.called("up "+r.URL+" "+testJoinKey) {
+		t.Fatalf("enable: %v, calls %v", err, n.calls)
+	}
+	r2 := newFakeRelay(t)
+	r2.set(func(r *fakeRelay) { r.loginServer = bad })
+	if err := f.ChangeRelay(context.Background(), r2.URL); err == nil || n.called("up "+r2.URL) || n.called("down") {
+		t.Fatalf("change: %v, calls %v", err, n.calls)
+	}
+	r2.set(func(r *fakeRelay) { r.loginServer = r2.URL + "/" })
+	if err := f.ChangeRelay(context.Background(), r2.URL); err != nil || !n.called("up "+r2.URL+" "+testJoinKey) {
+		t.Fatalf("change: %v, calls %v", err, n.calls)
+	}
+}
+
 func TestEnableMasterRelayIdempotent(t *testing.T) {
 	f, _, r, _ := relayMaster(t)
 	for range 2 {

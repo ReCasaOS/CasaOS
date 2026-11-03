@@ -415,7 +415,7 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 	}
 	rs = RelayState{Relay: relayURL, FleetID: creds.FleetID, Secret: creds.Secret}
 	undo := func(down bool) { f.leaveRelay(context.WithoutCancel(ctx), rs, down) }
-	if !sameURL(creds.LoginServer, relayURL) {
+	if ValidMasterURL(creds.LoginServer) != nil || !sameURL(creds.LoginServer, relayURL) {
 		undo(false)
 		return errLoginServer
 	}
@@ -428,7 +428,7 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 		undo(false)
 		return err
 	}
-	if err := n.Up(ctx, creds.LoginServer, key, netHostname(hostname)); err != nil {
+	if err := n.Up(ctx, relayURL, key, netHostname(hostname)); err != nil { // our validated address: sameURL as the announced one
 		undo(false) // Up undid itself: a Down here could log out a network that is not ours
 		return err
 	}

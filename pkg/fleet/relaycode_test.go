@@ -427,23 +427,38 @@ func TestAdoptsRelayJSONAfterACrashInChangeRelay(t *testing.T) {
 }
 
 // The same relay but another fleet, and this box not on that network: no
-// guessing, and no "already on" either (M2).
+// guessing, and no "already on" either (M2). relay.json is intact, so the box
+// is only off the network for now: never told to disable the master (M-b);
+// that advice is for a relay.json missing or damaged.
 func TestRelayJSONOfAnotherFleetIsLost(t *testing.T) {
 	f, _, r, _ := relayOn(t)
 	if err := f.saveRelay(RelayState{Relay: r.URL, FleetID: "fl2", Secret: testSecret}); err != nil {
 		t.Fatal(err)
 	}
 	master := readFile(t, f.masterPath())
-	if err := f.EnableMasterRelay(context.Background(), r.URL); !errors.Is(err, errRelayLost) {
+	notYet := func(err error) bool {
+		return errors.Is(err, errRelayNotUp) && strings.Contains(err.Error(), "try again") && !strings.Contains(err.Error(), "disable")
+	}
+	if err := f.EnableMasterRelay(context.Background(), r.URL); !notYet(err) {
 		t.Fatalf("got %v", err)
 	}
-	if _, _, err := f.AddBox("box a", "", false); !errors.Is(err, errRelayLost) {
+	if _, _, err := f.AddBox("box a", "", false); !notYet(err) {
 		t.Fatalf("got %v", err)
 	}
-	if err := f.ChangeRelay(context.Background(), r.URL); !errors.Is(err, errRelayLost) {
+	if err := f.ChangeRelay(context.Background(), r.URL); !notYet(err) {
 		t.Fatalf("got %v", err)
 	}
 	if readFile(t, f.masterPath()) != master || r.count(&r.creates) != 1 {
 		t.Fatal("master.json changed, or a fleet was created")
+	}
+	for _, body := range []string{"", "{damaged"} {
+		if body == "" {
+			os.Remove(f.relayPath())
+		} else {
+			os.WriteFile(f.relayPath(), []byte(body), 0o600)
+		}
+		if _, _, err := f.AddBox("box a", "", false); !errors.Is(err, errRelayLost) || !strings.Contains(err.Error(), "disable the master") {
+			t.Fatalf("relay.json %q: got %v", body, err)
+		}
 	}
 }
