@@ -396,7 +396,7 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 	if err != nil {
 		return err
 	}
-	if ns.Connected {
+	if ns.LoginServer != "" { // in a network, even stopped: the owner's, not ours
 		return ErrOtherNetwork
 	}
 	creds, err := f.RelayAPI.CreateFleet(ctx, relayURL)
@@ -419,7 +419,7 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 		return err
 	}
 	if err := n.Up(ctx, creds.LoginServer, key, netHostname(hostname)); err != nil {
-		undo(!errors.Is(err, ErrOtherNetwork)) // that refusal ran nothing; another failure may have started tailscaled
+		undo(false) // Up undid itself: a Down here could log out a network that is not ours
 		return err
 	}
 	addr, err := waitAddr(ctx, n)

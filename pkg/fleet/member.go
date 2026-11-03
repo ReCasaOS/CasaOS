@@ -135,16 +135,16 @@ func (f *Fleet) Join(code string) error {
 	ctx := context.Background()
 	if member && old.Relay != "" && !sameURL(old.Relay, c.Relay) {
 		// the master moved to another relay: leave the old relay's network, ours
-		if ns, err := n.State(ctx); err == nil && ns.Connected && sameURL(ns.LoginServer, old.Relay) {
+		if ns, err := n.State(ctx); err == nil && sameURL(ns.LoginServer, old.Relay) {
 			f.netDown(n)
 		}
 	}
 	hostname, _ := f.Hostname()
 	if err := n.Up(ctx, c.Relay, c.JoinKey, netHostname(hostname)); err != nil {
-		if errors.Is(err, ErrOtherNetwork) { // it ran nothing: the other network stays as it is
+		// Up undid itself: a Down here could log out a network that is not ours
+		if errors.Is(err, ErrOtherNetwork) {
 			return err
 		}
-		f.netDown(n)
 		return redact(err, c.JoinKey) // a Net that let the key into its error does not pass it on
 	}
 	if _, err := waitAddr(ctx, n); err != nil {

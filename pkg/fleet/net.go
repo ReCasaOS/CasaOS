@@ -28,16 +28,20 @@ const netTimeout = 45 * time.Second
 
 // NetState is what the box's private network looks like right now.
 type NetState struct {
-	Connected   bool
-	Addr        string // this box's address on the private network
-	LoginServer string // the coordination server it is joined to, without a trailing slash
+	Connected bool
+	Addr      string // this box's address on the private network
+	// LoginServer is the coordination server the box is logged in to, without a
+	// trailing slash, connected or not (a stopped tailscale is still in its
+	// network); empty when the box is in none.
+	LoginServer string
 }
 
 // Net drives the box's private network.
 type Net interface {
 	State(ctx context.Context) (NetState, error)
-	// Up joins the network of loginServer. It returns ErrOtherNetwork, having
-	// run nothing, if the box is already in another one.
+	// Up joins the network of loginServer. It returns ErrOtherNetwork if the
+	// box is already in another one, leaving it as it was. On any error, Up has
+	// undone what it did itself: the caller has nothing to take down.
 	Up(ctx context.Context, loginServer, authKey, hostname string) error
 	// Down leaves the network and stops the daemon.
 	Down(ctx context.Context) error
@@ -114,12 +118,13 @@ func (t *tailscale) State(ctx context.Context) (NetState, error) {
 		}
 		return NetState{}, errors.New("tailscale status: unreadable output")
 	}
-	if st.BackendState != "Running" {
+	switch st.BackendState {
+	case "", "NoState", "NeedsLogin": // logged in nowhere
 		return NetState{}, nil
 	}
-	// The status JSON does not carry the coordination server; the prefs do.
-	// A connected box whose server cannot be read is an error: it must not
-	// look like a free one.
+	// Any other state (Running, Stopped, Starting...) is logged in somewhere.
+	// The status JSON does not carry the coordination server; the prefs do. A
+	// box whose server cannot be read is an error: it must not look like a free one.
 	praw, err := t.run(ctx, "debug", "prefs")
 	var prefs struct{ ControlURL string }
 	if err != nil || json.Unmarshal(praw, &prefs) != nil {
@@ -128,7 +133,11 @@ func (t *tailscale) State(ctx context.Context) (NetState, error) {
 	if prefs.ControlURL == "" {
 		prefs.ControlURL = defaultControlURL
 	}
-	return NetState{Connected: true, Addr: pickAddr(append(st.Self.TailscaleIPs, st.TailscaleIPs...)), LoginServer: trimURL(prefs.ControlURL)}, nil
+	ns := NetState{LoginServer: trimURL(prefs.ControlURL)}
+	if st.BackendState == "Running" {
+		ns.Connected, ns.Addr = true, pickAddr(append(st.Self.TailscaleIPs, st.TailscaleIPs...))
+	}
+	return ns, nil
 }
 
 // Up starts tailscaled and joins loginServer. It does nothing if the box is
@@ -146,16 +155,28 @@ func (t *tailscale) Up(ctx context.Context, loginServer, authKey, hostname strin
 	if err != nil {
 		return err
 	}
-	if st.Connected {
-		if st.LoginServer != trimURL(loginServer) {
-			return ErrOtherNetwork
-		}
-		if st.Addr != "" {
-			return nil
-		}
+	if st.LoginServer != "" && !sameURL(st.LoginServer, loginServer) {
+		return ErrOtherNetwork
 	}
-	if err := t.systemctl(ctx, "enable", "--now", "tailscaled"); err != nil {
+	if st.Connected && st.Addr != "" {
+		return nil
+	}
+	restore, err := t.start(ctx)
+	if err != nil {
 		return redact(err, authKey)
+	}
+	// A stopped daemon answered nothing: only now can it say it is logged in
+	// elsewhere (tailscaled is Type=notify: started means answering).
+	st, err = t.State(ctx)
+	switch {
+	case err != nil:
+		restore()
+		return err
+	case st.LoginServer != "" && !sameURL(st.LoginServer, loginServer):
+		restore()
+		return ErrOtherNetwork
+	case st.Connected && st.Addr != "":
+		return nil
 	}
 	args := []string{"up", "--login-server=" + loginServer, "--authkey=" + authKey,
 		"--accept-dns=false", "--accept-routes=false", "--timeout=30s"}
@@ -163,9 +184,43 @@ func (t *tailscale) Up(ctx context.Context, loginServer, authKey, hostname strin
 		args = append(args, "--hostname="+hostname)
 	}
 	if _, err := t.run(ctx, args...); err != nil {
+		if st.LoginServer == "" { // logged in nowhere before: a half-done login goes
+			c, cancel := cleanupCtx(ctx)
+			t.run(c, "logout")
+			cancel()
+		}
+		restore()
 		return redact(err, authKey)
 	}
 	return nil
+}
+
+// start starts tailscaled and returns what puts it back as it was: nothing
+// when it was running already; else stopped again, and disabled again unless
+// it was enabled. Best-effort: a failure there leaves only a daemon running.
+func (t *tailscale) start(ctx context.Context) (restore func(), err error) {
+	if t.systemctl(ctx, "is-active", "--quiet", "tailscaled") == nil {
+		return func() {}, nil
+	}
+	undo := []string{"disable", "--now", "tailscaled"}
+	if t.systemctl(ctx, "is-enabled", "--quiet", "tailscaled") == nil {
+		undo = []string{"stop", "tailscaled"}
+	}
+	restore = func() {
+		c, cancel := cleanupCtx(ctx)
+		defer cancel()
+		t.systemctl(c, undo...)
+	}
+	if err := t.systemctl(ctx, "enable", "--now", "tailscaled"); err != nil {
+		restore() // enabled, perhaps, but not started
+		return nil, err
+	}
+	return restore, nil
+}
+
+// cleanupCtx is for undoing: it outlives ctx's cancellation and deadline.
+func cleanupCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 }
 
 // Down logs out and stops tailscaled. It fails only if both steps fail, so the

@@ -9,20 +9,27 @@ import (
 )
 
 // fakeTS stands in for the tailscale command and for systemctl, and records
-// every call.
+// every call. tailscaled is active (or enabled) when said; once started by
+// systemctl, status answers startedStatus when that is set.
 type fakeTS struct {
-	status, prefs string
-	statusErr     error
-	upErr         error
-	logoutErr     error
-	sysErr        error
-	calls         []string
+	status, prefs   string
+	statusErr       error
+	upErr           error
+	logoutErr       error
+	sysErr          error
+	active, enabled bool
+	startedStatus   string
+	started         bool
+	calls           []string
 }
 
 func (f *fakeTS) run(_ context.Context, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, "tailscale "+strings.Join(args, " "))
 	switch args[0] {
 	case "status":
+		if f.started && f.startedStatus != "" {
+			return []byte(f.startedStatus), nil
+		}
 		return []byte(f.status), f.statusErr
 	case "debug":
 		return []byte(f.prefs), nil
@@ -36,6 +43,15 @@ func (f *fakeTS) run(_ context.Context, args ...string) ([]byte, error) {
 
 func (f *fakeTS) systemctl(_ context.Context, args ...string) error {
 	f.calls = append(f.calls, "systemctl "+strings.Join(args, " "))
+	inactive := errors.New("exit status 3")
+	switch {
+	case args[0] == "is-active" && !f.active, args[0] == "is-enabled" && !f.enabled:
+		return inactive
+	case args[0] == "is-active", args[0] == "is-enabled":
+		return nil
+	case args[0] == "enable" && f.sysErr == nil:
+		f.started = true
+	}
 	return f.sysErr
 }
 
@@ -71,7 +87,11 @@ func TestStateParsesRunningAndStopped(t *testing.T) {
 			NetState{Connected: true, Addr: "fd7a::1", LoginServer: "https://r"}, false},
 		{"running, default control", runningJSON, `{"ControlURL":""}`, nil,
 			NetState{Connected: true, Addr: "100.64.0.7", LoginServer: defaultControlURL}, false},
-		{"stopped", `{"BackendState":"Stopped"}`, "", nil, NetState{}, false},
+		{"stopped, logged in elsewhere", `{"BackendState":"Stopped"}`, prefsFor(defaultControlURL), nil,
+			NetState{LoginServer: defaultControlURL}, false},
+		{"starting", `{"BackendState":"Starting"}`, prefsFor("https://relay.example/"), nil,
+			NetState{LoginServer: "https://relay.example"}, false},
+		{"stopped, prefs unreadable", `{"BackendState":"Stopped"}`, "nope", nil, NetState{}, true},
 		{"no state", `{"BackendState":"NoState"}`, "", nil, NetState{}, false},
 		{"needs login", `{"BackendState":"NeedsLogin"}`, "", nil, NetState{}, false},
 		{"daemon down", "", "", errors.New("exit status 1"), NetState{}, false},
@@ -104,12 +124,12 @@ func TestEnableRefusesAnotherTailnet(t *testing.T) {
 }
 
 func TestUpPassesLoginServerAndKey(t *testing.T) {
-	f := &fakeTS{status: `{"BackendState":"Stopped"}`}
+	f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`}
 	if err := f.net().Up(context.Background(), "https://relay.example/", "tskey-secret-0123", "box1"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) < 3 || f.calls[1] != "systemctl enable --now tailscaled" {
-		t.Fatalf("tailscaled must be started before up, calls: %v", f.calls)
+	if want := "systemctl enable --now tailscaled"; len(f.calls) < 3 || f.calls[len(f.calls)-3] != want {
+		t.Fatalf("tailscaled must be started, then asked again, before up; calls: %v", f.calls)
 	}
 	up := f.calls[len(f.calls)-1]
 	for _, want := range []string{"up ", "--login-server=https://relay.example/", "--authkey=tskey-secret-0123", "--hostname=box1", "--accept-dns=false", "--accept-routes=false"} {
@@ -121,13 +141,78 @@ func TestUpPassesLoginServerAndKey(t *testing.T) {
 
 func TestUpErrorNeverContainsAuthKey(t *testing.T) {
 	const key = "tskey-secret-0123"
-	f := &fakeTS{status: `{"BackendState":"Stopped"}`, upErr: errors.New("up --authkey=" + key + " failed: bad key " + key)}
+	f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`, upErr: errors.New("up --authkey=" + key + " failed: bad key " + key)}
 	err := f.net().Up(context.Background(), "https://relay.example", key, "box")
 	if err == nil {
 		t.Fatal("want an error")
 	}
 	if strings.Contains(err.Error(), key) {
 		t.Errorf("error leaks the key: %v", err)
+	}
+}
+
+// A tailscale the owner logged into another network, then stopped, is still
+// theirs: nothing is run on it.
+func TestUpLeavesAStoppedTailscaleOfAnotherNetwork(t *testing.T) {
+	for _, state := range []string{"Stopped", "Starting"} {
+		f := &fakeTS{active: true, status: `{"BackendState":"` + state + `"}`, prefs: prefsFor(defaultControlURL)}
+		if err := f.net().Up(context.Background(), "https://relay.example", testJoinKey, "box"); !errors.Is(err, ErrOtherNetwork) {
+			t.Fatalf("%s: err = %v", state, err)
+		}
+		if f.called("tailscale up") || f.called("tailscale logout") || f.called("systemctl") {
+			t.Errorf("%s: calls %v", state, f.calls)
+		}
+	}
+}
+
+// tailscaled stopped, but logged into another network: it shows only once
+// started. Up puts it back as it was and runs nothing else.
+func TestUpRestoresTailscaledWhenItOnlyNowAnswers(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		f := &fakeTS{enabled: enabled, statusErr: errors.New("exit status 1"), prefs: prefsFor(defaultControlURL),
+			startedStatus: `{"BackendState":"Stopped"}`}
+		if err := f.net().Up(context.Background(), "https://relay.example", testJoinKey, "box"); !errors.Is(err, ErrOtherNetwork) {
+			t.Fatalf("enabled %v: err = %v", enabled, err)
+		}
+		undo := "systemctl disable --now tailscaled"
+		if enabled {
+			undo = "systemctl stop tailscaled"
+		}
+		if !f.called("systemctl enable --now tailscaled") || f.calls[len(f.calls)-1] != undo {
+			t.Errorf("enabled %v: tailscaled not put back, calls %v", enabled, f.calls)
+		}
+		if f.called("tailscale up") || f.called("tailscale logout") || enabled && f.called("systemctl disable") {
+			t.Errorf("enabled %v: calls %v", enabled, f.calls)
+		}
+	}
+}
+
+// A failed up undoes what Up did, and only that.
+func TestUpFailureUndoesOnlyWhatItDid(t *testing.T) {
+	boom := errors.New("timeout")
+	// a box with tailscaled off: logged out again, tailscaled off again
+	f := &fakeTS{statusErr: errors.New("exit status 1"), startedStatus: `{"BackendState":"NeedsLogin"}`, upErr: boom}
+	if err := f.net().Up(context.Background(), "https://relay.example", testJoinKey, "box"); err == nil {
+		t.Fatal("no error")
+	}
+	if n := len(f.calls); n < 2 || f.calls[n-2] != "tailscale logout" || f.calls[n-1] != "systemctl disable --now tailscaled" {
+		t.Errorf("calls %v", f.calls)
+	}
+	// tailscaled already running, logged in nowhere: logged out again, left running
+	f = &fakeTS{active: true, status: `{"BackendState":"NeedsLogin"}`, upErr: boom}
+	if err := f.net().Up(context.Background(), "https://relay.example", testJoinKey, "box"); err == nil {
+		t.Fatal("no error")
+	}
+	if !f.called("tailscale logout") || f.called("systemctl enable") || f.called("systemctl disable") || f.called("systemctl stop") {
+		t.Errorf("calls %v", f.calls)
+	}
+	// already logged in to this very network, stopped: its login is kept
+	f = &fakeTS{active: true, status: `{"BackendState":"Stopped"}`, prefs: prefsFor("https://relay.example"), upErr: boom}
+	if err := f.net().Up(context.Background(), "https://relay.example", testJoinKey, "box"); err == nil {
+		t.Fatal("no error")
+	}
+	if !f.called("tailscale up") || f.called("tailscale logout") || f.called("systemctl disable") {
+		t.Errorf("calls %v", f.calls)
 	}
 }
 
@@ -145,7 +230,7 @@ func TestUpRefusesAKeyTailscaleWouldRead(t *testing.T) {
 }
 
 func TestUpIdempotentSameNetwork(t *testing.T) {
-	f := &fakeTS{status: runningJSON, prefs: prefsFor("https://relay.example/")}
+	f := &fakeTS{status: runningJSON, prefs: prefsFor("https://Relay.Example/")}
 	if err := f.net().Up(context.Background(), "https://relay.example", testJoinKey, "box"); err != nil {
 		t.Fatal(err)
 	}

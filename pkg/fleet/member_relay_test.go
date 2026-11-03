@@ -71,13 +71,22 @@ func TestJoinKeyIsNotPersisted(t *testing.T) {
 	if len(all) == 0 {
 		t.Fatal("no state written")
 	}
-	// a Net that puts the key in its error, then one that cannot leave
-	n.up, n.upErr, n.downErr = false, errors.New("up failed for "+testJoinKey), errors.New("down failed")
+	// a Net that puts the key in its error
+	n.up, n.upErr = false, errors.New("up failed for "+testJoinKey)
 	err := f.Join(relayCode().String())
 	if err == nil {
 		t.Fatal("joined though up failed")
 	}
-	all = append(append(all, err.Error()), logs()...)
+	all = append(all, err.Error())
+	// up, no address in time, and a network that cannot be left
+	oldWait, oldStep := addrWait, addrStep
+	t.Cleanup(func() { addrWait, addrStep = oldWait, oldStep })
+	addrWait, addrStep = 20*time.Millisecond, 5*time.Millisecond
+	n.upErr, n.downErr, n.after.Addr = nil, errors.New("down failed"), ""
+	if err := f.Join(relayCode().String()); err == nil {
+		t.Fatal("joined with no address")
+	}
+	all = append(all, logs()...)
 	if len(logs()) == 0 {
 		t.Fatal("the failed down was not logged")
 	}
@@ -99,14 +108,21 @@ func TestJoinRelayOtherNetworkSavesNothing(t *testing.T) {
 	}
 }
 
-func TestJoinRelayUpFailsSavesNothingAndDownCalled(t *testing.T) {
+// Up undoes its own failure (Net's contract): Join leaves the network only
+// once Up succeeded and a later step failed.
+func TestJoinRelayUpFailsSavesNothing(t *testing.T) {
 	f, n, _ := relayMember(t)
 	n.upErr = errors.New("tailscale up: timeout")
 	if err := f.Join(relayCode().String()); err == nil {
 		t.Fatal("joined")
 	}
-	if exists(t, memberJSON(f)) || !n.called("down") {
-		t.Fatalf("saved, or no down: %q", n.calls)
+	if exists(t, memberJSON(f)) || n.called("down") {
+		t.Fatalf("saved, or a down after a failed up: %q", n.calls)
+	}
+	// State unreadable: Up ran nothing, nothing to undo
+	n.upErr, n.calls = errors.New("tailscale status: unreadable output"), nil
+	if err := f.Join(relayCode().String()); err == nil || n.called("down") {
+		t.Fatalf("err %v, calls %q", err, n.calls)
 	}
 
 	// up, but no address in time

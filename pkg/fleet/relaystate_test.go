@@ -264,6 +264,11 @@ func TestEnableMasterRelayRefusesAnotherNetwork(t *testing.T) {
 	if r.count(&r.creates) != 0 || n.called("up") || n.called("down") || exists(t, f.relayPath()) || exists(t, f.masterPath()) {
 		t.Fatalf("something was done: creates %d, calls %v", r.creates, n.calls)
 	}
+	// stopped, but still logged in to the owner's own network: theirs too
+	n.before = NetState{LoginServer: "https://controlplane.tailscale.com"}
+	if err := f.EnableMasterRelay(context.Background(), r.URL); !errors.Is(err, ErrOtherNetwork) || r.count(&r.creates) != 0 || len(n.calls) != 0 {
+		t.Fatalf("got %v, creates %d, calls %v", err, r.creates, n.calls)
+	}
 	f.Net = nil
 	if err := f.EnableMasterRelay(context.Background(), r.URL); !errors.Is(err, ErrNoPrivateNet) || r.count(&r.creates) != 0 {
 		t.Fatalf("got %v", err)
@@ -279,8 +284,8 @@ func TestEnableMasterRelayRollsBackWhenUpFails(t *testing.T) {
 	if err := f.EnableMasterRelay(context.Background(), r.URL); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("got %v", err)
 	}
-	if r.count(&r.deletes) != 1 || exists(t, f.relayPath()) || exists(t, f.masterPath()) {
-		t.Fatalf("not rolled back: deletes %d", r.deletes)
+	if r.count(&r.deletes) != 1 || exists(t, f.relayPath()) || exists(t, f.masterPath()) || n.called("down") {
+		t.Fatalf("not rolled back, or a down after a failed up (Up undoes itself): deletes %d, calls %v", r.deletes, n.calls)
 	}
 	// an Up that refused because of another network ran nothing: it is not undone with a Down
 	n.calls, n.upErr = nil, ErrOtherNetwork
