@@ -132,10 +132,12 @@ func TestAddBoxRelayFleetGoneIsReadable(t *testing.T) {
 	}
 }
 
+// A box is removed from the relay's network by the name it joined with,
+// "b-<box id>", whatever its hello said; never this box itself.
 func TestRemoveBoxRemovesRelayNode(t *testing.T) {
 	f, _, r, _ := relayOn(t)
 	ids := map[string]string{}
-	for _, name := range []string{"a", "quiet", "liar", "twin", "twin2"} {
+	for _, name := range []string{"a", "quiet", "liar", "twin"} {
 		box, _, err := f.AddBox(name, "", false)
 		if err != nil {
 			t.Fatal(err)
@@ -146,22 +148,25 @@ func TestRemoveBoxRemovesRelayNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	said(t, f, ids["a"], "Box_1")     // removed by the name it joined with
-	said(t, f, ids["liar"], "MAISON") // the master's own hostname
-	said(t, f, ids["twin"], "box-2")
-	said(t, f, ids["twin2"], "Box.2") // the same name on the network
+	said(t, f, ids["a"], "Box_1")
+	said(t, f, ids["liar"], "MAISON") // the master's own hostname: no matter
+	said(t, f, ids["twin"], "Box_1")  // the same hostname as another box: no matter
 	said(t, f, self.ID, "maison")
-	for _, id := range []string{ids["a"], ids["quiet"], ids["liar"], ids["twin"], self.ID} {
+	for _, id := range []string{ids["a"], ids["quiet"], ids["liar"], self.ID} {
 		if err := f.RemoveBox(id); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// a master whose own name on the network is a box's: that box is left there
+	f.Hostname = func() (string, error) { return "B-" + ids["twin"], nil }
+	if err := f.RemoveBox(ids["twin"]); err != nil {
+		t.Fatal(err)
+	}
 	r.mu.Lock()
 	removed := strings.Join(r.removed, ",")
 	r.mu.Unlock()
-	// no hello, the master's name, a name another enrolled box still uses, and this box itself: left alone
-	if removed != "box-1" {
-		t.Fatalf("removed at the relay: %q", removed)
+	if want := "b-" + ids["a"] + ",b-" + ids["quiet"] + ",b-" + ids["liar"]; removed != want {
+		t.Fatalf("removed at the relay: %q, want %q", removed, want)
 	}
 }
 

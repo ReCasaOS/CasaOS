@@ -140,7 +140,7 @@ func (f *Fleet) Join(code string) error {
 		}
 	}
 	hostname, _ := f.Hostname()
-	if err := n.Up(ctx, c.Relay, c.JoinKey, netHostname(hostname)); err != nil {
+	if err := n.Up(ctx, c.Relay, c.JoinKey, nodeName(c.BoxID, hostname)); err != nil {
 		// Up undid itself: a Down here could log out a network that is not ours
 		if errors.Is(err, ErrOtherNetwork) {
 			return err
@@ -199,9 +199,32 @@ func (f *Fleet) Leave() error {
 	return err
 }
 
-// netHostname is the name a box takes on the relay's private network: its
-// hostname as a DNS label. The master derives it from the hello's hostname the
-// same way, to take a removed box off that network by name.
+// nodeName is the name a member takes on the relay's private network:
+// "b-<box id>", which the master removes it by (RemoveBox), unique in the fleet
+// whatever the boxes' hostnames. A box id that is no short DNS label (a code
+// the master did not make) falls back to the hostname.
+func nodeName(boxID, hostname string) string {
+	if !validBoxID(boxID) {
+		return netHostname(hostname)
+	}
+	return "b-" + boxID
+}
+
+// validBoxID: a box id as newID makes it (hex), at most 40 characters.
+func validBoxID(id string) bool {
+	if id == "" || len(id) > 40 {
+		return false
+	}
+	for _, c := range id {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// netHostname is a hostname as a DNS label: the name the master takes on the
+// relay's private network.
 func netHostname(h string) string {
 	b := []byte(strings.ToLower(h))
 	for i, c := range b {

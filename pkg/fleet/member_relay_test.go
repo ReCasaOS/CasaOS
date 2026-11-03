@@ -43,7 +43,7 @@ func TestJoinWithRelayCodeBringsNetworkUp(t *testing.T) {
 	if err := f.Join(relayCode().String()); err != nil {
 		t.Fatal(err)
 	}
-	if len(n.calls) != 1 || n.calls[0] != "up "+testRelay+" "+testJoinKey+" my-box" {
+	if len(n.calls) != 1 || n.calls[0] != "up "+testRelay+" "+testJoinKey+" b-b1" {
 		t.Fatalf("net calls %q", n.calls)
 	}
 	st, ok := f.loadMember()
@@ -184,7 +184,7 @@ func TestJoinOtherRelayLeavesTheOldNetwork(t *testing.T) {
 	if err := f.Join(c.String()); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(n.calls, ",") != "up "+testRelay+" "+testJoinKey+" my-box,down,up "+c.Relay+" "+testJoinKey+" my-box" {
+	if strings.Join(n.calls, ",") != "up "+testRelay+" "+testJoinKey+" b-b1,down,up "+c.Relay+" "+testJoinKey+" b-b1" {
 		t.Fatalf("calls %q", n.calls)
 	}
 }
@@ -294,20 +294,22 @@ func TestRelayDownKeepsMemberRetrying(t *testing.T) {
 	}
 }
 
-func TestNetHostnameMatchesTheHello(t *testing.T) {
-	shortWaits(t)
-	master, _ := newMaster(t)
-	member := newMember(t, &fakeGateway{status: 200})
-	member.Hostname = func() (string, error) { return "My_Box.Local", nil }
-	n := &fakeNet{after: NetState{Connected: true, Addr: "100.64.0.9", LoginServer: testRelay}}
-	code := relayJoin(t, master, member, n)
-	waitFor(t, "the hello", func() bool { return boxStatus(t, master, code.BoxID).Hostname != "" })
-	said := boxStatus(t, master, code.BoxID).Hostname
-	if said != "My_Box.Local" { // the hello is the box's own name, shown as it is
-		t.Fatalf("hello said %q", said)
-	}
-	if want := "up " + testRelay + " " + testJoinKey + " " + netHostname(said); n.calls[0] != want || netHostname(said) != "my-box-local" {
-		t.Fatalf("net calls %q, want %q", n.calls, want)
+// A member takes the name "b-<box id>" on the relay's network, the name the
+// master removes it by; a code whose box id is no DNS label falls back to the
+// box's hostname.
+func TestMemberNodeIsNamedByBoxID(t *testing.T) {
+	for id, want := range map[string]string{
+		"6f1c2d3e4a5b6c7d": "b-6f1c2d3e4a5b6c7d", "B_1": "my-box", strings.Repeat("a", 41): "my-box",
+	} {
+		f, n, _ := relayMember(t)
+		c := relayCode()
+		c.BoxID = id
+		if err := f.Join(c.String()); err != nil {
+			t.Fatal(err)
+		}
+		if n.calls[0] != "up "+testRelay+" "+testJoinKey+" "+want {
+			t.Errorf("%q: net calls %q, want %s", id, n.calls, want)
+		}
 	}
 }
 

@@ -121,22 +121,20 @@ func (f *Fleet) joinKey(st MasterState, self bool) (string, error) {
 }
 
 // removeNode takes a removed box off the relay's private network, best-effort
-// and logged; st is master.json without the box. A box names itself in its
-// hello: a name that is this box's own, or still another enrolled box's, is
-// never taken off the network for it; names compare as netHostname makes them,
-// the form the member joined with. The caller holds relayMu, not mu.
+// and logged; st is master.json without the box. The box joined as nodeName
+// makes it, "b-<box id>"; this box's own name there (netHostname of its
+// hostname) is never removed for it. The caller holds relayMu, not mu.
+//
+// shortcut: by name only; a box that runs its own `tailscale up --hostname`
+// can rename itself out of reach and stays on the network until the fleet is
+// deleted. Removing by the node's address at the relay is future work.
 func (f *Fleet) removeNode(st MasterState, box Box) {
-	if st.Relay == "" || box.Self || box.Hostname == "" {
+	if st.Relay == "" || box.Self || !validBoxID(box.ID) {
 		return
 	}
-	name := netHostname(box.Hostname) // the name the member took there
+	name := nodeName(box.ID, "")
 	if me, err := f.Hostname(); err != nil || netHostname(me) == name {
 		return
-	}
-	for _, b := range st.Boxes {
-		if b.Hostname != "" && netHostname(b.Hostname) == name {
-			return
-		}
 	}
 	rs, ok := f.loadRelay()
 	if !ok {
