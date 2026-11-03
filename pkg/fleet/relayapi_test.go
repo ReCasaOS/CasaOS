@@ -197,7 +197,8 @@ func TestRelayErrorsAreTyped(t *testing.T) {
 		{401, "", ErrRelayAuth, 0, []string{"create", "key", "node", "delete"}, false},
 		{404, "", ErrRelayFleetGone, 0, []string{"key", "node"}, false},
 		{404, "", nil, 0, []string{"create"}, true},
-		{500, "", nil, 0, []string{"create", "key", "node", "delete"}, true},
+		{500, "", ErrRelayFailed, 0, []string{"create", "key", "node", "delete"}, true},
+		{504, "", ErrRelayFailed, 0, []string{"key"}, true},
 		{400, "", nil, 0, []string{"node"}, true},
 		{200, "", nil, 0, []string{"key", "node", "delete"}, true}, // not the status the contract promises
 	} {
@@ -227,6 +228,16 @@ func TestRelayErrorsAreTyped(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The relay refuses a signature stamped too far from its own clock with a 401:
+// the error says to check this box's clock, and still reads as ErrRelayAuth.
+func TestCreateFleet401NamesTheClock(t *testing.T) {
+	c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) })
+	_, err := c.CreateFleet(context.Background(), relay)
+	if !errors.Is(err, ErrRelayAuth) || !strings.Contains(err.Error(), "clock") {
+		t.Fatalf("got %v", err)
 	}
 }
 

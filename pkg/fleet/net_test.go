@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -214,6 +215,19 @@ func TestUpFailureUndoesOnlyWhatItDid(t *testing.T) {
 	}
 	if !f.called("tailscale up") || f.called("tailscale logout") || f.called("systemctl disable") {
 		t.Errorf("calls %v", f.calls)
+	}
+}
+
+// A box without systemctl says so, not that tailscale is missing.
+func TestUpWithoutSystemctl(t *testing.T) {
+	f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`}
+	n := f.net().(*tailscale)
+	n.systemctl = func(context.Context, ...string) error {
+		return fmt.Errorf("systemctl is-active: %w", exec.ErrNotFound)
+	}
+	err := n.Up(context.Background(), "https://relay.example", testJoinKey, "box")
+	if !errors.Is(err, ErrNoSystemctl) || errors.Is(err, exec.ErrNotFound) || f.called("tailscale up") {
+		t.Fatalf("err %v, calls %v", err, f.calls)
 	}
 }
 

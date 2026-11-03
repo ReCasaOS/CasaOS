@@ -351,6 +351,8 @@ func fail(ctx echo.Context, status int, err error) error {
 	switch {
 	case errors.Is(err, fleet.ErrOtherNetwork), errors.Is(err, fleet.ErrRelayQuota), errors.Is(err, fleet.ErrRelayAuth), errors.Is(err, fleet.ErrRelayFleetGone):
 		status = http.StatusConflict // ErrFleetFull and ErrFleetGone wrap the relay's quota and gone
+	case errors.Is(err, fleet.ErrNoSystemctl): // its own message: tailscale is there
+		status = http.StatusServiceUnavailable
 	case errors.Is(err, fleet.ErrNoPrivateNet), errors.Is(err, exec.ErrNotFound):
 		status, msg = http.StatusServiceUnavailable, "the private network is not available on this box: tailscale is not installed"
 	case errors.As(err, &busy):
@@ -358,7 +360,7 @@ func fail(ctx echo.Context, status int, err error) error {
 		if busy.RetryAfter > 0 {
 			ctx.Response().Header().Set("Retry-After", strconv.Itoa(int(busy.RetryAfter/time.Second)))
 		}
-	case errors.Is(err, fleet.ErrRelayUnreachable):
+	case errors.Is(err, fleet.ErrRelayUnreachable), errors.Is(err, fleet.ErrRelayFailed):
 		status = http.StatusBadGateway
 	}
 	success := common_err.CLIENT_ERROR

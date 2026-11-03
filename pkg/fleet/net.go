@@ -19,6 +19,9 @@ var ErrOtherNetwork = errors.New("this box is already in another private network
 // ErrNoPrivateNet is returned when the box has no private-network driver.
 var ErrNoPrivateNet = errors.New("the private network is not available on this box")
 
+// ErrNoSystemctl: tailscale is there, but not systemctl, which starts tailscaled.
+var ErrNoSystemctl = errors.New("the private network cannot be started on this box: systemctl was not found")
+
 // defaultControlURL is what the tailscale client reports when no login server
 // was ever set.
 const defaultControlURL = "https://controlplane.tailscale.com"
@@ -159,6 +162,9 @@ func (t *tailscale) Up(ctx context.Context, loginServer, authKey, hostname strin
 		return nil
 	}
 	restore, err := t.start(ctx)
+	if errors.Is(err, ErrNoSystemctl) {
+		return err
+	}
 	if err != nil {
 		return redact(err, authKey)
 	}
@@ -196,23 +202,36 @@ func (t *tailscale) Up(ctx context.Context, loginServer, authKey, hostname strin
 // when it was running already; else stopped again, and disabled again unless
 // it was enabled. Best-effort: a failure there leaves only a daemon running.
 func (t *tailscale) start(ctx context.Context) (restore func(), err error) {
-	if t.systemctl(ctx, "is-active", "--quiet", "tailscaled") == nil {
+	switch err := t.sys(ctx, "is-active", "--quiet", "tailscaled"); {
+	case err == nil:
 		return func() {}, nil
+	case errors.Is(err, ErrNoSystemctl):
+		return nil, err
 	}
 	undo := []string{"disable", "--now", "tailscaled"}
-	if t.systemctl(ctx, "is-enabled", "--quiet", "tailscaled") == nil {
+	if t.sys(ctx, "is-enabled", "--quiet", "tailscaled") == nil {
 		undo = []string{"stop", "tailscaled"}
 	}
 	restore = func() {
 		c, cancel := cleanupCtx(ctx)
 		defer cancel()
-		t.systemctl(c, undo...)
+		t.sys(c, undo...)
 	}
-	if err := t.systemctl(ctx, "enable", "--now", "tailscaled"); err != nil {
+	if err := t.sys(ctx, "enable", "--now", "tailscaled"); err != nil {
 		restore() // enabled, perhaps, but not started
 		return nil, err
 	}
 	return restore, nil
+}
+
+// sys runs systemctl; a missing one is ErrNoSystemctl, never exec.ErrNotFound,
+// which says tailscale is missing.
+func (t *tailscale) sys(ctx context.Context, args ...string) error {
+	err := t.systemctl(ctx, args...)
+	if errors.Is(err, exec.ErrNotFound) {
+		return ErrNoSystemctl
+	}
+	return err
 }
 
 // cleanupCtx is for undoing: it outlives ctx's cancellation and deadline.
@@ -226,7 +245,7 @@ func (t *tailscale) Down(ctx context.Context) error {
 	ctx, cancel := withNetTimeout(ctx)
 	defer cancel()
 	_, lerr := t.run(ctx, "logout") // fails when already logged out or stopped
-	serr := t.systemctl(ctx, "disable", "--now", "tailscaled")
+	serr := t.sys(ctx, "disable", "--now", "tailscaled")
 	if lerr != nil && serr != nil {
 		return errors.Join(lerr, serr)
 	}
@@ -248,8 +267,13 @@ func pickAddr(ips []string) string {
 	return ""
 }
 
-// redact rewrites err without the key. The error chain is dropped on purpose.
+// redact rewrites err without the key; the error chain is dropped on purpose
+// then. An error that does not quote the key is kept as it is, so the caller
+// can still tell it (ErrNoSystemctl, ErrOtherNetwork).
 func redact(err error, key string) error {
+	if key == "" || !strings.Contains(err.Error(), key) {
+		return err
+	}
 	return errors.New(strings.ReplaceAll(err.Error(), key, "***"))
 }
 

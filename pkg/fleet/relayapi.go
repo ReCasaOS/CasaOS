@@ -30,6 +30,8 @@ var (
 	// ErrRelayFleetGone: 404 on JoinKey or RemoveNode. The relay no longer knows the fleet, for
 	// instance after it idled out.
 	ErrRelayFleetGone = errors.New("the relay no longer knows this fleet")
+	// ErrRelayFailed: another 5xx, the relay's own failure; the error names the status.
+	ErrRelayFailed = errors.New("the relay failed to answer")
 	// ErrRelayUnreachable wraps every transport failure (and the caller's cancelled context);
 	// the cause stays reachable with errors.Is.
 	ErrRelayUnreachable = errors.New("the relay cannot be reached")
@@ -135,6 +137,9 @@ func (r relayReply) statusError() error {
 	case http.StatusUnauthorized:
 		return ErrRelayAuth
 	}
+	if r.status >= 500 {
+		return fmt.Errorf("%w (status %d)", ErrRelayFailed, r.status)
+	}
 	return fmt.Errorf("the relay answered with status %d", r.status)
 }
 
@@ -168,6 +173,9 @@ func (c *RelayClient) CreateFleet(ctx context.Context, relay string) (FleetCreds
 	})
 	if err != nil {
 		return FleetCreds{}, err
+	}
+	if r.status == http.StatusUnauthorized { // the signature carries this box's clock
+		return FleetCreds{}, fmt.Errorf("%w: check that this box's clock is right", ErrRelayAuth)
 	}
 	if r.status != http.StatusCreated {
 		return FleetCreds{}, r.statusError()

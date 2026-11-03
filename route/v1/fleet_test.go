@@ -553,6 +553,12 @@ func TestOtherNetworkIs409(t *testing.T) {
 	if code != http.StatusServiceUnavailable || !strings.Contains(res.Message, "tailscale is not installed") {
 		t.Fatalf("no private network = %d %q", code, res.Message)
 	}
+	// systemctl missing is not tailscale missing
+	f.Net = &fakeNet{upErr: fleet.ErrNoSystemctl}
+	code, res = callFleet(t, PutFleetMember, http.MethodPut, "/v1/fleet/member", `{"code":"`+relayCode()+`"}`, nil)
+	if code != http.StatusServiceUnavailable || strings.Contains(res.Message, "tailscale is not installed") || !strings.Contains(res.Message, "systemctl") {
+		t.Fatalf("no systemctl = %d %q", code, res.Message)
+	}
 }
 
 func TestRelayBusyIs429WithRetryAfter(t *testing.T) {
@@ -690,7 +696,8 @@ func TestRouteErrorsCarryNoSecret(t *testing.T) {
 		{"secret refused", http.StatusUnauthorized, false, http.StatusConflict},
 		{"fleet gone", http.StatusNotFound, false, http.StatusConflict},
 		{"busy", http.StatusTooManyRequests, false, http.StatusTooManyRequests},
-		{"another status", http.StatusInternalServerError, false, http.StatusBadRequest},
+		{"relay failure", http.StatusInternalServerError, false, http.StatusBadGateway},
+		{"another status", http.StatusTeapot, false, http.StatusBadRequest},
 		{"unreachable", 0, true, http.StatusBadGateway},
 	} {
 		r.set(func(r *fakeRelay) { r.keyStatus, r.down = c.keyStatus, c.down })
