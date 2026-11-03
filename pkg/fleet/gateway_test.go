@@ -40,16 +40,40 @@ func TestGatewayURLFromINI(t *testing.T) {
 	}
 }
 
-func TestGatewayURLRefusesANonLoopbackAddress(t *testing.T) {
-	_, err := ReadGatewayINI(writeINI(t, "[gateway]\nport=80\naddress=192.168.1.5\n"), t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "192.168.1.5") {
+// A non-loopback bind is not an error: the member reports it, but the master
+// can still read the certificate to enrol boxes.
+func TestGatewayMarksANonLoopbackAddressUnreachable(t *testing.T) {
+	data := t.TempDir()
+	got, err := ReadGatewayINI(writeINI(t, "[gateway]\nport=80\naddress=192.168.1.5\n"), data)
+	if err != nil {
 		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(got.Unreachable, "192.168.1.5") {
+		t.Fatalf("Unreachable = %q", got.Unreachable)
+	}
+	if got.CertFile != filepath.Join(data, "tls", "gateway.crt") {
+		t.Fatalf("CertFile lost: %q", got.CertFile)
+	}
+}
+
+// httpsport=0 turns the self-signed HTTPS off: HTTPS is nil, not an error.
+func TestGatewayHTTPSOffWhenHTTPSPortIsZero(t *testing.T) {
+	data := t.TempDir()
+	got, err := ReadGatewayINI(writeINI(t, "[gateway]\nport=80\nhttpsport=0\n"), data)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got.HTTPS != nil || got.Public.String() != "http://127.0.0.1:80" || got.CertFile != filepath.Join(data, "tls", "gateway.crt") {
+		t.Fatalf("%+v", got)
 	}
 }
 
 func TestGatewayINIWithoutAPortIsAnError(t *testing.T) {
 	if _, err := ReadGatewayINI(writeINI(t, "[gateway]\nport=\n"), t.TempDir()); err == nil {
 		t.Fatal("accepted")
+	}
+	if _, err := ReadGatewayINI(writeINI(t, "[gateway]\nport=80\nhttpsport=notaport\n"), t.TempDir()); err == nil {
+		t.Fatal("a bad httpsport was accepted")
 	}
 	if _, err := ReadGatewayINI(filepath.Join(t.TempDir(), "missing.ini"), t.TempDir()); err == nil {
 		t.Fatal("missing file accepted")

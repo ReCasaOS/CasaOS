@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/pem"
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -383,8 +382,10 @@ func TestMemberSaysWhenItsGatewayCannotBeReached(t *testing.T) {
 	shortWaits(t)
 	master, _ := newMaster(t)
 	member := newMember(t, &fakeGateway{status: 200})
+	// a gateway bound off loopback: ReadGatewayINI reports it as Unreachable
+	// (not an error), and the member must turn that into a 502 and a status line
 	member.Gateway = func() (GatewayInfo, error) {
-		return GatewayInfo{}, errors.New("the gateway listens on 192.168.1.5, not on this box's loopback")
+		return GatewayInfo{Public: mustURL(t, "http://127.0.0.1:80"), Unreachable: "the gateway listens on 192.168.1.5, not on this box's loopback, so the fleet cannot reach it"}, nil
 	}
 	code := join(t, master, member, "Maison")
 	st, _ := member.MemberStatus()

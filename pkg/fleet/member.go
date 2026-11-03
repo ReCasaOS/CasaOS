@@ -215,7 +215,10 @@ func (f *Fleet) session(ctx context.Context, st MemberState) outcome {
 		f.m.failed(err.Error())
 		return failed
 	}
-	_, gwErr := f.Gateway()
+	info, gwErr := f.Gateway()
+	if gwErr == nil && info.Unreachable != "" {
+		gwErr = errors.New(info.Unreachable)
+	}
 	f.m.connected(conn, f.Now(), gwErr)
 	defer f.m.disconnected(conn)
 
@@ -319,6 +322,9 @@ func (f *Fleet) execute(req frame) frame {
 	gw, err := f.Gateway()
 	if err != nil {
 		return problem(http.StatusBadGateway, err.Error())
+	}
+	if gw.Unreachable != "" {
+		return problem(http.StatusBadGateway, gw.Unreachable)
 	}
 	if len(req.Body) > MaxBody {
 		return problem(http.StatusRequestEntityTooLarge, "the request body is too big to relay")
