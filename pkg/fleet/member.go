@@ -149,6 +149,12 @@ func (f *Fleet) Run(ctx context.Context) {
 			wait = firstWait
 			continue
 		}
+		// Drain the poke that brought us here: this session is the answer to it,
+		// so the watcher inside must only react to a change made while it runs.
+		select {
+		case <-f.restart:
+		default:
+		}
 		var d time.Duration
 		switch f.session(ctx, st) {
 		case restarted:
