@@ -309,15 +309,27 @@ func (f *Fleet) EnableMaster(address string) error {
 	return f.saveMaster(st)
 }
 
-// DisableMaster closes every tunnel and forgets the boxes.
+// DisableMaster closes every tunnel and forgets the boxes. A self-enrolled
+// master's own member.json pointed at this box's own gateway, which goes with
+// the master, so it is cleared too; a member.json of another fleet is left.
 func (f *Fleet) DisableMaster() error {
 	f.mu.Lock()
 	tunnels := f.tunnels
 	f.tunnels = map[string]*tunnel{}
 	err := os.Remove(f.masterPath())
+	selfGone := false
+	if m, ok := f.loadMember(); ok && f.namesSelf(m) {
+		if cerr := f.clearMember(); cerr != nil && err == nil {
+			err = cerr
+		}
+		selfGone = true
+	}
 	f.mu.Unlock()
 	for _, t := range tunnels {
 		t.close()
+	}
+	if selfGone {
+		f.pokeMember()
 	}
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil

@@ -302,7 +302,10 @@ func selfFleet(t *testing.T) (*Fleet, *fakeGateway) {
 	return f, gw
 }
 
-func TestDisableClosesTunnelsAndKeepsMemberIdle(t *testing.T) {
+// Disabling a self-enrolled master leaves no role: its own member.json pointed
+// at its own gateway, which is gone with the master, so the member half must go
+// too rather than dial a dead gateway with a key that can never be valid again.
+func TestDisableClearsASelfEnrolledMemberToo(t *testing.T) {
 	shortWaits(t)
 	f, gw := selfFleet(t)
 	box, _, err := f.AddBox("this box", "", true)
@@ -319,13 +322,37 @@ func TestDisableClosesTunnelsAndKeepsMemberIdle(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(f.Root, StateDir, "master.json")); !os.IsNotExist(err) {
 		t.Fatalf("master.json: %v", err)
 	}
-	if _, ok := f.loadMember(); !ok {
-		t.Fatal("member.json gone")
+	if _, ok := f.loadMember(); ok {
+		t.Fatal("the self member.json outlived the master")
 	}
-	waitFor(t, "member refused", func() bool {
-		st, ok := f.MemberStatus()
-		return ok && !st.Connected && st.LastError == "refused by the master"
-	})
+	if st := f.Status(); st.Role != "none" {
+		t.Fatalf("role = %q, want none", st.Role)
+	}
+	// re-enabling and adding this box again brings it back (Review Focus #1)
+	addr, _ := f.Gateway()
+	if err := f.EnableMaster(addr.Public.String()); err != nil {
+		t.Fatal(err)
+	}
+	box2, _, err := f.AddBox("this box", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "self online again", online(f, box2.ID))
+}
+
+// A member of another fleet is left alone by DisableMaster: only a self member
+// goes. (A box cannot be both, but guard the clear by whose master it names.)
+func TestDisableLeavesAMemberOfAnotherFleetAlone(t *testing.T) {
+	f := New(t.TempDir())
+	if err := f.saveMember(MemberState{MasterURL: "https://other.example", BoxID: "b", Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.DisableMaster(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.loadMember(); !ok {
+		t.Fatal("a member of another fleet lost its member.json")
+	}
 }
 
 func TestMemberHelloCarriesHostnameAndVersion(t *testing.T) {
