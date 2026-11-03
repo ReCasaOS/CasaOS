@@ -1,0 +1,425 @@
+package fleet
+
+import (
+	"bytes"
+	"context"
+	"encoding/pem"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+func mustURL(t *testing.T, s string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// newMaster is a master served by httptest, its gateway stubbed to the default
+// layout (plain port, https on 443, the default self-signed certificate).
+func newMaster(t *testing.T) (*Fleet, *httptest.Server) {
+	t.Helper()
+	f := New(t.TempDir())
+	leaf, _ := makeCert(t, "localhost", false, nil, nil)
+	certFile := filepath.Join(t.TempDir(), "gateway.crt")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.Gateway = func() (GatewayInfo, error) {
+		return GatewayInfo{Public: mustURL(t, "http://127.0.0.1:80"), HTTPS: mustURL(t, "https://127.0.0.1:443"), CertFile: certFile}, nil
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/fleet/tunnel", f.HandleTunnel)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	if err := f.EnableMaster(srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	return f, srv
+}
+
+// dialTunnel dials the master's tunnel as a box would; the response tells why when it fails.
+func dialTunnel(srv *httptest.Server, id, key string) (*websocket.Conn, *http.Response, error) {
+	h := http.Header{"Authorization": {"Fleet " + id + ":" + key}}
+	return websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/fleet/tunnel", h)
+}
+
+// fakeMember dials, says hello and answers each req frame with answer(req);
+// a nil answer never answers. Every frame it receives is also sent to got.
+func fakeMember(t *testing.T, srv *httptest.Server, code Code, answer func(frame) frame) (*websocket.Conn, chan frame) {
+	t.Helper()
+	conn, resp, err := dialTunnel(srv, code.BoxID, code.Key)
+	if err != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("dial: %v (status %d)", err, status)
+	}
+	t.Cleanup(func() { conn.Close() })
+	if err := conn.WriteJSON(frame{T: "hello", Hostname: "box-1", Version: "v0.9.0"}); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan frame, 64)
+	var wmu sync.Mutex
+	go func() {
+		for {
+			var req frame
+			if err := conn.ReadJSON(&req); err != nil {
+				return
+			}
+			got <- req
+			if answer == nil || req.T != "req" {
+				continue
+			}
+			res := answer(req)
+			res.T, res.ID = "res", req.ID
+			wmu.Lock()
+			conn.WriteJSON(res)
+			wmu.Unlock()
+		}
+	}()
+	return conn, got
+}
+
+func okJSON(frame) frame {
+	return frame{Status: 200, Headers: map[string]string{"Content-Type": "application/json"}, Body: []byte(`{"ok":true}`)}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func online(f *Fleet, id string) func() bool {
+	return func() bool {
+		st, _ := f.MasterStatus()
+		for _, b := range st.Boxes {
+			if b.ID == id {
+				return b.Online
+			}
+		}
+		return false
+	}
+}
+
+func addBox(t *testing.T, f *Fleet, name string) Code {
+	t.Helper()
+	_, code, err := f.AddBox(name, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code
+}
+
+// closedWithin says whether the far end closed conn within d.
+func closedWithin(conn *websocket.Conn, d time.Duration) bool {
+	conn.SetReadDeadline(time.Now().Add(d))
+	_, _, err := conn.NextReader()
+	return err != nil && !strings.Contains(err.Error(), "timeout")
+}
+
+func TestTunnelRefusesUnknownKeyAndRevokedBox(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	if _, resp, err := dialTunnel(srv, code.BoxID, strings.Repeat("00", 32)); err == nil || resp == nil || resp.StatusCode != 401 {
+		t.Fatalf("wrong key: err %v resp %v", err, resp)
+	}
+	if _, resp, err := dialTunnel(srv, "nobody", code.Key); err == nil || resp == nil || resp.StatusCode != 401 {
+		t.Fatalf("unknown box: err %v resp %v", err, resp)
+	}
+	if err := f.RemoveBox(code.BoxID); err != nil {
+		t.Fatal(err)
+	}
+	if _, resp, err := dialTunnel(srv, code.BoxID, code.Key); err == nil || resp == nil || resp.StatusCode != 401 {
+		t.Fatalf("revoked: err %v resp %v", err, resp)
+	}
+	if err := f.RemoveBox("nobody"); !errors.Is(err, ErrNoBox) {
+		t.Fatalf("RemoveBox(nobody) = %v", err)
+	}
+}
+
+func TestRelayRoundTrip(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	_, got := fakeMember(t, srv, code, okJSON)
+	waitFor(t, "online", online(f, code.BoxID))
+	res, err := f.Relay(context.Background(), code.BoxID, "PUT", "/v2/app_management/compose/plex/status", "a=1&token=x", "application/json", []byte(`"stop"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != 200 || res.ContentType != "application/json" || string(res.Body) != `{"ok":true}` {
+		t.Fatalf("%+v", res)
+	}
+	req := <-got
+	if req.T != "req" || req.ID == "" || req.Method != "PUT" || req.Path != "/v2/app_management/compose/plex/status" || req.Query != "a=1" || string(req.Body) != `"stop"` {
+		t.Fatalf("%+v", req)
+	}
+	if len(req.Headers) != 2 || req.Headers["Content-Type"] != "application/json" || req.Headers["Accept"] == "" {
+		t.Fatalf("headers %v", req.Headers)
+	}
+}
+
+func TestRelayRefusesOutsideTheTable(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	_, got := fakeMember(t, srv, code, okJSON)
+	waitFor(t, "online", online(f, code.BoxID))
+	if _, err := f.Relay(context.Background(), code.BoxID, "GET", "/v1/file/content", "", "", nil); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("err = %v", err)
+	}
+	select {
+	case fr := <-got:
+		t.Fatalf("a frame was sent: %+v", fr)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestRelayWhenOffline(t *testing.T) {
+	f, _ := newMaster(t)
+	code := addBox(t, f, "Maison")
+	if _, err := f.Relay(context.Background(), code.BoxID, "GET", "/v1/sys/os", "", "", nil); !errors.Is(err, ErrOffline) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := f.Relay(context.Background(), "nobody", "GET", "/v1/sys/os", "", "", nil); !errors.Is(err, ErrNoBox) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRelayTimeout(t *testing.T) {
+	old := timeouts
+	t.Cleanup(func() { timeouts = old })
+	timeouts = func(bool) time.Duration { return 100 * time.Millisecond }
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	fakeMember(t, srv, code, nil)
+	waitFor(t, "online", online(f, code.BoxID))
+	if _, err := f.Relay(context.Background(), code.BoxID, "GET", "/v1/sys/os", "", "", nil); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRelayCapsRequestsInFlight(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	fakeMember(t, srv, code, nil)
+	waitFor(t, "online", online(f, code.BoxID))
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f.Relay(ctx, code.BoxID, "GET", "/v1/sys/os", "", "", nil)
+		}()
+	}
+	waitFor(t, "16 in flight", func() bool { return f.inFlight(code.BoxID) == 16 })
+	if _, err := f.Relay(ctx, code.BoxID, "GET", "/v1/sys/os", "", "", nil); !errors.Is(err, ErrBusy) {
+		t.Fatalf("17th: %v", err)
+	}
+	cancel()
+	wg.Wait()
+	if n := f.inFlight(code.BoxID); n != 0 {
+		t.Fatalf("%d still in flight after cancel", n)
+	}
+}
+
+func TestASecondTunnelReplacesTheFirst(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	first, _ := fakeMember(t, srv, code, func(frame) frame { return frame{Status: 200, Body: []byte("first")} })
+	waitFor(t, "online", online(f, code.BoxID))
+	fakeMember(t, srv, code, func(frame) frame { return frame{Status: 200, Body: []byte("second")} })
+	if !closedWithin(first, 2*time.Second) {
+		t.Fatal("the first tunnel was not closed")
+	}
+	waitFor(t, "second online", online(f, code.BoxID))
+	res, err := f.Relay(context.Background(), code.BoxID, "GET", "/v1/sys/os", "", "", nil)
+	if err != nil || string(res.Body) != "second" {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+func TestOversizedFramesAreDroppedWithTheConnection(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	fakeMember(t, srv, code, func(frame) frame { return frame{Status: 200, Body: bytes.Repeat([]byte("x"), maxFrame+1)} })
+	waitFor(t, "online", online(f, code.BoxID))
+	if _, err := f.Relay(context.Background(), code.BoxID, "GET", "/v1/sys/os", "", "", nil); !errors.Is(err, ErrOffline) {
+		t.Fatalf("err = %v", err)
+	}
+	waitFor(t, "offline", func() bool { return !online(f, code.BoxID)() })
+	fakeMember(t, srv, code, okJSON)
+	waitFor(t, "online again", online(f, code.BoxID))
+}
+
+func TestAddBoxSelfWritesMemberJSON(t *testing.T) {
+	f, _ := newMaster(t)
+	box, code, err := f.AddBox("this box", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _ := f.Gateway()
+	want, _ := CertFingerprint(info.CertFile)
+	if !box.Self || code.MasterURL != "https://127.0.0.1:443" || code.CertSHA256 != want || code.BoxID != box.ID {
+		t.Fatalf("box %+v code %+v", box, code)
+	}
+	m, ok := f.loadMember()
+	if !ok || m.BoxID != box.ID || m.Key != code.Key || m.MasterURL != code.MasterURL || m.MasterCertSHA256 != want {
+		t.Fatalf("member.json %+v %v", m, ok)
+	}
+	st, _ := f.MasterStatus()
+	if len(st.Boxes) != 1 || !st.Boxes[0].Self {
+		t.Fatalf("%+v", st)
+	}
+}
+
+func TestAddBoxRefusesWhenOffOrNameless(t *testing.T) {
+	f, _ := newMaster(t)
+	if _, _, err := f.AddBox("", "", false); err == nil {
+		t.Fatal("nameless accepted")
+	}
+	if _, _, err := f.AddBox("x", "not a url", false); err == nil {
+		t.Fatal("bad url accepted")
+	}
+	if err := f.DisableMaster(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.AddBox("x", "", false); !errors.Is(err, ErrMasterOff) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRemoveBoxAndDisableCloseTunnels(t *testing.T) {
+	f, srv := newMaster(t)
+	c1, c2 := addBox(t, f, "one"), addBox(t, f, "two")
+	conn1, _ := fakeMember(t, srv, c1, okJSON)
+	conn2, _ := fakeMember(t, srv, c2, okJSON)
+	waitFor(t, "both online", func() bool { return online(f, c1.BoxID)() && online(f, c2.BoxID)() })
+	if err := f.RemoveBox(c1.BoxID); err != nil {
+		t.Fatal(err)
+	}
+	if !closedWithin(conn1, 2*time.Second) {
+		t.Fatal("tunnel one still open")
+	}
+	if _, err := f.Relay(context.Background(), c1.BoxID, "GET", "/v1/sys/os", "", "", nil); !errors.Is(err, ErrNoBox) {
+		t.Fatalf("relay to a removed box: %v", err)
+	}
+	if !online(f, c2.BoxID)() {
+		t.Fatal("tunnel two was closed too")
+	}
+	if err := f.DisableMaster(); err != nil {
+		t.Fatal(err)
+	}
+	if !closedWithin(conn2, 2*time.Second) {
+		t.Fatal("tunnel two still open after disable")
+	}
+	if _, err := os.Stat(filepath.Join(f.Root, StateDir, "master.json")); !os.IsNotExist(err) {
+		t.Fatalf("master.json: %v", err)
+	}
+	if _, ok := f.MasterStatus(); ok {
+		t.Fatal("still master")
+	}
+}
+
+func TestTheMasterNeverExecutesAFrameFromAMember(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	conn, got := fakeMember(t, srv, code, okJSON)
+	waitFor(t, "online", online(f, code.BoxID))
+	if err := conn.WriteJSON(frame{T: "req", ID: "evil", Method: "GET", Path: "/v1/sys/os"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case fr := <-got:
+		t.Fatalf("the master answered: %+v", fr)
+	case <-time.After(200 * time.Millisecond):
+	}
+	// the tunnel is still up and still works
+	if res, err := f.Relay(context.Background(), code.BoxID, "GET", "/v1/sys/os", "", "", nil); err != nil || res.Status != 200 {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+func TestMasterStatus(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	st, ok := f.MasterStatus()
+	if !ok || st.Address != srv.URL || len(st.Boxes) != 1 || st.Boxes[0].Online || st.Boxes[0].Name != "Maison" {
+		t.Fatalf("%+v %v", st, ok)
+	}
+	conn, _ := fakeMember(t, srv, code, okJSON)
+	waitFor(t, "online", online(f, code.BoxID))
+	st, _ = f.MasterStatus()
+	b := st.Boxes[0]
+	if !b.Online || b.LastSeen.IsZero() || b.Hostname != "box-1" || b.Version != "v0.9.0" || b.Self {
+		t.Fatalf("%+v", b)
+	}
+	conn.Close()
+	waitFor(t, "offline", func() bool { return !online(f, code.BoxID)() })
+	st, _ = f.MasterStatus()
+	if st.Boxes[0].LastSeen.IsZero() || st.Boxes[0].Hostname != "box-1" {
+		t.Fatalf("after close: %+v", st.Boxes[0])
+	}
+	if err := f.EnableMaster("https://new.example"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = f.MasterStatus(); st.Address != "https://new.example" || len(st.Boxes) != 1 {
+		t.Fatalf("re-enable lost the boxes: %+v", st)
+	}
+}
+
+func TestRenameAndRotate(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	conn, _ := fakeMember(t, srv, code, okJSON)
+	waitFor(t, "online", online(f, code.BoxID))
+	name, link := "Bureau", "https://bureau.example"
+	if err := f.RenameBox(code.BoxID, &name, &link); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := f.MasterStatus()
+	if st.Boxes[0].Name != "Bureau" || st.Boxes[0].URL != "https://bureau.example" {
+		t.Fatalf("%+v", st.Boxes[0])
+	}
+	if err := f.RenameBox(code.BoxID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	empty := ""
+	if err := f.RenameBox(code.BoxID, &empty, nil); err == nil {
+		t.Fatal("empty name accepted")
+	}
+	fresh, err := f.RotateCode(code.BoxID)
+	if err != nil || fresh.Key == code.Key || fresh.BoxID != code.BoxID || fresh.MasterURL != srv.URL || fresh.CertSHA256 != code.CertSHA256 {
+		t.Fatalf("%+v %v", fresh, err)
+	}
+	if !closedWithin(conn, 2*time.Second) {
+		t.Fatal("old tunnel still open after rotation")
+	}
+	if _, resp, err := dialTunnel(srv, code.BoxID, code.Key); err == nil || resp.StatusCode != 401 {
+		t.Fatal("old key still accepted")
+	}
+	fakeMember(t, srv, fresh, okJSON)
+	waitFor(t, "online with the new key", online(f, code.BoxID))
+	if _, err := f.RotateCode("nobody"); !errors.Is(err, ErrNoBox) {
+		t.Fatalf("%v", err)
+	}
+}
