@@ -57,6 +57,7 @@ type BoxStatus struct {
 // tunnel is one live connection from a box.
 type tunnel struct {
 	boxID   string
+	keyHash string // the key the handshake carried: attach refuses if it is no longer the box's
 	conn    *websocket.Conn
 	writeMu sync.Mutex
 	mu      sync.Mutex
@@ -137,8 +138,12 @@ func (f *Fleet) HandleTunnel(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
-	t := &tunnel{boxID: box.ID, conn: conn, pending: map[string]chan frame{}, done: make(chan struct{})}
-	f.attach(t, hello)
+	t := &tunnel{boxID: box.ID, keyHash: box.KeyHash, conn: conn, pending: map[string]chan frame{}, done: make(chan struct{})}
+	if !f.attach(t, hello) {
+		// revoked between the handshake and the hello: close, serve nothing
+		conn.Close()
+		return
+	}
 	defer f.detach(t)
 	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(readWait)) })
 	go t.ping()
@@ -187,19 +192,30 @@ func (f *Fleet) authorize(header string) (Box, bool) {
 	return Box{}, false
 }
 
-// attach makes t the box's tunnel, replacing an older one, and records the hello.
-func (f *Fleet) attach(t *tunnel, hello frame) {
+// attach makes t the box's tunnel, replacing an older one, and records the
+// hello. It refuses (false) when the box's key is no longer the one the
+// handshake carried: a dial authorised before the key was rotated, the box
+// removed or the master disabled must not end in a live tunnel.
+func (f *Fleet) attach(t *tunnel, hello frame) bool {
 	f.mu.Lock()
+	st, on := f.master()
+	i := indexOf(st.Boxes, t.boxID)
+	if !on || i < 0 || st.Boxes[i].KeyHash != t.keyHash {
+		f.mu.Unlock()
+		return false
+	}
 	old := f.tunnels[t.boxID]
 	f.tunnels[t.boxID] = t
-	f.modifyBox(t.boxID, func(b *Box) error {
-		b.LastSeen, b.Hostname, b.Version = f.Now(), cut(hello.Hostname), cut(hello.Version)
-		return nil
-	})
+	st.Boxes[i].LastSeen, st.Boxes[i].Hostname, st.Boxes[i].Version = f.Now(), cut(hello.Hostname), cut(hello.Version)
+	err := f.saveMaster(st)
 	f.mu.Unlock()
+	if err != nil {
+		f.Log("fleet: cannot record a box's hello", err)
+	}
 	if old != nil {
 		old.close()
 	}
+	return true
 }
 
 // detach closes t and forgets it, unless a newer tunnel already took its place.

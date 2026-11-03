@@ -538,3 +538,56 @@ func TestOfflineWatchGraceAfterStart(t *testing.T) {
 		t.Fatalf("calls = %d after removal", calls)
 	}
 }
+
+// A key checked at the handshake can be revoked before the hello arrives (the
+// hello has up to helloWait to come). The tunnel must not come up on a key that
+// is no longer the box's, whether it was rotated, the box removed, or the master
+// disabled.
+func TestARevokedKeyCannotOpenATunnelAfterTheHandshake(t *testing.T) {
+	dialThenRevoke := func(t *testing.T, revoke func(*Fleet, Code)) {
+		f, srv := newMaster(t)
+		code := addBox(t, f, "Maison")
+		conn, resp, err := dialTunnel(srv, code.BoxID, code.Key) // authorised and upgraded; hello not sent yet
+		if err != nil {
+			t.Fatalf("dial: %v (resp %v)", err, resp)
+		}
+		defer conn.Close()
+		revoke(f, code)
+		conn.WriteJSON(frame{T: "hello", Hostname: "thief"})
+		// the connection is closed by the master and never serves a relay
+		if closedWithinRaw(conn, 2*time.Second) == false {
+			t.Fatal("the connection stayed open after the key was revoked")
+		}
+		if online(f, code.BoxID)() {
+			t.Fatal("the box came online on a revoked key")
+		}
+	}
+	t.Run("rotated", func(t *testing.T) {
+		dialThenRevoke(t, func(f *Fleet, code Code) {
+			if _, err := f.RotateCode(code.BoxID); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	t.Run("removed", func(t *testing.T) {
+		dialThenRevoke(t, func(f *Fleet, code Code) {
+			if err := f.RemoveBox(code.BoxID); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	t.Run("master disabled", func(t *testing.T) {
+		dialThenRevoke(t, func(f *Fleet, code Code) {
+			if err := f.DisableMaster(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+}
+
+// closedWithinRaw reads conn directly (for a conn not owned by a fakeMember reader).
+func closedWithinRaw(conn *websocket.Conn, d time.Duration) bool {
+	conn.SetReadDeadline(time.Now().Add(d))
+	_, _, err := conn.NextReader()
+	return err != nil && !strings.Contains(err.Error(), "timeout")
+}
