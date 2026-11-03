@@ -217,6 +217,7 @@ func main() {
 	fleet.Default.RuntimePath = func() string { return config.CommonInfo.RuntimePath }
 	fleet.Default.Version = version.CurrentVersion
 	fleet.Default.Offline = alerts.Default.FleetOffline
+	fleet.Default.Net = fleet.NewTailscale(nil) // tailscaled stays stopped until the box joins a relay's fleet
 	go fleet.Default.Run(context.Background())
 	// Automatic updates start the button's own update, read the button's own
 	// version.json, and settle an update that restarted the core before checking.

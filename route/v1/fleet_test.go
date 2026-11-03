@@ -9,6 +9,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -78,6 +80,15 @@ func mustParse(s string) *url.URL {
 // params the route carries, and returns the status and the decoded envelope.
 func callFleet(t *testing.T, handler echo.HandlerFunc, method, target, body string, params map[string]string) (int, model.Result) {
 	t.Helper()
+	rec := callFleetRec(t, handler, method, target, body, params)
+	var result model.Result
+	json.Unmarshal(rec.Body.Bytes(), &result)
+	return rec.Code, result
+}
+
+// callFleetRec is callFleet's recorder: its headers and raw body.
+func callFleetRec(t *testing.T, handler echo.HandlerFunc, method, target, body string, params map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 	rec := httptest.NewRecorder()
@@ -92,9 +103,7 @@ func callFleet(t *testing.T, handler echo.HandlerFunc, method, target, body stri
 	if err := handler(ctx); err != nil {
 		t.Fatalf("%s %s: %v", method, target, err)
 	}
-	var result model.Result
-	json.Unmarshal(rec.Body.Bytes(), &result)
-	return rec.Code, result
+	return rec
 }
 
 // Through the real Echo router, a crafted {id} must not turn an allowed row
@@ -332,4 +341,328 @@ func TestFleetRelayPassesTheAnswerThrough(t *testing.T) {
 	if got != 1 || seen != "/v1/sys/os" {
 		t.Fatalf("the gateway saw %d requests, last %q", got, seen)
 	}
+}
+
+const (
+	relaySecret  = "fleet-secret-5d1e"
+	relayJoinKey = "join-key-a90b"
+)
+
+// fakeRelay answers every relay request in process, whatever its host (the
+// official relay's included), and records the hosts asked. Its login server is
+// the host it is asked on. Its refusals quote the secret and the join key,
+// which no route may pass on.
+type fakeRelay struct {
+	mu           sync.Mutex
+	hosts        []string
+	createStatus int    // when set, what a fleet creation is answered
+	keyStatus    int    // when set, what a join key request is answered
+	retryAfter   string // the Retry-After of a refusal
+	down         bool   // every request fails in transport
+}
+
+func (r *fakeRelay) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hosts = append(r.hosts, req.URL.Host)
+	if r.down {
+		return nil, errors.New("connection refused")
+	}
+	rec := httptest.NewRecorder()
+	refuse := func(status int) {
+		if r.retryAfter != "" {
+			rec.Header().Set("Retry-After", r.retryAfter)
+		}
+		rec.WriteHeader(status)
+		rec.WriteString(`{"error":"` + relaySecret + " " + relayJoinKey + `"}`)
+	}
+	authed := req.Header.Get("Authorization") == "Bearer "+relaySecret
+	switch {
+	case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets" && r.createStatus != 0:
+		refuse(r.createStatus)
+	case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets":
+		rec.WriteHeader(http.StatusCreated)
+		json.NewEncoder(rec).Encode(map[string]any{"fleet_id": "fl1", "secret": relaySecret, "login_server": "https://" + req.URL.Host})
+	case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets/fl1/keys" && authed && r.keyStatus != 0:
+		refuse(r.keyStatus)
+	case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets/fl1/keys" && authed:
+		rec.WriteHeader(http.StatusCreated)
+		json.NewEncoder(rec).Encode(map[string]any{"key": relayJoinKey, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+	case req.Method == http.MethodDelete && authed:
+		rec.WriteHeader(http.StatusNoContent)
+	default:
+		refuse(http.StatusUnauthorized)
+	}
+	return rec.Result(), nil
+}
+
+func (r *fakeRelay) set(change func(*fakeRelay)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	change(r)
+}
+
+func (r *fakeRelay) seen() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.hosts...)
+}
+
+// fakeNet is the private network: joined to other (another network) when set,
+// else to what Up last joined, with the address 100.64.0.7.
+type fakeNet struct {
+	mu    sync.Mutex
+	other string
+	upErr error
+	login string
+	calls []string
+}
+
+func (n *fakeNet) State(context.Context) (fleet.NetState, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	switch {
+	case n.other != "":
+		return fleet.NetState{Connected: true, Addr: "100.100.1.1", LoginServer: n.other}, nil
+	case n.login != "":
+		return fleet.NetState{Connected: true, Addr: "100.64.0.7", LoginServer: n.login}, nil
+	}
+	return fleet.NetState{}, nil
+}
+
+func (n *fakeNet) Up(_ context.Context, loginServer, _, _ string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, "up "+loginServer)
+	switch {
+	case n.other != "":
+		return fleet.ErrOtherNetwork
+	case n.upErr != nil:
+		return n.upErr
+	}
+	n.login = loginServer
+	return nil
+}
+
+func (n *fakeNet) Down(context.Context) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, "down")
+	n.login = ""
+	return nil
+}
+
+func (n *fakeNet) seen() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.calls...)
+}
+
+// relayFixture is useFleetFixture with a fake private network and a fake
+// relay; a log line that carries the secret or the join key fails the test.
+func relayFixture(t *testing.T) (*fleet.Fleet, *fakeNet, *fakeRelay) {
+	t.Helper()
+	f := useFleetFixture(t)
+	n, r := &fakeNet{}, &fakeRelay{}
+	f.Net = n
+	f.RelayAPI.HTTP = &http.Client{Transport: r}
+	f.Log = func(msg string, err error) {
+		if line := fmt.Sprint(msg, err); strings.Contains(line, relaySecret) || strings.Contains(line, relayJoinKey) {
+			t.Errorf("a log line carries a secret: %s", line)
+		}
+	}
+	return f, n, r
+}
+
+func relayCode() string {
+	return fleet.Code{MasterURL: "https://100.64.0.9", BoxID: "b", Key: "k", Relay: "https://relay.example", JoinKey: relayJoinKey}.String()
+}
+
+func TestPutMasterDefaultsToOfficialRelay(t *testing.T) {
+	_, n, r := relayFixture(t)
+	code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("enable = %d %q", code, res.Message)
+	}
+	if hosts := r.seen(); len(hosts) == 0 || hosts[0] != mustParse(fleet.DefaultRelayURL).Host {
+		t.Fatalf("the relay asked: %v, want %s", hosts, fleet.DefaultRelayURL)
+	}
+	if calls := n.seen(); len(calls) != 1 || calls[0] != "up "+fleet.DefaultRelayURL {
+		t.Fatalf("network calls %v", calls)
+	}
+	data := res.Data.(map[string]any)
+	if data["relay"] != fleet.DefaultRelayURL || data["master"].(map[string]any)["address"] != "https://100.64.0.7" {
+		t.Fatalf("status %v", data)
+	}
+}
+
+func TestPutMasterAdvancedAddressSkipsRelay(t *testing.T) {
+	_, n, r := relayFixture(t)
+	code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"address":"https://m.example"}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("enable = %d %q", code, res.Message)
+	}
+	if len(r.seen()) != 0 || len(n.seen()) != 0 {
+		t.Fatalf("advanced mode touched the relay %v or the network %v", r.seen(), n.seen())
+	}
+	data := res.Data.(map[string]any)
+	if data["master"].(map[string]any)["address"] != "https://m.example" {
+		t.Fatalf("status %v", data)
+	}
+	for _, field := range []string{"relay", "net"} {
+		if _, has := data[field]; has {
+			t.Errorf("advanced mode reports %q: %v", field, data)
+		}
+	}
+}
+
+func TestPutMasterBothAddressAndRelayIs400(t *testing.T) {
+	f, n, r := relayFixture(t)
+	code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"address":"https://m.example","relay":"https://relay.example"}`, nil)
+	if code != http.StatusBadRequest || res.Message == "" {
+		t.Fatalf("both = %d %q, want 400 and a message", code, res.Message)
+	}
+	if _, on := f.MasterStatus(); on || len(r.seen()) != 0 || len(n.seen()) != 0 {
+		t.Fatalf("a refused body changed something: master %v, relay %v, network %v", on, r.seen(), n.seen())
+	}
+}
+
+func TestOtherNetworkIs409(t *testing.T) {
+	f, n, r := relayFixture(t)
+	n.other = "https://controlplane.tailscale.com"
+	code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil)
+	if code != http.StatusConflict || res.Message != fleet.ErrOtherNetwork.Error() {
+		t.Fatalf("master in another network = %d %q", code, res.Message)
+	}
+	if _, on := f.MasterStatus(); on || len(r.seen()) != 0 {
+		t.Fatalf("master %v, relay asked %v", on, r.seen())
+	}
+	code, res = callFleet(t, PutFleetMember, http.MethodPut, "/v1/fleet/member", `{"code":"`+relayCode()+`"}`, nil)
+	if code != http.StatusConflict || res.Message != fleet.ErrOtherNetwork.Error() {
+		t.Fatalf("member in another network = %d %q", code, res.Message)
+	}
+	if _, on := f.MemberStatus(); on {
+		t.Fatal("a refused join was saved")
+	}
+	// no driver at all: the box cannot do it, readably
+	f.Net = nil
+	code, res = callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true}`, nil)
+	if code != http.StatusServiceUnavailable || !strings.Contains(res.Message, "tailscale is not installed") {
+		t.Fatalf("no private network = %d %q", code, res.Message)
+	}
+}
+
+func TestRelayBusyIs429WithRetryAfter(t *testing.T) {
+	_, _, r := relayFixture(t)
+	r.set(func(r *fakeRelay) { r.createStatus, r.retryAfter = http.StatusTooManyRequests, "30" })
+	rec := callFleetRec(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "30" {
+		t.Fatalf("busy = %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	// a relay that does not say how long: no header
+	r.set(func(r *fakeRelay) { r.createStatus, r.retryAfter = http.StatusServiceUnavailable, "" })
+	rec = callFleetRec(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("busy, no delay = %d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestPutRelayChangesRelay(t *testing.T) {
+	_, n, r := relayFixture(t)
+	if code, res := callFleet(t, PutFleetRelay, http.MethodPut, "/v1/fleet/relay", `{"relay":"https://relay2.example"}`, nil); code != http.StatusBadRequest || res.Message == "" {
+		t.Fatalf("change with the master off = %d %q", code, res.Message)
+	}
+	if code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil); code != http.StatusOK {
+		t.Fatalf("enable = %d %q", code, res.Message)
+	}
+	asked := len(r.seen())
+	if code, res := callFleet(t, PutFleetRelay, http.MethodPut, "/v1/fleet/relay", `{}`, nil); code != http.StatusBadRequest || res.Message == "" || len(r.seen()) != asked {
+		t.Fatalf("no relay = %d %q, relay asked %v", code, res.Message, r.seen())
+	}
+	code, res := callFleet(t, PutFleetRelay, http.MethodPut, "/v1/fleet/relay", `{"relay":"https://relay2.example"}`, nil)
+	if code != http.StatusOK || res.Data.(map[string]any)["relay"] != "https://relay2.example" {
+		t.Fatalf("change = %d %q %v", code, res.Message, res.Data)
+	}
+	if calls := n.seen(); calls[len(calls)-1] != "up https://relay2.example" {
+		t.Fatalf("network calls %v", calls)
+	}
+}
+
+func TestGetFleetReportsRelayAndNeedsRecode(t *testing.T) {
+	relayFixture(t)
+	callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil)
+	if code, res := callFleet(t, PostFleetBoxes, http.MethodPost, "/v1/fleet/boxes", `{"name":"Maison"}`, nil); code != http.StatusOK {
+		t.Fatalf("add box = %d %q", code, res.Message)
+	}
+	if code, res := callFleet(t, PutFleetRelay, http.MethodPut, "/v1/fleet/relay", `{"relay":"https://relay2.example"}`, nil); code != http.StatusOK {
+		t.Fatalf("change = %d %q", code, res.Message)
+	}
+	_, res := callFleet(t, GetFleet, http.MethodGet, "/v1/fleet", "", nil)
+	data := res.Data.(map[string]any)
+	net, _ := data["net"].(map[string]any)
+	if data["relay"] != "https://relay2.example" || net["connected"] != true || net["addr"] != "100.64.0.7" {
+		t.Fatalf("master over a relay: %v", data)
+	}
+	if box := data["master"].(map[string]any)["boxes"].([]any)[0].(map[string]any); box["needs_recode"] != true {
+		t.Fatalf("the box does not ask for a new code: %v", box)
+	}
+	// a member over a relay
+	relayFixture(t)
+	if code, res := callFleet(t, PutFleetMember, http.MethodPut, "/v1/fleet/member", `{"code":"`+relayCode()+`"}`, nil); code != http.StatusOK {
+		t.Fatalf("join = %d %q", code, res.Message)
+	}
+	_, res = callFleet(t, GetFleet, http.MethodGet, "/v1/fleet", "", nil)
+	data = res.Data.(map[string]any)
+	net, _ = data["net"].(map[string]any)
+	if data["relay"] != "https://relay.example" || net["connected"] != true {
+		t.Fatalf("member over a relay: %v", data)
+	}
+}
+
+// Every refusal of the relay, and a network error that quotes the join key,
+// answers a readable status and nothing of the secret or the key.
+func TestRouteErrorsCarryNoSecret(t *testing.T) {
+	_, _, r := relayFixture(t)
+	if code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil); code != http.StatusOK {
+		t.Fatalf("enable = %d %q", code, res.Message)
+	}
+	leaks := func(name string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if body := rec.Body.String(); strings.Contains(body, relaySecret) || strings.Contains(body, relayJoinKey) {
+			t.Errorf("%s: the answer carries a secret: %s", name, body)
+		}
+	}
+	for _, c := range []struct {
+		name      string
+		keyStatus int
+		down      bool
+		want      int
+	}{
+		{"fleet full", http.StatusConflict, false, http.StatusConflict},
+		{"secret refused", http.StatusUnauthorized, false, http.StatusConflict},
+		{"fleet gone", http.StatusNotFound, false, http.StatusConflict},
+		{"busy", http.StatusTooManyRequests, false, http.StatusTooManyRequests},
+		{"another status", http.StatusInternalServerError, false, http.StatusBadRequest},
+		{"unreachable", 0, true, http.StatusBadGateway},
+	} {
+		r.set(func(r *fakeRelay) { r.keyStatus, r.down = c.keyStatus, c.down })
+		rec := callFleetRec(t, PostFleetBoxes, http.MethodPost, "/v1/fleet/boxes", `{"name":"Maison"}`, nil)
+		if rec.Code != c.want {
+			t.Errorf("%s = %d, want %d: %s", c.name, rec.Code, c.want, rec.Body)
+		}
+		leaks(c.name, rec)
+	}
+	rec := callFleetRec(t, PutFleetRelay, http.MethodPut, "/v1/fleet/relay", `{"relay":"https://relay2.example"}`, nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("change to an unreachable relay = %d, want 502", rec.Code)
+	}
+	leaks("change relay", rec)
+	// a member whose network quotes the join key in its error
+	_, n, _ := relayFixture(t)
+	n.upErr = errors.New("tailscale up --authkey=" + relayJoinKey + ": refused")
+	rec = callFleetRec(t, PutFleetMember, http.MethodPut, "/v1/fleet/member", `{"code":"`+relayCode()+`"}`, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("join, network refused = %d, want 400", rec.Code)
+	}
+	leaks("join", rec)
 }
