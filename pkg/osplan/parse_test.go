@@ -110,6 +110,16 @@ func TestTheRealRunsWithDockerKeptParseToo(t *testing.T) {
 	}
 }
 
+// apt 3 prints "Solving dependencies..." where apt 2 printed "Calculating upgrade...", also for an install that is already done (issue #76)
+func TestApt3SolvingDependenciesLineIsProgress(t *testing.T) {
+	for _, line := range []string{"Solving dependencies...", "Solving dependencies... Done"} {
+		out := Output{Text: "Reading package lists...\nBuilding dependency tree...\nReading state information...\n" + line + "\n0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"}
+		if _, f := ParseSolver(out); f != nil {
+			t.Errorf("%q: %v", line, f)
+		}
+	}
+}
+
 // pieces of an output that parses, to break one at a time
 const headLines = "Reading package lists...\nBuilding dependency tree...\nReading state information...\nCalculating upgrade...\n"
 
