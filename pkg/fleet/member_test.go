@@ -24,7 +24,7 @@ func shortWaits(t *testing.T) {
 	t.Helper()
 	fw, mw, rw := firstWait, maxWait, refusedWait
 	t.Cleanup(func() { firstWait, maxWait, refusedWait = fw, mw, rw })
-	firstWait, maxWait, refusedWait = 50*time.Millisecond, 200*time.Millisecond, 500*time.Millisecond
+	firstWait, maxWait, refusedWait = 50*time.Millisecond, 200*time.Millisecond, 2*time.Second
 }
 
 // seen is one request the fake gateway received.
@@ -130,7 +130,7 @@ func (f *Fleet) rawRelay(boxID string, fr frame) (frame, error) {
 	select {
 	case res := <-ch:
 		return res, nil
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		return frame{}, ErrTimeout
 	}
 }
@@ -234,7 +234,7 @@ func TestRevokedMemberStopsHammering(t *testing.T) {
 		return st.LastError == "refused by the master" && !st.Connected
 	})
 	n := dials.Load()
-	time.Sleep(refusedWait / 2)
+	time.Sleep(refusedWait / 4) // the next try comes at refusedWait - 20 % at the earliest
 	if m := dials.Load(); m != n {
 		t.Fatalf("dialled %d times during the refused wait", m-n)
 	}

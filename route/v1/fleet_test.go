@@ -266,7 +266,7 @@ func TestFleetRelayPassesTheAnswerThrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second) // a bound: CI runs every package at once under -race
 	for {
 		st, _ := f.MasterStatus()
 		if len(st.Boxes) > 0 && st.Boxes[0].Online {

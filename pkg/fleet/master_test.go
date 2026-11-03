@@ -125,9 +125,11 @@ func okJSON(frame) frame {
 	return frame{Status: 200, Headers: map[string]string{"Content-Type": "application/json"}, Body: []byte(`{"ok":true}`)}
 }
 
+// waitFor polls cond until it holds. The deadline is a bound, not a duration: CI runs every package
+// at once under -race, where a tunnel can take seconds to come up.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -286,7 +288,7 @@ func TestASecondTunnelReplacesTheFirst(t *testing.T) {
 	first, _ := fakeMember(t, srv, code, func(frame) frame { return frame{Status: 200, Body: []byte("first")} })
 	waitFor(t, "online", online(f, code.BoxID))
 	fakeMember(t, srv, code, func(frame) frame { return frame{Status: 200, Body: []byte("second")} })
-	if !closedWithin(first, 2*time.Second) {
+	if !closedWithin(first, 10*time.Second) {
 		t.Fatal("the first tunnel was not closed")
 	}
 	waitFor(t, "second online", online(f, code.BoxID))
@@ -355,7 +357,7 @@ func TestRemoveBoxAndDisableCloseTunnels(t *testing.T) {
 	if err := f.RemoveBox(c1.BoxID); err != nil {
 		t.Fatal(err)
 	}
-	if !closedWithin(conn1, 2*time.Second) {
+	if !closedWithin(conn1, 10*time.Second) {
 		t.Fatal("tunnel one still open")
 	}
 	if _, err := f.Relay(context.Background(), c1.BoxID, "GET", "/v1/sys/os", "", "", nil); !errors.Is(err, ErrNoBox) {
@@ -367,7 +369,7 @@ func TestRemoveBoxAndDisableCloseTunnels(t *testing.T) {
 	if err := f.DisableMaster(); err != nil {
 		t.Fatal(err)
 	}
-	if !closedWithin(conn2, 2*time.Second) {
+	if !closedWithin(conn2, 10*time.Second) {
 		t.Fatal("tunnel two still open after disable")
 	}
 	if _, err := os.Stat(filepath.Join(f.Root, StateDir, "master.json")); !os.IsNotExist(err) {
@@ -449,7 +451,7 @@ func TestRenameAndRotate(t *testing.T) {
 	if err != nil || fresh.Key == code.Key || fresh.BoxID != code.BoxID || fresh.MasterURL != srv.URL || fresh.CertSHA256 != code.CertSHA256 {
 		t.Fatalf("%+v %v", fresh, err)
 	}
-	if !closedWithin(conn, 2*time.Second) {
+	if !closedWithin(conn, 10*time.Second) {
 		t.Fatal("old tunnel still open after rotation")
 	}
 	if _, resp, err := dialTunnel(srv, code.BoxID, code.Key); err == nil || resp.StatusCode != 401 {
