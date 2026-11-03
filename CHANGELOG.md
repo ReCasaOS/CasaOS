@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Fleet.** A box can be the master of your other boxes. Each one joins with a code from the master and keeps an outbound WebSocket to `/v1/fleet/tunnel`: no port opens on a member, Tailscale or not. A member checks the master's certificate the usual way, or, when that fails, against the fingerprint in the code (the default self-signed certificate).
+  - the master relays a fixed table of each box's own routes and nothing else, checked on both sides: version, OS, utilization, modules, health, packages and their update, the ReCasaOS update, the apps (list, start, stop, restart, update, image check) and the virtual machines (list, start, shutdown, reboot, force-off); everything else is 403
+  - the member runs them through its own gateway with the identity of its services, so the box's own refusals (an update during a backup, Docker left out) still hold
+  - `GET /v1/fleet`, `PUT /v1/fleet/master`, `POST|PATCH|DELETE /v1/fleet/boxes`, `POST /v1/fleet/boxes/{id}/code`, `/v1/fleet/boxes/{id}/relay/*`, `PUT|DELETE /v1/fleet/member`
+  - a new alert category, `fleet`: one alert when a box has not reached the master for ten minutes, resolved when it is back
+  - state in `/var/lib/casaos/fleet/master.json` (box keys only hashed) and `member.json`, root, 0600
 - **A local process stack for development.** `./dev/stack.sh` starts the Gateway and the sibling services as the developer, on `127.0.0.1:8081`, with config and state under `.dev-runtime/`. Compose talks to a record-keeping Engine (`dev/fakedocker`) on a unix socket in that tree, not to `/var/run/docker.sock`. Storage lists two fixture disks. The file API is confined to `.dev-runtime/data`. This is not `install.sh`. Commands and limits are in `dev/README.md`.
 - **`GET /v1/file/roots`** returns the directories `[file] ManagementRoots` names, so the dashboard Files panel opens there instead of `/DATA`.
 - **`[file] ManagementRoots` confines the file API** (opt-in; empty = unchanged). Comma-separated directories, e.g. `/DATA,/media`.

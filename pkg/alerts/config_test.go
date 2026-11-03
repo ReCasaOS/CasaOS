@@ -35,7 +35,7 @@ func TestTheConfigurationFile(t *testing.T) {
 			`{"channels":[{"id":"a1","name":"Phone","url":"` + phone + `"}],"categories":{"apps":false,"weather":true},"disk_threshold":80}`,
 			Config{
 				Channels:      []Channel{{ID: "a1", Name: "Phone", URL: phone}},
-				Categories:    map[string]bool{Backups: true, Disks: true, Updates: true, Apps: false, Resources: true},
+				Categories:    map[string]bool{Backups: true, Disks: true, Updates: true, Apps: false, Resources: true, Fleet: true},
 				DiskThreshold: 80,
 			},
 		},
@@ -161,7 +161,7 @@ func TestAPutChangesCategoriesAndThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := map[string]bool{Backups: true, Disks: false, Updates: true, Apps: true, Resources: true}
+	want := map[string]bool{Backups: true, Disks: false, Updates: true, Apps: true, Resources: true, Fleet: true}
 	if !reflect.DeepEqual(status.Categories, want) || status.DiskThreshold != 75 || len(status.Channels) != 2 {
 		t.Fatalf("PUT answered %+v, want disks off, 75 %%, the channels untouched", status)
 	}
@@ -235,7 +235,7 @@ func TestAFileWithoutResourcesKeepsItOn(t *testing.T) {
 	h, _, _ := newHub(t)
 	writeConfigFile(t, h, withoutResources)
 
-	want := map[string]bool{Backups: true, Disks: false, Updates: true, Apps: true, Resources: true}
+	want := map[string]bool{Backups: true, Disks: false, Updates: true, Apps: true, Resources: true, Fleet: true}
 	if got := h.load().Categories; !reflect.DeepEqual(got, want) {
 		t.Fatalf("load() categories = %v, want %v", got, want)
 	}

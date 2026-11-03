@@ -74,10 +74,36 @@ func TestTheV1TokenInTheQueryIsTakenOnlyOnAGetAndNeverTheRefreshToken(t *testing
 		{"websocket upgrade, the refresh token in the query", http.MethodGet, status + "?token=" + refresh, "", "", true, http.StatusUnauthorized},
 		{"POST /v1/sys/update, the refresh token in the header", http.MethodPost, update, "", refresh, false, http.StatusUnauthorized},
 		{"PUT /v1/sys/autoupdate, the refresh token in the header", http.MethodPut, autoupdate, "{", refresh, false, http.StatusUnauthorized},
+		// The fleet: a GET relay takes the token in the query (an image or a
+		// download would); a PUT that joins a fleet wants it in the header, and
+		// never the refresh token. Role off, so a request that passes the token
+		// check reaches the handler and gets 404, never 401.
+		{"GET relay, the access token in the query", http.MethodGet, "/v1/fleet/boxes/x/relay/v1/sys/os?token=" + access, "", "", false, http.StatusNotFound},
+		{"PUT /v1/fleet/member, the access token in the query", http.MethodPut, "/v1/fleet/member?token=" + access, "{}", "", false, http.StatusUnauthorized},
+		{"PUT /v1/fleet/member, the access token in the header", http.MethodPut, "/v1/fleet/member", "{}", access, false, http.StatusBadRequest},
+		{"PUT /v1/fleet/member, the refresh token in the header", http.MethodPut, "/v1/fleet/member", "{}", refresh, false, http.StatusUnauthorized},
 	} {
 		if got := callWith(e, c); got != c.want {
 			t.Errorf("%s: status = %d, want %d", c.name, got, c.want)
 		}
+	}
+}
+
+// A service of the box reaches a GET relay with the secret of the boot, from
+// loopback: the JWT group lets it through, so the handler runs (404, role off)
+// rather than 401.
+func TestFleetRelayTakesTheInternalSecretFromLoopback(t *testing.T) {
+	system := &fakeUpdateSystem{}
+	_, _, secret := theTokensOfTheTests(t, system)
+	service.MyService = tokenRepository{fakeUpdateRepository{system: system}}
+	e := InitV1Router()
+	request := httptest.NewRequest(http.MethodGet, "/v1/fleet/boxes/x/relay/v1/sys/os", nil)
+	request.Header.Set(echo.HeaderAuthorization, secret)
+	request.RemoteAddr = "127.0.0.1:40000"
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, request)
+	if recorder.Code == http.StatusUnauthorized {
+		t.Fatalf("an internal request was refused: %d", recorder.Code)
 	}
 }
 
