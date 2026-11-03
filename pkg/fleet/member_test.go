@@ -369,3 +369,43 @@ func TestMemberSaysWhenItsGatewayCannotBeReached(t *testing.T) {
 		t.Fatalf("%+v %v", res, err)
 	}
 }
+
+// The member does not trust the master: a frame whose {id} would make the member's own
+// request another route is refused there, and its gateway sees nothing.
+func TestMemberRefusesAnIDThatWouldChangeTheRoute(t *testing.T) {
+	shortWaits(t)
+	master, _ := newMaster(t)
+	gw := &fakeGateway{status: 200}
+	member := newMember(t, gw)
+	code := join(t, master, member, "Maison")
+	for _, fr := range []frame{
+		{Method: "PUT", Path: "/v2/app_management/compose/x?/status"},
+		{Method: "PUT", Path: "/v2/app_management/compose/x#/status"},
+		{Method: "PUT", Path: "/v2/app_management/compose/../status"},
+		{Method: "POST", Path: "/v2/virt_management/vms/x?/start"},
+	} {
+		res, err := master.rawRelay(code.BoxID, fr)
+		if err != nil || res.Status != 403 {
+			t.Errorf("%s %s: %d %v", fr.Method, fr.Path, res.Status, err)
+		}
+	}
+	if got := gw.requests(); len(got) != 0 {
+		t.Fatalf("the gateway executed %+v", got)
+	}
+}
+
+// The member does not follow a redirect from its gateway: the internal secret
+// travels to loopback only, so a redirect is handed back as it is.
+func TestMemberDoesNotFollowAGatewayRedirect(t *testing.T) {
+	shortWaits(t)
+	master, _ := newMaster(t)
+	redirector := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://evil.example/stolen", http.StatusFound)
+	})
+	member := newMember(t, redirector)
+	code := join(t, master, member, "Maison")
+	res, err := master.Relay(t.Context(), code.BoxID, "GET", "/v1/sys/os", "", "", nil)
+	if err != nil || res.Status != http.StatusFound {
+		t.Fatalf("status %d err %v, want 302 handed back unfollowed", res.Status, err)
+	}
+}

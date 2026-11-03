@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"regexp"
 	"strings"
 	"time"
 )
@@ -52,8 +53,14 @@ var vmActions = map[string]bool{"start": true, "shutdown": true, "reboot": true,
 // Allowed says whether method+path (the path alone, no query) is in the
 // table, and whether it is one of the slow routes. The path is compared as it
 // is: no decoding, no trimming, no case folding, so the table cannot be
-// reached around.
+// reached around. A path carrying a character a URL reads as a delimiter or an
+// escape (? # % \ or a control byte) is refused outright: an {id} that held one
+// would turn a row of the table into another route once a request is built from
+// it.
 func Allowed(method, path string) (slow, ok bool) {
+	if strings.ContainsAny(path, "?#%\\") || strings.IndexFunc(path, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return false, false
+	}
 	segs := strings.Split(path, "/")
 	for _, row := range allowed {
 		if row.method == method && match(strings.Split(row.pattern, "/"), segs) {
@@ -63,6 +70,11 @@ func Allowed(method, path string) (slow, ok bool) {
 	return false, false
 }
 
+// idSegment is what an {id} may be: one segment, starting alphanumeric, then
+// letters, digits, dot, dash or underscore. Never "." or "..", which a path
+// resolves away, and never empty.
+var idSegment = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
 func match(pattern, segs []string) bool {
 	if len(pattern) != len(segs) {
 		return false
@@ -70,7 +82,7 @@ func match(pattern, segs []string) bool {
 	for i, p := range pattern {
 		switch p {
 		case "{id}":
-			if segs[i] == "" {
+			if !idSegment.MatchString(segs[i]) || segs[i] == ".." {
 				return false
 			}
 		case "{action}":

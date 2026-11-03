@@ -215,7 +215,7 @@ func (f *Fleet) session(ctx context.Context, st MemberState) outcome {
 		f.m.failed(err.Error())
 		return failed
 	}
-	gw, gwErr := f.Gateway()
+	_, gwErr := f.Gateway()
 	f.m.connected(conn, f.Now(), gwErr)
 	defer f.m.disconnected(conn)
 
@@ -269,7 +269,7 @@ func (f *Fleet) session(ctx context.Context, st MemberState) outcome {
 		go func() {
 			defer handlers.Done()
 			defer func() { <-sem }()
-			writeFrame(conn, &writeMu, answer(req, f.execute(gw, gwErr, req)))
+			writeFrame(conn, &writeMu, answer(req, f.execute(req)))
 		}()
 	}
 	close(stop)
@@ -309,25 +309,30 @@ func (f *Fleet) dial(ctx context.Context, st MemberState) (*websocket.Conn, *htt
 }
 
 // execute runs one relayed request against this box's own gateway, with the
-// internal identity, and never anything outside the table.
-func (f *Fleet) execute(gw GatewayInfo, gwErr error, req frame) frame {
+// internal identity, and never anything outside the table. The gateway is
+// read fresh for each request: the web UI port can change under a running box.
+func (f *Fleet) execute(req frame) frame {
 	slow, ok := Allowed(req.Method, req.Path)
 	if !ok {
 		return problem(http.StatusForbidden, ErrNotAllowed.Error())
 	}
-	if gwErr != nil {
-		return problem(http.StatusBadGateway, gwErr.Error())
+	gw, err := f.Gateway()
+	if err != nil {
+		return problem(http.StatusBadGateway, err.Error())
 	}
 	if len(req.Body) > MaxBody {
 		return problem(http.StatusRequestEntityTooLarge, "the request body is too big to relay")
 	}
-	target := gw.Public.String() + req.Path
-	if q := stripToken(req.Query); q != "" {
-		target += "?" + q
-	}
+	// Build the URL from its parts, never by joining strings: Allowed has
+	// already refused a path with a delimiter or an escape in it, and the
+	// query is re-encoded here, so nothing in the frame can graft on a
+	// second route or a query the member did not mean to send.
+	target := *gw.Public
+	target.Path = req.Path
+	target.RawQuery = stripToken(req.Query)
 	ctx, cancel := context.WithTimeout(context.Background(), timeouts(slow))
 	defer cancel()
-	hreq, err := http.NewRequestWithContext(ctx, req.Method, target, bytes.NewReader(req.Body))
+	hreq, err := http.NewRequestWithContext(ctx, req.Method, target.String(), bytes.NewReader(req.Body))
 	if err != nil {
 		return problem(http.StatusBadRequest, "the relayed request is malformed")
 	}

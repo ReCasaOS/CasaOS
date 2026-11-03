@@ -64,3 +64,25 @@ func TestTimeout(t *testing.T) {
 		t.Fatal("timeouts")
 	}
 }
+
+// An {id} is one plain segment: no character a URL reads as something else (?, #, %), no
+// dot segment a server cleans away, nothing a shell or a path would split on. Otherwise a
+// row of the table turns into another route once the member builds its request.
+func TestAnIDIsOnePlainSegment(t *testing.T) {
+	for _, id := range []string{"x?", "x#", "x%3F", "x%2F..", "..", ".", `x\y`, "x y", "x;y", "?", "#"} {
+		for _, c := range []struct{ method, path string }{
+			{"PUT", "/v2/app_management/compose/" + id + "/status"},
+			{"PATCH", "/v2/app_management/compose/" + id},
+			{"POST", "/v2/virt_management/vms/" + id + "/start"},
+		} {
+			if _, ok := Allowed(c.method, c.path); ok {
+				t.Errorf("%s %q passed", c.method, c.path)
+			}
+		}
+	}
+	for _, id := range []string{"plex", "big-bear-ayon", "my_app", "0f1e-2d3c", "vm.1", "Plex", "a"} {
+		if _, ok := Allowed("PATCH", "/v2/app_management/compose/"+id); !ok {
+			t.Errorf("%q refused", id)
+		}
+	}
+}

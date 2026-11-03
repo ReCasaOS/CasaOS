@@ -97,6 +97,51 @@ func callFleet(t *testing.T, handler echo.HandlerFunc, method, target, body stri
 	return rec.Code, result
 }
 
+// Through the real Echo router, a crafted {id} must not turn an allowed row
+// into another route. Echo decodes ctx.Param("*"), which the hand-built route
+// tests never exercise: an allowed path reaches Relay (503, the box is offline),
+// an escape is refused before the tunnel (403).
+func TestFleetRelayDoesNotLetTheRouterReshapeThePath(t *testing.T) {
+	f := useFleetFixture(t)
+	if err := f.EnableMaster("https://m.example"); err != nil {
+		t.Fatal(err)
+	}
+	box, _, err := f.AddBox("Maison", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := echo.New()
+	g := e.Group("/v1/fleet")
+	g.GET("/boxes/:id/relay/*", FleetRelay)
+	g.Match([]string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}, "/boxes/:id/relay/*", FleetRelay)
+	status := func(method, rawURL, body string) int {
+		req := httptest.NewRequest(method, rawURL, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set(echo.HeaderContentType, "application/yaml")
+		}
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	base := "/v1/fleet/boxes/" + box.ID + "/relay"
+	// an allowed row reaches Relay: the box is offline
+	if code := status(http.MethodGet, base+"/v1/sys/os", ""); code != http.StatusServiceUnavailable {
+		t.Fatalf("an allowed route = %d, want 503 (reached Relay, box offline)", code)
+	}
+	// escapes are refused before anything is relayed
+	for _, esc := range []struct{ method, path string }{
+		{http.MethodPut, "/v2/app_management/compose/x%3F/status"},
+		{http.MethodPut, "/v2/app_management/compose/x%23/status"},
+		{http.MethodPatch, "/v2/app_management/compose/..%2F..%2F..%2Fv1%2Ffile%2Fcontent"},
+		{http.MethodPut, "/v2/app_management/compose/../status"},
+		{http.MethodPost, "/v2/virt_management/vms/x%3F/start"},
+	} {
+		if code := status(esc.method, base+esc.path, "image: evil"); code != http.StatusForbidden {
+			t.Errorf("%s %s = %d, want 403", esc.method, esc.path, code)
+		}
+	}
+}
+
 func TestFleetStatusRoles(t *testing.T) {
 	useFleetFixture(t)
 	if _, r := callFleet(t, GetFleet, http.MethodGet, "/v1/fleet", "", nil); r.Data.(map[string]any)["role"] != "none" {

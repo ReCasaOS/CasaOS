@@ -54,8 +54,12 @@ func New(root string) *Fleet {
 		tunnels:  map[string]*tunnel{},
 		restart:  make(chan struct{}, 1),
 		// The box's own gateway over loopback: its self-signed certificate is not
-		// for 127.0.0.1, and nothing leaves the box.
-		local: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}}, //nolint:gosec // see above
+		// for 127.0.0.1, and nothing leaves the box. A redirect is not followed:
+		// it is returned as it is, so the internal secret never leaves loopback.
+		local: &http.Client{
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+			Transport:     &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}, //nolint:gosec // see above
+		},
 	}
 }
 
