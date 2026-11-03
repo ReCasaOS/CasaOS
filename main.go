@@ -34,6 +34,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/cache"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
+	"github.com/ReCasaOS/CasaOS/pkg/fleet"
 	"github.com/ReCasaOS/CasaOS/pkg/hoststats"
 	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
@@ -41,6 +42,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/trash"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/httper"
+	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 	"github.com/ReCasaOS/CasaOS/route"
 	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/coreos/go-systemd/daemon"
@@ -208,6 +210,14 @@ func main() {
 		alerts.Default.OSSupport = service.MyService.System().GetSystemOS
 	}
 	go alerts.Default.Run(context.Background())
+	// The fleet: this box can be the master of the owner's other boxes, or a member of one. A member executes what its
+	// master relays through this box's own gateway, with the identity of the box's services; a master raises one alert
+	// when a box has been gone ten minutes. Set before Run, which dials at once when member.json exists. Image-managed
+	// boxes take part too: what they refuse (an update of the release), they refuse through their own routes.
+	fleet.Default.RuntimePath = func() string { return config.CommonInfo.RuntimePath }
+	fleet.Default.Version = version.CurrentVersion
+	fleet.Default.Offline = alerts.Default.FleetOffline
+	go fleet.Default.Run(context.Background())
 	// Automatic updates start the button's own update, read the button's own
 	// version.json, and settle an update that restarted the core before checking.
 	autoupdate.Default.Releases = service.MyService.Casa()
@@ -289,6 +299,7 @@ func main() {
 		"/v1/recover",
 		"/v1/other",
 		"/v1/zt",
+		"/v1/fleet",
 		"/v1/test",
 		route.V2APIPath,
 		route.V2DocPath,
