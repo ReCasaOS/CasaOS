@@ -64,6 +64,7 @@ func InitV1Router() http.Handler {
 	}))
 
 	e.GET("/v1/sys/version/check", v1.GetSystemCheckVersion)
+	e.GET("/v1/fleet/tunnel", v1.FleetTunnel)
 	e.GET("/v1/sys/version/current", func(ctx echo.Context) error {
 		return ctx.String(200, common.VERSION)
 	})
@@ -258,6 +259,26 @@ func InitV1Router() http.Handler {
 		v1ZerotierGroup.Use()
 		{
 			v1ZerotierGroup.Any("/*url", v1.ZerotierProxy)
+		}
+
+		// The fleet: this box's role and its boxes, and the relay that forwards
+		// one of a box's own routes into its tunnel. Reads take what the group
+		// takes; everything that changes a box, or relays an action, wants the
+		// access token in the header, like POST /v1/sys/update. The tunnel
+		// itself is a WebSocket outside the group (next to version/check).
+		v1FleetGroup := v1Group.Group("/fleet")
+		v1FleetGroup.Use()
+		{
+			v1FleetGroup.GET("", v1.GetFleet)
+			v1FleetGroup.PUT("/master", v1.PutFleetMaster, headerTokenOnly)
+			v1FleetGroup.POST("/boxes", v1.PostFleetBoxes, headerTokenOnly)
+			v1FleetGroup.PATCH("/boxes/:id", v1.PatchFleetBox)
+			v1FleetGroup.DELETE("/boxes/:id", v1.DeleteFleetBox, headerTokenOnly)
+			v1FleetGroup.POST("/boxes/:id/code", v1.PostFleetBoxCode, headerTokenOnly)
+			v1FleetGroup.GET("/boxes/:id/relay/*", v1.FleetRelay)
+			v1FleetGroup.Match([]string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}, "/boxes/:id/relay/*", v1.FleetRelay, headerTokenOnly)
+			v1FleetGroup.PUT("/member", v1.PutFleetMember, headerTokenOnly)
+			v1FleetGroup.DELETE("/member", v1.DeleteFleetMember, headerTokenOnly)
 		}
 	}
 
