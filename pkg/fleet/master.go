@@ -288,13 +288,19 @@ func (f *Fleet) inFlight(boxID string) int {
 	return len(t.pending)
 }
 
-// EnableMaster turns the role on at address, keeping the boxes already enrolled.
+// EnableMaster turns the role on at address, keeping the boxes already
+// enrolled. A box that is a member of another fleet cannot become a master:
+// the two roles are exclusive (a self-enrolled master's own member.json names
+// itself, which is not another fleet).
 func (f *Fleet) EnableMaster(address string) error {
 	if err := ValidMasterURL(address); err != nil {
 		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if m, ok := f.loadMember(); ok && !f.namesSelf(m) {
+		return errors.New("this box is a member of a fleet: leave it before becoming a master")
+	}
 	st, _ := f.loadMaster()
 	st.Enabled, st.Address = true, address
 	if st.Boxes == nil {
@@ -513,6 +519,13 @@ func (f *Fleet) code(st MasterState, box Box, key string) (Code, error) {
 		master = u.String()
 	}
 	return Code{MasterURL: master, BoxID: box.ID, Key: key, CertSHA256: fp}, nil
+}
+
+// namesSelf says whether a member.json is this box's own (a self-enrolled
+// master), not another fleet's: its master is this box's own loopback gateway.
+func (f *Fleet) namesSelf(m MemberState) bool {
+	u, err := url.Parse(m.MasterURL)
+	return err == nil && loopbackHost(u.Hostname())
 }
 
 // validLink accepts no link, or an http(s) one: where a box's own dashboard is.

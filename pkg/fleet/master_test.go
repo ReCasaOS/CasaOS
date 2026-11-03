@@ -591,3 +591,25 @@ func closedWithinRaw(conn *websocket.Conn, d time.Duration) bool {
 	_, _, err := conn.NextReader()
 	return err != nil && !strings.Contains(err.Error(), "timeout")
 }
+
+// A box that is a member of another fleet is not its own master: EnableMaster
+// refuses, so AddBox(self) cannot silently overwrite the master it belongs to.
+func TestABoxCannotMasterWhileAMemberOfAnother(t *testing.T) {
+	f := New(t.TempDir())
+	if err := f.saveMember(MemberState{MasterURL: "https://other.example", BoxID: "b", Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.EnableMaster("https://me.example"); err == nil {
+		t.Fatal("a member of another fleet became a master")
+	}
+	if st := f.Status(); st.Role != "member" {
+		t.Fatalf("role = %q, want member", st.Role)
+	}
+	// once it leaves, it can
+	if err := f.Leave(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.EnableMaster("https://me.example"); err != nil {
+		t.Fatalf("after leaving: %v", err)
+	}
+}
