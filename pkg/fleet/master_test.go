@@ -429,3 +429,78 @@ func TestRenameAndRotate(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// The only thing the master knows without the page open: a box gone for ten minutes.
+func TestOfflineWatch(t *testing.T) {
+	f, srv := newMaster(t)
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	f.Now = func() time.Time { return now }
+	type call struct {
+		id, name string
+		off      bool
+	}
+	var calls []call
+	f.Offline = func(id, name string, off bool) { calls = append(calls, call{id, name, off}) }
+	seen, never := addBox(t, f, "Maison"), addBox(t, f, "Bureau")
+	f.checkOffline() // the master starts: the grace period begins
+	conn, _ := fakeMember(t, srv, seen, okJSON)
+	waitFor(t, "online", online(f, seen.BoxID))
+	conn.Close()
+	waitFor(t, "offline", func() bool { return !online(f, seen.BoxID)() })
+	for _, after := range []time.Duration{time.Minute, offlineAfter - time.Minute} {
+		now = now.Add(after - now.Sub(time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)))
+		f.checkOffline()
+	}
+	if len(calls) != 0 {
+		t.Fatalf("too early: %+v", calls)
+	}
+	now = now.Add(time.Minute)
+	f.checkOffline()
+	f.checkOffline()
+	if len(calls) != 1 || calls[0] != (call{seen.BoxID, "Maison", true}) {
+		t.Fatalf("%+v", calls)
+	}
+	fakeMember(t, srv, seen, okJSON)
+	waitFor(t, "online again", online(f, seen.BoxID))
+	f.checkOffline()
+	if len(calls) != 2 || calls[1] != (call{seen.BoxID, "Maison", false}) {
+		t.Fatalf("%+v", calls)
+	}
+	// a box that never connected is not "gone": nothing, however long
+	now = now.Add(24 * time.Hour)
+	f.checkOffline()
+	if len(calls) != 2 {
+		t.Fatalf("never-connected box alerted: %+v", calls)
+	}
+	_ = never
+}
+
+// A master that restarts says nothing about its boxes during the grace period.
+func TestOfflineWatchGraceAfterStart(t *testing.T) {
+	f, _ := newMaster(t)
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	f.Now = func() time.Time { return now }
+	var calls int
+	f.Offline = func(string, string, bool) { calls++ }
+	code := addBox(t, f, "Maison")
+	f.mu.Lock()
+	f.modifyBox(code.BoxID, func(b *Box) error { b.LastSeen = now.Add(-48 * time.Hour); return nil })
+	f.mu.Unlock()
+	f.checkOffline()
+	now = now.Add(startGrace - time.Minute)
+	f.checkOffline()
+	if calls != 0 {
+		t.Fatal("alerted during the grace period")
+	}
+	now = now.Add(time.Minute)
+	f.checkOffline()
+	if calls != 1 {
+		t.Fatalf("calls = %d", calls)
+	}
+	// removing the box resolves what was raised for it
+	f.RemoveBox(code.BoxID)
+	f.checkOffline()
+	if calls != 2 {
+		t.Fatalf("calls = %d after removal", calls)
+	}
+}

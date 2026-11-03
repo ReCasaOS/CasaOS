@@ -134,6 +134,7 @@ func (f *Fleet) MemberStatus() (MemberStatus, bool) {
 // Run is the member loop, started once by main: while member.json exists, keep
 // a tunnel to the master and serve what it relays; otherwise wait for a code.
 func (f *Fleet) Run(ctx context.Context) {
+	go f.watchOffline(ctx)
 	wait := firstWait
 	for {
 		f.mu.Lock()

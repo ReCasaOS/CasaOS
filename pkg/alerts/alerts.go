@@ -62,9 +62,10 @@ const (
 	Updates   = "updates"
 	Apps      = "apps"
 	Resources = "resources"
+	Fleet     = "fleet"
 )
 
-var categories = []string{Backups, Disks, Updates, Apps, Resources}
+var categories = []string{Backups, Disks, Updates, Apps, Resources, Fleet}
 
 // alert is one condition: its key is what dedupe and resolution go by, its
 // sentence says what and where, and never anything more sensitive than an

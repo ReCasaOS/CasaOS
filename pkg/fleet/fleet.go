@@ -19,18 +19,21 @@ import (
 // Fleet holds both roles of one box. Its func fields are what main wires and
 // tests replace.
 type Fleet struct {
-	Root        string                      // "/" on a box; a temp dir in tests
-	RuntimePath func() string               // where internal.secret lives
-	Now         func() time.Time            // the clock of what is recorded
-	Log         func(msg string, err error) // one line when a file cannot be read
-	Gateway     func() (GatewayInfo, error) // where this box's gateway listens
-	Hostname    func() (string, error)      // this box's name, said in the hello
-	Version     func() string               // this box's ReCasaOS version, said in the hello
+	Root        string                                 // "/" on a box; a temp dir in tests
+	RuntimePath func() string                          // where internal.secret lives
+	Now         func() time.Time                       // the clock of what is recorded
+	Log         func(msg string, err error)            // one line when a file cannot be read
+	Gateway     func() (GatewayInfo, error)            // where this box's gateway listens
+	Hostname    func() (string, error)                 // this box's name, said in the hello
+	Version     func() string                          // this box's ReCasaOS version, said in the hello
+	Offline     func(boxID, name string, offline bool) // the alerts hub's hook: a box gone, or back
 
 	mu      sync.Mutex         // master.json, member.json and tunnels
 	tunnels map[string]*tunnel // the live tunnel of each box, by id
 	restart chan struct{}      // poked when member.json changes
 	m       memberState        // what the member loop reports
+	offline map[string]bool    // the boxes an offline alert is up for
+	started time.Time          // when the offline watch first ran: its grace period starts here
 	local   *http.Client       // how a member reaches its own gateway
 }
 
@@ -46,6 +49,8 @@ func New(root string) *Fleet {
 		},
 		Hostname: os.Hostname,
 		Version:  func() string { return "" },
+		Offline:  func(string, string, bool) {},
+		offline:  map[string]bool{},
 		tunnels:  map[string]*tunnel{},
 		restart:  make(chan struct{}, 1),
 		// The box's own gateway over loopback: its self-signed certificate is not
