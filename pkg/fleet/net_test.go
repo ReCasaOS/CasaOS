@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -70,6 +71,82 @@ func (f *fakeTS) called(prefix string) bool {
 		}
 	}
 	return false
+}
+
+// tailscaled models the daemon behind the real tailscale Net: the command
+// answers only while it is active, login is the server it is logged in to
+// (kept on disk while it is stopped), and up refuses another server, as
+// tailscale does without --force-reauth.
+type tailscaled struct {
+	mu              sync.Mutex
+	active, enabled bool
+	login           string
+	calls           []string
+}
+
+func (d *tailscaled) run(_ context.Context, args ...string) ([]byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = append(d.calls, "tailscale "+strings.Join(args, " "))
+	if !d.active {
+		return nil, errors.New("exit status 1: failed to connect to local tailscaled")
+	}
+	switch args[0] {
+	case "status":
+		if d.login == "" {
+			return []byte(`{"BackendState":"NeedsLogin"}`), nil
+		}
+		return []byte(runningJSON), nil
+	case "debug":
+		return []byte(prefsFor(d.login)), nil
+	case "logout":
+		d.login = ""
+		return nil, nil
+	case "up":
+		server := strings.TrimPrefix(args[1], "--login-server=")
+		if d.login != "" && !sameURL(d.login, server) {
+			return nil, errors.New("can't change --login-server without --force-reauth")
+		}
+		d.login = server
+		return nil, nil
+	}
+	return nil, errors.New("unexpected command")
+}
+
+func (d *tailscaled) systemctl(_ context.Context, args ...string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = append(d.calls, "systemctl "+strings.Join(args, " "))
+	switch {
+	case args[0] == "is-active" && !d.active, args[0] == "is-enabled" && !d.enabled:
+		return errors.New("exit status 3")
+	case args[0] == "enable":
+		d.active, d.enabled = true, true
+	case args[0] == "disable":
+		d.active, d.enabled = false, false
+	case args[0] == "stop":
+		d.active = false
+	}
+	return nil
+}
+
+func (d *tailscaled) net() Net {
+	n := NewTailscale(d.run).(*tailscale)
+	n.systemctl = d.systemctl
+	return n
+}
+
+// ups is every `tailscale up` run, in order.
+func (d *tailscaled) ups() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var ups []string
+	for _, c := range d.calls {
+		if strings.HasPrefix(c, "tailscale up ") {
+			ups = append(ups, c)
+		}
+	}
+	return ups
 }
 
 const runningJSON = `{"BackendState":"Running","Self":{"TailscaleIPs":["fd7a:115c:a1e0::1","100.64.0.7"]}}`
@@ -254,21 +331,32 @@ func TestUpIdempotentSameNetwork(t *testing.T) {
 	}
 }
 
+// A stopped tailscaled cannot log out: Down starts it first, or the login to
+// our relay stays on disk for the next Up to find (I-1).
 func TestDownLogsOut(t *testing.T) {
 	f := &fakeTS{}
 	if err := f.net().Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 2 || f.calls[0] != "tailscale logout" || f.calls[1] != "systemctl disable --now tailscaled" {
-		t.Errorf("calls: %v", f.calls)
+	want := "systemctl is-active --quiet tailscaled,systemctl is-enabled --quiet tailscaled,systemctl enable --now tailscaled,tailscale logout,systemctl disable --now tailscaled"
+	if got := strings.Join(f.calls, ","); got != want {
+		t.Errorf("stopped: calls %v", f.calls)
+	}
+	f = &fakeTS{active: true}
+	if err := f.net().Down(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.calls, ","); got != "systemctl is-active --quiet tailscaled,tailscale logout,systemctl disable --now tailscaled" {
+		t.Errorf("running: calls %v", f.calls)
 	}
 }
 
 func TestDownErrors(t *testing.T) {
 	boom := errors.New("boom")
 	// One step failing must not stop the caller's local cleanup.
-	if err := (&fakeTS{logoutErr: boom}).net().Down(context.Background()); err != nil {
-		t.Errorf("logout alone failing: %v", err)
+	f := &fakeTS{logoutErr: boom}
+	if err := f.net().Down(context.Background()); err != nil || f.calls[len(f.calls)-1] != "systemctl disable --now tailscaled" {
+		t.Errorf("logout alone failing: %v, calls %v", err, f.calls)
 	}
 	if err := (&fakeTS{sysErr: boom}).net().Down(context.Background()); err != nil {
 		t.Errorf("systemctl alone failing: %v", err)

@@ -210,6 +210,29 @@ func TestJoinOtherRelayLeavesTheOldNetwork(t *testing.T) {
 	}
 }
 
+// A member whose tailscaled is stopped, still logged in to the old relay,
+// joins with a code for another: the old login goes first (Down starts the
+// daemon to log out) and the box ends on the new relay (I-1).
+func TestJoinOtherRelayWithTailscaledStopped(t *testing.T) {
+	f, _, _ := relayMember(t)
+	d := &tailscaled{active: true, enabled: true}
+	f.Net = d.net()
+	if err := f.Join(relayCode().String()); err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	d.active = false // stopped, after a reboot say: its login to the old relay stays on disk
+	d.mu.Unlock()
+	c := relayCode()
+	c.Relay = "https://relay2.example"
+	if err := f.Join(c.String()); err != nil {
+		t.Fatalf("%v, calls %v", err, d.calls)
+	}
+	if st, _ := f.loadMember(); st.Relay != c.Relay || !sameURL(d.login, c.Relay) || !d.active {
+		t.Fatalf("member.json %+v, logged in to %q, active %v, calls %v", st, d.login, d.active, d.calls)
+	}
+}
+
 func TestLeaveBringsNetworkDown(t *testing.T) {
 	f, n, _ := relayMember(t)
 	if err := f.Join(relayCode().String()); err != nil {

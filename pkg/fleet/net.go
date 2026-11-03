@@ -46,7 +46,8 @@ type Net interface {
 	// box is already in another one, leaving it as it was. On any error, Up has
 	// undone what it did itself: the caller has nothing to take down.
 	Up(ctx context.Context, loginServer, authKey, hostname string) error
-	// Down leaves the network and stops the daemon.
+	// Down leaves the network and stops the daemon. Only for a network this box
+	// joined itself: it logs out whatever the box is logged in to.
 	Down(ctx context.Context) error
 }
 
@@ -141,7 +142,10 @@ func (t *tailscale) State(ctx context.Context) (NetState, error) {
 }
 
 // Up starts tailscaled and joins loginServer. It does nothing if the box is
-// already joined there, and refuses if it is in another network.
+// already joined there, and refuses if it is in another network. The no-op
+// cannot tell two fleets on one relay apart: it is for joining the same fleet
+// again, and a caller switching fleets (ChangeRelay, Join to another relay)
+// calls Down first.
 func (t *tailscale) Up(ctx context.Context, loginServer, authKey, hostname string) error {
 	if loginServer == "" || authKey == "" {
 		return errors.New("tailscale up: a login server and a key are needed")
@@ -239,12 +243,17 @@ func cleanupCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 }
 
-// Down logs out and stops tailscaled. It fails only if both steps fail, so the
-// caller can go on with its local cleanup.
+// Down starts tailscaled, logs out and stops it. A stopped tailscaled cannot
+// log out, and its login would stay on disk for the next Up to find; starting
+// it touches nothing of the owner's because Down is only called for a network
+// this box joined itself (every caller makes sure of it). It fails only if
+// both the logout and the stop fail, so the caller can go on with its local
+// cleanup.
 func (t *tailscale) Down(ctx context.Context) error {
 	ctx, cancel := withNetTimeout(ctx)
 	defer cancel()
-	_, lerr := t.run(ctx, "logout") // fails when already logged out or stopped
+	t.start(ctx)                    // undone by the disable below; a failure shows in the logout
+	_, lerr := t.run(ctx, "logout") // fails when already logged out
 	serr := t.sys(ctx, "disable", "--now", "tailscaled")
 	if lerr != nil && serr != nil {
 		return errors.Join(lerr, serr)

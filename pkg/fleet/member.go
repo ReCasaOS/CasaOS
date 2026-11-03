@@ -142,8 +142,11 @@ func (f *Fleet) Join(code string) error {
 		return f.enrol(st)
 	}
 	if member && old.Relay != "" && !sameURL(old.Relay, c.Relay) {
-		// the master moved to another relay: leave the old relay's network, ours
-		if ns, err := n.State(ctx); err == nil && sameURL(ns.LoginServer, old.Relay) {
+		// The master moved to another relay: leave the old relay's network, ours.
+		// A stopped tailscaled shows no network at all; member.json says the last
+		// one was ours, and Down starts it to log out. A network shown that is
+		// not the old relay's is the owner's: left alone, Up refuses it.
+		if ns, err := n.State(ctx); err == nil && (ns.LoginServer == "" || sameURL(ns.LoginServer, old.Relay)) {
 			f.netDown(n)
 		}
 	}

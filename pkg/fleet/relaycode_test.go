@@ -342,6 +342,31 @@ func TestChangeRelayUpFailsAfterDown(t *testing.T) {
 	}
 }
 
+// ChangeRelay with this box's tailscaled stopped: Down starts it to log out of
+// the old fleet, and Up then really joins the new one with its key, on the
+// same relay (never "already joined" to the old fleet) as on another (I-1).
+func TestChangeRelayWithTailscaledStopped(t *testing.T) {
+	for _, same := range []bool{true, false} {
+		f, _, r, _ := relayOn(t)
+		d := &tailscaled{enabled: true, login: r.URL} // stopped, still logged in to the old fleet
+		f.Net = d.net()
+		to := r
+		if !same {
+			to = newFakeRelay(t)
+		}
+		if err := f.ChangeRelay(context.Background(), to.URL); err != nil {
+			t.Fatalf("same relay %v: %v, calls %v", same, err, d.calls)
+		}
+		ups := d.ups()
+		if len(ups) != 1 || !strings.Contains(ups[0], "--login-server="+to.URL+" --authkey="+testJoinKey) || !sameURL(d.login, to.URL) {
+			t.Fatalf("same relay %v: ups %v, calls %v", same, ups, d.calls)
+		}
+		if st, _ := f.MasterStatus(); st.Relay != to.URL || st.NetAddr != "100.64.0.7" {
+			t.Fatalf("same relay %v: %+v", same, st)
+		}
+	}
+}
+
 func TestNoSecretOrJoinKeyInLogs(t *testing.T) {
 	f, _, r, logs := relayOn(t)
 	var errs []string
