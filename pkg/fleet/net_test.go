@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeTS stands in for the tailscale command and for systemctl, and records
@@ -267,5 +268,24 @@ func TestPrivateNetNil(t *testing.T) {
 	f := New(t.TempDir())
 	if _, err := f.PrivateNet(); !errors.Is(err, ErrNoPrivateNet) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// A caller's longer deadline (a route's detached two minutes) does not lift
+// the cap of one tailscale call.
+func TestNetTimeoutCapsALongerDeadline(t *testing.T) {
+	var left time.Duration
+	n := NewTailscale(func(ctx context.Context, _ ...string) ([]byte, error) {
+		d, _ := ctx.Deadline()
+		left = time.Until(d)
+		return []byte(`{"BackendState":"NeedsLogin"}`), nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if _, err := n.State(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if left > netTimeout {
+		t.Fatalf("a call may run %v", left)
 	}
 }

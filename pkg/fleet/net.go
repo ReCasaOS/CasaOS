@@ -23,7 +23,7 @@ var ErrNoPrivateNet = errors.New("the private network is not available on this b
 // was ever set.
 const defaultControlURL = "https://controlplane.tailscale.com"
 
-// netTimeout bounds a Net call whose context has no deadline of its own.
+// netTimeout bounds one Net call, also under a caller's longer deadline.
 const netTimeout = 45 * time.Second
 
 // NetState is what the box's private network looks like right now.
@@ -91,10 +91,7 @@ func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
 }
 
 func withNetTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); ok {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, netTimeout)
+	return context.WithTimeout(ctx, netTimeout) // the sooner of the two deadlines
 }
 
 // State reads `tailscale status --json`. A daemon that is stopped, not
