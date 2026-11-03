@@ -47,13 +47,30 @@ func newMasterHook(t *testing.T, onDial func()) (*Fleet, *httptest.Server) {
 		return GatewayInfo{Public: mustURL(t, "http://127.0.0.1:80"), HTTPS: mustURL(t, "https://127.0.0.1:443"), CertFile: certFile}, nil
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/fleet/tunnel", func(w http.ResponseWriter, r *http.Request) { onDial(); f.HandleTunnel(w, r) })
+	mux.HandleFunc("/v1/fleet/tunnel", tunnelHandler(t, f, onDial))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	if err := f.EnableMaster(srv.URL); err != nil {
 		t.Fatal(err)
 	}
 	return f, srv
+}
+
+// tunnelHandler mounts f.HandleTunnel for a test. Its cleanup, registered after
+// the test's temp dirs and so run before they are removed, closes every tunnel
+// and waits for the handlers: none writes master.json into a directory being
+// deleted. Register it before the server's own Close, which then runs first and
+// stops new dials.
+func tunnelHandler(t *testing.T, f *Fleet, onDial func()) http.HandlerFunc {
+	t.Helper()
+	var handlers sync.WaitGroup
+	t.Cleanup(func() { f.dropTunnels(); handlers.Wait() })
+	return func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
+		onDial()
+		f.HandleTunnel(w, r)
+	}
 }
 
 // dialTunnel dials the master's tunnel as a box would; the response tells why when it fails.
@@ -79,8 +96,12 @@ func fakeMember(t *testing.T, srv *httptest.Server, code Code, answer func(frame
 		t.Fatal(err)
 	}
 	got := make(chan frame, 64)
+	closed := make(chan struct{})
+	readerExits.Store(conn, closed)
 	var wmu sync.Mutex
 	go func() {
+		// the only reader of conn: closedWithin waits on closed instead of reading
+		defer close(closed)
 		for {
 			var req frame
 			if err := conn.ReadJSON(&req); err != nil {
@@ -136,11 +157,22 @@ func addBox(t *testing.T, f *Fleet, name string) Code {
 	return code
 }
 
-// closedWithin says whether the far end closed conn within d.
+// readerExits maps a fakeMember conn to the channel its reader closes when the
+// connection goes; a second reader on a websocket.Conn would be a data race.
+var readerExits sync.Map
+
+// closedWithin says whether the far end closed a fakeMember conn within d.
 func closedWithin(conn *websocket.Conn, d time.Duration) bool {
-	conn.SetReadDeadline(time.Now().Add(d))
-	_, _, err := conn.NextReader()
-	return err != nil && !strings.Contains(err.Error(), "timeout")
+	v, ok := readerExits.Load(conn)
+	if !ok {
+		panic("closedWithin needs a conn from fakeMember")
+	}
+	select {
+	case <-v.(chan struct{}):
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 func TestTunnelRefusesUnknownKeyAndRevokedBox(t *testing.T) {

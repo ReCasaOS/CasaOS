@@ -194,7 +194,7 @@ func TestMemberReconnectsAfterTheMasterRestarts(t *testing.T) {
 		return GatewayInfo{Public: mustURL(t, "http://127.0.0.1:80"), CertFile: certFile}, nil
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/fleet/tunnel", master.HandleTunnel)
+	mux.HandleFunc("/v1/fleet/tunnel", tunnelHandler(t, master, func() {}))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +281,7 @@ func selfFleet(t *testing.T) (*Fleet, *fakeGateway) {
 	f := New(t.TempDir())
 	gw := &fakeGateway{status: 200, ctype: "application/json", body: []byte(`{"ok":true}`)}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/fleet/tunnel", f.HandleTunnel)
+	mux.HandleFunc("/v1/fleet/tunnel", tunnelHandler(t, f, func() {}))
 	mux.Handle("/", gw)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
