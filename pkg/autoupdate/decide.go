@@ -9,7 +9,7 @@ import (
 
 // minAge is how old a release must be before it installs itself: time for a bad
 // one to be noticed and withdrawn. Fixed, not a setting.
-const minAge = 48 * time.Hour
+const minAge = 24 * time.Hour
 
 // The states the dashboard shows.
 const (
@@ -26,6 +26,7 @@ type facts struct {
 	state      State
 	current    string        // the installed release, fork-release
 	latest     model.Version // the latest release; empty when version.json could not be read
+	settled    model.Version // the newest release at least minAge old; empty when unknown or latest is old enough
 	unitActive bool          // casaos-update runs: the button's update or ours
 	appsBusy   bool          // AppManagement listed an operation, or did not answer
 }
@@ -48,10 +49,17 @@ func decide(f facts) verdict {
 		return verdict{state: stateUpdating}
 	case !version.IsVersionNewer(f.latest.Version, f.current): // the update button's comparison
 		return verdict{state: stateUpToDate}
-	case s.Failures != nil && s.Failures.Version == f.latest.Version && s.Failures.Count >= 2:
+	}
+	// Releases come out faster than minAge: aim at the latest one old enough
+	// when the latest itself is too young, or it would never be installed.
+	target := f.latest
+	if tooYoung(f.latest, f.now) && version.IsVersionNewer(f.settled.Version, f.current) {
+		target = f.settled
+	}
+	if s.Failures != nil && s.Failures.Version == target.Version && s.Failures.Count >= 2 {
 		return verdict{state: statePaused}
 	}
-	published, err := time.Parse(time.RFC3339, f.latest.PublishedAt)
+	published, err := time.Parse(time.RFC3339, target.PublishedAt)
 	if err != nil {
 		// Of unknown age: left to the button, never installed by itself.
 		return verdict{state: stateWaiting}
@@ -63,9 +71,16 @@ func decide(f facts) verdict {
 	notBefore := s.window().earliest(from, s.attempted())
 	return verdict{
 		state: stateWaiting,
-		next:  &Next{Version: f.latest.Version, NotBefore: notBefore},
+		next:  &Next{Version: target.Version, NotBefore: notBefore},
 		start: !notBefore.After(f.now) && !f.unitActive && !f.appsBusy,
 	}
+}
+
+// tooYoung is whether v came out less than minAge ago. A release of unknown age
+// is not young: decide leaves it to the button.
+func tooYoung(v model.Version, now time.Time) bool {
+	published, err := time.Parse(time.RFC3339, v.PublishedAt)
+	return err == nil && published.Add(minAge).After(now)
 }
 
 // window is the nightly window in minutes after local midnight. An end at or

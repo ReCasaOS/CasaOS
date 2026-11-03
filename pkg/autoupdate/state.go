@@ -125,6 +125,7 @@ func (a *AutoUpdate) Status() Status {
 	f := facts{now: a.Now(), state: s}
 	if s.Enabled {
 		f.current, f.latest = a.Current(), a.Releases.GetCasaosVersion()
+		f.settled = a.settled(f)
 	}
 	v := decide(f)
 	return Status{

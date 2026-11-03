@@ -8,6 +8,10 @@ const (
 	FORK_RELEASE_FILE    = "/var/lib/casaos/fork-release"
 	FORK_VERSION_URL     = "https://github.com/ReCasaOS/CasaOS-Install/releases/latest/download/version.json"
 	FORK_UPDATE_URL      = "https://github.com/ReCasaOS/CasaOS-Install/releases/latest/download/install.sh"
+	// The fork's releases: the list the automatic update picks a settled one from,
+	// and the base under which each release carries its own install.sh.
+	FORK_RELEASES_API = "https://api.github.com/repos/ReCasaOS/CasaOS-Install/releases?per_page=30"
+	FORK_RELEASE_BASE = "https://github.com/ReCasaOS/CasaOS-Install/releases/download/"
 	// UPDATE_UNIT is the transient systemd unit the update runs in, detached
 	// from the core it restarts: the button's and the automatic one.
 	UPDATE_UNIT = "casaos-update"
