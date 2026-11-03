@@ -75,6 +75,16 @@ type fakeRelay struct {
 	*httptest.Server
 	mu                     sync.Mutex
 	creates, keys, deletes int
+	keyStatus              int      // when set, what a join key request is answered
+	loginServer            string   // what a fleet creation names as login server; the relay's own URL when empty
+	removed                []string // the hostnames removed from the fleet
+}
+
+// set changes the fake's behaviour under its lock.
+func (r *fakeRelay) set(change func(*fakeRelay)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	change(r)
 }
 
 func (r *fakeRelay) count(n *int) int {
@@ -93,10 +103,21 @@ func newFakeRelay(t *testing.T) *fakeRelay {
 		switch {
 		case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets":
 			r.creates++
-			jsonReply(w, http.StatusCreated, map[string]any{"fleet_id": "fl1", "secret": testSecret, "login_server": testLogin, "expires_in_days_idle": 30})
+			login := r.loginServer
+			if login == "" {
+				login = r.URL
+			}
+			jsonReply(w, http.StatusCreated, map[string]any{"fleet_id": "fl1", "secret": testSecret, "login_server": login, "expires_in_days_idle": 30})
 		case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets/fl1/keys" && authed:
 			r.keys++
+			if r.keyStatus != 0 {
+				w.WriteHeader(r.keyStatus)
+				return
+			}
 			jsonReply(w, http.StatusCreated, map[string]any{"key": testJoinKey, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		case req.Method == http.MethodDelete && strings.HasPrefix(req.URL.Path, "/v1/fleets/fl1/nodes/") && authed:
+			r.removed = append(r.removed, strings.TrimPrefix(req.URL.Path, "/v1/fleets/fl1/nodes/"))
+			w.WriteHeader(http.StatusNoContent)
 		case req.Method == http.MethodDelete && req.URL.Path == "/v1/fleets/fl1" && authed:
 			r.deletes++
 			w.WriteHeader(http.StatusNoContent)
@@ -146,7 +167,7 @@ func TestEnableMasterRelayStoresTailnetAddress(t *testing.T) {
 	if !ok || st.Address != "https://100.64.0.7" || st.Relay != r.URL || st.NetAddr != "100.64.0.7" {
 		t.Fatalf("%+v %v", st, ok)
 	}
-	if !n.called("up " + testLogin + " " + testJoinKey + " maison") {
+	if !n.called("up " + r.URL + " " + testJoinKey + " maison") {
 		t.Fatalf("calls: %v", n.calls)
 	}
 	if err := f.DisableMaster(); err != nil {
@@ -261,6 +282,27 @@ func TestEnableMasterRelayRollsBackWhenUpFails(t *testing.T) {
 	}
 	if n.called("down") || r.count(&r.deletes) != 2 || exists(t, f.relayPath()) {
 		t.Fatalf("calls %v, deletes %d", n.calls, r.deletes)
+	}
+}
+
+// A code carries the relay's URL only, and members join with it as login server:
+// a relay naming another one is refused, and rolled back like any failure.
+func TestEnableMasterRelayRefusesDifferentLoginServer(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	r.set(func(r *fakeRelay) { r.loginServer = testLogin })
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err == nil || !strings.Contains(err.Error(), "different login server") {
+		t.Fatalf("got %v", err)
+	}
+	if r.count(&r.deletes) != 1 || r.count(&r.keys) != 0 || n.called("up") || exists(t, f.relayPath()) || exists(t, f.masterPath()) {
+		t.Fatalf("not rolled back: deletes %d keys %d calls %v", r.deletes, r.keys, n.calls)
+	}
+	// a trailing slash or the host's case is the same server
+	if !sameURL("https://Relay.Example/", "https://relay.example") || sameURL("https://relay.example", testLogin) || sameURL("https://relay.example/a", "https://relay.example/A") {
+		t.Fatal("sameURL")
+	}
+	r.set(func(r *fakeRelay) { r.loginServer = r.URL + "/" })
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
 	}
 }
 

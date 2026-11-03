@@ -25,6 +25,9 @@ type Box struct {
 	LastSeen  time.Time `json:"last_seen,omitzero"`
 	Hostname  string    `json:"hostname"`
 	Version   string    `json:"version"`
+	// NeedsRecode: the master changed relay since this box's code was made, so the box
+	// still looks for it on the old relay's network; cleared by RotateCode.
+	NeedsRecode bool `json:"needs_recode,omitempty"`
 }
 
 // MasterState is master.json. Over a relay, it names the relay and the fleet

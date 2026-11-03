@@ -56,6 +56,8 @@ type BoxStatus struct {
 	LastSeen time.Time `json:"last_seen,omitzero"`
 	Hostname string    `json:"hostname"`
 	Version  string    `json:"version"`
+	// NeedsRecode: the master changed relay; the box needs a new code (RotateCode) to follow it.
+	NeedsRecode bool `json:"needs_recode,omitempty"`
 }
 
 // tunnel is one live connection from a box.
@@ -380,7 +382,7 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 	if on && st.Relay != "" {
 		switch {
 		case !haveRelay: // never a new fleet over a lost secret: the members are in the old one
-			return errors.New("relay.json, which holds this fleet's secret, is missing or damaged: disable the master and enable it again")
+			return errRelayLost
 		case rs.Relay == relayURL && st.Relay == relayURL:
 			return nil
 		}
@@ -403,6 +405,10 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 	}
 	rs = RelayState{Relay: relayURL, FleetID: creds.FleetID, Secret: creds.Secret}
 	undo := func(down bool) { f.leaveRelay(context.WithoutCancel(ctx), rs, down) }
+	if !sameURL(creds.LoginServer, relayURL) {
+		undo(false)
+		return errLoginServer
+	}
 	if err := f.saveRelay(rs); err != nil { // saved before anything else: a crash never loses the secret
 		undo(false)
 		return err
@@ -508,7 +514,9 @@ func (f *Fleet) DisableMaster() error {
 
 // AddBox enrols a box and returns its code, the one time the key is handed
 // over. self enrols this box itself: its code points at its own gateway, and
-// its member.json is written. There is at most one self box.
+// its member.json is written. There is at most one self box. Over a relay, the
+// code of another box also carries a join key asked of the relay first: when the
+// relay refuses (ErrFleetFull, ErrFleetGone, ErrRelayBusy...) no box is added.
 func (f *Fleet) AddBox(name, link string, self bool) (Box, Code, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -521,14 +529,24 @@ func (f *Fleet) AddBox(name, link string, self bool) (Box, Code, error) {
 	if err != nil {
 		return Box{}, Code{}, err
 	}
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	st, on := f.snapshot()
+	if !on {
+		return Box{}, Code{}, ErrMasterOff
+	}
+	join, err := f.joinKey(st, self)
+	if err != nil {
+		return Box{}, Code{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	st, on := f.master()
+	st, on = f.master() // the boxes may have changed meanwhile; the relay cannot, under relayMu
 	if !on {
 		return Box{}, Code{}, ErrMasterOff
 	}
 	box := Box{ID: newID(), Name: name, URL: link, KeyHash: hash, Self: self, CreatedAt: f.Now()}
-	code, err := f.code(st, box, key)
+	code, err := f.code(st, box, key, join)
 	if err != nil {
 		return Box{}, Code{}, err
 	}
@@ -579,17 +597,23 @@ func (f *Fleet) RenameBox(id string, name, link *string) error {
 }
 
 // RemoveBox revokes a box: its tunnel is closed and its key is worth nothing.
+// Over a relay, the box is then taken off the private network too, best-effort:
+// the local removal never fails because the relay is down.
 func (f *Fleet) RemoveBox(id string) error {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
 	f.mu.Lock()
 	st, on := f.master()
 	if !on {
 		f.mu.Unlock()
 		return ErrMasterOff
 	}
-	if indexOf(st.Boxes, id) < 0 {
+	i := indexOf(st.Boxes, id)
+	if i < 0 {
 		f.mu.Unlock()
 		return ErrNoBox
 	}
+	box := st.Boxes[i]
 	st.Boxes = without(st.Boxes, func(b Box) bool { return b.ID == id })
 	err := f.saveMaster(st)
 	t := f.tunnels[id]
@@ -598,18 +622,32 @@ func (f *Fleet) RemoveBox(id string) error {
 	if t != nil {
 		t.close()
 	}
+	if err == nil {
+		f.removeNode(st, box)
+	}
 	return err
 }
 
 // RotateCode gives a box a new key: the old one is worth nothing and its
-// tunnel is closed; the new code is returned once.
+// tunnel is closed; the new code is returned once. Over a relay, it carries a
+// new join key, for the relay the master runs over now (which clears
+// NeedsRecode); when the relay refuses one, the old key stays as it was.
 func (f *Fleet) RotateCode(id string) (Code, error) {
 	key, hash, err := NewKey()
 	if err != nil {
 		return Code{}, err
 	}
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	st, on := f.snapshot()
+	join := ""
+	if i := indexOf(st.Boxes, id); on && i >= 0 {
+		if join, err = f.joinKey(st, st.Boxes[i].Self); err != nil {
+			return Code{}, err
+		}
+	}
 	f.mu.Lock()
-	st, on := f.master()
+	st, on = f.master() // the boxes may have changed meanwhile
 	if !on {
 		f.mu.Unlock()
 		return Code{}, ErrMasterOff
@@ -619,9 +657,9 @@ func (f *Fleet) RotateCode(id string) (Code, error) {
 		f.mu.Unlock()
 		return Code{}, ErrNoBox
 	}
-	st.Boxes[i].KeyHash = hash
+	st.Boxes[i].KeyHash, st.Boxes[i].NeedsRecode = hash, false
 	box := st.Boxes[i]
-	code, err := f.code(st, box, key)
+	code, err := f.code(st, box, key, join)
 	if err == nil {
 		err = f.saveMaster(st)
 	}
@@ -653,7 +691,7 @@ func (f *Fleet) MasterStatus() (MasterStatus, bool) {
 	}
 	out := MasterStatus{Address: st.Address, Boxes: make([]BoxStatus, 0, len(st.Boxes)), Relay: st.Relay, NetAddr: st.NetAddr}
 	for _, b := range st.Boxes {
-		out.Boxes = append(out.Boxes, BoxStatus{ID: b.ID, Name: b.Name, URL: b.URL, Self: b.Self, Online: f.tunnels[b.ID] != nil, LastSeen: b.LastSeen, Hostname: b.Hostname, Version: b.Version})
+		out.Boxes = append(out.Boxes, BoxStatus{ID: b.ID, Name: b.Name, URL: b.URL, Self: b.Self, Online: f.tunnels[b.ID] != nil, LastSeen: b.LastSeen, Hostname: b.Hostname, Version: b.Version, NeedsRecode: b.NeedsRecode})
 	}
 	return out, true
 }
@@ -662,6 +700,13 @@ func (f *Fleet) MasterStatus() (MasterStatus, bool) {
 func (f *Fleet) master() (MasterState, bool) {
 	st, ok := f.loadMaster()
 	return st, ok && st.Enabled
+}
+
+// snapshot is master taken under f.mu, for a caller about to go out over the network.
+func (f *Fleet) snapshot() (MasterState, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.master()
 }
 
 // modifyBox loads, changes and saves one box; the caller holds f.mu.
@@ -681,8 +726,9 @@ func (f *Fleet) modifyBox(id string, change func(*Box) error) error {
 }
 
 // code is the enrolment code of a box: the master's address (or, for this box
-// itself, its own gateway) and the fingerprint of the certificate it serves.
-func (f *Fleet) code(st MasterState, box Box, key string) (Code, error) {
+// itself, its own gateway) and the fingerprint of the certificate it serves;
+// with a join key, the relay the master runs over too.
+func (f *Fleet) code(st MasterState, box Box, key, joinKey string) (Code, error) {
 	info, err := f.Gateway()
 	if err != nil {
 		return Code{}, err
@@ -703,7 +749,11 @@ func (f *Fleet) code(st MasterState, box Box, key string) (Code, error) {
 		}
 		master = u.String()
 	}
-	return Code{MasterURL: master, BoxID: box.ID, Key: key, CertSHA256: fp}, nil
+	c := Code{MasterURL: master, BoxID: box.ID, Key: key, CertSHA256: fp}
+	if joinKey != "" {
+		c.Relay, c.JoinKey = st.Relay, joinKey
+	}
+	return c, nil
 }
 
 // namesSelf says whether a member.json is this box's own (a self-enrolled

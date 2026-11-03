@@ -32,7 +32,7 @@ type Fleet struct {
 	RelayAPI    *RelayClient                           // the relay's enrolment API; boxkey.json in the state directory
 
 	mu      sync.Mutex         // master.json, member.json and tunnels
-	relayMu sync.Mutex         // one master enable or disable at a time, relay.json written only under it; its network calls run outside mu
+	relayMu sync.Mutex         // one master enable, disable, relay change or box enrolment/removal at a time; relay.json and master.json's relay fields written only under it; its network calls run outside mu
 	tunnels map[string]*tunnel // the live tunnel of each box, by id
 	restart chan struct{}      // poked when member.json changes
 	m       memberState        // what the member loop reports
