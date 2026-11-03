@@ -19,6 +19,7 @@ type Fleet struct {
 	RuntimePath func() string    // where internal.secret lives
 	Now         func() time.Time // the clock
 	Log         func(msg string, err error)
+	Gateway     func() (GatewayInfo, error) // where this box's gateway listens
 }
 
 // New makes a Fleet rooted at root, with the box's defaults.
@@ -28,6 +29,9 @@ func New(root string) *Fleet {
 		RuntimePath: func() string { return constants.DefaultRuntimePath },
 		Now:         time.Now,
 		Log:         func(msg string, err error) { logger.Error(msg, zap.Error(err)) },
+		Gateway: func() (GatewayInfo, error) {
+			return ReadGatewayINI("/etc/casaos/gateway.ini", constants.DefaultDataPath)
+		},
 	}
 }
 
