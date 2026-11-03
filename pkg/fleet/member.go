@@ -251,9 +251,10 @@ func netHostname(h string) string {
 	return s
 }
 
-// netStatus is what MemberStatus says of the private network of a member over
-// relay, asked at most every netEvery. The caller holds f.m.netMu.
-func (f *Fleet) netStatus(relay string) (bool, string) {
+// netStatus is what MemberStatus or MasterStatus says of the private network of
+// a box over relay, asked at most every netEvery; off is what it says when the
+// box is not on it. The caller holds f.m.netMu.
+func (f *Fleet) netStatus(relay, off string) (bool, string) {
 	now := f.Now()
 	if !f.m.netAt.IsZero() && now.Sub(f.m.netAt) < netEvery && f.m.netRelay == relay {
 		return f.m.netOK, f.m.netErr
@@ -269,7 +270,7 @@ func (f *Fleet) netStatus(relay string) (bool, string) {
 		case err != nil:
 			msg = "the private network cannot be read: " + err.Error()
 		case !ns.Connected:
-			msg = "this box is off the relay's private network: join again with a new code from the master"
+			msg = off
 		case !sameURL(ns.LoginServer, relay):
 			msg = "this box is in another private network than its fleet's relay"
 		default:
@@ -291,7 +292,7 @@ func (f *Fleet) MemberStatus() (MemberStatus, bool) {
 	out := MemberStatus{MasterURL: st.MasterURL, Relay: st.Relay}
 	if st.Relay != "" {
 		f.m.netMu.Lock() // not f.m.mu: the loop reports under it, and State may be slow
-		out.NetConnected, out.NetError = f.netStatus(st.Relay)
+		out.NetConnected, out.NetError = f.netStatus(st.Relay, "this box is off the relay's private network: join again with a new code from the master")
 		f.m.netMu.Unlock()
 	}
 	f.m.mu.Lock()

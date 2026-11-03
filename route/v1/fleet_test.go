@@ -619,6 +619,25 @@ func TestGetFleetReportsRelayAndNeedsRecode(t *testing.T) {
 	}
 }
 
+// A master's net.connected is the live network, not the address it recorded.
+func TestGetFleetMasterNetIsLive(t *testing.T) {
+	f, n, _ := relayFixture(t)
+	now := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	f.Now = func() time.Time { return now }
+	if code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil); code != http.StatusOK {
+		t.Fatalf("enable = %d %q", code, res.Message)
+	}
+	n.mu.Lock()
+	n.login = "" // tailscaled down after a reboot, say
+	n.mu.Unlock()
+	now = now.Add(time.Minute)
+	_, res := callFleet(t, GetFleet, http.MethodGet, "/v1/fleet", "", nil)
+	net, _ := res.Data.(map[string]any)["net"].(map[string]any)
+	if net["connected"] != false || net["error"] == nil || net["addr"] != "100.64.0.7" {
+		t.Fatalf("net %v", net)
+	}
+}
+
 // A dashboard tells a core that knows the relay from an older one by
 // default_relay, whatever role the box has.
 func TestGetFleetAlwaysReportsDefaultRelay(t *testing.T) {

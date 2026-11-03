@@ -44,6 +44,10 @@ type MasterStatus struct {
 	Boxes   []BoxStatus `json:"boxes"`
 	Relay   string      `json:"relay,omitempty"`    // the relay the master runs over; none in advanced mode
 	NetAddr string      `json:"net_addr,omitempty"` // this box's address on the relay's private network
+	// Over a relay: whether this box is on its private network now (cached
+	// netEvery), NetError saying why not.
+	NetConnected bool   `json:"net_connected,omitempty"`
+	NetError     string `json:"net_error,omitempty"`
 }
 
 // BoxStatus is one box as the dashboard sees it: never its key.
@@ -693,14 +697,20 @@ func (f *Fleet) RotateCode(id string) (Code, error) {
 // MasterStatus is the master's view: ok is false when the role is off.
 func (f *Fleet) MasterStatus() (MasterStatus, bool) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	st, on := f.master()
 	if !on {
+		f.mu.Unlock()
 		return MasterStatus{}, false
 	}
 	out := MasterStatus{Address: st.Address, Boxes: make([]BoxStatus, 0, len(st.Boxes)), Relay: st.Relay, NetAddr: st.NetAddr}
 	for _, b := range st.Boxes {
 		out.Boxes = append(out.Boxes, BoxStatus{ID: b.ID, Name: b.Name, URL: b.URL, Self: b.Self, Online: f.tunnels[b.ID] != nil, LastSeen: b.LastSeen, Hostname: b.Hostname, Version: b.Version, NeedsRecode: b.NeedsRecode})
+	}
+	f.mu.Unlock()
+	if out.Relay != "" {
+		f.m.netMu.Lock() // not under mu: State may be slow
+		out.NetConnected, out.NetError = f.netStatus(out.Relay, "this box is off the relay's private network, its boxes cannot reach it: change the relay (the same one will do)")
+		f.m.netMu.Unlock()
 	}
 	return out, true
 }

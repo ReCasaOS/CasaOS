@@ -420,3 +420,25 @@ func TestLoadRelayRefusesADamagedFile(t *testing.T) {
 		}
 	}
 }
+
+// The master's place on the network is read live (cached netEvery), not taken
+// from the address it recorded: after a reboot with tailscaled down it says so (M4).
+func TestMasterStatusReadsTheLiveNetwork(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	now := time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC)
+	f.Now = func() time.Time { return now }
+	n.after.LoginServer = r.URL
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := f.MasterStatus(); !st.NetConnected || st.NetError != "" {
+		t.Fatalf("%+v", st)
+	}
+	n.mu.Lock()
+	n.up = false
+	n.mu.Unlock()
+	now = now.Add(netEvery)
+	if st, _ := f.MasterStatus(); st.NetConnected || !strings.Contains(st.NetError, "change the relay") || st.NetAddr == "" {
+		t.Fatalf("%+v", st)
+	}
+}

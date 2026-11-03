@@ -45,13 +45,13 @@ type netView struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// fleetStatus is the status the fleet routes answer. A master's network is the
-// address it recorded (no live check); a member's is its cached network state.
+// fleetStatus is the status the fleet routes answer; the network is the box's
+// cached live state, with a master's recorded address.
 func fleetStatus() statusView {
 	s := statusView{Status: fleet.Default.Status(), DefaultRelay: fleet.DefaultRelayURL}
 	switch {
 	case s.Master != nil && s.Master.Relay != "":
-		s.Relay, s.Net = s.Master.Relay, &netView{Connected: s.Master.NetAddr != "", Addr: s.Master.NetAddr}
+		s.Relay, s.Net = s.Master.Relay, &netView{Connected: s.Master.NetConnected, Addr: s.Master.NetAddr, Error: s.Master.NetError}
 	case s.Member != nil && s.Member.Relay != "":
 		s.Relay, s.Net = s.Member.Relay, &netView{Connected: s.Member.NetConnected, Error: s.Member.NetError}
 	}
