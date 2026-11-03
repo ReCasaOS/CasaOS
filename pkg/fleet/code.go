@@ -16,8 +16,9 @@ import (
 // Code is what the owner copies from the master into a box's settings: where
 // the master is, which box this is, the box's key, and the fingerprint of the
 // master's certificate for when its chain does not verify. When the fleet runs
-// over a relay, it also carries the relay's address and the key to join it. It
-// is shown once.
+// over a relay, it also carries the relay's address and the key to join it (no
+// key for a box that was on the relay's network when the code was made). It is
+// shown once.
 type Code struct {
 	MasterURL  string `json:"u"`
 	BoxID      string `json:"b"`
@@ -52,8 +53,9 @@ func ParseCode(s string) (Code, error) {
 	if c.CertSHA256 != "" && !isHex(c.CertSHA256, 32) {
 		return Code{}, errors.New("the certificate fingerprint in the code is malformed")
 	}
-	if (c.Relay == "") != (c.JoinKey == "") {
-		return Code{}, errors.New("the enrolment code needs both a relay and a join key, or neither")
+	// a relay without a join key: the code of a box already on its network (RotateCode)
+	if c.JoinKey != "" && c.Relay == "" {
+		return Code{}, errors.New("the enrolment code has a join key but no relay")
 	}
 	if c.Relay != "" {
 		if err := ValidMasterURL(c.Relay); err != nil {

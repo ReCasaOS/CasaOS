@@ -99,6 +99,8 @@ func (m *memberState) drop() {
 
 var errIsMaster = errors.New("this box is a master: it cannot join another fleet")
 
+var errNoJoinKey = errors.New("this code was made while this box was online, so it carries no key to join the relay's private network, which this box is not on now: ask the master for a new code")
+
 // netEvery is how long MemberStatus keeps what the private network said.
 var netEvery = 5 * time.Second
 
@@ -133,6 +135,12 @@ func (f *Fleet) Join(code string) error {
 		return errIsMaster
 	}
 	ctx := context.Background()
+	if c.JoinKey == "" { // made while this box was online: it must still be on the relay's network
+		if ns, err := n.State(ctx); err != nil || !ns.Connected || ns.Addr == "" || !sameURL(ns.LoginServer, c.Relay) {
+			return errNoJoinKey
+		}
+		return f.enrol(st)
+	}
 	if member && old.Relay != "" && !sameURL(old.Relay, c.Relay) {
 		// the master moved to another relay: leave the old relay's network, ours
 		if ns, err := n.State(ctx); err == nil && sameURL(ns.LoginServer, old.Relay) {

@@ -106,7 +106,8 @@ func TestAddBoxRelayQuotaIsReadable(t *testing.T) {
 	hash := readFile(t, f.masterPath())
 	r.set(func(r *fakeRelay) { r.keyStatus = http.StatusConflict })
 	_, _, err = f.AddBox("box b", "", false)
-	if !errors.Is(err, ErrFleetFull) || !errors.Is(err, ErrRelayQuota) || !strings.Contains(err.Error(), "full") {
+	// "limit of boxes" is what the dashboard matches (FleetModal.vue)
+	if !errors.Is(err, ErrFleetFull) || !errors.Is(err, ErrRelayQuota) || !strings.Contains(err.Error(), "limit of boxes") || !strings.Contains(err.Error(), "remove a box") {
 		t.Fatalf("got %v", err)
 	}
 	if st, _ := f.MasterStatus(); len(st.Boxes) != 1 {
@@ -117,6 +118,48 @@ func TestAddBoxRelayQuotaIsReadable(t *testing.T) {
 	}
 	if readFile(t, f.masterPath()) != hash {
 		t.Fatal("a failed rotation changed the box's key")
+	}
+}
+
+// markOnline marks a box's tunnel live without a connection: closing it is a no-op.
+func markOnline(f *Fleet, id string) {
+	t := &tunnel{boxID: id, done: make(chan struct{})}
+	t.once.Do(func() {})
+	f.mu.Lock()
+	f.tunnels[id] = t
+	f.mu.Unlock()
+}
+
+// A box online over the relay is on its network: the code it is given again
+// needs no join key, and none is spent at the relay (unused ones count against
+// the fleet's quota until they expire). A box offline, or one that must follow
+// the master to another relay, gets one.
+func TestRotateCodeOfAnOnlineBoxSpendsNoJoinKey(t *testing.T) {
+	f, _, r, _ := relayOn(t)
+	box, _, err := f.AddBox("box a", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := r.count(&r.keys)
+	markOnline(f, box.ID)
+	code, err := f.RotateCode(box.ID)
+	if err != nil || code.Relay != r.URL || code.JoinKey != "" || r.count(&r.keys) != keys {
+		t.Fatalf("%+v %v, keys %d", code, err, r.count(&r.keys))
+	}
+	if _, err := ParseCode(code.String()); err != nil {
+		t.Fatal(err)
+	}
+	// offline now (the rotation closed its tunnel): a join key
+	if code, err = f.RotateCode(box.ID); err != nil || code.JoinKey != testJoinKey || r.count(&r.keys) != keys+1 {
+		t.Fatalf("%+v %v", code, err)
+	}
+	// online, but asked to follow the master to its new relay: a join key
+	markOnline(f, box.ID)
+	f.mu.Lock()
+	f.modifyBox(box.ID, func(b *Box) error { b.NeedsRecode = true; return nil })
+	f.mu.Unlock()
+	if code, err = f.RotateCode(box.ID); err != nil || code.JoinKey != testJoinKey || r.count(&r.keys) != keys+2 {
+		t.Fatalf("%+v %v", code, err)
 	}
 }
 

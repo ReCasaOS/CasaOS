@@ -153,6 +153,27 @@ func TestJoinRelayUpFailsSavesNothing(t *testing.T) {
 	}
 }
 
+// A code without a join key (made while the box was online) joins only a box
+// already on the relay's network; any other is told to ask for a new code.
+func TestJoinCodeWithoutJoinKey(t *testing.T) {
+	c := relayCode()
+	c.JoinKey = ""
+	f, n, _ := relayMember(t)
+	if err := f.Join(c.String()); err == nil || !strings.Contains(err.Error(), "new code") {
+		t.Fatalf("off the network: %v", err)
+	}
+	if exists(t, memberJSON(f)) || len(n.calls) != 0 {
+		t.Fatalf("saved, or calls %q", n.calls)
+	}
+	n.before = NetState{Connected: true, Addr: "100.64.0.9", LoginServer: testRelay}
+	if err := f.Join(c.String()); err != nil {
+		t.Fatal(err)
+	}
+	if st, ok := f.loadMember(); !ok || st.Relay != testRelay || len(n.calls) != 0 {
+		t.Fatalf("member.json %+v, calls %q", st, n.calls)
+	}
+}
+
 func TestJoinOldCodeNeverTouchesNet(t *testing.T) {
 	f, n, _ := relayMember(t)
 	c := relayCode()

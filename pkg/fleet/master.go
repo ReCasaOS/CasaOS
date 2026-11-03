@@ -629,9 +629,14 @@ func (f *Fleet) RemoveBox(id string) error {
 }
 
 // RotateCode gives a box a new key: the old one is worth nothing and its
-// tunnel is closed; the new code is returned once. Over a relay, it carries a
-// new join key, for the relay the master runs over now (which clears
-// NeedsRecode); when the relay refuses one, the old key stays as it was.
+// tunnel is closed; the new code is returned once. Over a relay, it names the
+// relay the master runs over now (which clears NeedsRecode), and carries a new
+// join key unless the box is online and need not follow the master to another
+// relay: such a box is on the network already, and an unused join key would
+// count against the fleet's quota at the relay until it expires. A box that
+// left the network meanwhile is told by Join to ask for a new code, which then
+// carries one (rotating closed its tunnel). When the relay refuses a join key,
+// the old key stays as it was.
 func (f *Fleet) RotateCode(id string) (Code, error) {
 	key, hash, err := NewKey()
 	if err != nil {
@@ -639,9 +644,12 @@ func (f *Fleet) RotateCode(id string) (Code, error) {
 	}
 	f.relayMu.Lock()
 	defer f.relayMu.Unlock()
-	st, on := f.snapshot()
+	f.mu.Lock()
+	st, on := f.master()
+	live := f.tunnels[id] != nil
+	f.mu.Unlock()
 	join := ""
-	if i := indexOf(st.Boxes, id); on && i >= 0 {
+	if i := indexOf(st.Boxes, id); on && i >= 0 && (st.Boxes[i].NeedsRecode || !live) {
 		if join, err = f.joinKey(st, st.Boxes[i].Self); err != nil {
 			return Code{}, err
 		}
@@ -727,7 +735,7 @@ func (f *Fleet) modifyBox(id string, change func(*Box) error) error {
 
 // code is the enrolment code of a box: the master's address (or, for this box
 // itself, its own gateway) and the fingerprint of the certificate it serves;
-// with a join key, the relay the master runs over too.
+// over a relay, for another box, the relay and joinKey (none: see RotateCode).
 func (f *Fleet) code(st MasterState, box Box, key, joinKey string) (Code, error) {
 	info, err := f.Gateway()
 	if err != nil {
@@ -750,7 +758,7 @@ func (f *Fleet) code(st MasterState, box Box, key, joinKey string) (Code, error)
 		master = u.String()
 	}
 	c := Code{MasterURL: master, BoxID: box.ID, Key: key, CertSHA256: fp}
-	if joinKey != "" {
+	if st.Relay != "" && !box.Self {
 		c.Relay, c.JoinKey = st.Relay, joinKey
 	}
 	return c, nil

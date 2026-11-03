@@ -87,9 +87,13 @@ func TestParseCodeRefusesPlainHTTPRelay(t *testing.T) {
 	}
 }
 
-func TestParseCodeRelayNeedsJoinKey(t *testing.T) {
+// A join key needs its relay. A relay without a join key is the code of a box
+// that was on the relay's network when the code was made (RotateCode).
+func TestParseCodeJoinKeyNeedsRelay(t *testing.T) {
+	if _, err := ParseCode(Code{MasterURL: "https://m", BoxID: "b", Key: "k", Relay: "https://relay.example"}.String()); err != nil {
+		t.Errorf("relay without join key: %v", err)
+	}
 	for name, c := range map[string]Code{
-		"relay without join key": {MasterURL: "https://m", BoxID: "b", Key: "k", Relay: "https://relay.example"},
 		"join key without relay": {MasterURL: "https://m", BoxID: "b", Key: "k", JoinKey: "join-secret-0000-1111"},
 	} {
 		_, err := ParseCode(c.String())

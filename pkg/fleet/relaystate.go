@@ -25,8 +25,9 @@ func (e *relayError) Error() string { return e.msg }
 func (e *relayError) Unwrap() error { return e.cause }
 
 var (
-	// ErrFleetFull: the relay refused one more join key (ErrRelayQuota).
-	ErrFleetFull error = &relayError{"this fleet is full at the relay: remove a box, or wait for the unused codes to expire", ErrRelayQuota}
+	// ErrFleetFull: the relay refused one more join key (ErrRelayQuota). The
+	// dashboard matches "limit of boxes" (FleetModal.vue): keep it in the text.
+	ErrFleetFull error = &relayError{"the relay refused: this fleet has reached its limit of boxes, codes not used yet included: remove a box you no longer use, or wait for unused codes to expire (a day, by default)", ErrRelayQuota}
 	// ErrFleetGone: the relay no longer knows the fleet (ErrRelayFleetGone), for instance after a long idle time.
 	ErrFleetGone error = &relayError{"the relay no longer knows this fleet (it deletes idle fleets): enable the master on a relay again by changing the relay (the same one will do), then give each box a new code", ErrRelayFleetGone}
 
