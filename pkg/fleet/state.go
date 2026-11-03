@@ -42,12 +42,14 @@ type MasterState struct {
 	NetAddr string `json:"net_addr,omitempty"`
 }
 
-// MemberState is member.json: the code the owner pasted, kept.
+// MemberState is member.json: the code the owner pasted, kept, without its
+// join key (spent on joining the relay's private network).
 type MemberState struct {
 	MasterURL        string `json:"master_url"`
 	BoxID            string `json:"box_id"`
 	Key              string `json:"key"`
 	MasterCertSHA256 string `json:"master_cert_sha256"`
+	Relay            string `json:"relay,omitempty"`
 }
 
 func (f *Fleet) masterPath() string { return filepath.Join(f.Root, StateDir, "master.json") }

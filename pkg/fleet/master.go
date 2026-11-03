@@ -418,7 +418,7 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 		undo(false)
 		return err
 	}
-	if err := n.Up(ctx, creds.LoginServer, key, hostname); err != nil {
+	if err := n.Up(ctx, creds.LoginServer, key, netHostname(hostname)); err != nil {
 		undo(!errors.Is(err, ErrOtherNetwork)) // that refusal ran nothing; another failure may have started tailscaled
 		return err
 	}

@@ -34,15 +34,28 @@ type MemberStatus struct {
 	Since     time.Time `json:"since,omitzero"`
 	LastError string    `json:"last_error,omitempty"`
 	LastTry   time.Time `json:"last_try,omitzero"`
+	// Over a relay: the relay, and whether this box is on its private network
+	// (NetError says why not). Nothing repairs it: a stopped or logged-out box
+	// joins again with a new code.
+	Relay        string `json:"relay,omitempty"`
+	NetConnected bool   `json:"net_connected,omitempty"`
+	NetError     string `json:"net_error,omitempty"`
 }
 
-// memberState is what the loop reports, under its own mutex.
+// memberState is what the loop reports, under its own mutex, and what the
+// private network last said, under netMu.
 type memberState struct {
 	mu      sync.Mutex
 	conn    *websocket.Conn
 	since   time.Time
 	lastErr string
 	lastTry time.Time
+
+	netMu    sync.Mutex
+	netAt    time.Time
+	netRelay string
+	netOK    bool
+	netErr   string
 }
 
 func (m *memberState) trying(now time.Time) {
@@ -84,19 +97,75 @@ func (m *memberState) drop() {
 	m.mu.Unlock()
 }
 
+var errIsMaster = errors.New("this box is a master: it cannot join another fleet")
+
+// netEvery is how long MemberStatus keeps what the private network said.
+var netEvery = 5 * time.Second
+
 // Join makes this box a member: the code is kept in member.json and the loop
 // dials at once. A master does not join another fleet.
+//
+// A code that names a relay first joins the relay's private network with its
+// join key (ErrOtherNetwork when the box is in another one, untouched), and
+// member.json is written only once the box has an address there; on a failure
+// after that, the network is left again and nothing is saved. The join key is
+// spent: it is never kept.
 func (f *Fleet) Join(code string) error {
 	c, err := ParseCode(code)
 	if err != nil {
 		return err
 	}
+	st := MemberState{MasterURL: c.MasterURL, BoxID: c.BoxID, Key: c.Key, MasterCertSHA256: c.CertSHA256, Relay: c.Relay}
+	if c.Relay == "" {
+		return f.enrol(st)
+	}
+	n, err := f.PrivateNet()
+	if err != nil {
+		return err
+	}
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	f.mu.Lock()
+	_, on := f.master()
+	old, member := f.loadMember()
+	f.mu.Unlock()
+	if on {
+		return errIsMaster
+	}
+	ctx := context.Background()
+	if member && old.Relay != "" && !sameURL(old.Relay, c.Relay) {
+		// the master moved to another relay: leave the old relay's network, ours
+		if ns, err := n.State(ctx); err == nil && ns.Connected && sameURL(ns.LoginServer, old.Relay) {
+			f.netDown(n)
+		}
+	}
+	hostname, _ := f.Hostname()
+	if err := n.Up(ctx, c.Relay, c.JoinKey, netHostname(hostname)); err != nil {
+		if errors.Is(err, ErrOtherNetwork) { // it ran nothing: the other network stays as it is
+			return err
+		}
+		f.netDown(n)
+		return redact(err, c.JoinKey) // a Net that let the key into its error does not pass it on
+	}
+	if _, err := waitAddr(ctx, n); err != nil {
+		f.netDown(n)
+		return err
+	}
+	if err := f.enrol(st); err != nil {
+		f.netDown(n)
+		return err
+	}
+	return nil
+}
+
+// enrol writes member.json and restarts the loop, unless this box is a master.
+func (f *Fleet) enrol(st MemberState) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, on := f.master(); on {
-		return errors.New("this box is a master: it cannot join another fleet")
+		return errIsMaster
 	}
-	if err := f.saveMember(MemberState{MasterURL: c.MasterURL, BoxID: c.BoxID, Key: c.Key, MasterCertSHA256: c.CertSHA256}); err != nil {
+	if err := f.saveMember(st); err != nil {
 		return err
 	}
 	f.m.drop()
@@ -104,14 +173,79 @@ func (f *Fleet) Join(code string) error {
 	return nil
 }
 
-// Leave closes the tunnel and forgets the master.
+// netDown leaves the private network, best-effort and logged.
+func (f *Fleet) netDown(n Net) {
+	if err := n.Down(context.Background()); err != nil {
+		f.Log("fleet: cannot leave the relay's private network", err)
+	}
+}
+
+// Leave closes the tunnel and forgets the master. A member over a relay then
+// leaves its private network, best-effort: the local leave never fails for it.
 func (f *Fleet) Leave() error {
 	f.mu.Lock()
+	st, member := f.loadMember()
 	err := f.clearMember()
 	f.mu.Unlock()
 	f.m.drop()
 	f.pokeMember()
+	if err == nil && member && st.Relay != "" {
+		if n, nerr := f.PrivateNet(); nerr == nil {
+			f.relayMu.Lock()
+			f.netDown(n)
+			f.relayMu.Unlock()
+		}
+	}
 	return err
+}
+
+// netHostname is the name a box takes on the relay's private network: its
+// hostname as a DNS label. The master derives it from the hello's hostname the
+// same way, to take a removed box off that network by name.
+func netHostname(h string) string {
+	b := []byte(strings.ToLower(h))
+	for i, c := range b {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			b[i] = '-'
+		}
+	}
+	s := strings.Trim(string(b), "-")
+	if len(s) > 63 {
+		s = strings.TrimRight(s[:63], "-")
+	}
+	if s == "" {
+		return "recasaos-box"
+	}
+	return s
+}
+
+// netStatus is what MemberStatus says of the private network of a member over
+// relay, asked at most every netEvery. The caller holds f.m.netMu.
+func (f *Fleet) netStatus(relay string) (bool, string) {
+	now := f.Now()
+	if !f.m.netAt.IsZero() && now.Sub(f.m.netAt) < netEvery && f.m.netRelay == relay {
+		return f.m.netOK, f.m.netErr
+	}
+	ok, msg := false, ""
+	if n, err := f.PrivateNet(); err != nil {
+		msg = err.Error()
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ns, err := n.State(ctx)
+		cancel()
+		switch {
+		case err != nil:
+			msg = "the private network cannot be read: " + err.Error()
+		case !ns.Connected:
+			msg = "this box is off the relay's private network: join again with a new code from the master"
+		case !sameURL(ns.LoginServer, relay):
+			msg = "this box is in another private network than its fleet's relay"
+		default:
+			ok = true
+		}
+	}
+	f.m.netAt, f.m.netRelay, f.m.netOK, f.m.netErr = now, relay, ok, msg
+	return ok, msg
 }
 
 // MemberStatus is the member's view: ok is false when the role is off.
@@ -122,9 +256,15 @@ func (f *Fleet) MemberStatus() (MemberStatus, bool) {
 	if !ok {
 		return MemberStatus{}, false
 	}
+	out := MemberStatus{MasterURL: st.MasterURL, Relay: st.Relay}
+	if st.Relay != "" {
+		f.m.netMu.Lock() // not f.m.mu: the loop reports under it, and State may be slow
+		out.NetConnected, out.NetError = f.netStatus(st.Relay)
+		f.m.netMu.Unlock()
+	}
 	f.m.mu.Lock()
 	defer f.m.mu.Unlock()
-	out := MemberStatus{MasterURL: st.MasterURL, Connected: f.m.conn != nil, LastError: f.m.lastErr, LastTry: f.m.lastTry}
+	out.Connected, out.LastError, out.LastTry = f.m.conn != nil, f.m.lastErr, f.m.lastTry
 	if out.Connected {
 		out.Since = f.m.since
 	}

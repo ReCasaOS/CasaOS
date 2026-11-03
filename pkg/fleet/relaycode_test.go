@@ -146,10 +146,10 @@ func TestRemoveBoxRemovesRelayNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	said(t, f, ids["a"], "box-1")
+	said(t, f, ids["a"], "Box_1")     // removed by the name it joined with
 	said(t, f, ids["liar"], "MAISON") // the master's own hostname
 	said(t, f, ids["twin"], "box-2")
-	said(t, f, ids["twin2"], "box-2")
+	said(t, f, ids["twin2"], "Box.2") // the same name on the network
 	said(t, f, self.ID, "maison")
 	for _, id := range []string{ids["a"], ids["quiet"], ids["liar"], ids["twin"], self.ID} {
 		if err := f.RemoveBox(id); err != nil {

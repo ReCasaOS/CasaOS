@@ -27,6 +27,9 @@ type fakeNet struct {
 	mu            sync.Mutex
 	before, after NetState
 	upErr         error
+	stateErr      error // when set, what State fails with
+	downErr       error
+	states        int // how many times State was asked
 	up            bool
 	calls         []string
 }
@@ -34,6 +37,10 @@ type fakeNet struct {
 func (n *fakeNet) State(context.Context) (NetState, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.states++
+	if n.stateErr != nil {
+		return NetState{}, n.stateErr
+	}
 	if n.up {
 		return n.after, nil
 	}
@@ -56,7 +63,7 @@ func (n *fakeNet) Down(context.Context) error {
 	defer n.mu.Unlock()
 	n.calls = append(n.calls, "down")
 	n.up, n.before = false, NetState{}
-	return nil
+	return n.downErr
 }
 
 func (n *fakeNet) called(prefix string) bool {

@@ -123,16 +123,18 @@ func (f *Fleet) joinKey(st MasterState, self bool) (string, error) {
 // removeNode takes a removed box off the relay's private network, best-effort
 // and logged; st is master.json without the box. A box names itself in its
 // hello: a name that is this box's own, or still another enrolled box's, is
-// never taken off the network for it. The caller holds relayMu, not mu.
+// never taken off the network for it; names compare as netHostname makes them,
+// the form the member joined with. The caller holds relayMu, not mu.
 func (f *Fleet) removeNode(st MasterState, box Box) {
 	if st.Relay == "" || box.Self || box.Hostname == "" {
 		return
 	}
-	if me, err := f.Hostname(); err != nil || strings.EqualFold(me, box.Hostname) {
+	name := netHostname(box.Hostname) // the name the member took there
+	if me, err := f.Hostname(); err != nil || netHostname(me) == name {
 		return
 	}
 	for _, b := range st.Boxes {
-		if strings.EqualFold(b.Hostname, box.Hostname) {
+		if b.Hostname != "" && netHostname(b.Hostname) == name {
 			return
 		}
 	}
@@ -140,7 +142,7 @@ func (f *Fleet) removeNode(st MasterState, box Box) {
 	if !ok {
 		return
 	}
-	if err := f.RelayAPI.RemoveNode(context.Background(), rs.Relay, rs.FleetID, rs.Secret, box.Hostname); err != nil {
+	if err := f.RelayAPI.RemoveNode(context.Background(), rs.Relay, rs.FleetID, rs.Secret, name); err != nil {
 		f.Log("fleet: cannot remove the box from the relay's private network; it stays there until the fleet is deleted", err)
 	}
 }
@@ -230,7 +232,7 @@ func (f *Fleet) ChangeRelay(ctx context.Context, relayURL string) error {
 		}
 		return fmt.Errorf("this box is now off the private network, its boxes cannot reach it: change the relay again: %w", err)
 	}
-	if err := n.Up(ctx, creds.LoginServer, key, hostname); err != nil {
+	if err := n.Up(ctx, creds.LoginServer, key, netHostname(hostname)); err != nil {
 		return lost(err)
 	}
 	addr, err := waitAddr(ctx, n)
