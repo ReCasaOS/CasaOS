@@ -336,6 +336,11 @@ func (f *Fleet) enableMaster(address, relay, fleetID, netAddr string) error {
 	if st.Boxes == nil {
 		st.Boxes = []Box{}
 	}
+	if relay != "" { // an advanced master moved onto a relay: its boxes look for it at its old address
+		for i := range st.Boxes {
+			st.Boxes[i].NeedsRecode = !st.Boxes[i].Self
+		}
+	}
 	return f.saveMaster(st)
 }
 

@@ -442,3 +442,22 @@ func TestMasterStatusReadsTheLiveNetwork(t *testing.T) {
 		t.Fatalf("%+v", st)
 	}
 }
+
+// An advanced master moved onto a relay has a new address its boxes do not
+// know: each is asked for a new code, as after a relay change (M5).
+func TestEnableMasterRelayFromAdvancedAsksForNewCodes(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if err := f.EnableMaster("https://m.example"); err != nil {
+		t.Fatal(err)
+	}
+	box, _, err := f.AddBox("box a", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if b := boxStatus(t, f, box.ID); !b.NeedsRecode {
+		t.Fatalf("%+v", b)
+	}
+}
