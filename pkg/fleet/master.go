@@ -525,6 +525,10 @@ func (f *Fleet) code(st MasterState, box Box, key string) (Code, error) {
 		return Code{}, err
 	}
 	fp, err := CertFingerprint(info.CertFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		// no certificate to pin (HTTPS is off): the chain check alone decides
+		fp, err = "", nil
+	}
 	if err != nil {
 		return Code{}, err
 	}

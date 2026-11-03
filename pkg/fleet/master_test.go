@@ -658,3 +658,51 @@ func TestAHugeHelloIsCutNotFatal(t *testing.T) {
 	// the master still serves a fresh dial afterwards
 	fakeMember(t, srv, addBox(t, f, "Bureau"), okJSON)
 }
+
+// A gateway with HTTPS off has no certificate to pin: the code carries none and
+// the chain check alone decides (a master behind a TLS-terminating proxy).
+func TestAddBoxWithoutACertificate(t *testing.T) {
+	f := New(t.TempDir())
+	f.Gateway = func() (GatewayInfo, error) {
+		return GatewayInfo{Public: mustURL(t, "http://127.0.0.1:80"), CertFile: filepath.Join(t.TempDir(), "gateway.crt")}, nil
+	}
+	if err := f.EnableMaster("http://127.0.0.1:8080"); err != nil {
+		t.Fatal(err)
+	}
+	self, code, err := f.AddBox("this box", "", true)
+	if err != nil {
+		t.Fatalf("self: %v", err)
+	}
+	if code.MasterURL != "http://127.0.0.1:80" || code.CertSHA256 != "" {
+		t.Fatalf("self code %+v", code)
+	}
+	if m, ok := f.loadMember(); !ok || m.BoxID != self.ID || m.MasterCertSHA256 != "" {
+		t.Fatalf("member.json %+v %v", m, ok)
+	}
+	_, other, err := f.AddBox("box b", "", false)
+	if err != nil {
+		t.Fatalf("other: %v", err)
+	}
+	if other.MasterURL != "http://127.0.0.1:8080" || other.CertSHA256 != "" {
+		t.Fatalf("other code %+v", other)
+	}
+}
+
+// Only a missing certificate is let go: one that is there and unreadable is
+// still an error, so a broken gateway setup is not hidden behind an empty pin.
+func TestAddBoxRefusesACertificateThatIsNotOne(t *testing.T) {
+	f := New(t.TempDir())
+	certFile := filepath.Join(t.TempDir(), "gateway.crt")
+	if err := os.WriteFile(certFile, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.Gateway = func() (GatewayInfo, error) {
+		return GatewayInfo{Public: mustURL(t, "http://127.0.0.1:80"), CertFile: certFile}, nil
+	}
+	if err := f.EnableMaster("http://127.0.0.1:8080"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.AddBox("this box", "", true); err == nil {
+		t.Fatal("a file with no certificate in it was accepted")
+	}
+}
