@@ -66,7 +66,7 @@ func ValidMasterURL(raw string) error {
 	case "https":
 		return nil
 	case "http":
-		if h := u.Hostname(); h == "localhost" || (net.ParseIP(h) != nil && net.ParseIP(h).IsLoopback()) {
+		if loopbackHost(u.Hostname()) {
 			return nil
 		}
 		return errors.New("a plain-http master is only allowed on this box's loopback")
@@ -88,6 +88,12 @@ func NewKey() (key, keyHash string, err error) {
 func KeyHash(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])
+}
+
+// loopbackHost says whether a host is this box's own loopback.
+func loopbackHost(h string) bool {
+	ip := net.ParseIP(h)
+	return h == "localhost" || (ip != nil && ip.IsLoopback())
 }
 
 func isHex(s string, n int) bool {

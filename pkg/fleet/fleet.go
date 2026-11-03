@@ -5,6 +5,8 @@
 package fleet
 
 import (
+	"crypto/tls"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -28,6 +30,8 @@ type Fleet struct {
 	mu      sync.Mutex         // master.json, member.json and tunnels
 	tunnels map[string]*tunnel // the live tunnel of each box, by id
 	restart chan struct{}      // poked when member.json changes
+	m       memberState        // what the member loop reports
+	local   *http.Client       // how a member reaches its own gateway
 }
 
 // New makes a Fleet rooted at root, with the box's defaults.
@@ -44,6 +48,9 @@ func New(root string) *Fleet {
 		Version:  func() string { return "" },
 		tunnels:  map[string]*tunnel{},
 		restart:  make(chan struct{}, 1),
+		// The box's own gateway over loopback: its self-signed certificate is not
+		// for 127.0.0.1, and nothing leaves the box.
+		local: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}}, //nolint:gosec // see above
 	}
 }
 

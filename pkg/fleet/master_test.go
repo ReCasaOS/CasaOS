@@ -31,6 +31,12 @@ func mustURL(t *testing.T, s string) *url.URL {
 // layout (plain port, https on 443, the default self-signed certificate).
 func newMaster(t *testing.T) (*Fleet, *httptest.Server) {
 	t.Helper()
+	return newMasterHook(t, func() {})
+}
+
+// newMasterHook is newMaster with onDial run at every tunnel dial.
+func newMasterHook(t *testing.T, onDial func()) (*Fleet, *httptest.Server) {
+	t.Helper()
 	f := New(t.TempDir())
 	leaf, _ := makeCert(t, "localhost", false, nil, nil)
 	certFile := filepath.Join(t.TempDir(), "gateway.crt")
@@ -41,7 +47,7 @@ func newMaster(t *testing.T) (*Fleet, *httptest.Server) {
 		return GatewayInfo{Public: mustURL(t, "http://127.0.0.1:80"), HTTPS: mustURL(t, "https://127.0.0.1:443"), CertFile: certFile}, nil
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/fleet/tunnel", f.HandleTunnel)
+	mux.HandleFunc("/v1/fleet/tunnel", func(w http.ResponseWriter, r *http.Request) { onDial(); f.HandleTunnel(w, r) })
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	if err := f.EnableMaster(srv.URL); err != nil {
