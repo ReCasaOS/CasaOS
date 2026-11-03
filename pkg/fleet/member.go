@@ -190,7 +190,10 @@ func (f *Fleet) netDown(n Net) {
 
 // Leave closes the tunnel and forgets the master. A member over a relay then
 // leaves its private network, best-effort: the local leave never fails for it.
+// It waits for a Join in progress (relayMu), never cutting one half-way.
 func (f *Fleet) Leave() error {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
 	f.mu.Lock()
 	st, member := f.loadMember()
 	err := f.clearMember()
@@ -199,9 +202,7 @@ func (f *Fleet) Leave() error {
 	f.pokeMember()
 	if err == nil && member && st.Relay != "" {
 		if n, nerr := f.PrivateNet(); nerr == nil {
-			f.relayMu.Lock()
 			f.netDown(n)
-			f.relayMu.Unlock()
 		}
 	}
 	return err

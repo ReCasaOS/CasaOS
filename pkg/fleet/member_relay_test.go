@@ -345,3 +345,21 @@ func TestNetHostname(t *testing.T) {
 		}
 	}
 }
+
+// Leave waits for a Join (or any relay work) in progress: it must not forget
+// the master while a Join is half-way into the network (M3).
+func TestLeaveWaitsForRelayWork(t *testing.T) {
+	f, _, _ := relayMember(t)
+	if err := f.Join(relayCode().String()); err != nil {
+		t.Fatal(err)
+	}
+	f.relayMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- f.Leave() }()
+	time.Sleep(50 * time.Millisecond)
+	still := exists(t, memberJSON(f))
+	f.relayMu.Unlock()
+	if err := <-done; err != nil || !still || exists(t, memberJSON(f)) {
+		t.Fatalf("err %v, member.json kept while relayMu was held: %v", err, still)
+	}
+}
