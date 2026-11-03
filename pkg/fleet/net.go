@@ -1,0 +1,208 @@
+package fleet
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/netip"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// ErrOtherNetwork is returned by Net.Up when the box is already connected to a
+// private network other than the one asked for. The box is left untouched.
+var ErrOtherNetwork = errors.New("this box is already in another private network")
+
+// ErrNoPrivateNet is returned when the box has no private-network driver.
+var ErrNoPrivateNet = errors.New("the private network is not available on this box")
+
+// defaultControlURL is what the tailscale client reports when no login server
+// was ever set.
+const defaultControlURL = "https://controlplane.tailscale.com"
+
+// netTimeout bounds a Net call whose context has no deadline of its own.
+const netTimeout = 45 * time.Second
+
+// NetState is what the box's private network looks like right now.
+type NetState struct {
+	Connected   bool
+	Addr        string // this box's address on the private network
+	LoginServer string // the coordination server it is joined to, without a trailing slash
+}
+
+// Net drives the box's private network.
+type Net interface {
+	State(ctx context.Context) (NetState, error)
+	// Up joins the network of loginServer. It returns ErrOtherNetwork, having
+	// run nothing, if the box is already in another one.
+	Up(ctx context.Context, loginServer, authKey, hostname string) error
+	// Down leaves the network and stops the daemon.
+	Down(ctx context.Context) error
+}
+
+// PrivateNet returns the box's private-network driver, or ErrNoPrivateNet when
+// Fleet.Net is nil.
+func (f *Fleet) PrivateNet() (Net, error) {
+	if f.Net == nil {
+		return nil, ErrNoPrivateNet
+	}
+	return f.Net, nil
+}
+
+// tailscale is Net over the system tailscaled, driven by the tailscale command.
+type tailscale struct {
+	run       func(ctx context.Context, args ...string) ([]byte, error) // the tailscale command: its stdout
+	systemctl func(ctx context.Context, args ...string) error           // starts and stops the tailscaled unit
+}
+
+// NewTailscale returns a Net over the tailscale command. A nil run executes
+// the real command.
+func NewTailscale(run func(ctx context.Context, args ...string) ([]byte, error)) Net {
+	if run == nil {
+		run = func(ctx context.Context, args ...string) ([]byte, error) { return runCmd(ctx, "tailscale", args...) }
+	}
+	return &tailscale{run: run, systemctl: func(ctx context.Context, args ...string) error {
+		_, err := runCmd(ctx, "systemctl", args...)
+		return err
+	}}
+}
+
+// runCmd returns stdout only; a failure carries the tail of stderr, never the
+// arguments (one of them may be a key).
+func runCmd(ctx context.Context, name string, args ...string) ([]byte, error) {
+	var out, errb bytes.Buffer
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		tail := strings.TrimSpace(errb.String())
+		if len(tail) > 200 {
+			tail = tail[len(tail)-200:]
+		}
+		return out.Bytes(), fmt.Errorf("%s %s: %w: %s", name, args[0], err, tail)
+	}
+	return out.Bytes(), nil
+}
+
+func withNetTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, netTimeout)
+}
+
+// State reads `tailscale status --json`. A daemon that is stopped, not
+// logged in or not running is not an error: it is just not connected. A
+// missing command or unreadable output is.
+func (t *tailscale) State(ctx context.Context) (NetState, error) {
+	ctx, cancel := withNetTimeout(ctx)
+	defer cancel()
+	out, err := t.run(ctx, "status", "--json")
+	if errors.Is(err, exec.ErrNotFound) || ctx.Err() != nil {
+		return NetState{}, firstErr(ctx.Err(), err)
+	}
+	var st struct {
+		BackendState string
+		TailscaleIPs []string
+		Self         struct{ TailscaleIPs []string }
+	}
+	if jerr := json.Unmarshal(out, &st); jerr != nil {
+		if err != nil { // a non-zero exit with no JSON: tailscaled is not running
+			return NetState{}, nil
+		}
+		return NetState{}, errors.New("tailscale status: unreadable output")
+	}
+	if st.BackendState != "Running" {
+		return NetState{}, nil
+	}
+	// The status JSON does not carry the coordination server; the prefs do.
+	// A connected box whose server cannot be read is an error: it must not
+	// look like a free one.
+	praw, err := t.run(ctx, "debug", "prefs")
+	var prefs struct{ ControlURL string }
+	if err != nil || json.Unmarshal(praw, &prefs) != nil {
+		return NetState{}, errors.New("tailscale debug prefs: cannot read the login server")
+	}
+	if prefs.ControlURL == "" {
+		prefs.ControlURL = defaultControlURL
+	}
+	return NetState{Connected: true, Addr: pickAddr(append(st.Self.TailscaleIPs, st.TailscaleIPs...)), LoginServer: trimURL(prefs.ControlURL)}, nil
+}
+
+// Up starts tailscaled and joins loginServer. It does nothing if the box is
+// already joined there, and refuses if it is in another network.
+func (t *tailscale) Up(ctx context.Context, loginServer, authKey, hostname string) error {
+	if loginServer == "" || authKey == "" {
+		return errors.New("tailscale up: a login server and a key are needed")
+	}
+	ctx, cancel := withNetTimeout(ctx)
+	defer cancel()
+	st, err := t.State(ctx)
+	if err != nil {
+		return err
+	}
+	if st.Connected {
+		if st.LoginServer != trimURL(loginServer) {
+			return ErrOtherNetwork
+		}
+		if st.Addr != "" {
+			return nil
+		}
+	}
+	if err := t.systemctl(ctx, "enable", "--now", "tailscaled"); err != nil {
+		return redact(err, authKey)
+	}
+	args := []string{"up", "--login-server=" + loginServer, "--authkey=" + authKey,
+		"--accept-dns=false", "--accept-routes=false", "--timeout=30s"}
+	if hostname != "" {
+		args = append(args, "--hostname="+hostname)
+	}
+	if _, err := t.run(ctx, args...); err != nil {
+		return redact(err, authKey)
+	}
+	return nil
+}
+
+// Down logs out and stops tailscaled. It fails only if both steps fail, so the
+// caller can go on with its local cleanup.
+func (t *tailscale) Down(ctx context.Context) error {
+	ctx, cancel := withNetTimeout(ctx)
+	defer cancel()
+	_, lerr := t.run(ctx, "logout") // fails when already logged out or stopped
+	serr := t.systemctl(ctx, "disable", "--now", "tailscaled")
+	if lerr != nil && serr != nil {
+		return errors.Join(lerr, serr)
+	}
+	return nil
+}
+
+func trimURL(s string) string { return strings.TrimRight(s, "/") }
+
+// pickAddr prefers the IPv4 (100.x) address.
+func pickAddr(ips []string) string {
+	for _, s := range ips {
+		if a, err := netip.ParseAddr(s); err == nil && a.Is4() {
+			return s
+		}
+	}
+	if len(ips) > 0 {
+		return ips[0]
+	}
+	return ""
+}
+
+// redact rewrites err without the key. The error chain is dropped on purpose.
+func redact(err error, key string) error {
+	return errors.New(strings.ReplaceAll(err.Error(), key, "***"))
+}
+
+func firstErr(errs ...error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}

@@ -27,6 +27,7 @@ type Fleet struct {
 	Hostname    func() (string, error)                 // this box's name, said in the hello
 	Version     func() string                          // this box's ReCasaOS version, said in the hello
 	Offline     func(boxID, name string, offline bool) // the alerts hub's hook: a box gone, or back
+	Net         Net                                    // the private network; nil in New: callers go through PrivateNet
 
 	mu      sync.Mutex         // master.json, member.json and tunnels
 	tunnels map[string]*tunnel // the live tunnel of each box, by id
