@@ -126,10 +126,10 @@ func TestJoinKeyUsesBearerSecret(t *testing.T) {
 		if r.Header.Get("X-Box-Signature") != "" {
 			t.Error("a join key is asked with the secret, not a box signature")
 		}
-		jsonReply(w, http.StatusCreated, map[string]string{"key": "hskey-1", "expires_at": "2026-11-04T12:00:00Z"})
+		jsonReply(w, http.StatusCreated, map[string]string{"key": realJoinKey, "expires_at": "2026-11-04T12:00:00Z"})
 	})
 	key, exp, err := c.JoinKey(context.Background(), relay, "f/1", "s3cret")
-	if err != nil || key != "hskey-1" || !exp.Equal(testNow.Add(24*time.Hour)) {
+	if err != nil || key != realJoinKey || !exp.Equal(testNow.Add(24*time.Hour)) {
 		t.Fatalf("JoinKey = %q %v %v", key, exp, err)
 	}
 }
@@ -138,6 +138,9 @@ func TestJoinKeyRefusesAnInvalidAnswer(t *testing.T) {
 	for name, body := range map[string]string{
 		"no key":      `{"expires_at":"2026-11-04T12:00:00Z"}`,
 		"bad expires": `{"key":"k","expires_at":"tomorrow"}`,
+		"file key":    `{"key":"file:/etc/shadow","expires_at":"2026-11-04T12:00:00Z"}`,
+		"flag key":    `{"key":"--reset-everything-now","expires_at":"2026-11-04T12:00:00Z"}`,
+		"short key":   `{"key":"k","expires_at":"2026-11-04T12:00:00Z"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) {

@@ -137,6 +137,9 @@ func (t *tailscale) Up(ctx context.Context, loginServer, authKey, hostname strin
 	if loginServer == "" || authKey == "" {
 		return errors.New("tailscale up: a login server and a key are needed")
 	}
+	if err := validJoinKey(authKey); err != nil { // checked again here: the key goes on tailscale's command line
+		return err
+	}
 	ctx, cancel := withNetTimeout(ctx)
 	defer cancel()
 	st, err := t.State(ctx)

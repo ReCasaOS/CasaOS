@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 )
 
 // Code is what the owner copies from the master into a box's settings: where
@@ -59,7 +60,26 @@ func ParseCode(s string) (Code, error) {
 			return Code{}, fmt.Errorf("the relay address in the code is not valid: %w", err)
 		}
 	}
+	if c.JoinKey != "" {
+		if err := validJoinKey(c.JoinKey); err != nil {
+			return Code{}, err
+		}
+	}
 	return c, nil
+}
+
+// joinKeyShape is what a relay's join key looks like: a Headscale pre-auth key
+// ("hskey-auth-<prefix>-<secret>", URL-safe base64) or an older one (48 hex).
+// Never ':' or '/' (tailscale reads --authkey=file:<path> as a file, as root)
+// nor a leading '-' (a flag).
+var joinKeyShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{15,255}$`)
+
+// validJoinKey refuses a join key of any other shape; the error never quotes it.
+func validJoinKey(k string) error {
+	if !joinKeyShape.MatchString(k) {
+		return errors.New("the join key is malformed")
+	}
+	return nil
 }
 
 // ValidMasterURL accepts https://host[:port], or plain http on this box's

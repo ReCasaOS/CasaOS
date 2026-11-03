@@ -345,7 +345,7 @@ func TestFleetRelayPassesTheAnswerThrough(t *testing.T) {
 
 const (
 	relaySecret  = "fleet-secret-5d1e"
-	relayJoinKey = "join-key-a90b"
+	relayJoinKey = "join-key-a90b-0000"
 )
 
 // fakeRelay answers every relay request in process, whatever its host (the

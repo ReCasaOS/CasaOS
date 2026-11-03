@@ -17,7 +17,7 @@ import (
 
 const (
 	testSecret  = "fleet-secret-8f3a"
-	testJoinKey = "join-key-77c1"
+	testJoinKey = "join-key-77c1-0000"
 	testLogin   = "https://hs.relay.example"
 )
 

@@ -94,7 +94,7 @@ func TestStateParsesRunningAndStopped(t *testing.T) {
 
 func TestEnableRefusesAnotherTailnet(t *testing.T) {
 	f := &fakeTS{status: runningJSON, prefs: prefsFor("https://controlplane.tailscale.com")}
-	err := f.net().Up(context.Background(), "https://relay.example", "tskey-secret", "box")
+	err := f.net().Up(context.Background(), "https://relay.example", "tskey-secret-0123", "box")
 	if !errors.Is(err, ErrOtherNetwork) {
 		t.Fatalf("err = %v, want ErrOtherNetwork", err)
 	}
@@ -105,14 +105,14 @@ func TestEnableRefusesAnotherTailnet(t *testing.T) {
 
 func TestUpPassesLoginServerAndKey(t *testing.T) {
 	f := &fakeTS{status: `{"BackendState":"Stopped"}`}
-	if err := f.net().Up(context.Background(), "https://relay.example/", "tskey-secret", "box1"); err != nil {
+	if err := f.net().Up(context.Background(), "https://relay.example/", "tskey-secret-0123", "box1"); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.calls) < 3 || f.calls[1] != "systemctl enable --now tailscaled" {
 		t.Fatalf("tailscaled must be started before up, calls: %v", f.calls)
 	}
 	up := f.calls[len(f.calls)-1]
-	for _, want := range []string{"up ", "--login-server=https://relay.example/", "--authkey=tskey-secret", "--hostname=box1", "--accept-dns=false", "--accept-routes=false"} {
+	for _, want := range []string{"up ", "--login-server=https://relay.example/", "--authkey=tskey-secret-0123", "--hostname=box1", "--accept-dns=false", "--accept-routes=false"} {
 		if !strings.Contains(up, want) {
 			t.Errorf("up call %q lacks %q", up, want)
 		}
@@ -120,7 +120,7 @@ func TestUpPassesLoginServerAndKey(t *testing.T) {
 }
 
 func TestUpErrorNeverContainsAuthKey(t *testing.T) {
-	const key = "tskey-secret"
+	const key = "tskey-secret-0123"
 	f := &fakeTS{status: `{"BackendState":"Stopped"}`, upErr: errors.New("up --authkey=" + key + " failed: bad key " + key)}
 	err := f.net().Up(context.Background(), "https://relay.example", key, "box")
 	if err == nil {
@@ -131,9 +131,22 @@ func TestUpErrorNeverContainsAuthKey(t *testing.T) {
 	}
 }
 
+func TestUpRefusesAKeyTailscaleWouldRead(t *testing.T) {
+	for _, key := range []string{"file:/etc/shadow", "--x", "a key with spaces", strings.Repeat("k", 300)} {
+		f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`}
+		err := f.net().Up(context.Background(), "https://relay.example", key, "box")
+		if err == nil || strings.Contains(err.Error(), key) {
+			t.Errorf("%q: err = %v", key, err)
+		}
+		if len(f.calls) != 0 {
+			t.Errorf("%q: calls %v", key, f.calls)
+		}
+	}
+}
+
 func TestUpIdempotentSameNetwork(t *testing.T) {
 	f := &fakeTS{status: runningJSON, prefs: prefsFor("https://relay.example/")}
-	if err := f.net().Up(context.Background(), "https://relay.example", "k", "box"); err != nil {
+	if err := f.net().Up(context.Background(), "https://relay.example", testJoinKey, "box"); err != nil {
 		t.Fatal(err)
 	}
 	if f.called("tailscale up") || f.called("systemctl") {

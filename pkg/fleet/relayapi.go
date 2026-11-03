@@ -205,7 +205,7 @@ func (c *RelayClient) JoinKey(ctx context.Context, relay, fleetID, secret string
 		Key       string `json:"key"`
 		ExpiresAt string `json:"expires_at"`
 	}
-	if json.Unmarshal(r.body, &v) != nil || v.Key == "" {
+	if json.Unmarshal(r.body, &v) != nil || validJoinKey(v.Key) != nil {
 		return "", time.Time{}, errors.New("the relay's answer to a join key request is not valid")
 	}
 	if expires, err = time.Parse(time.RFC3339, v.ExpiresAt); err != nil {
