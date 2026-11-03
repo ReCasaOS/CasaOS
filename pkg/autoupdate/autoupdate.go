@@ -1,8 +1,10 @@
 // Package autoupdate installs new ReCasaOS releases by itself, for an owner who
 // turned it on: at night, inside a window of the box's local time, once a
-// release is 48 hours old, and never while an update, a backup or an app
-// operation runs. It starts exactly the update the dashboard's button starts,
-// and keeps its choice and its last attempt in autoupdate.json for the
+// release is 24 hours old, and never while an update, a backup or an app
+// operation runs. When the latest release is younger than that, it installs the
+// newest one that is old enough, so a box is not kept back by releases that come
+// out more than once in 24 hours. It starts the update the dashboard's button
+// starts, for that release, and keeps its choice and its last attempt in autoupdate.json for the
 // dashboard. An attempt that fails is tried once more the next night; after a
 // second failure that release is paused until the owner resumes it or a newer
 // one comes out.
@@ -72,6 +74,10 @@ type AutoUpdate struct {
 	// casaos-update unit, its installer and its log.
 	Releases Releases
 	Start    func(version string) error
+	// Settled, when set, returns the newest release published before the given
+	// time: what to install while the latest is under 24 hours old. main sets it
+	// to service.SettledCasaosVersion, and Start to the update of that release.
+	Settled func(before time.Time) model.Version
 	// Command runs a program and returns its standard output: systemctl.
 	Command func(name string, args ...string) ([]byte, error)
 	// AppsBusy reports whether AppManagement lists an operation in progress,
@@ -155,6 +161,7 @@ func (a *AutoUpdate) Check(ctx context.Context) {
 		return
 	}
 	f := facts{now: now, state: s, current: a.Current(), latest: a.Releases.FetchCasaosVersion()}
+	f.settled = a.settled(f)
 	if !decide(f).start {
 		return
 	}
@@ -162,6 +169,15 @@ func (a *AutoUpdate) Check(ctx context.Context) {
 	if v := decide(f); v.start {
 		a.start(v.next.Version, now)
 	}
+}
+
+// settled asks for the newest release old enough, only when the latest is too
+// young to install and a newer one than the installed could still be aimed at.
+func (a *AutoUpdate) settled(f facts) model.Version {
+	if a.Settled == nil || !tooYoung(f.latest, f.now) {
+		return model.Version{}
+	}
+	return a.Settled(f.now.Add(-minAge))
 }
 
 // start records the attempt, then starts the button's update. The attempt is

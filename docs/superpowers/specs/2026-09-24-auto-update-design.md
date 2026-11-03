@@ -15,7 +15,7 @@ what happened in the dashboard.
 - **Opt-in**: off by default; the installer never turns it on.
 - **Every release** is installed, not only patch releases.
 - **At night, after a delay**: inside a window of the box's local time (03:00 to 05:00 by
-  default, adjustable), and only once the release is at least **48 hours** old.
+  default, adjustable), and only once the release is at least **24 hours** old.
 - **On failure**: one new attempt the next night; after a second failure for the same version,
   automatic updates pause for that version until the owner resumes them or a newer release
   appears.
@@ -44,7 +44,7 @@ Built like `pkg/telemetry`: a state file, an hourly check, a status for the API.
   read or parsed means **off**: when in doubt, nothing is started. The next `PUT` rewrites it.
 - The window is `HH:MM` in the box's local time (`time.Local`), may wrap midnight
   (`23:00`–`01:00`), and lasts at least one hour; anything else is a 400.
-- The 48-hour delay is fixed, not a setting.
+- The 24-hour delay is fixed, not a setting.
 - Written atomically (temporary file, then rename), like `telemetry.json`.
 
 ### The cycle
@@ -61,7 +61,7 @@ Built like `pkg/telemetry`: a state file, an hourly check, a status for the API.
   3. the latest release (`version.json` at `FORK_VERSION_URL`, or the configured
      `UpdateVersionUrl`) is newer than `/var/lib/casaos/fork-release` (the comparison the button
      uses, `version.IsNeedUpdate`);
-  4. its `published_at` is at least 48 hours ago; a `version.json` without `published_at` is
+  4. its `published_at` is at least 24 hours ago; a `version.json` without `published_at` is
      never installed automatically;
   5. it is not paused: `failures.version` is that version and `failures.count >= 2` means paused;
   6. no update runs already: the `casaos-update` unit is not active (`systemctl is-active`);
@@ -88,7 +88,7 @@ Built like `pkg/telemetry`: a state file, an hourly check, a status for the API.
   - `state`: `off`, `up_to_date`, `waiting` (a newer release that is too recent, outside the
     window, or held by an operation), `updating` (`last.result` is `running`), `paused`;
   - `next`: `{version, not_before}` (the release aimed at and the earliest time it may start:
-    the later of `published_at + 48h` and the next window opening), or null;
+    the later of `published_at + 24h` and the next window opening), or null;
   - `last`: `{version, started_at, result}` or null.
 - `PUT /v1/sys/autoupdate` with any of `{enabled, window_start, window_end, resume}`; answers
   the same view. Behind the JWT like every `/v1/sys` route.
@@ -112,7 +112,7 @@ Built like `pkg/telemetry`: a state file, an hourly check, a status for the API.
 
 - In the settings, below the update row: a switch "Update automatically". When on:
   - the window, two hour selects ("between 03:00 and 05:00");
-  - the note "A new release is installed at night, two days after it comes out. Nothing starts
+  - the note "A new release is installed at night, one day after it comes out. Nothing starts
     while a backup or an app operation runs.";
   - the state line: "Up to date", "v0.5.8 will be installed after <not_before>", "Updating…",
     or "Paused: v0.5.8 failed twice" with "See the log" (the existing upgrade log view) and

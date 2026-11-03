@@ -12,6 +12,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/httper"
+	"github.com/ReCasaOS/CasaOS/pkg/utils/version"
 	"github.com/tidwall/gjson"
 )
 
@@ -106,6 +107,48 @@ func (o *casaService) FetchCasaosVersion() model.Version {
 	}
 
 	return version
+}
+
+// SettledCasaosVersion is the newest published release, pre-releases left out,
+// that came out before the given time: what the automatic update installs while
+// the latest is still too young. Empty when the feed is not the fork's own (a
+// feed set in config or by the install check has no list to read) or the list
+// could not be read. The list is cached like version.json.
+func SettledCasaosVersion(before time.Time) model.Version {
+	if resolveUpdateVersionURL() != common.FORK_VERSION_URL {
+		return model.Version{}
+	}
+	key := "casa_releases:" + common.FORK_RELEASES_API
+	list, ok := Cache.Get(key)
+	payload, _ := list.(string)
+	if !ok {
+		payload = httper.Get(common.FORK_RELEASES_API, map[string]string{
+			"Accept":     "application/vnd.github+json",
+			"User-Agent": "CasaOS-Fork-Updater",
+		})
+		if !gjson.Valid(payload) || !gjson.Parse(payload).IsArray() {
+			return model.Version{}
+		}
+		Cache.Set(key, payload, time.Minute*20)
+	}
+	return pickSettled(payload, before)
+}
+
+// pickSettled is SettledCasaosVersion over a GitHub releases list.
+func pickSettled(payload string, before time.Time) model.Version {
+	var settled model.Version
+	gjson.Parse(payload).ForEach(func(_, release gjson.Result) bool {
+		tag, published := release.Get("tag_name").String(), release.Get("published_at").String()
+		at, err := time.Parse(time.RFC3339, published)
+		if release.Get("draft").Bool() || release.Get("prerelease").Bool() || err != nil || at.After(before) {
+			return true
+		}
+		if settled.Version == "" || version.IsVersionNewer(tag, settled.Version) {
+			settled = model.Version{Version: tag, PublishedAt: published}
+		}
+		return true
+	})
+	return settled
 }
 
 func NewCasaService() CasaService {

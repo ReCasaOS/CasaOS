@@ -60,9 +60,9 @@ func TestTheDecision(t *testing.T) {
 		{"3. an older release", func(f *facts) { f.latest.Version = "v0.5.6" }, stateUpToDate, nil, false},
 		{"3. version.json could not be read", func(f *facts) { f.latest = model.Version{} }, stateUpToDate, nil, false},
 
-		{"4. 47 hours old: waits for its 48th, inside the window", func(f *facts) { f.latest.PublishedAt = "2026-09-22T02:00:00Z" }, stateWaiting, aim("v0.5.8", local("2026-09-24 04:00")), false},
-		{"4. 48 hours old after tonight's window: tomorrow night", func(f *facts) { f.latest.PublishedAt = "2026-09-22T10:00:00Z" }, stateWaiting, aim("v0.5.8", local("2026-09-25 03:00")), false},
-		{"4. exactly 48 hours old", func(f *facts) { f.latest.PublishedAt = "2026-09-22T01:30:00Z" }, stateWaiting, aim("v0.5.8", now), true},
+		{"4. 23 hours old: waits for its 24th, inside the window", func(f *facts) { f.latest.PublishedAt = "2026-09-23T02:00:00Z" }, stateWaiting, aim("v0.5.8", local("2026-09-24 04:00")), false},
+		{"4. 24 hours old after tonight's window: tomorrow night", func(f *facts) { f.latest.PublishedAt = "2026-09-23T10:00:00Z" }, stateWaiting, aim("v0.5.8", local("2026-09-25 03:00")), false},
+		{"4. exactly 24 hours old", func(f *facts) { f.latest.PublishedAt = "2026-09-23T01:30:00Z" }, stateWaiting, aim("v0.5.8", now), true},
 		{"4. no published_at: never by itself", func(f *facts) { f.latest.PublishedAt = "" }, stateWaiting, nil, false},
 		{"4. a published_at that is not a time", func(f *facts) { f.latest.PublishedAt = "last week" }, stateWaiting, nil, false},
 
@@ -72,6 +72,24 @@ func TestTheDecision(t *testing.T) {
 			f.state.Failures = &Failures{Version: "v0.5.8", Count: 2}
 			f.latest.Version = "v0.5.9"
 		}, stateWaiting, aim("v0.5.9", now), true},
+
+		// v0.5.9 came out 10 hours ago, v0.5.8 is old enough
+		{"4. latest too young: the newest old enough is aimed at", func(f *facts) {
+			f.latest = model.Version{Version: "v0.5.9", PublishedAt: "2026-09-23T17:30:00Z"}
+			f.settled = model.Version{Version: "v0.5.8", PublishedAt: "2026-09-21T10:00:00Z"}
+		}, stateWaiting, aim("v0.5.8", now), true},
+		{"4. latest too young, the old enough one is installed: waits for the latest", func(f *facts) {
+			f.latest = model.Version{Version: "v0.5.9", PublishedAt: "2026-09-23T17:30:00Z"}
+			f.settled = model.Version{Version: "v0.5.7", PublishedAt: "2026-09-21T10:00:00Z"}
+		}, stateWaiting, aim("v0.5.9", local("2026-09-25 03:00")), false},
+		{"4. latest old enough: the latest, whatever settled says", func(f *facts) {
+			f.settled = model.Version{Version: "v0.5.7", PublishedAt: "2026-09-01T10:00:00Z"}
+		}, stateWaiting, aim("v0.5.8", now), true},
+		{"5. the settled one failed twice: paused", func(f *facts) {
+			f.latest = model.Version{Version: "v0.5.9", PublishedAt: "2026-09-23T17:30:00Z"}
+			f.settled = model.Version{Version: "v0.5.8", PublishedAt: "2026-09-21T10:00:00Z"}
+			f.state.Failures = &Failures{Version: "v0.5.8", Count: 2}
+		}, statePaused, nil, false},
 
 		{"6. casaos-update runs", func(f *facts) { f.unitActive = true }, stateWaiting, aim("v0.5.8", now), false},
 
