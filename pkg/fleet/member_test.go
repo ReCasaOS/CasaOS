@@ -443,16 +443,11 @@ func TestMemberDoesNotFollowAGatewayRedirect(t *testing.T) {
 func TestJoinDuringASessionIsNotLost(t *testing.T) {
 	shortWaits(t)
 	first, _ := newMaster(t)
-	second, srv2 := newMaster(t)
-	var seen2 atomic.Int32
-	// second master records a box so the member can join it
+	second, _ := newMaster(t)
 	member := newMember(t, &fakeGateway{status: 200})
 	code1 := join(t, first, member, "A")
-	_ = code1
-	// now join the second fleet; the member must end up connected there
+	// now join the second fleet; the member must end up connected there, and leave the first
 	code2 := addBox(t, second, "B")
-	_ = srv2
-	_ = seen2
 	if err := member.Join(code2.String()); err != nil {
 		t.Fatal(err)
 	}
