@@ -221,8 +221,9 @@ func main() {
 	// Automatic updates start the button's own update, read the button's own
 	// version.json, and settle an update that restarted the core before checking.
 	autoupdate.Default.Releases = service.MyService.Casa()
+	autoupdate.Default.Settled = service.SettledCasaosVersion
 	autoupdate.Default.Start = func(release string) error {
-		err := service.MyService.System().UpdateSystemVersion(release)
+		err := service.MyService.System().UpdateSystemRelease(release)
 		if errors.Is(err, service.ErrSystemMaintenanceBusy) {
 			return fmt.Errorf("%w: %v", autoupdate.ErrBusy, err)
 		}
