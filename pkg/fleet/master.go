@@ -6,7 +6,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,6 +42,8 @@ var timeouts = Timeout
 type MasterStatus struct {
 	Address string      `json:"address"`
 	Boxes   []BoxStatus `json:"boxes"`
+	Relay   string      `json:"relay,omitempty"`    // the relay the master runs over; none in advanced mode
+	NetAddr string      `json:"net_addr,omitempty"` // this box's address on the relay's private network
 }
 
 // BoxStatus is one box as the dashboard sees it: never its key.
@@ -294,32 +298,188 @@ func (f *Fleet) inFlight(boxID string) int {
 	return len(t.pending)
 }
 
+var errMemberElsewhere = errors.New("this box is a member of a fleet: leave it before becoming a master")
+
 // EnableMaster turns the role on at address, keeping the boxes already
 // enrolled. A box that is a member of another fleet cannot become a master:
 // the two roles are exclusive (a self-enrolled master's own member.json names
-// itself, which is not another fleet).
+// itself, which is not another fleet). A master running over a relay is not
+// switched to an address typed by hand: it is disabled first.
 func (f *Fleet) EnableMaster(address string) error {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	return f.enableMaster(address, "", "", "")
+}
+
+// enableMaster is EnableMaster with the relay's fields, empty in advanced
+// mode; the caller holds relayMu.
+func (f *Fleet) enableMaster(address, relay, fleetID, netAddr string) error {
 	if err := ValidMasterURL(address); err != nil {
 		return err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if m, ok := f.loadMember(); ok && !f.namesSelf(m) {
-		return errors.New("this box is a member of a fleet: leave it before becoming a master")
+		return errMemberElsewhere
 	}
 	st, _ := f.loadMaster()
-	st.Enabled, st.Address = true, address
+	if relay == "" && st.Enabled && st.Relay != "" {
+		return errors.New("the master runs over a relay: disable it before typing its address by hand")
+	}
+	st.Enabled, st.Address, st.Relay, st.FleetID, st.NetAddr = true, address, relay, fleetID, netAddr
 	if st.Boxes == nil {
 		st.Boxes = []Box{}
 	}
 	return f.saveMaster(st)
 }
 
+// addrWait bounds how long EnableMasterRelay waits for the private network to
+// give this box an address, asking every addrStep; replaced by tests.
+var addrWait, addrStep = 30 * time.Second, 500 * time.Millisecond
+
+// EnableMasterRelay turns the role on over a relay (DefaultRelayURL when
+// relayURL is empty): a fleet is created there, this box joins its private
+// network, and the master's address is this box's address on it. Nothing is
+// asked of the relay before every local check passed, and what was done is
+// undone on a later failure. A master already on over this relay is left as it
+// is; one on over another relay changes relay instead.
+func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
+	if relayURL == "" {
+		relayURL = DefaultRelayURL
+	}
+	relayURL = trimURL(relayURL)
+	if err := ValidMasterURL(relayURL); err != nil {
+		return fmt.Errorf("the relay address is not valid: %w", err)
+	}
+	n, err := f.PrivateNet()
+	if err != nil {
+		return err
+	}
+	info, err := f.Gateway()
+	if err != nil {
+		return err
+	}
+	port, err := httpsPort(info)
+	if err != nil {
+		return err
+	}
+	hostname, err := f.Hostname()
+	if err != nil {
+		return err
+	}
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	f.mu.Lock()
+	st, on := f.master()
+	rs, haveRelay := f.loadRelay()
+	m, member := f.loadMember()
+	f.mu.Unlock()
+	if member && !f.namesSelf(m) {
+		return errMemberElsewhere
+	}
+	if on && st.Relay != "" {
+		switch {
+		case !haveRelay: // never a new fleet over a lost secret: the members are in the old one
+			return errors.New("relay.json, which holds this fleet's secret, is missing or damaged: disable the master and enable it again")
+		case rs.Relay == relayURL && st.Relay == relayURL:
+			return nil
+		}
+		return errors.New("the master already runs over another relay: change the relay instead")
+	}
+	if haveRelay {
+		// left by an enable that did not finish: that fleet and its network go first
+		f.leaveRelay(ctx, rs, true)
+	}
+	ns, err := n.State(ctx)
+	if err != nil {
+		return err
+	}
+	if ns.Connected {
+		return ErrOtherNetwork
+	}
+	creds, err := f.RelayAPI.CreateFleet(ctx, relayURL)
+	if err != nil {
+		return err
+	}
+	rs = RelayState{Relay: relayURL, FleetID: creds.FleetID, Secret: creds.Secret}
+	undo := func(down bool) { f.leaveRelay(context.WithoutCancel(ctx), rs, down) }
+	if err := f.saveRelay(rs); err != nil { // saved before anything else: a crash never loses the secret
+		undo(false)
+		return err
+	}
+	key, _, err := f.RelayAPI.JoinKey(ctx, relayURL, creds.FleetID, creds.Secret)
+	if err != nil {
+		undo(false)
+		return err
+	}
+	if err := n.Up(ctx, creds.LoginServer, key, hostname); err != nil {
+		undo(!errors.Is(err, ErrOtherNetwork)) // that refusal ran nothing; another failure may have started tailscaled
+		return err
+	}
+	addr, err := waitAddr(ctx, n)
+	if err == nil {
+		err = f.enableMaster(relayAddress(addr, port), relayURL, creds.FleetID, addr)
+	}
+	if err != nil {
+		undo(true)
+		return err
+	}
+	return nil
+}
+
+// waitAddr asks the private network for this box's address until it has one,
+// addrWait at most.
+func waitAddr(ctx context.Context, n Net) (string, error) {
+	deadline := time.Now().Add(addrWait)
+	for {
+		if st, err := n.State(ctx); err == nil && st.Connected && st.Addr != "" {
+			return st.Addr, nil
+		}
+		if !time.Now().Before(deadline) {
+			return "", errors.New("the private network gave this box no address in time: try again later")
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(addrStep):
+		}
+	}
+}
+
+// httpsPort is the port of the gateway's HTTPS, where members reach the master
+// over the private network: the self-signed one, or Public when a configured
+// certificate makes it https. Off loopback, members dial https only.
+func httpsPort(info GatewayInfo) (string, error) {
+	u := info.HTTPS
+	if u == nil {
+		u = info.Public
+	}
+	if u == nil || u.Scheme != "https" {
+		return "", errors.New("the gateway serves no HTTPS, which members need to reach the master over a relay: turn it on first")
+	}
+	if p := u.Port(); p != "" {
+		return p, nil
+	}
+	return "443", nil
+}
+
+// relayAddress is the master's address on the private network: https on addr,
+// the port said unless it is 443.
+func relayAddress(addr, port string) string {
+	return "https://" + strings.TrimSuffix(net.JoinHostPort(addr, port), ":443")
+}
+
 // DisableMaster closes every tunnel and forgets the boxes. A self-enrolled
 // master's own member.json pointed at this box's own gateway, which goes with
 // the master, so it is cleared too; a member.json of another fleet is left.
+// Over a relay, the fleet is then deleted there and the private network left,
+// best-effort: the local disable never fails because the relay is down.
 func (f *Fleet) DisableMaster() error {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
 	f.mu.Lock()
+	st, _ := f.loadMaster()
+	rs, haveRelay := f.loadRelay()
 	tunnels := f.tunnels
 	f.tunnels = map[string]*tunnel{}
 	err := os.Remove(f.masterPath())
@@ -336,6 +496,9 @@ func (f *Fleet) DisableMaster() error {
 	}
 	if selfGone {
 		f.pokeMember()
+	}
+	if haveRelay || st.Relay != "" { // a damaged relay.json still leaves a network to go down
+		f.leaveRelay(context.Background(), rs, true)
 	}
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -488,7 +651,7 @@ func (f *Fleet) MasterStatus() (MasterStatus, bool) {
 	if !on {
 		return MasterStatus{}, false
 	}
-	out := MasterStatus{Address: st.Address, Boxes: make([]BoxStatus, 0, len(st.Boxes))}
+	out := MasterStatus{Address: st.Address, Boxes: make([]BoxStatus, 0, len(st.Boxes)), Relay: st.Relay, NetAddr: st.NetAddr}
 	for _, b := range st.Boxes {
 		out.Boxes = append(out.Boxes, BoxStatus{ID: b.ID, Name: b.Name, URL: b.URL, Self: b.Self, Online: f.tunnels[b.ID] != nil, LastSeen: b.LastSeen, Hostname: b.Hostname, Version: b.Version})
 	}

@@ -11,7 +11,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 )
 
-// StateDir holds master.json and member.json, under Root.
+// StateDir holds master.json, member.json, relay.json and boxkey.json, under Root.
 const StateDir = "/var/lib/casaos/fleet"
 
 // Box is one enrolled box as the master keeps it: its key only hashed.
@@ -27,11 +27,16 @@ type Box struct {
 	Version   string    `json:"version"`
 }
 
-// MasterState is master.json.
+// MasterState is master.json. Over a relay, it names the relay and the fleet
+// there, and this box's address on the private network; the fleet's secret is
+// in relay.json only.
 type MasterState struct {
 	Enabled bool   `json:"enabled"`
 	Address string `json:"address"`
 	Boxes   []Box  `json:"boxes"`
+	Relay   string `json:"relay,omitempty"`
+	FleetID string `json:"fleet_id,omitempty"`
+	NetAddr string `json:"net_addr,omitempty"`
 }
 
 // MemberState is member.json: the code the owner pasted, kept.
