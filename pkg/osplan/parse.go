@@ -55,7 +55,7 @@ var (
 	summaryLine = regexp.MustCompile(`^([0-9]+) upgraded, ([0-9]+) newly installed, (?:([0-9]+) downgraded, )?([0-9]+) to remove and ([0-9]+) not upgraded\.$`)
 	// the warning of apt about essential packages: its two lines, and the names that follow ("login libpam-runtime (due to login)")
 	essentialDue = regexp.MustCompile(`\(due to [^()]*\)`)
-	progress     = regexp.MustCompile(`^(?:Reading package lists|Building dependency tree|Reading state information|Calculating upgrade)\.\.\.(?: Done| [0-9]+%)?$`)
+	progress     = regexp.MustCompile(`^(?:Reading package lists|Building dependency tree|Reading state information|Calculating upgrade|Solving dependencies)\.\.\.(?: Done| [0-9]+%)?$`)
 	// the line that apt adds after its summary when dpkg says a package is half installed or half configured
 	notFullyInstalled = regexp.MustCompile(`^[0-9]+ not fully installed or removed\.$`)
 	autoremove        = regexp.MustCompile(`^Use '(?:sudo )?apt(?:-get)? autoremove' to remove (?:it|them)\.$`)
