@@ -34,6 +34,9 @@ type statusView struct {
 	fleet.Status
 	Relay string   `json:"relay,omitempty"`
 	Net   *netView `json:"net,omitempty"`
+	// DefaultRelay is always there: it tells a core that knows the relay from an
+	// older one, even for a box with no role.
+	DefaultRelay string `json:"default_relay"`
 }
 
 type netView struct {
@@ -45,7 +48,7 @@ type netView struct {
 // fleetStatus is the status the fleet routes answer. A master's network is the
 // address it recorded (no live check); a member's is its cached network state.
 func fleetStatus() statusView {
-	s := statusView{Status: fleet.Default.Status()}
+	s := statusView{Status: fleet.Default.Status(), DefaultRelay: fleet.DefaultRelayURL}
 	switch {
 	case s.Master != nil && s.Master.Relay != "":
 		s.Relay, s.Net = s.Master.Relay, &netView{Connected: s.Master.NetAddr != "", Addr: s.Master.NetAddr}

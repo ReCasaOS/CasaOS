@@ -619,6 +619,32 @@ func TestGetFleetReportsRelayAndNeedsRecode(t *testing.T) {
 	}
 }
 
+// A dashboard tells a core that knows the relay from an older one by
+// default_relay, whatever role the box has.
+func TestGetFleetAlwaysReportsDefaultRelay(t *testing.T) {
+	check := func(name string) {
+		t.Helper()
+		_, res := callFleet(t, GetFleet, http.MethodGet, "/v1/fleet", "", nil)
+		if got := res.Data.(map[string]any)["default_relay"]; got != fleet.DefaultRelayURL {
+			t.Errorf("%s: default_relay = %v, want %s", name, got, fleet.DefaultRelayURL)
+		}
+	}
+	relayFixture(t)
+	check("role none")
+	if code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"address":"https://m.example"}`, nil); code != http.StatusOK {
+		t.Fatalf("advanced = %d %q", code, res.Message)
+	} else if res.Data.(map[string]any)["default_relay"] != fleet.DefaultRelayURL {
+		t.Errorf("PUT answer without default_relay: %v", res.Data)
+	}
+	check("master advanced")
+	relayFixture(t)
+	callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil)
+	check("master relay")
+	relayFixture(t)
+	callFleet(t, PutFleetMember, http.MethodPut, "/v1/fleet/member", `{"code":"`+relayCode()+`"}`, nil)
+	check("member")
+}
+
 // Every refusal of the relay, and a network error that quotes the join key,
 // answers a readable status and nothing of the secret or the key.
 func TestRouteErrorsCarryNoSecret(t *testing.T) {
