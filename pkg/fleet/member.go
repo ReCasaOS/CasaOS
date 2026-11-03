@@ -149,12 +149,6 @@ func (f *Fleet) Run(ctx context.Context) {
 			wait = firstWait
 			continue
 		}
-		// Drain the poke that brought us here: this session is the answer to it,
-		// so the watcher inside must only react to a change made while it runs.
-		select {
-		case <-f.restart:
-		default:
-		}
 		var d time.Duration
 		switch f.session(ctx, st) {
 		case restarted:
@@ -238,9 +232,16 @@ func (f *Fleet) session(ctx context.Context, st MemberState) outcome {
 				conn.Close()
 				return
 			case <-f.restart:
-				out = restarted
-				conn.Close()
-				return
+				// A poke means member.json may have changed. Restart only when
+				// it actually did: the poke that started this very session (its
+				// own enrolment) names the same master, and tearing the fresh
+				// tunnel down for it is the self-enrol flake. A Join or a Leave
+				// names something else, and must restart at once.
+				if now, ok := f.loadMember(); !ok || now != st {
+					out = restarted
+					conn.Close()
+					return
+				}
 			case <-tick.C:
 				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
 					conn.Close()

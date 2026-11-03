@@ -264,7 +264,13 @@ func (f *Fleet) Relay(ctx context.Context, boxID, method, path, query, contentTy
 	defer cancel()
 	select {
 	case res := <-ch:
-		return Response{Status: res.Status, ContentType: res.Headers["Content-Type"], Body: res.Body}, nil
+		status := res.Status
+		if status < 100 || status > 599 {
+			// a box that answers a status no HTTP response can carry is not
+			// one the dashboard can be handed as it is: call it a bad gateway
+			status = http.StatusBadGateway
+		}
+		return Response{Status: status, ContentType: res.Headers["Content-Type"], Body: res.Body}, nil
 	case <-t.done:
 		return Response{}, ErrOffline
 	case <-ctx.Done():

@@ -531,11 +531,15 @@ func TestOfflineWatchGraceAfterStart(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("calls = %d", calls)
 	}
-	// removing the box resolves what was raised for it
+	// removing the box stops its tracking and says nothing more: it did not
+	// come back, the owner removed it, and a resolution would carry no name
 	f.RemoveBox(code.BoxID)
 	f.checkOffline()
-	if calls != 2 {
-		t.Fatalf("calls = %d after removal", calls)
+	if calls != 1 {
+		t.Fatalf("calls = %d after removal, want no further call", calls)
+	}
+	if _, tracked := f.offline[code.BoxID]; tracked {
+		t.Fatal("a removed box is still tracked")
 	}
 }
 
@@ -612,4 +616,45 @@ func TestABoxCannotMasterWhileAMemberOfAnother(t *testing.T) {
 	if err := f.EnableMaster("https://me.example"); err != nil {
 		t.Fatalf("after leaving: %v", err)
 	}
+}
+
+// A box can answer a status no HTTP response carries (0, 1000). Relay must
+// hand back a sane status, not one that makes the route layer panic.
+func TestRelayClampsAnImpossibleStatus(t *testing.T) {
+	for _, bad := range []int{0, 1000, -1, 99, 600} {
+		f, srv := newMaster(t)
+		code := addBox(t, f, "Maison")
+		fakeMember(t, srv, code, func(frame) frame { return frame{Status: bad, Body: []byte("x")} })
+		waitFor(t, "online", online(f, code.BoxID))
+		res, err := f.Relay(t.Context(), code.BoxID, "GET", "/v1/sys/os", "", "", nil)
+		if err != nil || res.Status != 502 {
+			t.Fatalf("status %d: relay returned %d, %v, want 502", bad, res.Status, err)
+		}
+	}
+}
+
+// Review Focus #3: a hello with a 10 000-character hostname and version is cut,
+// and does not take the master down.
+func TestAHugeHelloIsCutNotFatal(t *testing.T) {
+	f, srv := newMaster(t)
+	code := addBox(t, f, "Maison")
+	conn, _, err := dialTunnel(srv, code.BoxID, code.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	big := strings.Repeat("a", 10000)
+	if err := conn.WriteJSON(frame{T: "hello", Hostname: big, Version: big}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "online", online(f, code.BoxID))
+	st, _ := f.MasterStatus()
+	if n := len(st.Boxes[0].Hostname); n == 0 || n > maxName {
+		t.Fatalf("hostname kept at %d bytes, want 1..%d", n, maxName)
+	}
+	if n := len(st.Boxes[0].Version); n > maxName {
+		t.Fatalf("version kept at %d bytes", n)
+	}
+	// the master still serves a fresh dial afterwards
+	fakeMember(t, srv, addBox(t, f, "Bureau"), okJSON)
 }

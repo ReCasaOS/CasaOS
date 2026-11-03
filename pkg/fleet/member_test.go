@@ -437,3 +437,26 @@ func TestMemberDoesNotFollowAGatewayRedirect(t *testing.T) {
 		t.Fatalf("status %d err %v, want 302 handed back unfollowed", res.Status, err)
 	}
 }
+
+// A Join that lands while a session is being established is not lost: the
+// watcher re-reads member.json on a poke and restarts when the master changed.
+func TestJoinDuringASessionIsNotLost(t *testing.T) {
+	shortWaits(t)
+	first, _ := newMaster(t)
+	second, srv2 := newMaster(t)
+	var seen2 atomic.Int32
+	// second master records a box so the member can join it
+	member := newMember(t, &fakeGateway{status: 200})
+	code1 := join(t, first, member, "A")
+	_ = code1
+	// now join the second fleet; the member must end up connected there
+	code2 := addBox(t, second, "B")
+	_ = srv2
+	_ = seen2
+	if err := member.Join(code2.String()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "connected to the second master", online(second, code2.BoxID))
+	// and no longer to the first
+	waitFor(t, "left the first master", func() bool { return !online(first, code1.BoxID)() })
+}

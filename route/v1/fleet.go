@@ -160,6 +160,8 @@ func FleetRelay(ctx echo.Context) error {
 		return ctx.JSON(relayStatus(err), model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 	}
 	ctx.Response().Header().Set("Cache-Control", "no-store")
+	// the Content-Type is the box's; do not let a browser sniff past it
+	ctx.Response().Header().Set("X-Content-Type-Options", "nosniff")
 	contentType := res.ContentType
 	if contentType == "" {
 		contentType = echo.MIMEOctetStream

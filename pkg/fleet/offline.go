@@ -61,10 +61,12 @@ func (f *Fleet) checkOffline() {
 			events = append(events, event{b.ID, b.Name, true})
 		}
 	}
+	// a box removed (or the master disabled) while an alert was up: stop
+	// tracking it, but send no "reached the master again" — it did not, the
+	// owner took it out, and the message would carry no box name.
 	for id := range f.offline {
 		if !known[id] {
 			delete(f.offline, id)
-			events = append(events, event{id, "", false})
 		}
 	}
 	f.mu.Unlock()
