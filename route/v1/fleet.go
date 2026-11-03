@@ -69,9 +69,9 @@ func detached(ctx echo.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx.Request().Context()), relayWork)
 }
 
-// PutFleetMaster turns the master role on, or off. On: over a relay (the
-// official one when neither relay nor address is given), or in advanced mode
-// at an address typed by hand. Disabling closes every tunnel, forgets the
+// PutFleetMaster turns the master role on, or off. On: over the relay given
+// (the dashboard names the official one too), or in advanced mode at an
+// address typed by hand; neither is a 400. Disabling closes every tunnel, forgets the
 // boxes and, over a relay, deletes the fleet there and leaves its network.
 //
 // @Summary fleet: become the master, or stop being one
@@ -102,10 +102,9 @@ func PutFleetMaster(ctx echo.Context) error {
 		err = errors.New("give either a relay or a master address (advanced mode), not both")
 	case body.Address != "":
 		err = fleet.Default.EnableMaster(body.Address)
+	case body.Relay == "":
+		err = errors.New("give a relay or a master address (advanced mode)")
 	default:
-		if body.Relay == "" {
-			body.Relay = fleet.DefaultRelayURL
-		}
 		c, cancel := detached(ctx)
 		defer cancel()
 		err = fleet.Default.EnableMasterRelay(c, body.Relay)

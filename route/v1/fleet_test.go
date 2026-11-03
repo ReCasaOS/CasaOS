@@ -478,21 +478,24 @@ func relayCode() string {
 	return fleet.Code{MasterURL: "https://100.64.0.9", BoxID: "b", Key: "k", Relay: "https://relay.example", JoinKey: relayJoinKey}.String()
 }
 
-func TestPutMasterDefaultsToOfficialRelay(t *testing.T) {
-	_, n, r := relayFixture(t)
+// Ruling 19: neither an address nor a relay is refused, readably; the
+// dashboard always sends the relay it means (the official one included).
+func TestPutMasterWithoutAddressOrRelayIs400(t *testing.T) {
+	f, n, r := relayFixture(t)
 	code, res := callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true}`, nil)
-	if code != http.StatusOK {
+	if code != http.StatusBadRequest || !strings.Contains(res.Message, "give a relay or a master address") {
+		t.Fatalf("enable = %d %q", code, res.Message)
+	}
+	if _, on := f.MasterStatus(); on || len(r.seen()) != 0 || len(n.seen()) != 0 {
+		t.Fatalf("master %v, relay %v, network %v", on, r.seen(), n.seen())
+	}
+	// the official relay, said explicitly
+	code, res = callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"`+fleet.DefaultRelayURL+`"}`, nil)
+	if code != http.StatusOK || res.Data.(map[string]any)["relay"] != fleet.DefaultRelayURL {
 		t.Fatalf("enable = %d %q", code, res.Message)
 	}
 	if hosts := r.seen(); len(hosts) == 0 || hosts[0] != mustParse(fleet.DefaultRelayURL).Host {
 		t.Fatalf("the relay asked: %v, want %s", hosts, fleet.DefaultRelayURL)
-	}
-	if calls := n.seen(); len(calls) != 1 || calls[0] != "up "+fleet.DefaultRelayURL {
-		t.Fatalf("network calls %v", calls)
-	}
-	data := res.Data.(map[string]any)
-	if data["relay"] != fleet.DefaultRelayURL || data["master"].(map[string]any)["address"] != "https://100.64.0.7" {
-		t.Fatalf("status %v", data)
 	}
 }
 
@@ -546,7 +549,7 @@ func TestOtherNetworkIs409(t *testing.T) {
 	}
 	// no driver at all: the box cannot do it, readably
 	f.Net = nil
-	code, res = callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true}`, nil)
+	code, res = callFleet(t, PutFleetMaster, http.MethodPut, "/v1/fleet/master", `{"enabled":true,"relay":"https://relay.example"}`, nil)
 	if code != http.StatusServiceUnavailable || !strings.Contains(res.Message, "tailscale is not installed") {
 		t.Fatalf("no private network = %d %q", code, res.Message)
 	}
