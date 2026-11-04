@@ -25,6 +25,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/common"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/cpufreq"
 	"github.com/ReCasaOS/CasaOS/pkg/hwmon"
 	"github.com/ReCasaOS/CasaOS/pkg/osplan"
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
@@ -141,6 +142,7 @@ type SystemService interface {
 	MkdirAll(path string) (int, error)
 	GetCPUTemperature() int
 	GetCPUPower() map[string]string
+	GetCPUFrequency() int
 	GetMacAddress() (string, error)
 	SystemReboot() error
 	SystemShutdown() error
@@ -661,6 +663,12 @@ func (s *systemService) GetCPUTemperature() int {
 		celsius = celsius / 1000
 	}
 	return celsius
+}
+
+// GetCPUFrequency is the mean current frequency of the cores in MHz, 0 when the box reports none.
+func (s *systemService) GetCPUFrequency() int {
+	mhz, _ := cpufreq.Average("/sys/devices/system/cpu")
+	return mhz
 }
 
 func (s *systemService) GetCPUPower() map[string]string {

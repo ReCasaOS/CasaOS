@@ -391,6 +391,7 @@ func GetSystemUtilization(ctx echo.Context) error {
 	cpuData["num"] = num
 	cpuData["temperature"] = service.MyService.System().GetCPUTemperature()
 	cpuData["power"] = service.MyService.System().GetCPUPower()
+	cpuData["freq"] = service.MyService.System().GetCPUFrequency()
 	cpuData["model"] = cpuModel
 
 	data["cpu"] = cpuData
