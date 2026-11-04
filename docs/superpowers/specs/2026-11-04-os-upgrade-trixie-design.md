@@ -105,6 +105,12 @@ La page ne connaît pas les releases, sauf les phrases. Il faut les nouvelles cl
 
 Chaque PR passe `go test ./...` sous Linux (le cœur a des tests `_linux_test.go`) et, pour l'interface, avec Node 22 et pnpm 9.
 
+## À reprendre dans la PR 3 (relevé par la relecture de la PR 1)
+
+- `hop_folders_test.go` ne tourne que sur le runbook à la main : l'ajouter à `execSuiteFiles` (`auto_exec_test.go`) pour qu'il tourne aussi sur le texte de l'unité, et ajouter un cas R0 de la refresh à côté d'un dossier 11 → 12 fini.
+- `osUpgradeManualFolder` (`service/system_os_upgrade_start.go`) n'est pas rangé par saut côté Go. C'est voulu, puisqu'un dossier à moitié fait d'un autre saut doit refuser le démarrage, mais il faut un test qui le dise pour 12 → 13.
+- `/var/backups/casaos-os-upgrade-timers.state` est commun aux deux sauts. Il faut vérifier qu'un fichier laissé par un 11 → 12 interrompu ne trompe pas le bloc 1 de 12 → 13.
+
 ## Laissé au constructeur
 
 - Le texte exact des nouvelles phrases, dans le registre des phrases actuelles.
