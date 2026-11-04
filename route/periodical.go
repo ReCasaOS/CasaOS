@@ -53,6 +53,7 @@ func SendAllHardwareStatusBySocket() {
 	cpuData["num"] = num
 	cpuData["temperature"] = service.MyService.System().GetCPUTemperature()
 	cpuData["power"] = service.MyService.System().GetCPUPower()
+	cpuData["freq"] = service.MyService.System().GetCPUFrequency()
 	cpuData["model"] = cpuModel
 
 	memInfo := service.MyService.System().GetMemInfo()
