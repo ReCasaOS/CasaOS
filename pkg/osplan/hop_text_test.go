@@ -67,6 +67,8 @@ func TestTheTextOfAHopNamesItsOwnReleases(t *testing.T) {
 	for _, blk := range refresh.Blocks {
 		texts["the refresh's block "+blk.ID] = blk.Title + "\n" + blk.Text
 	}
+	texts["the unit's block F"] = auto.Forward.Title + "\n" + auto.Forward.Text
+	texts["the refresh's block F"] = refresh.Forward.Title + "\n" + refresh.Forward.Text
 	for _, blk := range rb.Blocks {
 		texts["the title of block "+blk.ID] = blk.Title
 	}
@@ -98,13 +100,32 @@ func TestTheTextOfAHopNamesItsOwnReleases(t *testing.T) {
 func TestTheTextOf11To12HasNoWordLeftThatStandsForARelease(t *testing.T) {
 	_, rb := realRunbook(t)
 	_, auto := realAuto(t)
-	text := rb.Text
-	for _, blk := range auto.Blocks {
+	refresh := refreshOf(t, false)
+	text := rb.Text + auto.Forward.Text + refresh.Forward.Text
+	for _, blk := range append(auto.Blocks, refresh.Blocks...) {
 		text += blk.Title + blk.Text
 	}
 	for _, word := range []string{"@from@", "@to@", "@tov@"} {
 		if strings.Contains(text, word) {
 			t.Errorf("%q is left in the text", word)
+		}
+	}
+}
+
+// A hop row says the numbers of its releases: the texts name the releases by them, and a row without them would say "Debian " and nothing.
+func TestEveryHopSaysTheNumbersOfItsReleases(t *testing.T) {
+	for _, h := range planHops {
+		if h.FromVersion == "" || h.ToVersion == "" {
+			t.Errorf("%s: FromVersion %q, ToVersion %q", h.ID, h.FromVersion, h.ToVersion)
+		}
+	}
+}
+
+// A file of the sources that has a word standing for a release is refused: the text would write it changed, and its hash would not be the plan's.
+func TestASourceWithAWordThatStandsForAReleaseIsRefused(t *testing.T) {
+	for _, word := range []string{"@from@", "@to@", "@tov@"} {
+		if treeIsSafe([]TreeFile{{Path: "sources.list", Content: "# " + word + "\ndeb http://deb.debian.org/debian bookworm main\n"}}) {
+			t.Errorf("a tree with %q is safe", word)
 		}
 	}
 }

@@ -160,10 +160,11 @@ func newRbCtx(p Plan) (*rbCtx, []blockSpec, error) {
 	return c, blocks, nil
 }
 
-// treeIsSafe says whether no line of the files of the tree has the word that ends a heredoc, or the marker of a block: the text could not be told from its own structure.
+// treeIsSafe says whether no line of the files of the tree has the word that ends a heredoc, or the marker of a block: the text could not be told from its own structure. Nor
+// may one have a word that stands for a release (names): it would be changed in the copy that the text writes, and no longer be the file whose hash the plan holds.
 func treeIsSafe(tree []TreeFile) bool {
 	for _, f := range tree {
-		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK"} {
+		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK", "@from@", "@to@", "@tov@"} {
 			if strings.Contains(f.Content, bad) {
 				return false
 			}

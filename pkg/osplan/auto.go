@@ -107,7 +107,7 @@ func buildAuto(p Plan, a AutoParams) (*AutoRunbook, map[string]int, error) {
 		prev = blk.ID
 	}
 	c.cur = osrun.BlockForward
-	text, err := autoText(osrun.BlockForward, a.RunID, autoForward(c))
+	text, err := autoText(osrun.BlockForward, a.RunID, c.names(autoForward(c)))
 	if err != nil {
 		return nil, nil, err
 	}

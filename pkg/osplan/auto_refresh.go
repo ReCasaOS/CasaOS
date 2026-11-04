@@ -82,7 +82,7 @@ func buildRefresh(in RefreshInputs) (*AutoRunbook, map[string]int, error) {
 		prev = blk.ID
 	}
 	c.cur = osrun.BlockForward
-	text, err := autoText(osrun.BlockForward, in.RunID, autoForward(c))
+	text, err := autoText(osrun.BlockForward, in.RunID, c.names(autoForward(c)))
 	if err != nil {
 		return nil, nil, err
 	}
