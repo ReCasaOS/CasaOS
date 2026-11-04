@@ -144,11 +144,12 @@ func (t *tailscale) State(ctx context.Context) (NetState, error) {
 	if err != nil || json.Unmarshal(praw, &prefs) != nil {
 		return NetState{}, errors.New("tailscale debug prefs: cannot read the login server")
 	}
-	// NeedsLogin is both a box logged out (LoggedOut, and no ControlURL: what
-	// `tailscale logout` and a daemon never used leave) and one whose node key
-	// expired, or whose login was never finished: those are still in a network, the
-	// owner's perhaps, and are not free to take.
-	if st.BackendState == "NeedsLogin" && prefs.LoggedOut {
+	// NeedsLogin is both a box logged out and one whose node key expired, or whose
+	// login was never finished: the second kind is still in a network, the owner's
+	// perhaps, and is not free to take. The prefs tell them apart: LoggedOut is what
+	// `tailscale logout` and a daemon never used leave (with no ControlURL, or the
+	// old one when the logout could not reach its server: Stopped then).
+	if prefs.LoggedOut {
 		return NetState{}, nil
 	}
 	if prefs.ControlURL == "" {

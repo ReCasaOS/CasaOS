@@ -181,6 +181,8 @@ func TestStateParsesRunningAndStopped(t *testing.T) {
 		// observed with tailscale 1.104.4 against Headscale 0.29.7: after `tailscale logout`, and on a daemon never logged in
 		{"needs login, logged out", `{"BackendState":"NeedsLogin"}`, `{"ControlURL":"","LoggedOut":true,"WantRunning":false}`, nil, NetState{}, false},
 		// an expired node key (`headscale nodes expire`): still the relay's login, the key only asks to be renewed
+		// `tailscale logout` of an expired node while the relay was down: exit 1, yet logged out locally
+		{"stopped, logout could not reach its server", `{"BackendState":"Stopped","Self":{"Expired":true,"Online":false}}`, `{"ControlURL":"https://relay.example","LoggedOut":true,"WantRunning":false}`, nil, NetState{}, false},
 		{"needs login, key expired", `{"BackendState":"NeedsLogin","Self":{"Expired":true,"Online":true}}`, `{"ControlURL":"https://relay.example","LoggedOut":false,"WantRunning":true}`, nil,
 			NetState{LoginServer: "https://relay.example"}, false},
 		{"needs login, expired on the default control", `{"BackendState":"NeedsLogin"}`, `{"ControlURL":"","LoggedOut":false}`, nil,
@@ -385,6 +387,11 @@ func TestDownErrors(t *testing.T) {
 	}
 	if err := (&fakeTS{logoutErr: boom}).net().Down(ctx, ""); err == nil {
 		t.Error("a login that cannot be read must not pass for gone")
+	}
+	// ...also when the logout could not reach the relay (exit 1) but left the box logged out locally
+	f = &fakeTS{logoutErr: boom, status: `{"BackendState":"Stopped"}`, prefs: `{"ControlURL":"https://relay.example","LoggedOut":true,"WantRunning":false}`}
+	if err := f.net().Down(ctx, ""); err != nil {
+		t.Errorf("logged out locally: %v", err)
 	}
 	// A daemon that will not stop is harmless once the login is gone.
 	if err := (&fakeTS{sysErr: boom}).net().Down(ctx, ""); err != nil {
