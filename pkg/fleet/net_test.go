@@ -335,7 +335,7 @@ func TestUpIdempotentSameNetwork(t *testing.T) {
 // our relay stays on disk for the next Up to find (I-1).
 func TestDownLogsOut(t *testing.T) {
 	f := &fakeTS{}
-	if err := f.net().Down(context.Background()); err != nil {
+	if err := f.net().Down(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	want := "systemctl is-active --quiet tailscaled,systemctl is-enabled --quiet tailscaled,systemctl enable --now tailscaled,tailscale logout,systemctl disable --now tailscaled"
@@ -343,7 +343,7 @@ func TestDownLogsOut(t *testing.T) {
 		t.Errorf("stopped: calls %v", f.calls)
 	}
 	f = &fakeTS{active: true}
-	if err := f.net().Down(context.Background()); err != nil {
+	if err := f.net().Down(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(f.calls, ","); got != "systemctl is-active --quiet tailscaled,tailscale logout,systemctl disable --now tailscaled" {
@@ -353,16 +353,46 @@ func TestDownLogsOut(t *testing.T) {
 
 func TestDownErrors(t *testing.T) {
 	boom := errors.New("boom")
-	// One step failing must not stop the caller's local cleanup.
-	f := &fakeTS{logoutErr: boom}
-	if err := f.net().Down(context.Background()); err != nil || f.calls[len(f.calls)-1] != "systemctl disable --now tailscaled" {
-		t.Errorf("logout alone failing: %v, calls %v", err, f.calls)
+	ctx := context.Background()
+	// A failed logout is fine when the box turns out to be logged out already...
+	f := &fakeTS{logoutErr: boom, status: `{"BackendState":"NeedsLogin"}`}
+	if err := f.net().Down(ctx, ""); err != nil || f.calls[len(f.calls)-1] != "systemctl disable --now tailscaled" {
+		t.Errorf("logged out already: %v, calls %v", err, f.calls)
 	}
-	if err := (&fakeTS{sysErr: boom}).net().Down(context.Background()); err != nil {
+	// ...and an error when it is still logged in: Up would take it for joined.
+	f = &fakeTS{logoutErr: boom, status: runningJSON, prefs: prefsFor("https://relay.example")}
+	if err := f.net().Down(ctx, ""); err == nil || f.calls[len(f.calls)-1] != "systemctl disable --now tailscaled" {
+		t.Errorf("still logged in: %v, calls %v", err, f.calls)
+	}
+	if err := (&fakeTS{logoutErr: boom}).net().Down(ctx, ""); err == nil {
+		t.Error("a login that cannot be read must not pass for gone")
+	}
+	// A daemon that will not stop is harmless once the login is gone.
+	if err := (&fakeTS{sysErr: boom}).net().Down(ctx, ""); err != nil {
 		t.Errorf("systemctl alone failing: %v", err)
 	}
-	if err := (&fakeTS{logoutErr: boom, sysErr: boom}).net().Down(context.Background()); err == nil {
-		t.Error("both failing must be reported")
+}
+
+// A stopped tailscaled shows no login: Down starts it, reads whose login is on
+// disk, and logs out only the relay's. The owner's own is left, the daemon
+// stopped again.
+func TestDownLeavesAnotherLoginAlone(t *testing.T) {
+	ctx := context.Background()
+	d := &tailscaled{login: "https://tailnet.example"}
+	if err := d.net().Down(ctx, testRelay); err != nil {
+		t.Fatal(err)
+	}
+	if d.login != "https://tailnet.example" || d.active || strings.Contains(strings.Join(d.calls, ","), "logout") {
+		t.Fatalf("login %q, active %v, calls %v", d.login, d.active, d.calls)
+	}
+	// whose login it is cannot be read: not logged out on a guess
+	f := &fakeTS{active: true, status: runningJSON} // no prefs
+	if err := f.net().Down(ctx, testRelay); err == nil || f.called("tailscale logout") {
+		t.Fatalf("err %v, calls %v", err, f.calls)
+	}
+	d = &tailscaled{login: testRelay + "/"}
+	if err := d.net().Down(ctx, testRelay); err != nil || d.login != "" || d.active {
+		t.Fatalf("err %v, login %q, active %v, calls %v", err, d.login, d.active, d.calls)
 	}
 }
 
@@ -389,5 +419,14 @@ func TestNetTimeoutCapsALongerDeadline(t *testing.T) {
 	}
 	if left > netTimeout {
 		t.Fatalf("a call may run %v", left)
+	}
+}
+
+// A daemon that cannot be started hides its login: an empty State is no proof
+// the box is logged out, so a failed logout is an error then.
+func TestDownFailsWhenTheDaemonCannotBeStarted(t *testing.T) {
+	f := &fakeTS{sysErr: errors.New("start-limit-hit"), logoutErr: errors.New("not running")}
+	if err := f.net().Down(context.Background(), testRelay); err == nil {
+		t.Fatalf("Down passed for a login it could not reach, calls %v", f.calls)
 	}
 }

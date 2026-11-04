@@ -94,7 +94,7 @@ func (f *Fleet) leaveRelay(ctx context.Context, rs RelayState, down bool) {
 		}
 	}
 	if down && f.Net != nil {
-		if err := f.Net.Down(ctx); err != nil {
+		if err := f.Net.Down(ctx, rs.Relay); err != nil {
 			f.Log("fleet: cannot leave the private network", err)
 		}
 	}
@@ -274,12 +274,12 @@ func (f *Fleet) ChangeRelay(ctx context.Context, relayURL string) error {
 		drop()
 		return err
 	}
-	if err := n.Down(ctx); err != nil {
+	if err := n.Down(ctx, old.Relay); err != nil {
 		drop()
 		return fmt.Errorf("cannot leave the current private network: %w", err)
 	}
 	lost := func(err error) error {
-		if derr := n.Down(bg); derr != nil {
+		if derr := n.Down(bg, relayURL); derr != nil {
 			f.Log("fleet: cannot leave the new private network", derr)
 		}
 		drop()

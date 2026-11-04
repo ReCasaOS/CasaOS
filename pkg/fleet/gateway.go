@@ -16,10 +16,11 @@ import (
 
 // GatewayInfo is where this box's gateway listens, as seen from the box itself.
 type GatewayInfo struct {
-	Public      *url.URL // http(s)://127.0.0.1:<port>: where a member executes relayed requests
-	HTTPS       *url.URL // https://127.0.0.1:<httpsport or 443>; nil when a configured certificate makes Public itself https, or HTTPS is off (httpsport=0)
-	CertFile    string   // the certificate the gateway serves: tlscert, or the default self-signed one
-	Unreachable string   // non-empty when the gateway is bound off loopback: the member cannot relay, and says so, but the master can still read the certificate to enrol boxes
+	Public       *url.URL // http(s)://127.0.0.1:<port>: where a member executes relayed requests
+	HTTPS        *url.URL // https://127.0.0.1:<httpsport or 443>; nil when a configured certificate makes Public itself https, or HTTPS is off (httpsport=0)
+	CertFile     string   // the certificate the gateway serves: tlscert, or the default self-signed one
+	LoopbackOnly bool     // the gateway is bound to the loopback address alone: fine for the box itself, not for a master that other boxes reach over a network
+	Unreachable  string   // non-empty when the gateway is bound off loopback: the member cannot relay, and says so, but the master can still read the certificate to enrol boxes
 }
 
 // ReadGatewayINI reads [gateway] port, address, tlscert, tlskey and httpsport
@@ -44,6 +45,7 @@ func ReadGatewayINI(path, dataPath string) (GatewayInfo, error) {
 		if err != nil || !(ip.IsUnspecified() || ip.IsLoopback()) {
 			info.Unreachable = fmt.Sprintf("the gateway listens on %s, not on this box's loopback, so the fleet cannot reach it", address)
 		}
+		info.LoopbackOnly = err == nil && ip.IsLoopback()
 	}
 	if cert, key := gw.Key("tlscert").String(), gw.Key("tlskey").String(); cert != "" && key != "" {
 		info.Public = loopbackURL("https", port)

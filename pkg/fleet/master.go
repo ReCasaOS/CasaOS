@@ -304,6 +304,8 @@ func (f *Fleet) inFlight(boxID string) int {
 	return len(t.pending)
 }
 
+var errLoopbackGateway = errors.New("the gateway listens on this box's loopback only, so other boxes cannot reach the master over the private network: set its address to 0.0.0.0 (or leave it empty)")
+
 var errMemberElsewhere = errors.New("this box is a member of a fleet: leave it before becoming a master")
 
 // EnableMaster turns the role on at address, keeping the boxes already
@@ -402,6 +404,9 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 		// left by an enable that did not finish: that fleet and its network go first
 		f.leaveRelay(ctx, rs, true)
 	}
+	if mine, ok := f.loadNetOwn(); ok { // a member's Join that did not finish: its network is ours to leave
+		f.netDown(n, mine)
+	}
 	ns, err := n.State(ctx)
 	if err != nil {
 		return err
@@ -466,6 +471,9 @@ func waitAddr(ctx context.Context, n Net) (string, error) {
 // over the private network: the self-signed one, or Public when a configured
 // certificate makes it https. Off loopback, members dial https only.
 func httpsPort(info GatewayInfo) (string, error) {
+	if info.LoopbackOnly {
+		return "", errLoopbackGateway
+	}
 	u := info.HTTPS
 	if u == nil {
 		u = info.Public
@@ -775,7 +783,7 @@ func (f *Fleet) code(st MasterState, box Box, key, joinKey string) (Code, error)
 	}
 	c := Code{MasterURL: master, BoxID: box.ID, Key: key, CertSHA256: fp}
 	if st.Relay != "" && !box.Self {
-		c.Relay, c.JoinKey = st.Relay, joinKey
+		c.Relay, c.JoinKey, c.Fleet = st.Relay, joinKey, st.FleetID
 	}
 	return c, nil
 }

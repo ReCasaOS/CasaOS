@@ -94,3 +94,15 @@ func TestCertFingerprintOfAPEMFile(t *testing.T) {
 		t.Fatal("missing file accepted")
 	}
 }
+
+func TestGatewayMarksALoopbackOnlyBind(t *testing.T) {
+	for address, want := range map[string]bool{"127.0.0.1": true, "::1": true, "0.0.0.0": false, "192.168.1.5": false, "": false} {
+		got, err := ReadGatewayINI(writeINI(t, "[gateway]\nport=80\naddress="+address+"\n"), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.LoopbackOnly != want {
+			t.Errorf("address %q: LoopbackOnly = %v, want %v", address, got.LoopbackOnly, want)
+		}
+	}
+}

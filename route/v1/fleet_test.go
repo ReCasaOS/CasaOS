@@ -444,7 +444,7 @@ func (n *fakeNet) Up(_ context.Context, loginServer, _, _ string) error {
 	return nil
 }
 
-func (n *fakeNet) Down(context.Context) error {
+func (n *fakeNet) Down(context.Context, string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.calls = append(n.calls, "down")

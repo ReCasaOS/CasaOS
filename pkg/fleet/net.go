@@ -47,8 +47,10 @@ type Net interface {
 	// undone what it did itself: the caller has nothing to take down.
 	Up(ctx context.Context, loginServer, authKey, hostname string) error
 	// Down leaves the network and stops the daemon. Only for a network this box
-	// joined itself: it logs out whatever the box is logged in to.
-	Down(ctx context.Context) error
+	// joined itself, the one of relay: a login to any other server is left alone
+	// (an empty relay logs out whatever the box is logged in to). It returns nil
+	// only once the box is logged out of that network, or was in none.
+	Down(ctx context.Context, relay string) error
 }
 
 // PrivateNet returns the box's private-network driver, or ErrNoPrivateNet when
@@ -244,20 +246,32 @@ func cleanupCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 }
 
 // Down starts tailscaled, logs out and stops it. A stopped tailscaled cannot
-// log out, and its login would stay on disk for the next Up to find; starting
-// it touches nothing of the owner's because Down is only called for a network
-// this box joined itself (every caller makes sure of it). It fails only if
-// both the logout and the stop fail, so the caller can go on with its local
-// cleanup.
-func (t *tailscale) Down(ctx context.Context) error {
+// log out, and its login would stay on disk for the next Up to find, so it is
+// started first; the login it then shows is read, and left alone (the daemon
+// put back as it was) unless it is relay's, since a stopped daemon hid whose it
+// was. It fails when the box is still logged in afterwards, which Up would take
+// for the box being in the new network already; a failed stop alone does not.
+func (t *tailscale) Down(ctx context.Context, relay string) error {
 	ctx, cancel := withNetTimeout(ctx)
 	defer cancel()
-	t.start(ctx)                    // undone by the disable below; a failure shows in the logout
-	_, lerr := t.run(ctx, "logout") // fails when already logged out
-	serr := t.sys(ctx, "disable", "--now", "tailscaled")
-	if lerr != nil && serr != nil {
-		return errors.Join(lerr, serr)
+	restore, serr := t.start(ctx) // nil on a failure: a daemon that stays down reads as logged out
+	if relay != "" {
+		st, err := t.State(ctx)
+		if err != nil || (st.LoginServer != "" && !sameURL(st.LoginServer, relay)) {
+			if restore != nil {
+				restore()
+			}
+			return err // nil: another login, not ours to log out; else whose it is stays unknown
+		}
 	}
+	_, lerr := t.run(ctx, "logout") // fails when already logged out
+	if lerr != nil {
+		if st, err := t.State(ctx); serr != nil || err != nil || st.LoginServer != "" {
+			t.sys(ctx, "disable", "--now", "tailscaled")
+			return fmt.Errorf("still logged in to the private network: %w", lerr)
+		}
+	}
+	t.sys(ctx, "disable", "--now", "tailscaled") // a daemon left running is harmless
 	return nil
 }
 

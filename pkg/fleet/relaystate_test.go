@@ -32,6 +32,7 @@ type fakeNet struct {
 	states        int // how many times State was asked
 	up            bool
 	calls         []string
+	downs         []string // the relay each Down was asked to leave
 }
 
 func (n *fakeNet) State(context.Context) (NetState, error) {
@@ -58,10 +59,11 @@ func (n *fakeNet) Up(_ context.Context, loginServer, authKey, hostname string) e
 	return nil
 }
 
-func (n *fakeNet) Down(context.Context) error {
+func (n *fakeNet) Down(_ context.Context, relay string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.calls = append(n.calls, "down")
+	n.downs = append(n.downs, relay)
 	n.up, n.before = false, NetState{}
 	return n.downErr
 }
@@ -483,5 +485,37 @@ func TestEnableMasterRelayFromAdvancedAsksForNewCodes(t *testing.T) {
 	}
 	if b := boxStatus(t, f, box.ID); !b.NeedsRecode {
 		t.Fatalf("%+v", b)
+	}
+}
+
+// M9, master side: a member's Join that crashed after Up leaves a network that
+// netown.json says is ours; enabling the master takes it down first instead of
+// calling it the owner's.
+func TestEnableMasterRelayLeavesACrashedJoinsNetwork(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	n.before = NetState{Connected: true, Addr: "100.64.0.9", LoginServer: testRelay}
+	if err := f.saveNetOwn(testRelay); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if len(n.calls) < 2 || n.calls[0] != "down" || n.downs[0] != testRelay || exists(t, f.netOwnPath()) {
+		t.Fatalf("calls %q, downs %q, marker %v", n.calls, n.downs, exists(t, f.netOwnPath()))
+	}
+}
+
+// A gateway bound to the loopback only cannot be reached by the boxes over the
+// private network: said before a fleet is created at the relay.
+func TestEnableMasterRelayRefusesALoopbackOnlyGateway(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	f.Gateway = func() (GatewayInfo, error) {
+		return GatewayInfo{Public: mustURL(t, "http://127.0.0.1:80"), HTTPS: mustURL(t, "https://127.0.0.1:443"), LoopbackOnly: true}, nil
+	}
+	if err := f.EnableMasterRelay(context.Background(), r.URL); !errors.Is(err, errLoopbackGateway) {
+		t.Fatalf("err %v", err)
+	}
+	if r.count(&r.creates) != 0 || len(n.calls) != 0 {
+		t.Fatalf("something was done: creates %d, calls %q", r.creates, n.calls)
 	}
 }

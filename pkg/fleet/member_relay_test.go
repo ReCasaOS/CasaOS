@@ -82,6 +82,7 @@ func TestJoinKeyIsNotPersisted(t *testing.T) {
 	oldWait, oldStep := addrWait, addrStep
 	t.Cleanup(func() { addrWait, addrStep = oldWait, oldStep })
 	addrWait, addrStep = 20*time.Millisecond, 5*time.Millisecond
+	f.Leave() // a box in no fleet: the Down that fails below is the one after the missing address
 	n.upErr, n.downErr, n.after.Addr = nil, errors.New("down failed"), ""
 	if err := f.Join(relayCode().String()); err == nil {
 		t.Fatal("joined with no address")
@@ -120,6 +121,7 @@ func TestJoinRelayUpFailsSavesNothing(t *testing.T) {
 		t.Fatalf("saved, or a down after a failed up: %q", n.calls)
 	}
 	// State unreadable: Up ran nothing, nothing to undo
+	f.clearNetOwn() // the marker the failed Up kept would make the next Join leave first
 	n.upErr, n.calls = errors.New("tailscale status: unreadable output"), nil
 	if err := f.Join(relayCode().String()); err == nil || n.called("down") {
 		t.Fatalf("err %v, calls %q", err, n.calls)
@@ -384,5 +386,229 @@ func TestLeaveWaitsForRelayWork(t *testing.T) {
 	f.relayMu.Unlock()
 	if err := <-done; err != nil || !still || exists(t, memberJSON(f)) {
 		t.Fatalf("err %v, member.json kept while relayMu was held: %v", err, still)
+	}
+}
+
+func fleetCode(fleet string) Code {
+	c := relayCode()
+	c.Fleet = fleet
+	return c
+}
+
+func netCalls(n *fakeNet) string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var kinds []string
+	for _, c := range n.calls {
+		kinds = append(kinds, strings.Fields(c)[0])
+	}
+	return strings.Join(kinds, ",")
+}
+
+// M-d: a box in one fleet of a relay, given a code of another fleet of the same
+// relay, leaves its own first; Up alone would find the login to the same relay
+// and keep the box in the old fleet.
+func TestJoinAnotherFleetOfTheSameRelayLeavesTheFirst(t *testing.T) {
+	f, n, _ := relayMember(t)
+	if err := f.Join(fleetCode("f-aaa").String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Join(fleetCode("f-bbb").String()); err != nil {
+		t.Fatal(err)
+	}
+	if got := netCalls(n); got != "up,down,up" || len(n.downs) != 1 || n.downs[0] != testRelay {
+		t.Fatalf("calls %q, downs %q", n.calls, n.downs)
+	}
+	if st, _ := f.loadMember(); st.FleetID != "f-bbb" {
+		t.Fatalf("member.json %+v", st)
+	}
+}
+
+func TestJoinTheSameFleetAgainKeepsTheNetwork(t *testing.T) {
+	f, n, _ := relayMember(t)
+	for range 2 {
+		if err := f.Join(fleetCode("f-aaa").String()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n.called("down") {
+		t.Fatalf("left a network to join the same fleet: %q", n.calls)
+	}
+}
+
+// A code of an older master names no fleet: the box cannot tell, and leaves.
+func TestJoinACodeWithNoFleetLeavesTheCurrentOne(t *testing.T) {
+	f, n, _ := relayMember(t)
+	if err := f.Join(fleetCode("").String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Join(fleetCode("").String()); err != nil {
+		t.Fatal(err)
+	}
+	if got := netCalls(n); got != "up,down,up" {
+		t.Fatalf("calls %q", n.calls)
+	}
+}
+
+// If the previous network cannot be left, the box does not go on to Up, which
+// would take a login to the same relay for the new fleet's.
+func TestJoinAnotherFleetStopsWhenTheOldNetworkStays(t *testing.T) {
+	f, n, _ := relayMember(t)
+	if err := f.Join(fleetCode("f-aaa").String()); err != nil {
+		t.Fatal(err)
+	}
+	n.downErr = errors.New("still logged in")
+	n.mu.Lock()
+	n.calls = nil
+	n.mu.Unlock()
+	err := f.Join(fleetCode("f-bbb").String())
+	if err == nil || n.called("up") {
+		t.Fatalf("err %v, calls %q", err, n.calls)
+	}
+	if st, _ := f.loadMember(); st.FleetID != "f-aaa" {
+		t.Fatalf("member.json changed: %+v", st)
+	}
+}
+
+// M9: a crash after Up and before member.json leaves a network that nothing but
+// netown.json says is this box's: Leave and the next Join take it down.
+func TestACrashedJoinLeavesAMarkerLeaveAndJoinHonour(t *testing.T) {
+	crashed := func() (*Fleet, *fakeNet) {
+		f, n, _ := relayMember(t)
+		n.before = NetState{Connected: true, Addr: "100.64.0.9", LoginServer: testRelay}
+		if err := f.saveNetOwn(testRelay); err != nil {
+			t.Fatal(err)
+		}
+		return f, n
+	}
+	f, n := crashed()
+	if err := f.Leave(); err != nil {
+		t.Fatal(err)
+	}
+	if !n.called("down") || exists(t, f.netOwnPath()) {
+		t.Fatalf("Leave: calls %q, marker kept %v", n.calls, exists(t, f.netOwnPath()))
+	}
+	f, n = crashed()
+	if err := f.Join(fleetCode("f-bbb").String()); err != nil {
+		t.Fatal(err)
+	}
+	if got := netCalls(n); got != "down,up" || exists(t, f.netOwnPath()) {
+		t.Fatalf("Join: calls %q, marker kept %v", n.calls, exists(t, f.netOwnPath()))
+	}
+}
+
+// The marker lives only while a Join is half-way: gone after a success or a
+// refusal; kept after an Up that failed (its logout may have too) and when the
+// network could not be left.
+func TestNetOwnMarkerLifecycle(t *testing.T) {
+	f, n, _ := relayMember(t)
+	n.upErr = ErrOtherNetwork
+	if err := f.Join(relayCode().String()); err == nil || exists(t, f.netOwnPath()) {
+		t.Fatalf("after a refusal: %v, marker %v", err, exists(t, f.netOwnPath()))
+	}
+	n.upErr = errors.New("tailscale up: timeout")
+	if err := f.Join(relayCode().String()); err == nil || !exists(t, f.netOwnPath()) {
+		t.Fatalf("after a failed Up: %v, marker %v", err, exists(t, f.netOwnPath()))
+	}
+	n.upErr = nil
+	if err := f.Join(relayCode().String()); err != nil || exists(t, f.netOwnPath()) {
+		t.Fatalf("after a success: %v, marker %v", err, exists(t, f.netOwnPath()))
+	}
+	n.downErr = errors.New("logout failed")
+	if err := f.saveNetOwn(testRelay); err != nil {
+		t.Fatal(err)
+	}
+	f.Leave()
+	if !exists(t, f.netOwnPath()) {
+		t.Fatal("the marker went though the network is still ours to leave")
+	}
+}
+
+// A login to the code's own relay that this box never made is the owner's:
+// refused, not taken for the fleet's.
+func TestJoinRefusesAnOwnersLoginToTheSameRelay(t *testing.T) {
+	f, n, _ := relayMember(t)
+	n.before = NetState{Connected: true, Addr: "100.64.0.3", LoginServer: testRelay}
+	if err := f.Join(relayCode().String()); !errors.Is(err, ErrOtherNetwork) {
+		t.Fatalf("err %v", err)
+	}
+	if n.called("up") || n.called("down") {
+		t.Fatalf("calls %q", n.calls)
+	}
+}
+
+// A keyless code (the box was online when it was made) of another fleet cannot
+// be followed: the box is on the first fleet's network.
+func TestKeylessCodeOfAnotherFleetNeedsAKey(t *testing.T) {
+	f, n, _ := relayMember(t)
+	if err := f.Join(fleetCode("f-aaa").String()); err != nil {
+		t.Fatal(err)
+	}
+	c := fleetCode("f-bbb")
+	c.JoinKey = ""
+	if err := f.Join(c.String()); !errors.Is(err, errNoJoinKey) {
+		t.Fatalf("err %v, calls %q", err, n.calls)
+	}
+	c.Fleet = "f-aaa"
+	if err := f.Join(c.String()); err != nil {
+		t.Fatalf("the same fleet's keyless code: %v", err)
+	}
+}
+
+func TestCodeFleetIsValidated(t *testing.T) {
+	c := fleetCode("f aaa")
+	if _, err := ParseCode(c.String()); err == nil {
+		t.Error("a fleet with a space was accepted")
+	}
+	c = Code{MasterURL: "https://m.example", BoxID: "b1", Key: "k1", Fleet: "f-aaa"}
+	if _, err := ParseCode(c.String()); err == nil {
+		t.Error("a fleet without a relay was accepted")
+	}
+}
+
+// Leave leaves the member's relay and the relay of a Join that did not finish,
+// and forgets the marker only for the one it left.
+func TestLeaveLeavesBothTheMembersRelayAndTheMarkers(t *testing.T) {
+	f, n, _ := relayMember(t)
+	if err := f.Join(relayCode().String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.saveNetOwn("https://relay2.example"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Leave(); err != nil {
+		t.Fatal(err)
+	}
+	if len(n.downs) != 2 || n.downs[0] != testRelay || n.downs[1] != "https://relay2.example" || exists(t, f.netOwnPath()) {
+		t.Fatalf("downs %q, marker kept %v", n.downs, exists(t, f.netOwnPath()))
+	}
+	// the second Down fails: its marker stays, the first one's left nothing to forget
+	if err := f.Join(relayCode().String()); err != nil {
+		t.Fatal(err)
+	}
+	f.saveNetOwn("https://relay2.example")
+	n.downErr = errors.New("logout failed")
+	f.Leave()
+	if !exists(t, f.netOwnPath()) {
+		t.Fatal("the marker of a network that could not be left was forgotten")
+	}
+}
+
+// A code with no relay, given to a member over one, takes that relay's network
+// down: nothing else would remember it.
+func TestJoinACodeWithNoRelayLeavesTheMembersRelay(t *testing.T) {
+	f, n, _ := relayMember(t)
+	if err := f.Join(relayCode().String()); err != nil {
+		t.Fatal(err)
+	}
+	c := Code{MasterURL: "https://master.example", BoxID: "b2", Key: "k2"}
+	if err := f.Join(c.String()); err != nil {
+		t.Fatal(err)
+	}
+	if len(n.downs) != 1 || n.downs[0] != testRelay {
+		t.Fatalf("downs %q", n.downs)
+	}
+	if st, _ := f.loadMember(); st.Relay != "" || st.BoxID != "b2" {
+		t.Fatalf("member.json %+v", st)
 	}
 }

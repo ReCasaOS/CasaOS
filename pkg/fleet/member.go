@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -117,9 +118,23 @@ func (f *Fleet) Join(code string) error {
 	if err != nil {
 		return err
 	}
-	st := MemberState{MasterURL: c.MasterURL, BoxID: c.BoxID, Key: c.Key, MasterCertSHA256: c.CertSHA256, Relay: c.Relay}
+	st := MemberState{MasterURL: c.MasterURL, BoxID: c.BoxID, Key: c.Key, MasterCertSHA256: c.CertSHA256, Relay: c.Relay, FleetID: c.Fleet}
 	if c.Relay == "" {
-		return f.enrol(st)
+		// A member over a relay moving to a master with none leaves that relay's network.
+		f.relayMu.Lock()
+		defer f.relayMu.Unlock()
+		f.mu.Lock()
+		old, member := f.loadMember()
+		f.mu.Unlock()
+		if err := f.enrol(st); err != nil {
+			return err
+		}
+		if member && old.Relay != "" {
+			if n, nerr := f.PrivateNet(); nerr == nil {
+				f.netDown(n, old.Relay)
+			}
+		}
+		return nil
 	}
 	n, err := f.PrivateNet()
 	if err != nil {
@@ -135,38 +150,77 @@ func (f *Fleet) Join(code string) error {
 		return errIsMaster
 	}
 	ctx := context.Background()
+	ns, err := n.State(ctx)
 	if c.JoinKey == "" { // made while this box was online: it must still be on the relay's network
-		if ns, err := n.State(ctx); err != nil || !ns.Connected || ns.Addr == "" || !sameURL(ns.LoginServer, c.Relay) {
+		if err != nil || !ns.Connected || ns.Addr == "" || !sameURL(ns.LoginServer, c.Relay) {
 			return errNoJoinKey
+		}
+		if member && old.FleetID != "" && c.Fleet != "" && old.FleetID != c.Fleet {
+			return errNoJoinKey // this box is on another fleet's network: it needs a key to join this one
 		}
 		return f.enrol(st)
 	}
-	if member && old.Relay != "" && !sameURL(old.Relay, c.Relay) {
-		// The master moved to another relay: leave the old relay's network, ours.
-		// A stopped tailscaled shows no network at all; member.json says the last
-		// one was ours, and Down starts it to log out. A network shown that is
-		// not the old relay's is the owner's: left alone, Up refuses it.
-		if ns, err := n.State(ctx); err == nil && (ns.LoginServer == "" || sameURL(ns.LoginServer, old.Relay)) {
-			f.netDown(n)
+	if err != nil {
+		return err
+	}
+	// A box in a fleet of this relay, told to join another, leaves its own first:
+	// Up takes a login to the same relay for the right one. The network is left
+	// only if this box joined it (member.json, or the marker of a Join that did
+	// not finish); anything else is the owner's, and Up refuses it.
+	sameFleet := member && old.Relay != "" && sameURL(old.Relay, c.Relay) && c.Fleet != "" && old.FleetID == c.Fleet
+	if !sameFleet {
+		if relay, ours := f.ownNet(ns, old, member); ours {
+			if err := n.Down(ctx, relay); err != nil {
+				return fmt.Errorf("cannot leave the previous private network: %w", err)
+			}
+			f.clearNetOwn()
+		} else if ns.LoginServer != "" {
+			return ErrOtherNetwork
 		}
+	}
+	if err := f.saveNetOwn(c.Relay); err != nil { // before Up: a crash after it never leaves a network nobody knows is ours
+		return err
 	}
 	hostname, _ := f.Hostname()
 	if err := n.Up(ctx, c.Relay, c.JoinKey, nodeName(c.BoxID, hostname)); err != nil {
-		// Up undid itself: a Down here could log out a network that is not ours
+		// Up undid itself, as far as it could: a Down here could log out a network
+		// that is not ours. The marker stays unless Up refused to touch anything:
+		// a logout it could not do is left for Leave and the next Join.
 		if errors.Is(err, ErrOtherNetwork) {
+			f.clearNetOwn()
 			return err
 		}
 		return redact(err, c.JoinKey) // a Net that let the key into its error does not pass it on
 	}
 	if _, err := waitAddr(ctx, n); err != nil {
-		f.netDown(n)
+		f.netDown(n, c.Relay)
 		return err
 	}
 	if err := f.enrol(st); err != nil {
-		f.netDown(n)
+		f.netDown(n, c.Relay)
 		return err
 	}
+	f.clearNetOwn() // member.json says it from now on
 	return nil
+}
+
+// ownNet says whether the network the box shows (ns, empty when tailscaled is
+// stopped, hiding its login) is one this box joined as a member, and the relay
+// to leave it by: the marker of a Join that did not finish, or member.json.
+func (f *Fleet) ownNet(ns NetState, old MemberState, member bool) (string, bool) {
+	var mine []string
+	if r, ok := f.loadNetOwn(); ok {
+		mine = append(mine, r)
+	}
+	if member && old.Relay != "" {
+		mine = append(mine, old.Relay)
+	}
+	for _, r := range mine {
+		if ns.LoginServer == "" || sameURL(ns.LoginServer, r) {
+			return r, true
+		}
+	}
+	return "", false
 }
 
 // enrol writes member.json and restarts the loop, unless this box is a master.
@@ -184,16 +238,23 @@ func (f *Fleet) enrol(st MemberState) error {
 	return nil
 }
 
-// netDown leaves the private network, best-effort and logged.
-func (f *Fleet) netDown(n Net) {
-	if err := n.Down(context.Background()); err != nil {
+// netDown leaves relay's private network, best-effort and logged. The marker
+// goes only when it names relay and the box left: if the box could not, the
+// network is still ours to leave.
+func (f *Fleet) netDown(n Net, relay string) {
+	if err := n.Down(context.Background(), relay); err != nil {
 		f.Log("fleet: cannot leave the relay's private network", err)
+		return
+	}
+	if mine, ok := f.loadNetOwn(); ok && sameURL(mine, relay) {
+		f.clearNetOwn()
 	}
 }
 
 // Leave closes the tunnel and forgets the master. A member over a relay then
 // leaves its private network, best-effort: the local leave never fails for it.
-// It waits for a Join in progress (relayMu), never cutting one half-way.
+// It does so for the network of a Join that did not finish too (netown.json). It
+// waits for a Join in progress (relayMu), never cutting one half-way.
 func (f *Fleet) Leave() error {
 	f.relayMu.Lock()
 	defer f.relayMu.Unlock()
@@ -203,12 +264,25 @@ func (f *Fleet) Leave() error {
 	f.mu.Unlock()
 	f.m.drop()
 	f.pokeMember()
-	if err == nil && member && st.Relay != "" {
+	if err != nil {
+		return err
+	}
+	// The member's relay and the one of a Join that did not finish may differ.
+	relays := []string{}
+	if member && st.Relay != "" {
+		relays = append(relays, st.Relay)
+	}
+	if mine, ok := f.loadNetOwn(); ok && (len(relays) == 0 || !sameURL(mine, relays[0])) {
+		relays = append(relays, mine)
+	}
+	if len(relays) > 0 {
 		if n, nerr := f.PrivateNet(); nerr == nil {
-			f.netDown(n)
+			for _, r := range relays {
+				f.netDown(n, r)
+			}
 		}
 	}
-	return err
+	return nil
 }
 
 // nodeName is the name a member takes on the relay's private network:

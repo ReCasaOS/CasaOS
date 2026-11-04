@@ -26,6 +26,9 @@ type Code struct {
 	CertSHA256 string `json:"f"`
 	Relay      string `json:"r,omitempty"`
 	JoinKey    string `json:"j,omitempty"`
+	// Fleet is the master's fleet at the relay: a member told to join another one
+	// leaves its own first. Absent from the codes of an older master.
+	Fleet string `json:"n,omitempty"`
 }
 
 // String is the one line the owner copies.
@@ -67,6 +70,9 @@ func ParseCode(s string) (Code, error) {
 			return Code{}, err
 		}
 	}
+	if c.Fleet != "" && (c.Relay == "" || !fleetIDShape.MatchString(c.Fleet)) {
+		return Code{}, errors.New("the fleet in the enrolment code is malformed")
+	}
 	return c, nil
 }
 
@@ -75,6 +81,10 @@ func ParseCode(s string) (Code, error) {
 // Never ':' or '/' (tailscale reads --authkey=file:<path> as a file, as root)
 // nor a leading '-' (a flag).
 var joinKeyShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{15,255}$`)
+
+// fleetIDShape is a fleet id as the relay makes it ("f-<hex>"), loosely: it is
+// only compared with the id member.json keeps.
+var fleetIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 // validJoinKey refuses a join key of any other shape; the error never quotes it.
 func validJoinKey(k string) error {
