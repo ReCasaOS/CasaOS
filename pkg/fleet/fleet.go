@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -27,8 +28,11 @@ type Fleet struct {
 	Hostname    func() (string, error)                 // this box's name, said in the hello
 	Version     func() string                          // this box's ReCasaOS version, said in the hello
 	Offline     func(boxID, name string, offline bool) // the alerts hub's hook: a box gone, or back
+	Net         Net                                    // the private network; nil in New: callers go through PrivateNet
+	RelayAPI    *RelayClient                           // the relay's enrolment API; boxkey.json in the state directory
 
 	mu      sync.Mutex         // master.json, member.json and tunnels
+	relayMu sync.Mutex         // one master enable, disable, relay change or box enrolment/removal at a time; relay.json and master.json's relay fields written only under it; its network calls run outside mu
 	tunnels map[string]*tunnel // the live tunnel of each box, by id
 	restart chan struct{}      // poked when member.json changes
 	m       memberState        // what the member loop reports
@@ -50,6 +54,7 @@ func New(root string) *Fleet {
 		Hostname: os.Hostname,
 		Version:  func() string { return "" },
 		Offline:  func(string, string, bool) {},
+		RelayAPI: &RelayClient{Dir: filepath.Join(root, StateDir)},
 		offline:  map[string]bool{},
 		tunnels:  map[string]*tunnel{},
 		restart:  make(chan struct{}, 1),

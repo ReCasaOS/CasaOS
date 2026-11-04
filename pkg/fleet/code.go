@@ -7,18 +7,28 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 )
 
 // Code is what the owner copies from the master into a box's settings: where
 // the master is, which box this is, the box's key, and the fingerprint of the
-// master's certificate for when its chain does not verify. It is shown once.
+// master's certificate for when its chain does not verify. When the fleet runs
+// over a relay, it also carries the relay's address and the key to join it (no
+// key for a box that was on the relay's network when the code was made). It is
+// shown once.
 type Code struct {
 	MasterURL  string `json:"u"`
 	BoxID      string `json:"b"`
 	Key        string `json:"k"`
 	CertSHA256 string `json:"f"`
+	Relay      string `json:"r,omitempty"`
+	JoinKey    string `json:"j,omitempty"`
+	// Fleet is the master's fleet at the relay: a member told to join another one
+	// leaves its own first. Absent from the codes of an older master.
+	Fleet string `json:"n,omitempty"`
 }
 
 // String is the one line the owner copies.
@@ -46,7 +56,42 @@ func ParseCode(s string) (Code, error) {
 	if c.CertSHA256 != "" && !isHex(c.CertSHA256, 32) {
 		return Code{}, errors.New("the certificate fingerprint in the code is malformed")
 	}
+	// a relay without a join key: the code of a box already on its network (RotateCode)
+	if c.JoinKey != "" && c.Relay == "" {
+		return Code{}, errors.New("the enrolment code has a join key but no relay")
+	}
+	if c.Relay != "" {
+		if err := ValidMasterURL(c.Relay); err != nil {
+			return Code{}, fmt.Errorf("the relay address in the code is not valid: %w", err)
+		}
+	}
+	if c.JoinKey != "" {
+		if err := validJoinKey(c.JoinKey); err != nil {
+			return Code{}, err
+		}
+	}
+	if c.Fleet != "" && (c.Relay == "" || !fleetIDShape.MatchString(c.Fleet)) {
+		return Code{}, errors.New("the fleet in the enrolment code is malformed")
+	}
 	return c, nil
+}
+
+// joinKeyShape is what a relay's join key looks like: a Headscale pre-auth key
+// ("hskey-auth-<prefix>-<secret>", URL-safe base64) or an older one (48 hex).
+// Never ':' or '/' (tailscale reads --authkey=file:<path> as a file, as root)
+// nor a leading '-' (a flag).
+var joinKeyShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{15,255}$`)
+
+// fleetIDShape is a fleet id as the relay makes it ("f-<hex>"), loosely: it is
+// only compared with the id member.json keeps.
+var fleetIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+// validJoinKey refuses a join key of any other shape; the error never quotes it.
+func validJoinKey(k string) error {
+	if !joinKeyShape.MatchString(k) {
+		return errors.New("the join key is malformed")
+	}
+	return nil
 }
 
 // ValidMasterURL accepts https://host[:port], or plain http on this box's

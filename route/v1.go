@@ -271,6 +271,7 @@ func InitV1Router() http.Handler {
 		{
 			v1FleetGroup.GET("", v1.GetFleet)
 			v1FleetGroup.PUT("/master", v1.PutFleetMaster, headerTokenOnly)
+			v1FleetGroup.PUT("/relay", v1.PutFleetRelay, headerTokenOnly)
 			v1FleetGroup.POST("/boxes", v1.PostFleetBoxes, headerTokenOnly)
 			v1FleetGroup.PATCH("/boxes/:id", v1.PatchFleetBox)
 			v1FleetGroup.DELETE("/boxes/:id", v1.DeleteFleetBox, headerTokenOnly)

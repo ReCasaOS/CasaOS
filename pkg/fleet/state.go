@@ -11,7 +11,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 )
 
-// StateDir holds master.json and member.json, under Root.
+// StateDir holds master.json, member.json, relay.json and boxkey.json, under Root.
 const StateDir = "/var/lib/casaos/fleet"
 
 // Box is one enrolled box as the master keeps it: its key only hashed.
@@ -25,21 +25,60 @@ type Box struct {
 	LastSeen  time.Time `json:"last_seen,omitzero"`
 	Hostname  string    `json:"hostname"`
 	Version   string    `json:"version"`
+	// NeedsRecode: the master changed relay since this box's code was made, so the box
+	// still looks for it on the old relay's network; cleared by RotateCode.
+	NeedsRecode bool `json:"needs_recode,omitempty"`
 }
 
-// MasterState is master.json.
+// MasterState is master.json. Over a relay, it names the relay and the fleet
+// there, and this box's address on the private network; the fleet's secret is
+// in relay.json only.
 type MasterState struct {
 	Enabled bool   `json:"enabled"`
 	Address string `json:"address"`
 	Boxes   []Box  `json:"boxes"`
+	Relay   string `json:"relay,omitempty"`
+	FleetID string `json:"fleet_id,omitempty"`
+	NetAddr string `json:"net_addr,omitempty"`
 }
 
-// MemberState is member.json: the code the owner pasted, kept.
+// MemberState is member.json: the code the owner pasted, kept, without its
+// join key (spent on joining the relay's private network).
 type MemberState struct {
 	MasterURL        string `json:"master_url"`
 	BoxID            string `json:"box_id"`
 	Key              string `json:"key"`
 	MasterCertSHA256 string `json:"master_cert_sha256"`
+	Relay            string `json:"relay,omitempty"`
+	// FleetID is the code's fleet at the relay: another fleet's code makes this
+	// box leave this one first. Empty for a code of an older master.
+	FleetID string `json:"fleet_id,omitempty"`
+}
+
+// netOwn is netown.json: the relay whose private network this box joined (or is
+// about to join) as a member. It exists only between the start of Join and the
+// moment member.json says the same, so a crash in between leaves a network that
+// Leave and the next Join still know to be this box's own.
+type netOwn struct {
+	Relay string `json:"relay"`
+}
+
+func (f *Fleet) netOwnPath() string { return filepath.Join(f.Root, StateDir, "netown.json") }
+
+func (f *Fleet) loadNetOwn() (string, bool) {
+	var s netOwn
+	if !f.loadJSON(f.netOwnPath(), &s) || ValidMasterURL(s.Relay) != nil {
+		return "", false
+	}
+	return s.Relay, true
+}
+
+func (f *Fleet) saveNetOwn(relay string) error { return saveJSON(f.netOwnPath(), netOwn{Relay: relay}) }
+
+func (f *Fleet) clearNetOwn() {
+	if err := os.Remove(f.netOwnPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		f.Log("fleet: cannot remove netown.json", err)
+	}
 }
 
 func (f *Fleet) masterPath() string { return filepath.Join(f.Root, StateDir, "master.json") }

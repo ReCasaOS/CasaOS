@@ -12,6 +12,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/jwt"
 	"github.com/ReCasaOS/CasaOS/model"
+	"github.com/ReCasaOS/CasaOS/pkg/fleet"
 	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/labstack/echo/v4"
 )
@@ -82,6 +83,33 @@ func TestTheV1TokenInTheQueryIsTakenOnlyOnAGetAndNeverTheRefreshToken(t *testing
 		{"PUT /v1/fleet/member, the access token in the query", http.MethodPut, "/v1/fleet/member?token=" + access, "{}", "", false, http.StatusUnauthorized},
 		{"PUT /v1/fleet/member, the access token in the header", http.MethodPut, "/v1/fleet/member", "{}", access, false, http.StatusBadRequest},
 		{"PUT /v1/fleet/member, the refresh token in the header", http.MethodPut, "/v1/fleet/member", "{}", refresh, false, http.StatusUnauthorized},
+	} {
+		if got := callWith(e, c); got != c.want {
+			t.Errorf("%s: status = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// The routes that put this box in a relay's private network, or move it to
+// another, want the access token in the header like the other fleet PUTs. Past
+// the token, each refuses its body (400) before anything is touched.
+func TestRelayRoutesNeedHeaderToken(t *testing.T) {
+	system := &fakeUpdateSystem{}
+	access, refresh, _ := theTokensOfTheTests(t, system)
+	service.MyService = tokenRepository{fakeUpdateRepository{system: system}}
+	original := fleet.Default
+	fleet.Default = fleet.New(t.TempDir())
+	t.Cleanup(func() { fleet.Default = original })
+	e := InitV1Router()
+
+	const master, relay, both = "/v1/fleet/master", "/v1/fleet/relay", `{"enabled":true,"address":"https://m.example","relay":"https://relay.example"}`
+	for _, c := range []tokenCase{
+		{"PUT /v1/fleet/master, the access token in the query", http.MethodPut, master + "?token=" + access, both, "", false, http.StatusUnauthorized},
+		{"PUT /v1/fleet/master, the access token in the header", http.MethodPut, master, both, access, false, http.StatusBadRequest},
+		{"PUT /v1/fleet/master, the refresh token in the header", http.MethodPut, master, both, refresh, false, http.StatusUnauthorized},
+		{"PUT /v1/fleet/relay, the access token in the query", http.MethodPut, relay + "?token=" + access, "{}", "", false, http.StatusUnauthorized},
+		{"PUT /v1/fleet/relay, the access token in the header", http.MethodPut, relay, "{}", access, false, http.StatusBadRequest},
+		{"PUT /v1/fleet/relay, the refresh token in the header", http.MethodPut, relay, "{}", refresh, false, http.StatusUnauthorized},
 	} {
 		if got := callWith(e, c); got != c.want {
 			t.Errorf("%s: status = %d, want %d", c.name, got, c.want)
