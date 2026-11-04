@@ -319,6 +319,9 @@ func (s *sharesStruct) initSambaConfig() bool {
 // times; smbd then keeps only the first section of each name, while the
 // dashboard lists them all.
 func (s *sharesStruct) MergeDuplicateShares() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	shares := []model2.SharesDBModel{}
 	s.db.Order("id").Find(&shares)
 
