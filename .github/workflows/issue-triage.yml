@@ -3,6 +3,11 @@ name: Triage issues
 on:
   issues:
     types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to triage"
+        required: true
 
 permissions:
   issues: write
@@ -27,7 +32,14 @@ jobs:
             const PRIORITIES = ["priority: high", "priority: medium", "priority: low"];
             const allowed = new Set([...TYPES, ...PRIORITIES]);
 
-            const issue = context.payload.issue;
+            // From the issue event, or fetched by number on manual dispatch.
+            let issue = context.payload.issue;
+            if (!issue) {
+              const n = Number(context.payload.inputs.issue_number);
+              issue = (await github.rest.issues.get({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: n,
+              })).data;
+            }
             const content = `Title: ${issue.title}\n\nBody:\n${(issue.body || "").slice(0, 6000)}`;
 
             const sys = [
