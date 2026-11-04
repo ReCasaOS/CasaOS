@@ -612,3 +612,31 @@ func TestJoinACodeWithNoRelayLeavesTheMembersRelay(t *testing.T) {
 		t.Fatalf("member.json %+v", st)
 	}
 }
+
+// A box that is on the relay's network but cannot reach the relay is said not
+// to be connected, with the reason: the owner sees an outage at once.
+func TestStatusSaysTheRelayDoesNotAnswer(t *testing.T) {
+	f, n, _ := relayMember(t)
+	if err := f.Join(relayCode().String()); err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	n.after.RelayUnreachable = true
+	n.mu.Unlock()
+	f.m.netMu.Lock()
+	f.m.netAt = time.Time{} // not the cached answer
+	f.m.netMu.Unlock()
+	ms, _ := f.MemberStatus()
+	if ms.NetConnected || !strings.Contains(ms.NetError, "does not answer") {
+		t.Fatalf("status %+v", ms)
+	}
+	n.mu.Lock()
+	n.after.RelayUnreachable = false
+	n.mu.Unlock()
+	f.m.netMu.Lock()
+	f.m.netAt = time.Time{}
+	f.m.netMu.Unlock()
+	if ms, _ := f.MemberStatus(); !ms.NetConnected || ms.NetError != "" {
+		t.Fatalf("status after the relay is back %+v", ms)
+	}
+}
