@@ -16,7 +16,7 @@ jobs:
       - uses: actions/github-script@v7
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: o4-mini
+          OPENAI_MODEL: gpt-4o-mini
         with:
           script: |
             const key = process.env.OPENAI_API_KEY;
