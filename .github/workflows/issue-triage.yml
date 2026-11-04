@@ -81,8 +81,10 @@ jobs:
             } catch (e) { core.warning(`Triage call failed: ${e}`); return; }
 
             // Clamp every label to the whitelist; the model cannot invent labels.
-            const labels = [data.type, data.priority, ...(data.areas || [])]
-              .filter(l => allowed.has(l));
+            // The prompt asks for 0-2 areas but the model overshoots, so cap it here.
+            const areas = (Array.isArray(data.areas) ? data.areas : [])
+              .filter(a => AREAS.includes(a)).slice(0, 2);
+            const labels = [data.type, data.priority, ...areas].filter(l => allowed.has(l));
             // needs-triage only when the model is unsure or could not place type/priority.
             if (data.confidence !== "high" || !allowed.has(data.type) || !allowed.has(data.priority)) {
               labels.push("needs-triage");
