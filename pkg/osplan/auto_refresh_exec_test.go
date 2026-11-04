@@ -296,7 +296,7 @@ func TestR1KeepsACopyAndWritesTheSourcesOfTheRefreshAndFetchesTheLists(t *testin
 	if !b.exists("bk/apt-orig/sources.list") || !b.exists("bk/apt-orig/sources.list.d/docker.list") || b.exists("bk/apt-orig.new") {
 		t.Error("the copy of /etc/apt is not there, or is not whole")
 	}
-	if b.read("bk/restore-sources.sh") != restoreScriptRefresh {
+	if b.read("bk/restore-sources.sh") != d11(restoreScriptRefresh) {
 		t.Error("the restore script is not the refresh's")
 	}
 	// the refresh removes nothing, and says so to the block that mends

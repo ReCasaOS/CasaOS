@@ -23,6 +23,8 @@ type HopSpec struct {
 	ID osreadiness.HopID
 	// From and To are the codenames of the releases ("bullseye", "bookworm").
 	From, To string
+	// FromVersion and ToVersion are the numbers of the releases ("11", "12"), which the texts of the blocks name them by.
+	FromVersion, ToVersion string
 	// Later are the codenames of the releases after To: a source that names one is already past the target.
 	Later []string
 	// Firmware says that the target has the component non-free-firmware, which is put beside non-free.
@@ -39,10 +41,14 @@ func (h HopSpec) ForRefresh() HopSpec {
 	return h
 }
 
+// FromName and ToName are the releases as the texts of the blocks say them: "Debian 11".
+func (h HopSpec) FromName() string { return "Debian " + h.FromVersion }
+func (h HopSpec) ToName() string   { return "Debian " + h.ToVersion }
+
 // planHops is the one table of the hops a plan can be made for. Debian 12 to 13 (deb822, non-free-firmware, new clues) and
 // Ubuntu are later rungs: every other hop is hop_not_planned.
 var planHops = []HopSpec{
-	{ID: osreadiness.HopDebian11to12, From: "bullseye", To: "bookworm", Later: []string{"trixie", "forky"}, Firmware: true},
+	{ID: osreadiness.HopDebian11to12, From: "bullseye", To: "bookworm", FromVersion: "11", ToVersion: "12", Later: []string{"trixie", "forky"}, Firmware: true},
 }
 
 // PlannedHop is the hop of a box's identity, when a plan can be made for it.

@@ -73,11 +73,11 @@ func buildRefresh(in RefreshInputs) (*AutoRunbook, map[string]int, error) {
 	prev := ""
 	for _, blk := range refreshBlocks {
 		c.cur = blk.ID
-		text, err := autoText(blk.ID, in.RunID, blk.body(c, prev))
+		text, err := autoText(blk.ID, in.RunID, c.names(blk.body(c, prev)))
 		if err != nil {
 			return nil, nil, err
 		}
-		out.Blocks = append(out.Blocks, AutoBlock{ID: blk.ID, Title: blk.Title, Text: text})
+		out.Blocks = append(out.Blocks, AutoBlock{ID: blk.ID, Title: c.names(blk.Title), Text: text})
 		total += len(text)
 		prev = blk.ID
 	}
@@ -156,8 +156,8 @@ var refreshBlocks = []blockSpec{
 			b.WriteString("echo \"Block R0: can the old release be brought up to date? Nothing is changed but the timers of apt.\"\n")
 			b.WriteString(`[ "$(id -u)" = 0 ] || ` + stop("run this as root.") + "\n")
 			b.WriteString(`[ "$(hostname)" = ` + shQ(c.refresh.hostname) + ` ] || ` + stop("this machine is called $(hostname), which is not the machine that the refresh was started on: the text of this unit was written for another.") + "\n")
-			b.WriteString(`grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || ` + stop("this machine is not Debian 11 ("+c.hop.From+") any more: the refresh brings the release that the machine runs up to its last state, and this machine runs another.") + "\n")
-			b.WriteString(otherPlans())
+			b.WriteString(`grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || ` + stop("this machine is not @from@ ("+c.hop.From+") any more: the refresh brings the release that the machine runs up to its last state, and this machine runs another.") + "\n")
+			b.WriteString(c.otherPlans())
 			// a package manager at work is looked for before dpkg is asked whether it is quiet: one that is half way through an install leaves dpkg unquiet, and the stop that
 			// says so is the busy one, which is the truth, and not a broken dpkg that the owner is sent to mend under it
 			b.WriteString(busyCheck("Nothing has been changed by this block."))
@@ -169,7 +169,7 @@ var refreshBlocks = []blockSpec{
 			// from here the block changes something: the folder of the refresh is made, the kernels that are there are written down (R3 compares), and the state of the timers is
 			// written as block 1 of the hop writes it. done-timers comes before the timers are stopped, and not after: a stop that fails half way has stopped some of them, and
 			// the unwind starts again what the state says was running only when it finds that file
-			b.WriteString(bkdir)
+			b.WriteString(c.mkBK())
 			b.WriteString(refreshKernels + " > \"$BK/kernels-before.txt\" || true\n")
 			b.WriteString("TS=" + timersState + "\n")
 			b.WriteString(shTimersState("the end of the refresh"))
@@ -231,10 +231,13 @@ var refreshBlocks = []blockSpec{
 			b.WriteString("rm -f \"$BK/download.rc\"\n")
 			b.WriteString("{ aptq --download-only dist-upgrade" + refreshPhased + " || echo \"$?\" > \"$BK/download.rc\"; } 2>&1 | tee \"$BK/download.txt\"\n")
 			b.WriteString("if [ -e \"$BK/download.rc\" ]; then\n")
-			b.WriteString("  sechost=\"$(grep -E '" + refreshSecurity404 + "' \"$BK/download.txt\" | awk -F/ 'NR == 1 { print $3 }')\"\n")
-			b.WriteString("  if [ -n \"$sechost\" ]; then\n")
-			b.WriteString("    " + stop(SecurityArchiveGapWords+" Nothing has been installed or removed yet.") + "\n")
-			b.WriteString("  fi\n")
+			if c.hop.From == "bullseye" {
+				// only Debian 11's security updates moved to the archive while the mirror still lists them: for another release a 404 is the network's
+				b.WriteString("  sechost=\"$(grep -E '" + refreshSecurity404 + "' \"$BK/download.txt\" | awk -F/ 'NR == 1 { print $3 }')\"\n")
+				b.WriteString("  if [ -n \"$sechost\" ]; then\n")
+				b.WriteString("    " + stop(SecurityArchiveGapWords+" Nothing has been installed or removed yet.") + "\n")
+				b.WriteString("  fi\n")
+			}
 			b.WriteString("  " + stop("the download did not go through: the network, or a lock held by another package manager (see what apt printed above). Nothing has been installed or removed yet.") + "\n")
 			b.WriteString("fi\n")
 			// from here dpkg is changed: the unwind mends what it leaves only for a refresh that got this far
