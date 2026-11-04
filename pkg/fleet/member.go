@@ -350,6 +350,8 @@ func (f *Fleet) netStatus(relay, off string) (bool, string) {
 			msg = off
 		case !sameURL(ns.LoginServer, relay):
 			msg = "this box is in another private network than its fleet's relay"
+		case ns.RelayUnreachable:
+			msg = "the relay does not answer: boxes already linked may keep reaching each other, but no box can join and no code can be given until it is back"
 		default:
 			ok = true
 		}

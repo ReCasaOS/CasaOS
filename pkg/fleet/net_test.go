@@ -98,6 +98,9 @@ func (d *tailscaled) run(_ context.Context, args ...string) ([]byte, error) {
 		}
 		return []byte(runningJSON), nil
 	case "debug":
+		if d.login == "" {
+			return []byte(`{"ControlURL":"","LoggedOut":true,"WantRunning":false}`), nil
+		}
 		return []byte(prefsFor(d.login)), nil
 	case "logout":
 		d.login = ""
@@ -151,6 +154,9 @@ func (d *tailscaled) ups() []string {
 
 const runningJSON = `{"BackendState":"Running","Self":{"TailscaleIPs":["fd7a:115c:a1e0::1","100.64.0.7"]}}`
 
+// what `tailscale debug prefs` says of a box logged out, or of a daemon never used (tailscale 1.104.4)
+const loggedOutPrefs = `{"ControlURL":"","LoggedOut":true,"WantRunning":false}`
+
 func prefsFor(url string) string { return `{"ControlURL":"` + url + `","WantRunning":true}` }
 
 func TestStateParsesRunningAndStopped(t *testing.T) {
@@ -172,7 +178,19 @@ func TestStateParsesRunningAndStopped(t *testing.T) {
 			NetState{LoginServer: "https://relay.example"}, false},
 		{"stopped, prefs unreadable", `{"BackendState":"Stopped"}`, "nope", nil, NetState{}, true},
 		{"no state", `{"BackendState":"NoState"}`, "", nil, NetState{}, false},
-		{"needs login", `{"BackendState":"NeedsLogin"}`, "", nil, NetState{}, false},
+		// observed with tailscale 1.104.4 against Headscale 0.29.7: after `tailscale logout`, and on a daemon never logged in
+		{"needs login, logged out", `{"BackendState":"NeedsLogin"}`, `{"ControlURL":"","LoggedOut":true,"WantRunning":false}`, nil, NetState{}, false},
+		// an expired node key (`headscale nodes expire`): still the relay's login, the key only asks to be renewed
+		{"needs login, key expired", `{"BackendState":"NeedsLogin","Self":{"Expired":true,"Online":true}}`, `{"ControlURL":"https://relay.example","LoggedOut":false,"WantRunning":true}`, nil,
+			NetState{LoginServer: "https://relay.example"}, false},
+		{"needs login, expired on the default control", `{"BackendState":"NeedsLogin"}`, `{"ControlURL":"","LoggedOut":false}`, nil,
+			NetState{LoginServer: defaultControlURL}, false},
+		{"needs login, prefs unreadable", `{"BackendState":"NeedsLogin"}`, "nope", nil, NetState{}, true},
+		// the control server does not answer: Running, with an address, but Self.Online false
+		{"running, relay unreachable", `{"BackendState":"Running","Self":{"Online":false,"TailscaleIPs":["100.64.0.7"]}}`, prefsFor("https://relay.example"), nil,
+			NetState{Connected: true, Addr: "100.64.0.7", LoginServer: "https://relay.example", RelayUnreachable: true}, false},
+		{"running, relay answering", `{"BackendState":"Running","Self":{"Online":true,"TailscaleIPs":["100.64.0.7"]}}`, prefsFor("https://relay.example"), nil,
+			NetState{Connected: true, Addr: "100.64.0.7", LoginServer: "https://relay.example"}, false},
 		{"daemon down", "", "", errors.New("exit status 1"), NetState{}, false},
 		{"not installed", "", "", exec.ErrNotFound, NetState{}, true},
 		{"garbage", "not json", "", nil, NetState{}, true},
@@ -203,11 +221,12 @@ func TestEnableRefusesAnotherTailnet(t *testing.T) {
 }
 
 func TestUpPassesLoginServerAndKey(t *testing.T) {
-	f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`}
+	f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`, prefs: loggedOutPrefs}
 	if err := f.net().Up(context.Background(), "https://relay.example/", "tskey-secret-0123", "box1"); err != nil {
 		t.Fatal(err)
 	}
-	if want := "systemctl enable --now tailscaled"; len(f.calls) < 3 || f.calls[len(f.calls)-3] != want {
+	// started, then asked again (status, then the prefs of a box that shows a login), before up
+	if want := "systemctl enable --now tailscaled,tailscale status --json,tailscale debug prefs"; len(f.calls) < 4 || strings.Join(f.calls[len(f.calls)-4:len(f.calls)-1], ",") != want {
 		t.Fatalf("tailscaled must be started, then asked again, before up; calls: %v", f.calls)
 	}
 	up := f.calls[len(f.calls)-1]
@@ -220,7 +239,7 @@ func TestUpPassesLoginServerAndKey(t *testing.T) {
 
 func TestUpErrorNeverContainsAuthKey(t *testing.T) {
 	const key = "tskey-secret-0123"
-	f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`, upErr: errors.New("up --authkey=" + key + " failed: bad key " + key)}
+	f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`, prefs: loggedOutPrefs, upErr: errors.New("up --authkey=" + key + " failed: bad key " + key)}
 	err := f.net().Up(context.Background(), "https://relay.example", key, "box")
 	if err == nil {
 		t.Fatal("want an error")
@@ -270,7 +289,7 @@ func TestUpRestoresTailscaledWhenItOnlyNowAnswers(t *testing.T) {
 func TestUpFailureUndoesOnlyWhatItDid(t *testing.T) {
 	boom := errors.New("timeout")
 	// a box with tailscaled off: logged out again, tailscaled off again
-	f := &fakeTS{statusErr: errors.New("exit status 1"), startedStatus: `{"BackendState":"NeedsLogin"}`, upErr: boom}
+	f := &fakeTS{statusErr: errors.New("exit status 1"), startedStatus: `{"BackendState":"NeedsLogin"}`, prefs: loggedOutPrefs, upErr: boom}
 	if err := f.net().Up(context.Background(), "https://relay.example", testJoinKey, "box"); err == nil {
 		t.Fatal("no error")
 	}
@@ -278,7 +297,7 @@ func TestUpFailureUndoesOnlyWhatItDid(t *testing.T) {
 		t.Errorf("calls %v", f.calls)
 	}
 	// tailscaled already running, logged in nowhere: logged out again, left running
-	f = &fakeTS{active: true, status: `{"BackendState":"NeedsLogin"}`, upErr: boom}
+	f = &fakeTS{active: true, status: `{"BackendState":"NeedsLogin"}`, prefs: loggedOutPrefs, upErr: boom}
 	if err := f.net().Up(context.Background(), "https://relay.example", testJoinKey, "box"); err == nil {
 		t.Fatal("no error")
 	}
@@ -297,7 +316,7 @@ func TestUpFailureUndoesOnlyWhatItDid(t *testing.T) {
 
 // A box without systemctl says so, not that tailscale is missing.
 func TestUpWithoutSystemctl(t *testing.T) {
-	f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`}
+	f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`, prefs: loggedOutPrefs}
 	n := f.net().(*tailscale)
 	n.systemctl = func(context.Context, ...string) error {
 		return fmt.Errorf("systemctl is-active: %w", exec.ErrNotFound)
@@ -310,7 +329,7 @@ func TestUpWithoutSystemctl(t *testing.T) {
 
 func TestUpRefusesAKeyTailscaleWouldRead(t *testing.T) {
 	for _, key := range []string{"file:/etc/shadow", "--x", "a key with spaces", strings.Repeat("k", 300)} {
-		f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`}
+		f := &fakeTS{status: `{"BackendState":"NeedsLogin"}`, prefs: loggedOutPrefs}
 		err := f.net().Up(context.Background(), "https://relay.example", key, "box")
 		if err == nil || strings.Contains(err.Error(), key) {
 			t.Errorf("%q: err = %v", key, err)
@@ -355,7 +374,7 @@ func TestDownErrors(t *testing.T) {
 	boom := errors.New("boom")
 	ctx := context.Background()
 	// A failed logout is fine when the box turns out to be logged out already...
-	f := &fakeTS{logoutErr: boom, status: `{"BackendState":"NeedsLogin"}`}
+	f := &fakeTS{logoutErr: boom, status: `{"BackendState":"NeedsLogin"}`, prefs: `{"LoggedOut":true}`}
 	if err := f.net().Down(ctx, ""); err != nil || f.calls[len(f.calls)-1] != "systemctl disable --now tailscaled" {
 		t.Errorf("logged out already: %v, calls %v", err, f.calls)
 	}

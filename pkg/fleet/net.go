@@ -37,6 +37,10 @@ type NetState struct {
 	// trailing slash, connected or not (a stopped tailscale is still in its
 	// network); empty when the box is in none.
 	LoginServer string
+	// RelayUnreachable: connected, with an address, but the coordination server
+	// does not answer (tailscale reports this node offline). Links already made
+	// may carry on; nothing new can join.
+	RelayUnreachable bool
 }
 
 // Net drives the box's private network.
@@ -113,7 +117,10 @@ func (t *tailscale) State(ctx context.Context) (NetState, error) {
 	var st struct {
 		BackendState string
 		TailscaleIPs []string
-		Self         struct{ TailscaleIPs []string }
+		Self         struct {
+			TailscaleIPs []string
+			Online       *bool // absent on a client that does not say
+		}
 	}
 	if jerr := json.Unmarshal(out, &st); jerr != nil {
 		if err != nil { // a non-zero exit with no JSON: tailscaled is not running
@@ -122,16 +129,27 @@ func (t *tailscale) State(ctx context.Context) (NetState, error) {
 		return NetState{}, errors.New("tailscale status: unreadable output")
 	}
 	switch st.BackendState {
-	case "", "NoState", "NeedsLogin": // logged in nowhere
+	case "", "NoState": // no daemon state at all
 		return NetState{}, nil
 	}
-	// Any other state (Running, Stopped, Starting...) is logged in somewhere.
-	// The status JSON does not carry the coordination server; the prefs do. A
-	// box whose server cannot be read is an error: it must not look like a free one.
+	// Any other state (Running, Stopped, Starting, NeedsLogin...) may be logged in
+	// somewhere. The status JSON does not carry the coordination server; the prefs
+	// do. A box whose server cannot be read is an error: it must not look like a
+	// free one.
 	praw, err := t.run(ctx, "debug", "prefs")
-	var prefs struct{ ControlURL string }
+	var prefs struct {
+		ControlURL string
+		LoggedOut  bool
+	}
 	if err != nil || json.Unmarshal(praw, &prefs) != nil {
 		return NetState{}, errors.New("tailscale debug prefs: cannot read the login server")
+	}
+	// NeedsLogin is both a box logged out (LoggedOut, and no ControlURL: what
+	// `tailscale logout` and a daemon never used leave) and one whose node key
+	// expired, or whose login was never finished: those are still in a network, the
+	// owner's perhaps, and are not free to take.
+	if st.BackendState == "NeedsLogin" && prefs.LoggedOut {
+		return NetState{}, nil
 	}
 	if prefs.ControlURL == "" {
 		prefs.ControlURL = defaultControlURL
@@ -139,6 +157,7 @@ func (t *tailscale) State(ctx context.Context) (NetState, error) {
 	ns := NetState{LoginServer: trimURL(prefs.ControlURL)}
 	if st.BackendState == "Running" {
 		ns.Connected, ns.Addr = true, pickAddr(append(st.Self.TailscaleIPs, st.TailscaleIPs...))
+		ns.RelayUnreachable = st.Self.Online != nil && !*st.Self.Online
 	}
 	return ns, nil
 }
