@@ -424,3 +424,43 @@ func TestAResolvedRecordIsForgottenAfterADay(t *testing.T) {
 		t.Fatalf("resolved kept: %v, open kept: %v; want only the open one kept", kept(crashed.key), kept(open.key))
 	}
 }
+
+func died(h *Hub, event string) {
+	h.onEvent(event, map[string]string{"app:name": "immich", "app:title": `{"en_us":"Immich"}`, "docker:container:name": "immich-server", "docker:container:exit-code": "1"})
+	h.sending.Wait()
+}
+
+func TestAContainerAlertLinksToItsLogs(t *testing.T) {
+	h, o, _ := newHub(t)
+
+	died(h, "app:container-died")
+
+	want := "Immich stopped unexpectedly (container immich-server), exit code 1.\nhttp://192.168.1.20/#/logs?app=immich&at=2026-09-25T06:00:00Z"
+	if got := o.texts(phone); !reflect.DeepEqual(got, []string{want}) {
+		t.Fatalf("sent %q", got)
+	}
+}
+
+func TestAMemberBoxLinksToItsMaster(t *testing.T) {
+	h, o, _ := newHub(t)
+	h.MasterLink = func() (string, string, bool) { return "https://m", "b1", true }
+
+	died(h, "app:container-died")
+
+	got := o.texts(phone)
+	if want := "\nhttps://m/#/logs?box=b1&app=immich&at=2026-09-25T06:00:00Z"; len(got) != 1 || !strings.HasSuffix(got[0], want) {
+		t.Fatalf("sent %q, want it to end with %q", got, want)
+	}
+}
+
+func TestAResolutionKeepsThePlainAddress(t *testing.T) {
+	h, o, _ := newHub(t)
+
+	died(h, "app:container-died")
+	died(h, "app:container-healthy")
+
+	got := o.texts(phone)
+	if want := "\nhttp://192.168.1.20"; len(got) != 2 || !strings.HasSuffix(got[1], want) || strings.Contains(got[1], "#/logs") {
+		t.Fatalf("sent %q, want the resolution to end with %q", got, want)
+	}
+}

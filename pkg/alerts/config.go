@@ -238,7 +238,7 @@ func (h *Hub) Test(id string) ([]Result, error) {
 	if id != "" && len(chosen) == 0 {
 		return nil, ErrNoChannel
 	}
-	title, message := h.compose("test", "This is a test: alerts from ReCasaOS reach this channel.")
+	title, message := h.compose("test", "This is a test: alerts from ReCasaOS reach this channel.", "")
 	results := make([]Result, len(chosen))
 	var each sync.WaitGroup
 	for i, c := range chosen {

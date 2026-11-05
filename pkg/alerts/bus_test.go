@@ -425,3 +425,18 @@ func sorted(names []string) []string {
 	slices.Sort(names)
 	return names
 }
+
+func TestLogsLink(t *testing.T) {
+	at := time.Date(2026, 9, 25, 6, 0, 0, 0, time.UTC)
+	for _, c := range []struct{ master, box, address, app, want string }{
+		{"https://m.example:8443/", "b1", "http://192.168.1.20", "immich", "https://m.example:8443/#/logs?box=b1&app=immich&at=2026-09-25T06:00:00Z"},
+		{"", "", "http://192.168.1.20", "immich", "http://192.168.1.20/#/logs?app=immich&at=2026-09-25T06:00:00Z"},
+		{"", "", "", "immich", ""},
+		{"", "", "http://192.168.1.20", "", ""},
+		{"", "", "http://192.168.1.20", "my app&x", "http://192.168.1.20/#/logs?app=my+app%26x&at=2026-09-25T06:00:00Z"},
+	} {
+		if got := logsLink(c.master, c.box, c.address, c.app, at); got != c.want {
+			t.Errorf("%+v: %q", c, got)
+		}
+	}
+}

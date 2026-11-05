@@ -26,7 +26,7 @@ func (h *Hub) OSUpgradeNotice(key, sentence string) bool {
 	go func() {
 		defer h.sending.Done()
 		for i := 0; ; i++ {
-			if h.raiseAs(a, true) {
+			if h.raiseAs(a, true, "") {
 				return
 			}
 			if i >= len(retries) {

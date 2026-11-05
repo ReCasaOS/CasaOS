@@ -201,9 +201,30 @@ func (h *Hub) onEvent(name string, properties map[string]string) {
 	case !ok:
 	case resolved:
 		h.resolve(a)
+	case slices.Contains(logsEvents, name):
+		m, b, _ := h.MasterLink()
+		h.raiseWith(a, logsLink(m, b, h.Address(), properties["app:name"], h.Now()))
 	default:
 		h.raise(a)
 	}
+}
+
+// logsEvents are the alerts that end with a link to the app's logs.
+var logsEvents = []string{"app:container-died", "app:container-unhealthy", "app:container-restarting"}
+
+// logsLink opens the Logs page on app at the minute of the event: on the fleet master when the box
+// is a member, else on the box's own dashboard, else "".
+func logsLink(masterURL, boxID, address, app string, at time.Time) string {
+	query := "app=" + url.QueryEscape(app) + "&at=" + at.UTC().Format(time.RFC3339)
+	switch {
+	case app == "":
+		return ""
+	case masterURL != "":
+		return strings.TrimSuffix(masterURL, "/") + "/#/logs?box=" + url.QueryEscape(boxID) + "&" + query
+	case address != "":
+		return strings.TrimSuffix(address, "/") + "/#/logs?" + query
+	}
+	return ""
 }
 
 // fromEvent is the alert of one of AppManagement's events, and whether the

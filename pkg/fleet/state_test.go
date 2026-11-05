@@ -69,3 +69,16 @@ func TestClearMemberRemovesTheFile(t *testing.T) {
 		t.Fatalf("clearing twice: %v", err)
 	}
 }
+
+func TestMemberLinkReadsMemberJSON(t *testing.T) {
+	f := New(t.TempDir())
+	if _, _, ok := f.MemberLink(); ok {
+		t.Fatal("no member.json read as a member")
+	}
+	if err := f.saveMember(MemberState{MasterURL: "https://m", BoxID: "b1", Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	if m, b, ok := f.MemberLink(); m != "https://m" || b != "b1" || !ok {
+		t.Fatalf("%q %q %v", m, b, ok)
+	}
+}

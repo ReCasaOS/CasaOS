@@ -360,6 +360,15 @@ func (f *Fleet) netStatus(relay, off string) (bool, string) {
 	return ok, msg
 }
 
+// MemberLink is the master's address and this box's id there, for a link into the master: ok is false when
+// the box is no member.
+func (f *Fleet) MemberLink() (masterURL, boxID string, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st, ok := f.loadMember()
+	return st.MasterURL, st.BoxID, ok
+}
+
 // MemberStatus is the member's view: ok is false when the role is off.
 func (f *Fleet) MemberStatus() (MemberStatus, bool) {
 	f.mu.Lock()
