@@ -308,7 +308,7 @@ func TestR1HoldsTheTreeAndTheRestoreScriptByteForByte(t *testing.T) {
 		bodies = append(bodies, h.opener)
 		switch {
 		case strings.Contains(h.opener, "restore-sources.sh"):
-			if h.body != strings.TrimSuffix(restoreScriptRefresh, "\n") {
+			if h.body != strings.TrimSuffix(d11(restoreScriptRefresh), "\n") {
 				t.Error("the restore script is not the refresh's")
 			}
 		case strings.Contains(h.opener, ".casaos-new"):
@@ -349,8 +349,8 @@ func runIn(dir, sh string, args ...string) (string, error) {
 // The restore script of a refresh is the owner's but for what it says of a hop: the line that sends the owner back to block 3 and the one about the timers that block 1 stopped,
 // which the last block of a refresh starts itself. Nothing that does the work is different.
 func TestTheRestoreScriptOfTheRefreshDiffersFromTheOwnersOnlyInWhatItSaysOfAHop(t *testing.T) {
-	owner := strings.Split(restoreScript, "\n")
-	refresh := strings.Split(restoreScriptRefresh, "\n")
+	owner := strings.Split(d11(restoreScript), "\n")
+	refresh := strings.Split(d11(restoreScriptRefresh), "\n")
 	var gone []string
 	for _, l := range owner {
 		if !slices.Contains(refresh, l) {
@@ -371,17 +371,17 @@ func TestTheRestoreScriptOfTheRefreshDiffersFromTheOwnersOnlyInWhatItSaysOfAHop(
 		}
 	}
 	for _, word := range []string{"Block 3 can be run again", "timers of apt that block 1 stopped", "block 3 of the runbook", "that block 3 made"} {
-		if strings.Contains(restoreScriptRefresh, word) {
+		if strings.Contains(d11(restoreScriptRefresh), word) {
 			t.Errorf("the restore script of a refresh says %q", word)
 		}
-		if !strings.Contains(restoreScript, word) {
+		if !strings.Contains(d11(restoreScript), word) {
 			t.Errorf("the owner's restore script does not say %q any more: the test is not looking at what it was made for", word)
 		}
 	}
-	if !strings.Contains(restoreScriptRefresh, `rm -f "$HERE/done-sources" "$HERE/done-download"`) || !strings.Contains(restoreScriptRefresh, "apt-get update") {
+	if !strings.Contains(d11(restoreScriptRefresh), `rm -f "$HERE/done-sources" "$HERE/done-download"`) || !strings.Contains(d11(restoreScriptRefresh), "apt-get update") {
 		t.Error("the work of the script is not all there")
 	}
-	if restoreScriptHashOf(restoreScriptRefresh) == restoreScriptHash() {
+	if restoreScriptHashOf(d11(restoreScriptRefresh)) == restoreScriptHash() {
 		t.Error("the two scripts have the same hash")
 	}
 }

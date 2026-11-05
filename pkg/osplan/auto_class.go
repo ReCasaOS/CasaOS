@@ -100,8 +100,7 @@ var stopClasses = []stopClass{
 	// who the machine is, and where it is in the hop
 	{"the hop is over", osrun.ClassIdentity},
 	{"run this as root", osrun.ClassIdentity},
-	{"this machine is not Debian 11", osrun.ClassIdentity},
-	{"this machine is not Debian 12", osrun.ClassIdentity},
+	{"this machine is not Debian", osrun.ClassIdentity},
 	{"this machine is called", osrun.ClassIdentity},
 	{"the machine has not been restarted", osrun.ClassIdentity},
 	{"the sources of apt do not name", osrun.ClassIdentity},

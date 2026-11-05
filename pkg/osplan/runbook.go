@@ -120,14 +120,14 @@ type blockSpec struct {
 
 // runbookHops is the table of the hops that have a runbook: adding a hop is adding its blocks here.
 var runbookHops = map[osreadiness.HopID][]blockSpec{
-	osreadiness.HopDebian11to12: debian11to12Blocks,
+	osreadiness.HopDebian11to12: debianBlocks,
 }
 
-// backupFoldersScopedByHop says whether head() and otherPlans() look only at the backup folders of their own hop. They do not: they look at every
-// /var/backups/casaos-os-upgrade-* folder, which is right while there is one hop (a second hop's folder is a folder of another plan of this machine, as far as the
-// first hop's blocks can tell, and would stop them for the wrong reason). A second row of runbookHops makes TestASecondHopNeedsTheBackupFoldersScopedByHop fail until
-// the folders are told apart by hop and this is true.
-const backupFoldersScopedByHop = false
+// backupFoldersScopedByHop says whether head() and otherPlans() look only at the backup folders of their own hop. They do: a hop other than the first writes its id in
+// the file hop of its folder (mkBK) and passes over the folders whose file says another (sameHop), and a folder with no such file is the first hop's. The first hop's text looks
+// at every folder, as it always did: on a machine of its release there is none of a later hop. TestASecondHopNeedsTheBackupFoldersScopedByHop holds a second row of
+// runbookHops to this.
+const backupFoldersScopedByHop = true
 
 // the markers of a block, which the tests and the page look for
 const (
@@ -160,10 +160,11 @@ func newRbCtx(p Plan) (*rbCtx, []blockSpec, error) {
 	return c, blocks, nil
 }
 
-// treeIsSafe says whether no line of the files of the tree has the word that ends a heredoc, or the marker of a block: the text could not be told from its own structure.
+// treeIsSafe says whether no line of the files of the tree has the word that ends a heredoc, or the marker of a block: the text could not be told from its own structure. Nor
+// may one have a word that stands for a release (names): it would be changed in the copy that the text writes, and no longer be the file whose hash the plan holds.
 func treeIsSafe(tree []TreeFile) bool {
 	for _, f := range tree {
-		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK"} {
+		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK", "@from@", "@to@", "@tov@"} {
 			if strings.Contains(f.Content, bad) {
 				return false
 			}
@@ -203,10 +204,12 @@ func BuildRunbook(p Plan) (*Runbook, error) {
 		b.WriteString(strings.TrimRight(blk.body(c, prev), "\n"))
 		fmt.Fprintf(&b, "\n)\n%s%d\n", blockEnd, i)
 		prev = blk.ID
-		info = append(info, blk.RunbookBlock)
+		rb := blk.RunbookBlock
+		rb.Title = c.names(rb.Title)
+		info = append(info, rb)
 	}
 	b.WriteString(resumeMap(blocks))
-	text := b.String()
+	text := c.names(b.String())
 	if len(text) > MaxRunbookBytes {
 		return nil, ErrRunbookTooLarge
 	}
@@ -220,7 +223,7 @@ func runbookHeader(c *rbCtx) string {
 	b.WriteString("# This is a runbook, not a script: open it, and paste ONE BLOCK AT A TIME into a console of the machine, as root.\n")
 	b.WriteString("case $- in *i*) ;; *) echo \"This file is a runbook, not a script. Open it and paste one block at a time into a root console, reading what each one prints.\"; exit 1;; esac\n")
 	b.WriteString("#\n")
-	fmt.Fprintf(&b, "# Upgrade of the operating system by hand: Debian 11 (%s) to Debian 12 (%s).\n", c.hop.From, c.hop.To)
+	fmt.Fprintf(&b, "# Upgrade of the operating system by hand: @from@ (%s) to @to@ (%s).\n", c.hop.From, c.hop.To)
 	fmt.Fprintf(&b, "# Plan: %s   made at %s   (hop %s; it was good for 24 hours, until %s)\n", p.PlanID, p.MadeAt.UTC().Format("2006-01-02 15:04:05")+" UTC", p.Hop, p.ExpiresAt.UTC().Format("2006-01-02 15:04")+" UTC")
 	b.WriteString("#\n")
 	b.WriteString("# This text was written for exactly this machine and this plan. If the machine changed since (packages, sources, holds), ask for a new plan.\n")
@@ -238,7 +241,7 @@ func runbookHeader(c *rbCtx) string {
 	b.WriteString("#  - A snapshot of the machine (from the hypervisor), or a console that works without the network: a screen and a keyboard, a serial line, the\n")
 	b.WriteString("#    hypervisor's console. A tunnel (Tailscale, Cloudflare) does not count: it goes down with the network card.\n")
 	b.WriteString("#  - A terminal that survives a dropped connection, for blocks 5 and 6: the machine's own console, or tmux or screen. INSTALL tmux NOW, BEFORE block 3, while the machine is\n")
-	b.WriteString("#    still Debian 11 (apt-get install tmux): block 0 stops when there is no console and neither is installed. After block 3 install nothing by hand: a package installed from Debian 12's\n")
+	b.WriteString("#    still @from@ (apt-get install tmux): block 0 stops when there is no console and neither is installed. After block 3 install nothing by hand: a package installed from @to@'s\n")
 	b.WriteString("#    sources upgrades libc6 with it, outside the protection of block 5. Become root first (su - or sudo -i), THEN start it from the root shell:  tmux new-session -s casaos-upgrade\n")
 	b.WriteString("#    (or: screen -S casaos-upgrade)  and paste the blocks inside it (sudo and su drop the variables that tmux and screen set: that is why). Blocks 5 and 6 stop if they are not run in one of\n")
 	b.WriteString("#    them or on a console. After a dropped connection: log in, become root, tmux attach -t casaos-upgrade   (or: screen -r casaos-upgrade). In block 5, libc6 restarts services (ssh, smbd and\n")
@@ -246,7 +249,7 @@ func runbookHeader(c *rbCtx) string {
 	b.WriteString("#  - A plain sh to paste into: if your root shell has aliases for mv, cp or rm, type sh first. The blocks use mv -f and read back what they wrote, but a plain sh is what they were tried in.\n")
 	b.WriteString("#    Type sh first too when a paste is changed on its way: bash without bracketed paste takes a TAB for completion, and a tab in a comment line of the sources of this machine then changes what block 3 writes\n")
 	b.WriteString("#    (block 3 sees it, stops on the hash, and stops again at every paste).\n")
-	b.WriteString("#  - Debian 11 fully updated and restarted once before you start (apt-get update, apt-get upgrade, restart), as the machine of the measurement was. Nothing here checks it.\n")
+	b.WriteString("#  - @from@ fully updated and restarted once before you start (apt-get update, apt-get upgrade, restart), as the machine of the measurement was. Nothing here checks it.\n")
 	b.WriteString("#  - The machine must not be doing something else with its packages (no update running, no other package manager). Blocks 0, 3, 5 and 6 look at the processes of the package managers; the apt-get\n")
 	b.WriteString("#    commands of the blocks that check, download or install wait up to 5 minutes for the dpkg lock, and apt-get update does not wait for the lock of the lists: it fails at once when another one holds it.\n")
 	b.WriteString("#  - Room in /var/backups for a copy of /etc and /etc/apt. The directory that this text makes there is private to root (mode 700), because it holds a copy of /etc.\n")
@@ -285,6 +288,17 @@ func runbookHeader(c *rbCtx) string {
 	}
 	b.WriteString("#\n")
 	b.WriteString("# WHAT HAS BEEN TESTED, AND WHAT HAS NOT\n")
+	b.WriteString(provenance(c))
+	b.WriteString("#  - Nothing goes back to @from@ once the upgrade has begun (block 5): a failure after it is mended by going forward, or by the snapshot.\n")
+	b.WriteString("#  - A line that starts with STOP says why a block did not go through. But a command that fails in the middle (a full disk, a lost connection) ends a block too, with its own message and\n")
+	b.WriteString("#    no STOP line: a block that did not print 'Block N done.' did not go through, STOP line or not. Read what it printed, do not go on, and look at the table at the end.\n")
+	return b.String()
+}
+
+// provenance is what the runbook says of where its commands were measured and tried. It names the releases of the measurement, which are not
+// always the ones of the hop: it is the one part of the text that keeps them as they were written.
+func provenance(c *rbCtx) string {
+	var b strings.Builder
 	b.WriteString("#  - The apt COMMANDS of blocks 3 to 6 below, and their order (update, the download and the minimal upgrade, the download and the full upgrade, the simulation that finds nothing left), are\n")
 	b.WriteString("#    the ones of a hop from Debian 11 to Debian 12 that was measured in a virtual machine, on a clean cloud image with ReCasaOS and Docker installed, and that ended with the machine up on Debian 12,\n")
 	b.WriteString("#    but for one option: the measured hop ran them with Dpkg::Use-Pty=0, and this text leaves apt's pty on, so that /var/log/apt/term.log holds what dpkg and the scripts of the packages print.\n")
@@ -297,9 +311,6 @@ func runbookHeader(c *rbCtx) string {
 	b.WriteString("#    timers, libc6 restarting services, the initrd, grub, the restart and Docker's source were never run for real. They may be wrong in ways nobody has seen.\n")
 	b.WriteString("#  - Your machine is not that image. It has its own hardware (network card names, firmware, disk controllers), its own history, files you edited, and packages that nobody tested.\n")
 	b.WriteString("#    None of that was tried, and nothing here promises how it will go.\n")
-	b.WriteString("#  - Nothing goes back to Debian 11 once the upgrade has begun (block 5): a failure after it is mended by going forward, or by the snapshot.\n")
-	b.WriteString("#  - A line that starts with STOP says why a block did not go through. But a command that fails in the middle (a full disk, a lost connection) ends a block too, with its own message and\n")
-	b.WriteString("#    no STOP line: a block that did not print 'Block N done.' did not go through, STOP line or not. Read what it printed, do not go on, and look at the table at the end.\n")
 	return b.String()
 }
 
@@ -383,15 +394,15 @@ func resumeMap(blocks []blockSpec) string {
 	b.WriteString("#  0, 1, 2                   Nothing has been changed (block 1 stopped timers).    Fix what the STOP line says and run the block again. To give up: start the timers again, as they were:   " + timersBack + "\n")
 	b.WriteString("#  3                         /etc/apt may have been rewritten.                     Run:  sh /var/backups/casaos-os-upgrade-<plan id>/restore-sources.sh   (it puts the sources back, takes apt-orig aside and forgets blocks 3 and 4), then run block 3 again (pasted again with no restore, it stops and says so). To give up: do that, then start the timers again, as for blocks 0 to 2.\n")
 	b.WriteString("#  4                         The same as after block 3, with packages downloaded.  The same as for block 3, timers included.\n")
-	b.WriteString("#  0 or 3 of another plan    Another plan of this machine ran its block 3 (the folder of that plan in /var/backups has an apt-orig): the sources may be Debian 12's, and this plan cannot be made on them.   The STOP line names the restore script of that plan: run it with sh, then this block again. When that plan's upgrade has begun (begun-upgrade in its folder), only forward, as for block 5.\n")
+	b.WriteString("#  0 or 3 of another plan    Another plan of this machine ran its block 3 (the folder of that plan in /var/backups has an apt-orig): the sources may be @to@'s, and this plan cannot be made on them.   The STOP line names the restore script of that plan: run it with sh, then this block again. When that plan's upgrade has begun (begun-upgrade in its folder), only forward, as for block 5.\n")
 	b.WriteString("#  a restart, blocks 3 to 6  The timers of apt are back (they are enabled units), and apt-daily may be at work.   First:   " + stopTimersNow + "   (each stop waits for its unit to end). Then run the block again, by its row: blocks 3, 5 and 6 stop the timers again, and stop while a package manager is at work.\n")
 	b.WriteString("#  5, before CONFIRM         Nothing has begun: the machine is as after block 4.   Fix what the STOP line says (it also stops here when it is not run in tmux, in screen or on a console), and run block 5 again.\n")
 	b.WriteString("#  5, apt failed at once     Nothing was installed (the block says so, and takes its marker back).  Fix what apt printed (a lock, no room, the network), and run block 5 again (type the confirmation again), or put the sources back: restore-sources.sh.\n")
-	b.WriteString("#  5 after CONFIRM, 6        The upgrade has begun: Debian 11 and 12 are mixed.    Only forward: " + forwardCommands + "   then run the block again (block 5: type the confirmation again). Do not restore /etc/apt: from the moment block 5 writes begun-upgrade, restore-sources.sh and blocks 2, 3 and 4 refuse.\n")
+	b.WriteString("#  5 after CONFIRM, 6        The upgrade has begun: @from@ and @tov@ are mixed.    Only forward: " + forwardCommands + "   then run the block again (block 5: type the confirmation again). Do not restore /etc/apt: from the moment block 5 writes begun-upgrade, restore-sources.sh and blocks 2, 3 and 4 refuse.\n")
 	b.WriteString("#  5 or 6, cut off           A crash, a power cut, a dead terminal, a restart      First:   " + stopTimersNow + "   Then the same as the row above: only forward, with those commands (dpkg --configure -a mends a package left half unpacked). A restart may have started the machine on the new kernel already, or on the old one: run block 6 again on either (block 7 says which it is).\n")
-	b.WriteString("#  7                         Debian 12 packages, the old kernel still runs.        Do what the STOP line says, run block 7 again, and do not restart the machine before it ends.\n")
+	b.WriteString("#  7                         @to@ packages, the old kernel still runs.        Do what the STOP line says, run block 7 again, and do not restart the machine before it ends.\n")
 	b.WriteString("#  restarted before 7 ended  The machine runs the new kernel, or the old one (the grub menu).   Run block 7 again. On the new kernel it says so, skips the checks that are for before a restart (the kernel, the initrd, grub), makes the ones that stay true after a boot (DNS, the clock, the iptables alternative, sshd), and goes on to block 8 only when they pass: a STOP there says what to fix, then run block 7 again. On the old one it runs all its checks and says to restart: restart again and choose the new kernel in the grub menu.\n")
-	b.WriteString("#  after the restart         The machine is Debian 12, or does not start.          Block 8. If it does not start: the console, the rescue mode of the installer, or the snapshot.\n")
+	b.WriteString("#  after the restart         The machine is @to@, or does not start.          Block 8. If it does not start: the console, the rescue mode of the installer, or the snapshot.\n")
 	b.WriteString("#  after block 8             The hop is over (done-after is there).                Nothing more is run from this text: every block stops. Update Docker from the dashboard, and look at your applications.\n")
 	return b.String()
 }
@@ -558,11 +569,10 @@ func busyCheck(then string) string {
 // A plan whose block 8 ended is over, and it is not looked at here: head stops every block on it first (the hop is over for the machine). The folder of the plan itself is no other: the
 // blocks that call this look at it first and stop on what it holds, so that it has none of the three marks here; the file of the timers' state (casaos-os-upgrade-timers.state) is no
 // folder, and has none of them either, and a pattern that matches nothing is itself a name that has none.
-func otherPlans() string {
-	return shLines(
-		`for d in /var/backups/casaos-os-upgrade-*; do`,
+func (c *rbCtx) otherPlans() string {
+	return "for d in /var/backups/casaos-os-upgrade-*; do\n" + c.sameHop("d") + shLines(
 		`  if [ -e "$d/begun-upgrade" ] || [ -e "$d/done-minimal" ]; then`,
-		`    echo "STOP: another plan of this machine has begun the upgrade of the packages ($d has begun-upgrade): Debian 11 and 12 are mixed there, and nothing in this text applies to it. Do not restore anything, and do not make another plan: finish that upgrade. Only forward: `+forwardCommands+`   then:   apt-get dist-upgrade until nothing is left, and restart. Or ask for help."`,
+		`    echo "STOP: another plan of this machine has begun the upgrade of the packages ($d has begun-upgrade): @from@ and @tov@ are mixed there, and nothing in this text applies to it. Do not restore anything, and do not make another plan: finish that upgrade. Only forward: `+forwardCommands+`   then:   apt-get dist-upgrade until nothing is left, and restart. Or ask for help."`,
 		`    exit 1`,
 		`  fi`,
 		`  if [ -e "$d/apt-orig" ]; then`,
@@ -603,7 +613,7 @@ func indentBy(s, pad string) string {
 //
 // The hop is over when block 8 ended: no block runs again on a finished machine (block 1 would stop the timers and write their state again, block 5 would run apt, block 8
 // would start them). It is over for the machine whichever plan ended it: a second plan has another folder, and its text, pasted from an older page, must not run on a machine that
-// the first one took to its end. (Only one hop has a runbook; a second one would need its folders told apart from these.)
+// the first one took to its end. (A hop other than the first looks only at the folders of its own hop: sameHop.)
 //
 // It is over too when the machine is no longer Debian 11 and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in its folder): another
 // plan, or the owner by hand, took it on. When this plan has begun, the machine turns Debian 12 as base-files is upgraded, and the blocks from there must run. Block 0 has its own
@@ -611,32 +621,49 @@ func indentBy(s, pad string) string {
 func head(c *rbCtx, prev string) string {
 	s := shHead + c.prologue() + "BK=" + c.backupFolder() + "\n"
 	s += `[ ! -e "$BK/done-after" ] || { echo "STOP: the hop is over (block 8 ended: done-after is in $BK): there is nothing more to run in this text."; exit 1; }` + "\n"
-	s += shLines(
-		`for fin in /var/backups/casaos-os-upgrade-*; do`,
+	s += "for fin in /var/backups/casaos-os-upgrade-*; do\n" + c.sameHop("fin") + shLines(
 		`  [ ! -e "$fin/done-after" ] || { echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }`,
 		`done`,
 	)
 	switch {
 	case prev != "" && c.refresh != nil:
 		// a refresh has no point of no return to tell another plan's text by, and no person to run the block before: the machine is the release it was started on, or it is not
-		s += `grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || { echo "STOP: this machine is not Debian 11 (` + c.hop.From + `) any more: the refresh brings the release that the machine runs up to its last state, and this machine runs another."; exit 1; }` + "\n"
+		s += `grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || { echo "STOP: this machine is not @from@ (` + c.hop.From + `) any more: the refresh brings the release that the machine runs up to its last state, and this machine runs another."; exit 1; }` + "\n"
 		s += `[ -e "$BK/done-` + prev + `" ] || { echo "STOP: the block before this one (` + prev + `) did not end: the refresh does not go on without it (ls $BK shows how far it got)."; exit 1; }` + "\n"
-		s += bkdir
+		s += c.mkBK()
 	case prev != "":
-		s += `[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || { echo "STOP: the hop is over for this machine: it is not Debian 11 (` + c.hop.From + `) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }` + "\n"
+		s += `[ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ] || grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || { echo "STOP: the hop is over for this machine: it is not @from@ (` + c.hop.From + `) any more, and this plan did not begin the upgrade of its packages (neither begun-upgrade nor done-minimal is in $BK): another plan, or the owner by hand, took it on, and nothing in this text applies to it. If another plan of this machine has not ended (ls /var/backups), go on with that one."; exit 1; }` + "\n"
 		s += `[ -e "$BK/done-` + prev + `" ] || { echo "STOP: the block before this one (` + prev + `) did not end: run it first (ls $BK shows how far you got)."; exit 1; }` + "\n"
-		s += bkdir
+		s += c.mkBK()
 	}
 	return s
 }
 
 // done is what every block ends with: its marker. Block 0 makes the directory (the other blocks made it in head, before they wrote in it).
-func done(id string, n int) string {
+func (c *rbCtx) done(id string, n int) string {
 	s := fmt.Sprintf(": > \"$BK/done-%s\"\necho \"Block %d done.\"\n", id, n)
 	if n == 0 {
-		return bkdir + s
+		return c.mkBK() + s
 	}
 	return s
+}
+
+// mkBK makes the backup folder ($BK). For a hop other than the first one it writes the hop's id in the folder's file hop too: the folders that the beta left before there was a
+// second hop have no such file, and are the first hop's (head and otherPlans tell the folders of their own hop by it).
+func (c *rbCtx) mkBK() string {
+	if c.hop.ID == osreadiness.HopDebian11to12 {
+		return bkdir
+	}
+	return bkdir + "printf '%s\\n' " + shQ(string(c.hop.ID)) + " > \"$BK/hop\"\n"
+}
+
+// sameHop is the first line of the body of a loop over the folders of /var/backups (v is the loop's variable): it goes on to the next folder when that one is of another hop. The
+// first hop's text has none, and is the text it was: on a machine of its release there is no folder of a later hop.
+func (c *rbCtx) sameHop(v string) string {
+	if c.hop.ID == osreadiness.HopDebian11to12 {
+		return ""
+	}
+	return `  [ "$(cat "$` + v + `/hop" 2> /dev/null)" = ` + shQ(string(c.hop.ID)) + ` ] || continue` + "\n"
 }
 
 // checkSim is the three checks of a simulation of apt that the block has put in file: that it has its summary line, that the names it lists as removed
@@ -685,7 +712,7 @@ func muxAtHand() string {
 		`if [ -z "${TMUX:-}${STY:-}" ]; then`,
 		`  case "$(tty 2> /dev/null || true)" in`,
 		`    `+consoleTTY+`) ;;`,
-		`    *) command -v tmux > /dev/null 2>&1 || command -v screen > /dev/null 2>&1 || `+stop("there is no console here, and neither tmux nor screen is installed: blocks 5 and 6 need one, and after block 3 it is too late to install it (a package installed from Debian 12's sources upgrades libc6 with it, outside block 5's protection). Install it now, while this is still Debian 11:  apt-get install tmux   then run this block again.")+` ;;`,
+		`    *) command -v tmux > /dev/null 2>&1 || command -v screen > /dev/null 2>&1 || `+stop("there is no console here, and neither tmux nor screen is installed: blocks 5 and 6 need one, and after block 3 it is too late to install it (a package installed from @to@'s sources upgrades libc6 with it, outside block 5's protection). Install it now, while this is still @from@:  apt-get install tmux   then run this block again.")+` ;;`,
 		`  esac`,
 		`fi`,
 	)
@@ -725,9 +752,9 @@ func survive() string {
 		`      elif [ -e "$BK/begun-upgrade" ]; then`,
 		`        how="Neither tmux nor screen is installed, and the upgrade has begun: do not install anything by hand now, and do not restore the sources. Paste this block on the machine's own console."`,
 		`      else`,
-		`        how="Neither tmux nor screen is installed, and the sources are Debian 12's since block 3: a package installed from them upgrades libc6 with it, outside this block's protection. Paste this block on the machine's own console, or go back while nothing has begun: sh $BK/restore-sources.sh   then   apt-get install tmux   (Debian 11 again), redo blocks 3 and 4, and run this block in tmux."`,
+		`        how="Neither tmux nor screen is installed, and the sources are @to@'s since block 3: a package installed from them upgrades libc6 with it, outside this block's protection. Paste this block on the machine's own console, or go back while nothing has begun: sh $BK/restore-sources.sh   then   apt-get install tmux   (@from@ again), redo blocks 3 and 4, and run this block in tmux."`,
 		`      fi`,
-		`      `+stop("this block must not run in a terminal that dies with the connection: a dropped connection would kill apt in the middle of the upgrade and leave Debian 11 and 12 mixed. $how On the machine's own console, or a serial or hypervisor console, this check passes by itself.")+` ;;`,
+		`      `+stop("this block must not run in a terminal that dies with the connection: a dropped connection would kill apt in the middle of the upgrade and leave @from@ and @tov@ mixed. $how On the machine's own console, or a serial or hypervisor console, this check passes by itself.")+` ;;`,
 		`  esac`,
 		`fi`,
 	)
@@ -766,7 +793,7 @@ LC_ALL=C; export LC_ALL
 PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
 case "$0" in */*) HERE="${0%/*}" ;; *) HERE=. ;; esac
 APT_ETC="${APT_ETC:-/etc/apt}"
-if [ -e "$HERE/begun-upgrade" ] || [ -e "$HERE/done-minimal" ]; then echo "STOP: the upgrade has begun (block 5 was started): putting Debian 11's sources back now would leave Debian 12 packages on Debian 11 sources. Do not restore anything. Only forward: ` + forwardWords + `"; exit 1; fi
+if [ -e "$HERE/begun-upgrade" ] || [ -e "$HERE/done-minimal" ]; then echo "STOP: the upgrade has begun (block 5 was started): putting @from@'s sources back now would leave @to@ packages on @from@ sources. Do not restore anything. Only forward: ` + forwardWords + `"; exit 1; fi
 [ -d "$HERE/apt-orig" ] || { echo "STOP: $HERE/apt-orig is not there: nothing to restore from."; exit 1; }
 rm -f "$APT_ETC"/sources.list.d/*.list "$APT_ETC"/sources.list.d/*.sources "$APT_ETC"/sources.list.d/*.casaos-paused "$APT_ETC"/sources.list.d/*.casaos-new "$APT_ETC/sources.list.casaos-new"
 if [ -e "$HERE/apt-orig/sources.list" ]; then cp -a "$HERE/apt-orig/sources.list" "$APT_ETC/sources.list"; else rm -f "$APT_ETC/sources.list"; fi
@@ -783,7 +810,6 @@ if [ -z "${CASAOS_NO_UPDATE:-}" ]; then apt-get update || echo "apt-get update d
 `
 
 // restoreScriptHash is the hash of the restore script as the block writes it, which the block checks after writing it.
-func restoreScriptHash() string { return restoreScriptHashOf(restoreScript) }
 
 func restoreScriptHashOf(script string) string {
 	sum := sha256.Sum256([]byte(script))
@@ -820,11 +846,17 @@ func refreshRestoreScript(script string) string {
 func (c *rbCtx) restoreText() string {
 	switch {
 	case c.refresh != nil:
-		return restoreScriptRefresh
+		return c.names(restoreScriptRefresh)
 	case c.auto != nil:
-		return restoreScriptUnit
+		return c.names(restoreScriptUnit)
 	}
-	return restoreScript
+	return c.names(restoreScript)
+}
+
+// names is s with the releases of the hop of c in place of the words that stand for them in the texts of the blocks: @from@ and @to@ are the releases ("Debian 11"),
+// @tov@ the number of the one reached ("Debian 11 and 12 are mixed"). Every text is written with them and goes through here once, before it is hashed or shown.
+func (c *rbCtx) names(s string) string {
+	return strings.NewReplacer("@from@", c.hop.FromName(), "@to@", c.hop.ToName(), "@tov@", c.hop.ToVersion).Replace(s)
 }
 
 // shSourcesBackup is what a block does before it changes a file of /etc/apt: it writes the restore script and reads it back, and copies /etc/apt whole (or not at all). Block 3
@@ -955,7 +987,7 @@ func verifyGate() string {
 		`fi`,
 		`if [ -e "$BK/apt-orig" ]; then`,
 		`  if [ -e "$BK/done-sources" ]; then`,
-		`    echo "STOP: block 3 has begun and ended ($BK/done-sources is there): the sources of apt are Debian 12's now, and this block is for before it. The next is block 4. To start again from block 3, put the sources back first: sh $BK/restore-sources.sh   (it forgets blocks 3 and 4)."`,
+		`    echo "STOP: block 3 has begun and ended ($BK/done-sources is there): the sources of apt are @to@'s now, and this block is for before it. The next is block 4. To start again from block 3, put the sources back first: sh $BK/restore-sources.sh   (it forgets blocks 3 and 4)."`,
 		`  else`,
 		`    echo "STOP: block 3 has begun and did not end ($BK/apt-orig is there): the sources of apt may no longer be the ones that the plan was made from, and this block is for before it. Look at the table at the end of this text: sh $BK/restore-sources.sh puts the sources back (when that file is there), and block 3 can then be run again."`,
 		`  fi`,
@@ -964,15 +996,15 @@ func verifyGate() string {
 	)
 }
 
-// debian11to12Blocks are the blocks of the hop from Debian 11 to 12: block 0 to 8.
-var debian11to12Blocks = []blockSpec{
+// debianBlocks are the blocks of the hop from Debian 11 to 12: block 0 to 8.
+var debianBlocks = []blockSpec{
 	{
 		RunbookBlock: RunbookBlock{ID: "verify", Title: "check that this is the machine of the plan, and that it is ready"},
 		prose: []string{
 			"Nothing is changed here. Type the name of this machine between the quotes of TYPED_HOSTNAME, so that you have looked at which machine this is (the plan holds no identity of the machine: this guards the terminal, nothing more).",
 			"It also checks that the plan is still good (24 hours), that the sources of apt are the ones the plan was made from, that dpkg is quiet, that there is room (for the packages, in /usr and /, in /boot, on the EFI partition",
 			"or the disk of grub-pc where the machine has them), that the tools the next blocks use are there (ps, ss, and curl when Docker's source is put aside), and that blocks 5 and 6 will have a terminal that survives a",
-			"dropped connection: a console, or tmux or screen installed. If none is, this is the time to install one (apt-get install tmux): after block 3 the machine takes its packages from Debian 12.",
+			"dropped connection: a console, or tmux or screen installed. If none is, this is the time to install one (apt-get install tmux): after block 3 the machine takes its packages from @to@.",
 			"It does NOT run the readiness report of the dashboard: read that first, and do not start when it says that it refuses. It prints a WARNING, which is not a stop, when dkms has modules built from source.",
 			"It looks at the processes of the package managers; it does not see their file locks. The apt-get commands of the blocks that check, download or install wait up to 5 minutes for the dpkg lock and stop if it stays",
 			"held; apt-get update waits for no lock, and fails at once when another package manager holds the lock of the lists.",
@@ -987,10 +1019,10 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("echo \"Block 0: is this the machine of the plan? Nothing is changed.\"\n")
 			b.WriteString(`[ "$(id -u)" = 0 ] || ` + stop("run this as root.") + "\n")
 			b.WriteString(verifyGate())
-			b.WriteString(otherPlans())
+			b.WriteString(c.otherPlans())
 			b.WriteString(`[ -n "$TYPED_HOSTNAME" ] && [ "$TYPED_HOSTNAME" = "$(hostname)" ] || { echo "STOP: this machine is called $(hostname). Type that name between the quotes of TYPED_HOSTNAME at the top of this block, to show that you are on the machine you mean to upgrade."; exit 1; }` + "\n")
 			b.WriteString(`[ "$(date +%s)" -lt ` + strconv.FormatInt(c.plan.ExpiresAt.Unix(), 10) + ` ] || ` + stop("this plan is older than its 24 hours (it was good until "+c.plan.ExpiresAt.UTC().Format("2006-01-02 15:04")+" UTC): the machine may have changed. Ask for a new plan.") + "\n")
-			b.WriteString(`grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || ` + stop("this machine is not Debian 11 ("+c.hop.From+") any more: the plan does not apply. Ask for a new one.") + "\n")
+			b.WriteString(`grep -q '^VERSION_CODENAME=` + c.hop.From + `$' /etc/os-release || ` + stop("this machine is not @from@ ("+c.hop.From+") any more: the plan does not apply. Ask for a new one.") + "\n")
 			b.WriteString(auditCheck("Run: dpkg --configure -a   then ask for a new plan. If dpkg cannot open its own database, ask for help."))
 			b.WriteString("command -v ss > /dev/null 2>&1 || " + stop("ss is not installed: blocks 2 and 8 use it to write down the ports that listen. Install it: apt-get install iproute2   then run this block again.") + "\n")
 			for _, pa := range c.plan.Paused {
@@ -1018,7 +1050,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString(sourcesHash + "now=\"$(srchash)\"\n")
 			fmt.Fprintf(&b, "[ \"$now\" = %s ] || %s\n", shQ(c.plan.Sources.HashCurrent), stop("the sources of apt are not the ones the plan was made from: something changed them. Ask for a new plan."))
 			b.WriteString(`if command -v dkms > /dev/null 2>&1 && [ -n "$(dkms status 2> /dev/null || true)" ]; then echo "WARNING: dkms has modules built from source on this machine (dkms status lists them). Block 6 builds them again for the new kernel, and a driver that does not build for it is a driver that is missing after the restart (a network card, a disk controller). This is NOT a stop: check by hand that each one supports the kernel of ` + c.hop.To + ` before you go on."; fi` + "\n")
-			b.WriteString(done("verify", 0))
+			b.WriteString(c.done("verify", 0))
 			return b.String()
 		},
 	},
@@ -1040,7 +1072,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString(shTimersState("block 8"))
 			b.WriteString(c.timersStopping())
 			b.WriteString(shTimers())
-			b.WriteString(done("timers", 1))
+			b.WriteString(c.done("timers", 1))
 			return b.String()
 		},
 	},
@@ -1085,12 +1117,12 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("fi\n")
 			b.WriteString("find / -xdev \\( -name '*.dpkg-old' -o -name '*.dpkg-new' -o -name '*.dpkg-dist' -o -name '*.ucf-*' \\) 2> /dev/null | sort > \"$BK/dpkg-files.txt\" || true\n")
 			b.WriteString("for f in selections.txt packages.tsv etc.tar.gz listening.txt; do [ -s \"$BK/$f\" ] || { echo \"STOP: $BK/$f was not written: is the disk full (df -h /var/backups)? See what the commands above printed, free some room, then run this block again.\"; exit 1; }; done\n")
-			b.WriteString(done("snapshot", 2))
+			b.WriteString(c.done("snapshot", 2))
 			return b.String()
 		},
 	},
 	{
-		RunbookBlock: RunbookBlock{ID: "sources", Title: "write the sources of Debian 12, and read the plan again"},
+		RunbookBlock: RunbookBlock{ID: "sources", Title: "write the sources of @to@, and read the plan again"},
 		prose: []string{
 			"It first asks whether it was run before (pasted again, it says to run the restore script, or that it ended and the next is block 4), then looks again at what it relies on (the plan is inside its 24 hours,",
 			"the sources of apt are still the plan's: block 0 looked once, and hours may have passed), stops the timers again, stops while a package manager is at work, copies /etc/apt",
@@ -1107,7 +1139,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("APT_ETC=/etc/apt\n")
 			b.WriteString("undo=\"No package has been installed or removed yet. To put the sources back: sh $BK/restore-sources.sh   (it also lets this block be run again, and this block says when the plan is no longer good).\"\n")
 			b.WriteString("changed=\"The machine is not as it was when the plan was made: once the sources are back, ask for a new plan.\"\n")
-			b.WriteString(beganCheck("the sources are Debian 12's now: this block would write them again or put Debian 11's back."))
+			b.WriteString(beganCheck("the sources are @to@'s now: this block would write them again or put @from@'s back."))
 			// Has this block been run? Asked BEFORE the date and the hash of the sources below: once the sources are Debian 12's their hash is not the plan's any more,
 			// and a block 3 pasted again (after a dropped connection, a stop at the update or at the comparison, or when it ended) has to be sent to the restore script, or
 			// told that it ended, and not told to ask for a new plan: a plan cannot be made on sources that are Debian 12's already.
@@ -1118,7 +1150,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("fi\n")
 			b.WriteString("[ ! -e \"$BK/done-sources\" ] || " + stop("block 3 ended: the next is block 4 ($BK/done-sources is there).") + "\n")
 			// another plan of this machine whose block 3 ran has rewritten the sources: this plan cannot go on from them, and the way back is that plan's restore script
-			b.WriteString(otherPlans())
+			b.WriteString(c.otherPlans())
 			if len(c.manual) > 0 {
 				b.WriteString(c.acceptRemovals())
 				fmt.Fprintf(&b, "[ \"$ACCEPT_REMOVALS\" = %s ] || %s\n", shQ(strings.Join(c.manual, " ")), stop("type the names of the packages that are removed, "+strings.Join(c.manual, " ")+", between the quotes of ACCEPT_REMOVALS at the top of this block, to accept that they go."))
@@ -1157,7 +1189,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("  echo \"$undo $changed\"\n")
 			b.WriteString("  exit 1\n")
 			b.WriteString("fi\n")
-			b.WriteString(done("sources", 3))
+			b.WriteString(c.done("sources", 3))
 			return b.String()
 		},
 	},
@@ -1177,14 +1209,14 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("echo \"Block 4: downloading.\"\n")
 			b.WriteString("aptq --download-only upgrade || { echo \"STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above). $(whereto)\"; exit 1; }\n")
 			b.WriteString("ls /var/cache/apt/archives/*.deb > /dev/null 2>&1 || { echo \"STOP: no package was downloaded: apt had nothing to fetch, or the cache of downloaded packages was emptied (apt-get clean), or the download did not go through (see what apt printed above). $(whereto)\"; exit 1; }\n")
-			b.WriteString(done("download", 4))
+			b.WriteString(c.done("download", 4))
 			return b.String()
 		},
 	},
 	{
 		RunbookBlock: RunbookBlock{ID: "minimal", Title: "THE POINT OF NO RETURN: the minimal upgrade, then the protected packages", PointOfNoReturn: true},
 		prose: []string{
-			"From here on nothing is undone by going back: the packages of Debian 11 and of Debian 12 are mixed until the end of block 6, and the way out is forward.",
+			"From here on nothing is undone by going back: the packages of @from@ and of @to@ are mixed until the end of block 6, and the way out is forward.",
 			"The libc6 upgrade restarts services during this block (ssh, smbd and cron were restarted in the measured hop): run it in tmux or screen, or on the console. The block stops if you do not.",
 			"Have the snapshot, or the console. Type I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON between the quotes of CONFIRM to go on.",
 			"It stops the timers again, stops while a package manager is at work, writes the marker begun-upgrade (from then on the restore script and blocks 2, 3 and 4 refuse), and runs apt-get upgrade. When apt-get upgrade",
@@ -1220,7 +1252,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("aptq -s dist-upgrade > \"$BK/after-minimal.txt\" 2>&1 || { echo \"STOP: apt cannot work out the full upgrade: see $BK/after-minimal.txt. $help\"; exit 1; }\n")
 			b.WriteString(checkSim("$BK/after-minimal.txt", "$help"))
 			b.WriteString("guard_removals \"$BK/after-minimal.txt\"\n")
-			b.WriteString(done("minimal", 5))
+			b.WriteString(c.done("minimal", 5))
 			return b.String()
 		},
 	},
@@ -1261,7 +1293,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("[ \"$converged\" = yes ] || " + stop("apt still has something to do after the passes: see $last, and ask for help. "+c.logWords()) + "\n")
 			b.WriteString(auditCheck("Run dpkg --configure -a, then this block again. If dpkg cannot open its own database, do not undo anything: ask for help."))
 			b.WriteString("aptq check > /dev/null || " + stop("apt-get check finds a broken dependency, or could not get the lock of dpkg in 5 minutes, or dpkg was interrupted (what it printed above says which). If it printed dpkg was interrupted, or Unmet dependencies: "+interruptedTail+" Do not undo anything: ask for help. "+c.logWords()) + "\n")
-			b.WriteString(done("full", 6))
+			b.WriteString(c.done("full", 6))
 			b.WriteString("echo \"The next is block 7: do not restart the machine before it has ended (it looks at the new kernel and at what the machine needs to start). Apt may say that some packages are no longer needed: do not run apt autoremove by hand, see the end of block 8.\"\n")
 			return b.String()
 		},
@@ -1304,7 +1336,7 @@ var debian11to12Blocks = []blockSpec{
 			// what is for before a restart, and only that, is skipped when the machine has started on the new kernel already
 			b.WriteString("if [ \"$early\" = no ]; then\n")
 			if expectsNewKernel(c.plan) {
-				b.WriteString("[ \"$newest\" != \"$running\" ] || " + stop("the plan installs a new kernel (or its list of new packages was cut and cannot say that it does not), and the newest kernel that dpkg has is the one that runs now ($running), which was already installed before the hop: the new kernel is not installed, or its installation did not end. Run block 6 again, then this block. If it stays so, ask for help, with: dpkg -l 'linux-image*'   Do not restart before: the machine would start on the kernel of Debian 11 with the system of Debian 12.") + "\n")
+				b.WriteString("[ \"$newest\" != \"$running\" ] || " + stop("the plan installs a new kernel (or its list of new packages was cut and cannot say that it does not), and the newest kernel that dpkg has is the one that runs now ($running), which was already installed before the hop: the new kernel is not installed, or its installation did not end. Run block 6 again, then this block. If it stays so, ask for help, with: dpkg -l 'linux-image*'   Do not restart before: the machine would start on the kernel of @from@ with the system of @to@.") + "\n")
 			}
 			b.WriteString("echo \"The kernel that runs: $running. The newest installed: $newest.\"\n")
 			b.WriteString("[ -s \"/boot/vmlinuz-$newest\" ] || " + stop("/boot/vmlinuz-$newest is not there: the machine would not start. Fix: apt-get install --reinstall linux-image-$newest   then run this block again.") + "\n")
@@ -1328,9 +1360,9 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString(shLines(
 				`if [ "$resolved" = yes ] && ! isinst systemd-resolved; then`,
 				`  if [ "$early" = yes ]; then`,
-				`    `+stop("systemd-resolved served as the resolver of this machine and is not installed on Debian 12, and the machine has started without it: it has no DNS, and apt cannot fetch the package. Fix, in this order: replace /etc/resolv.conf, a link to a file of systemd-resolved that is not there, by a file that holds a nameserver of your network (rm /etc/resolv.conf   then:   echo 'nameserver <the address of a DNS server of your network>' > /etc/resolv.conf)   then apt-get install systemd-resolved   then run this block again."),
+				`    `+stop("systemd-resolved served as the resolver of this machine and is not installed on @to@, and the machine has started without it: it has no DNS, and apt cannot fetch the package. Fix, in this order: replace /etc/resolv.conf, a link to a file of systemd-resolved that is not there, by a file that holds a nameserver of your network (rm /etc/resolv.conf   then:   echo 'nameserver <the address of a DNS server of your network>' > /etc/resolv.conf)   then apt-get install systemd-resolved   then run this block again."),
 				`  fi`,
-				`  `+stop("systemd-resolved served as the resolver of this machine and is not installed on Debian 12: after a boot the machine has no DNS. Fix: apt-get install systemd-resolved   then run this block again."),
+				`  `+stop("systemd-resolved served as the resolver of this machine and is not installed on @to@: after a boot the machine has no DNS. Fix: apt-get install systemd-resolved   then run this block again."),
 				`fi`,
 			))
 			b.WriteString("timed=no\n")
@@ -1345,7 +1377,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("  sshd -T 2> /dev/null | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication) ' | sort > \"$BK/sshd-keys-now.txt\" || true\n")
 			b.WriteString("  grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication) ' \"$BK/sshd-keys.txt\" | sort > \"$BK/sshd-keys-before.txt\" || true\n")
 			b.WriteString("  [ \"$(cat \"$BK/sshd-keys-before.txt\")\" = \"$(cat \"$BK/sshd-keys-now.txt\")\" ] || " + stop("the settings of sshd (port, address, root login, passwords) are not the ones of before: compare $BK/sshd-keys.txt with sshd -T.") + "\n")
-			b.WriteString("  echo \"The algorithms that sshd accepts for keys are named differently by Debian 12, and its defaults changed: look at them yourself.\"\n")
+			b.WriteString("  echo \"The algorithms that sshd accepts for keys are named differently by @to@, and its defaults changed: look at them yourself.\"\n")
 			b.WriteString("  echo \"  before:  $(grep -E '^pubkeyaccepted' \"$BK/sshd-keys.txt\" || echo none)\"\n")
 			b.WriteString("  echo \"  now:     $(sshd -T 2> /dev/null | grep -E '^pubkeyaccepted' || echo none)\"\n")
 			b.WriteString("fi\n")
@@ -1359,7 +1391,7 @@ var debian11to12Blocks = []blockSpec{
 			// the kernel that block 8 will expect to find running, and the boot that must be over by then
 			b.WriteString("printf '%s\\n' \"$newest\" > \"$BK/kernel\"\n")
 			b.WriteString("cat /proc/sys/kernel/random/boot_id > \"$BK/boot_id\"\n")
-			b.WriteString(done("prereboot", 7))
+			b.WriteString(c.done("prereboot", 7))
 			b.WriteString("if [ \"$warned\" = yes ]; then echo \"The checks above passed, except what the WARNING above says (the size of the initrd, or the boot loader): look at it by hand first. What this block does not check is yours too. When you have looked, restart the machine yourself, with the console at hand. This text does not do it.\"\n")
 			b.WriteString("else echo \"The checks above passed. What this block does not check (the NOT checked line above) is yours: look at it first. When you have, restart the machine yourself, with the console at hand. This text does not do it.\"; fi\n")
 			return b.String()
@@ -1368,9 +1400,9 @@ var debian11to12Blocks = []blockSpec{
 	{
 		RunbookBlock: RunbookBlock{ID: "after", Title: "after the restart: look at the machine, then put the sources and the timers back"},
 		prose: []string{
-			"Run this when the machine is back. It checks that the machine was restarted, that it is Debian 12, that the kernel that runs is the one block 7 looked at and that the sources of apt name Debian 12.",
+			"Run this when the machine is back. It checks that the machine was restarted, that it is @to@, that the kernel that runs is the one block 7 looked at and that the sources of apt name @to@.",
 			"It shows what to look at (the units that fail now and did not before the hop, the ReCasaOS units and the containers beside the lists of before, the ports that listen compared with the ones of before), puts back the",
-			"timers that were running (from " + timersState + ", which it then removes), puts Docker's source back for Debian 12 when Docker publishes it (when Docker's server cannot be asked, for lack of curl or of a network, or",
+			"timers that were running (from " + timersState + ", which it then removes), puts Docker's source back for @to@ when Docker publishes it (when Docker's server cannot be asked, for lack of curl or of a network, or",
 			"answers an error that is not 'not published', the block stops and gives the commands to put the source back by hand; run it again then), and says which sources stay paused. The Docker engine itself is updated from the dashboard.",
 			"That the block ends ('Block 8 done.') says that its steps ran, not that the machine is healthy: read the lists it printed. Once it has ended, no block of this text runs again.",
 		},
@@ -1383,13 +1415,13 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString(c.freshNote())
 			// block 7 wrote the boot it ran in, unless it found the machine restarted already and ended without the checks: then there is no boot to compare
 			b.WriteString("if [ -s \"$BK/boot_id\" ]; then\n  [ \"$(cat /proc/sys/kernel/random/boot_id)\" != \"$(cat \"$BK/boot_id\")\" ] || " + stop("the machine has not been restarted since block 7: restart it first.") + "\nfi\n")
-			b.WriteString("grep -q '^VERSION_CODENAME=" + c.hop.To + "$' /etc/os-release || " + stop("this machine is not Debian 12 ("+c.hop.To+"): see the console, and the table at the end of this text.") + "\n")
+			b.WriteString("grep -q '^VERSION_CODENAME=" + c.hop.To + "$' /etc/os-release || " + stop("this machine is not @to@ ("+c.hop.To+"): see the console, and the table at the end of this text.") + "\n")
 			// the kernel that block 7 looked at is the one that must run: the machine may have started on the old one (grub's default is not the newest kernel)
 			b.WriteString("want=\"$(cat \"$BK/kernel\" 2> /dev/null || true)\"\n")
 			b.WriteString("[ -n \"$want\" ] || " + stop("$BK/kernel is not there: block 7 writes it, and it did not end. Run block 7 first.") + "\n")
 			b.WriteString("[ \"$(uname -r)\" = \"$want\" ] || " + stop("the machine runs the kernel $(uname -r), not $want, the one block 7 looked at: it started on the old one (grub's default, or a choice in its menu). Fix: choose $want in the boot menu on the console, make it the default (GRUB_DEFAULT=0 in /etc/default/grub, or grub-set-default 0 when it is saved), run update-grub, restart, and run this block again.") + "\n")
 			// the sources of apt name the new release: a restore script run after the upgrade would have left Debian 11's
-			b.WriteString("cat \"$APT_ETC/sources.list\" \"$APT_ETC\"/sources.list.d/*.list 2> /dev/null | grep -Eq '^[[:space:]]*deb(-src)?[[:space:]].*" + c.hop.To + "' || " + stop("the sources of apt do not name "+c.hop.To+": they are not the ones block 3 wrote (the restore script run after the upgrade, or a change by hand). Write Debian 12's sources again as block 3 does (its text has them), run apt-get update, then run this block again.") + "\n")
+			b.WriteString("cat \"$APT_ETC/sources.list\" \"$APT_ETC\"/sources.list.d/*.list 2> /dev/null | grep -Eq '^[[:space:]]*deb(-src)?[[:space:]].*" + c.hop.To + "' || " + stop("the sources of apt do not name "+c.hop.To+": they are not the ones block 3 wrote (the restore script run after the upgrade, or a change by hand). Write @to@'s sources again as block 3 does (its text has them), run apt-get update, then run this block again.") + "\n")
 			b.WriteString("echo \"The machine runs: $(grep '^PRETTY_NAME=' /etc/os-release), kernel $(uname -r).\"\n")
 			b.WriteString("systemctl --failed --no-legend --plain 2> /dev/null | awk '{ print $1 }' | sort > \"$BK/failed-units-after.txt\" || true\n")
 			b.WriteString("echo \"--- units that fail now and did not before the hop (block 2 wrote down the ones that failed before, in $BK/failed-units.txt):\"\ncomm -13 \"$BK/failed-units.txt\" \"$BK/failed-units-after.txt\" || true\n")
@@ -1409,7 +1441,7 @@ var debian11to12Blocks = []blockSpec{
 				}
 			}
 			if docker {
-				b.WriteString("# Docker's source goes back, for Debian 12, when Docker publishes Debian 12. curl says which it is: 0 it does; 22 it answers with an error status, which is\n")
+				b.WriteString("# Docker's source goes back, for @to@, when Docker publishes @to@. curl says which it is: 0 it does; 22 it answers with an error status, which is\n")
 				b.WriteString("# 'not published' for 403, 404 and 410 and the server's own trouble for the others (429, 5xx); anything else is the network (6 no name, 7 no connection, 28 too\n")
 				b.WriteString("# slow) or no curl, and is no answer.\n")
 				b.WriteString("rc=0\ncode=000\n")
@@ -1449,7 +1481,7 @@ var debian11to12Blocks = []blockSpec{
 				}
 			}
 			if len(left) > 0 {
-				b.WriteString("echo " + shQ("These sources stay paused: "+strings.Join(left, "; ")+". Put them back yourself when their vendor has a release for Debian 12.") + "\n")
+				b.WriteString("echo " + shQ("These sources stay paused: "+strings.Join(left, "; ")+". Put them back yourself when their vendor has a release for @to@.") + "\n")
 			}
 			b.WriteString("aptq update || echo \"apt-get update did not go through (another package manager may hold the lock of the lists: apt-get update does not wait for it): run it again.\"\n")
 			b.WriteString("find / -xdev \\( -name '*.dpkg-old' -o -name '*.dpkg-new' -o -name '*.dpkg-dist' -o -name '*.ucf-*' \\) 2> /dev/null | sort > \"$BK/dpkg-files-after.txt\" || true\n")
@@ -1460,7 +1492,7 @@ var debian11to12Blocks = []blockSpec{
 			b.WriteString("echo \"Do not run apt autoremove without looking: apt says that some packages are no longer needed, and the list can hold a package that this text protects (net-tools was in it in the measured hop). Run apt-get -s autoremove first, and keep what you need: apt-mark manual <the name>.\"\n")
 			// the state of the timers has done its work: a later hop starts from the machine as it is then
 			b.WriteString("rm -f \"$TS\"\n")
-			b.WriteString(done("after", 8))
+			b.WriteString(c.done("after", 8))
 			b.WriteString("echo \"That is not to say that the machine is healthy: the steps ran. Read the lists above (the units that fail, the ports, the containers, the files of dpkg) and look at your applications.\"\n")
 			return b.String()
 		},

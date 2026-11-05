@@ -586,7 +586,7 @@ func TestTheRestoreScriptSaysHowToStartTheTimersThatBlock1Stopped(t *testing.T) 
 	for rel, c := range map[string]string{
 		"etc/sources.list":         "deb http://deb.debian.org/debian bookworm main\n",
 		"bk/apt-orig/sources.list": "deb http://deb.debian.org/debian bullseye main\n",
-		"bk/restore-sources.sh":    restoreScript,
+		"bk/restore-sources.sh":    d11(restoreScript),
 		"bk/done-sources":          "",
 		"timers.state":             "apt-daily.timer active\napt-daily-upgrade.timer inactive\nunattended-upgrades.service active\n",
 	} {
@@ -609,7 +609,7 @@ func TestTheRestoreScriptSaysHowToStartTheTimersThatBlock1Stopped(t *testing.T) 
 		dir2 := t.TempDir()
 		os.MkdirAll(filepath.Join(dir2, "etc", "sources.list.d"), 0o755)
 		os.MkdirAll(filepath.Join(dir2, "bk", "apt-orig"), 0o755)
-		os.WriteFile(filepath.Join(dir2, "bk", "restore-sources.sh"), []byte(restoreScript), 0o644)
+		os.WriteFile(filepath.Join(dir2, "bk", "restore-sources.sh"), []byte(d11(restoreScript)), 0o644)
 		if state != "" {
 			os.WriteFile(filepath.Join(dir2, "timers.state"), []byte(state), 0o644)
 		}

@@ -98,16 +98,16 @@ func buildAuto(p Plan, a AutoParams) (*AutoRunbook, map[string]int, error) {
 	prev := ""
 	for _, blk := range blocks {
 		c.cur = blk.ID
-		text, err := autoText(blk.ID, a.RunID, blk.body(c, prev))
+		text, err := autoText(blk.ID, a.RunID, c.names(blk.body(c, prev)))
 		if err != nil {
 			return nil, nil, err
 		}
-		out.Blocks = append(out.Blocks, AutoBlock{ID: blk.ID, Title: blk.Title, Text: text})
+		out.Blocks = append(out.Blocks, AutoBlock{ID: blk.ID, Title: c.names(blk.Title), Text: text})
 		total += len(text)
 		prev = blk.ID
 	}
 	c.cur = osrun.BlockForward
-	text, err := autoText(osrun.BlockForward, a.RunID, autoForward(c))
+	text, err := autoText(osrun.BlockForward, a.RunID, c.names(autoForward(c)))
 	if err != nil {
 		return nil, nil, err
 	}

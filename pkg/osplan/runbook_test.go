@@ -431,7 +431,7 @@ func TestTheMarkerOfThePointOfNoReturnIsWrittenBeforeTheUpgradeAndLookedForWhere
 			t.Errorf("block %s does not stop once the upgrade has begun", id)
 		}
 	}
-	if !strings.Contains(restoreScript, `if [ -e "$HERE/begun-upgrade" ] || [ -e "$HERE/done-minimal" ]; then echo "STOP: the upgrade has begun (block 5 was started)`) || !strings.Contains(restoreScript, "Do not restore anything. Only forward: "+forwardWords) {
+	if !strings.Contains(d11(restoreScript), `if [ -e "$HERE/begun-upgrade" ] || [ -e "$HERE/done-minimal" ]; then echo "STOP: the upgrade has begun (block 5 was started)`) || !strings.Contains(d11(restoreScript), "Do not restore anything. Only forward: "+forwardWords) {
 		t.Error("the restore script does not stop once the upgrade has begun")
 	}
 	// and nowhere else is a restore offered after it: the stops of blocks 5 and 6, and of what comes after, do not name the restore script (block 5's own stop, before
@@ -941,7 +941,7 @@ func TestTheRestoreScriptPutsTheSourcesBackAsTheyWere(t *testing.T) {
 		write("etc/"+name, c)
 		write("bk/apt-orig/"+name, c)
 	}
-	write("bk/restore-sources.sh", restoreScript)
+	write("bk/restore-sources.sh", d11(restoreScript))
 	// the markers of the blocks that ended, and the copy of /etc/apt that block 3 made (what it is the copy of: the files above)
 	write("bk/done-snapshot", "")
 	write("bk/done-sources", "")
@@ -1002,7 +1002,7 @@ func TestTheRestoreScriptRefusesOnceTheUpgradeHasBegun(t *testing.T) {
 			"etc/sources.list":                  "deb http://deb.debian.org/debian bookworm main\n",
 			"bk/apt-orig/sources.list":          "deb http://deb.debian.org/debian bullseye main\n",
 			"bk/apt-orig/sources.list.d/x.list": "deb http://x.example/ bullseye main\n",
-			"bk/restore-sources.sh":             restoreScript,
+			"bk/restore-sources.sh":             d11(restoreScript),
 			"bk/done-sources":                   "",
 			"bk/done-download":                  "",
 			"bk/" + marker:                      "",
@@ -1049,7 +1049,7 @@ func TestTheRestoreScriptFindsItsCopyWhereverItIsRunFrom(t *testing.T) {
 			"etc/sources.list":                  "deb http://deb.debian.org/debian bookworm main\n",
 			"bk/apt-orig/sources.list":          "deb http://deb.debian.org/debian bullseye main\n",
 			"bk/apt-orig/sources.list.d/x.list": "deb http://x.example/ bullseye main\n",
-			"bk/restore-sources.sh":             restoreScript,
+			"bk/restore-sources.sh":             d11(restoreScript),
 			"bk/done-sources":                   "",
 		} {
 			p := filepath.Join(dir, filepath.FromSlash(rel))
