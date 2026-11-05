@@ -58,10 +58,10 @@ Le propriétaire gère plusieurs boxes ReCasaOS sur des sites différents (chez 
 | `GET /v1/sys/version/check`, `GET /v1/sys/os`, `GET /v1/sys/utilization`, `GET /v1/sys/modules`, `GET /v1/sys/autoupdate` | `POST /v1/sys/update` |
 | `GET /v1/sys/packages` (lent), `GET /v1/sys/packages/update/status`, `GET /v1/sys/docker/update/status` | `POST /v1/sys/packages/update` |
 | `GET /v2/casaos/health/services` | |
-| `GET /v2/app_management/compose`, `GET /v2/app_management/web/appgrid`, `GET /v2/app_management/operations`, `GET /v2/app_management/compose/updates` (lent avec `check=true`), `GET /v2/app_management/compose/updates/run` | `PUT /v2/app_management/compose/{id}/status`, `PATCH /v2/app_management/compose/{id}`, `POST /v2/app_management/compose/updates`, `POST /v2/app_management/image-updates` (lent) |
+| `GET /v2/app_management/compose`, `GET /v2/app_management/web/appgrid`, `GET /v2/app_management/operations`, `GET /v2/app_management/compose/updates` (lent avec `check=true`), `GET /v2/app_management/compose/updates/run`, `GET /v2/app_management/logs/apps`, `GET /v2/app_management/logs`, `GET /v2/app_management/logs/events`, `GET /v2/app_management/logs/export` (lent) | `PUT /v2/app_management/compose/{id}/status`, `PATCH /v2/app_management/compose/{id}`, `POST /v2/app_management/compose/updates`, `POST /v2/app_management/image-updates` (lent) |
 | `GET /v2/virt_management/vms` | `POST /v2/virt_management/vms/{id}/{action}`, `action` ∈ start, shutdown, reboot, force-off |
 
-- Jamais par le relais, quoi qu'il arrive : les fichiers, les partages, les comptes, les disques, les sauvegardes, les alertes, le bus, les modules (installation), la console et les journaux. Étendre la liste = une ligne dans la table et son test.
+- Jamais par le relais, quoi qu'il arrive : les fichiers, les partages, les comptes, les disques, les sauvegardes, les alertes, le bus, les modules (installation), la console et les journaux système. Les journaux des apps passent, en lecture seule, depuis la spec Journaux du 2026-11-05 (`logs/settings` et `logs/stream` restent refusés). Étendre la liste = une ligne dans la table et son test.
 - Délais : 60 s par requête, 5 min pour celles marquées *lent* ; 16 requêtes en vol par box, au-delà 503. Corps limité à 4 Mio dans chaque sens. Box hors ligne : 503 `box offline` ; délai dépassé : 504.
 - Sur le master, une action (tout sauf `GET`) exige le jeton d'accès dans l'en-tête, comme `POST /v1/sys/update` sur une box (`headerTokenOnly`).
 
