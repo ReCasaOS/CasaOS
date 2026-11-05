@@ -360,13 +360,17 @@ func (f *Fleet) netStatus(relay, off string) (bool, string) {
 	return ok, msg
 }
 
-// MemberLink is the master's address and this box's id there, for a link into the master: ok is false when
-// the box is no member.
+// MemberLink is the master's address and this box's id there, for a link into the master. ok is false when
+// the box is no member, or when the master is this box itself (a loopback address). ok is also false
+// for a relay member, whose master_url is a private-network address a phone cannot reach.
 func (f *Fleet) MemberLink() (masterURL, boxID string, ok bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	st, ok := f.loadMember()
-	return st.MasterURL, st.BoxID, ok
+	if !ok || st.Relay != "" || f.namesSelf(st) {
+		return "", "", false
+	}
+	return st.MasterURL, st.BoxID, true
 }
 
 // MemberStatus is the member's view: ok is false when the role is off.

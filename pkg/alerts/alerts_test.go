@@ -431,13 +431,19 @@ func died(h *Hub, event string) {
 }
 
 func TestAContainerAlertLinksToItsLogs(t *testing.T) {
-	h, o, _ := newHub(t)
+	link := "\nhttp://192.168.1.20/#/logs?app=immich&at=2026-09-25T06:00:00Z"
+	for event, sentence := range map[string]string{
+		"app:container-died":       "Immich stopped unexpectedly (container immich-server), exit code 1.",
+		"app:container-unhealthy":  "Immich is unhealthy (container immich-server).",
+		"app:container-restarting": "Immich keeps restarting (container immich-server).",
+	} {
+		h, o, _ := newHub(t)
 
-	died(h, "app:container-died")
+		died(h, event)
 
-	want := "Immich stopped unexpectedly (container immich-server), exit code 1.\nhttp://192.168.1.20/#/logs?app=immich&at=2026-09-25T06:00:00Z"
-	if got := o.texts(phone); !reflect.DeepEqual(got, []string{want}) {
-		t.Fatalf("sent %q", got)
+		if got := o.texts(phone); !reflect.DeepEqual(got, []string{sentence + link}) {
+			t.Errorf("%s: sent %q", event, got)
+		}
 	}
 }
 
