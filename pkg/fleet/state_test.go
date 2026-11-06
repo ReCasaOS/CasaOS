@@ -69,3 +69,27 @@ func TestClearMemberRemovesTheFile(t *testing.T) {
 		t.Fatalf("clearing twice: %v", err)
 	}
 }
+
+func TestMemberLinkReadsMemberJSON(t *testing.T) {
+	f := New(t.TempDir())
+	if _, _, ok := f.MemberLink(); ok {
+		t.Fatal("no member.json read as a member")
+	}
+	if err := f.saveMember(MemberState{MasterURL: "https://m", BoxID: "b1", Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	if m, b, ok := f.MemberLink(); m != "https://m" || b != "b1" || !ok {
+		t.Fatalf("%q %q %v", m, b, ok)
+	}
+	for name, st := range map[string]MemberState{
+		"the master itself": {MasterURL: "https://127.0.0.1:443", BoxID: "self", Key: "k"},
+		"a relay member":   {MasterURL: "https://100.64.0.1", BoxID: "b1", Key: "k", Relay: "relay.example"},
+	} {
+		if err := f.saveMember(st); err != nil {
+			t.Fatal(err)
+		}
+		if m, b, ok := f.MemberLink(); ok {
+			t.Errorf("%s: linked to %q %q", name, m, b)
+		}
+	}
+}

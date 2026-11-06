@@ -181,6 +181,7 @@ func main() {
 	// hear from automatic updates how each attempt ended: set before those
 	// settle the attempt that restarted the core.
 	alerts.Default.Address = dashboardAddress
+	alerts.Default.MasterLink = fleet.Default.MemberLink
 	// image-managed: no release to look up, no OS support to report (the image owns both)
 	if !config.ServerInfo.ImageManaged {
 		alerts.Default.Latest = func() string { return service.MyService.Casa().GetCasaosVersion().Version }

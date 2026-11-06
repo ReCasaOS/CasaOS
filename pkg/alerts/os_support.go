@@ -68,7 +68,7 @@ func (h *Hub) checkOSSupport() {
 		return
 	}
 	// one key per state: the six hours an alert stays quiet are for repeats, not for the next state
-	if !h.raiseAs(alert{key: "os-support:" + key, category: Updates, sentence: osSupportSentence(report)}, true) {
+	if !h.raiseAs(alert{key: "os-support:" + key, category: Updates, sentence: osSupportSentence(report)}, true, "") {
 		return
 	}
 	// ponytail: without the file (an unwritable state directory) a restart tells the state again.
