@@ -232,7 +232,7 @@ func PutSambaShare(ctx echo.Context) error {
 
 	message := common_err.GetMsg(common_err.SUCCESS)
 	if skipped != nil {
-		message = skippedMessage([]string{skipped.path})
+		message = skippedMessage([]skippedReown{*skipped})
 	}
 
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: message, Data: shareResponse(share)})

@@ -84,13 +84,17 @@ func validateShareMembers(members []model2.ShareMember, kept ...model2.ShareMemb
 			return err
 		}
 
-		if _, err := user.Lookup(member.Username); err != nil {
-			return errors.New(common_err.GetMsg(common_err.USER_NOT_EXIST))
-		}
+		// a member the share has already stays as it is, even once its
+		// account is gone: a client sends the whole list back unchanged
+		if !already[member.Username] {
+			if _, err := user.Lookup(member.Username); err != nil {
+				return errors.New(common_err.GetMsg(common_err.USER_NOT_EXIST))
+			}
 
-		// a member may become the owner: never root, www-data or a person's login
-		if !already[member.Username] && !isShareAccount(member.Username) {
-			return errShareMemberNotShareAccount
+			// a member may become the owner: never root, www-data or a person's login
+			if !isShareAccount(member.Username) {
+				return errShareMemberNotShareAccount
+			}
 		}
 
 		if seen[member.Username] {
@@ -147,16 +151,27 @@ func chooseShareOwner(current string, members []model2.ShareMember, leaving stri
 // reownPlan is the walk an owner change leaves to do: the files of oldUID under
 // path go to uid:gid. The ids are resolved when the change is planned, so a
 // walk that waits behind another still has them once the new owner, or the
-// next one, has been deleted.
+// next one, has been deleted. prune are the roots of other shares inside path,
+// which have owners and walks of their own.
 type reownPlan struct {
 	path     string
 	oldUID   int
 	uid, gid int
+	prune    []string
 }
 
 // skippedReown is set when an owner change leaves the old owner's files as
-// they are, on a folder where containers keep theirs (see reownRefused).
-type skippedReown struct{ path string }
+// they are: on a folder where containers keep theirs (see reownRefused), or
+// on one that no longer belongs to the old owner.
+type skippedReown struct {
+	path   string
+	reason string
+}
+
+const (
+	skipContainers = "containers"
+	skipNotOwned   = "not-owned"
+)
 
 // moveShareOwnership hands a shared directory from one owner to the next, and
 // returns the walk left to do once Samba has taken the change, or nil.
@@ -166,8 +181,10 @@ type skippedReown struct{ path string }
 // they keep the old owner and a 0660 mask that would lock the new one out. Only
 // those, and never on /DATA, AppData or a whole disk (reownRefused): there a
 // share account's uid can be a container's too (postgres's 999). The old
-// owner is whoever owns the share's folder, so a share whose owning account is
-// gone can still be changed.
+// owner's uid is its account's while it exists; the folder's owner only stands
+// in for an account deleted from the shell, and only when no account has that
+// uid. A folder that was given to somebody else since keeps its files: that
+// uid may be a person's login or a container's.
 //
 // path must already have been through service.ValidateSharePath.
 func moveShareOwnership(path, from, to string) (*reownPlan, *skippedReown, error) {
@@ -180,10 +197,12 @@ func moveShareOwnership(path, from, to string) (*reownPlan, *skippedReown, error
 		return nil, nil, restrictShare(path, to)
 	}
 
-	oldUID, err := shareFolderOwner(path)
+	folder, err := readFolder(path)
 	if err != nil {
 		return nil, nil, err
 	}
+
+	oldUID, owned := previousOwnerUID(from, folder.uid)
 
 	account, err := user.Lookup(to)
 	if err != nil {
@@ -204,32 +223,69 @@ func moveShareOwnership(path, from, to string) (*reownPlan, *skippedReown, error
 		return nil, nil, err
 	}
 
+	if !owned {
+		return nil, &skippedReown{path: path, reason: skipNotOwned}, nil
+	}
+
 	// root's files are never handed over, and the same uid has nothing to move
 	if oldUID == 0 || oldUID == uid {
 		return nil, nil, nil
 	}
 
 	if reownRefused(path) {
-		return nil, &skippedReown{path: path}, nil
+		return nil, &skippedReown{path: path, reason: skipContainers}, nil
 	}
 
 	return &reownPlan{path: path, oldUID: oldUID, uid: uid, gid: gid}, nil, nil
 }
 
-// shareFolderOwner is the uid that owns a share's folder: its owner, even when
-// the account has been deleted since.
-var shareFolderOwner = func(path string) (int, error) {
+// previousOwnerUID is the uid whose files an owner change hands over, and
+// whether the folder is still that owner's.
+func previousOwnerUID(from string, folderUID int) (int, bool) {
+	if account, err := user.Lookup(from); err == nil {
+		uid, err := strconv.Atoi(account.Uid)
+
+		return uid, err == nil && uid == folderUID
+	}
+
+	// the account is gone: the folder's uid is its, unless an account has it
+	if _, err := lookupUID(strconv.Itoa(folderUID)); err == nil {
+		return folderUID, false
+	}
+
+	return folderUID, true
+}
+
+var lookupUID = user.LookupId
+
+// folderState is a share folder's owner and mode, as an undo puts it back.
+type folderState struct {
+	uid, gid int
+	mode     os.FileMode
+}
+
+// readFolder reads a share folder's owner and mode; restoreFolder puts them
+// back by number, which works for an owner whose account is gone.
+var readFolder = func(path string) (folderState, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return 0, err
+		return folderState{}, err
 	}
 
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return 0, errors.New("cannot read the owner of " + path)
+		return folderState{}, errors.New("cannot read the owner of " + path)
 	}
 
-	return int(stat.Uid), nil
+	return folderState{uid: int(stat.Uid), gid: int(stat.Gid), mode: info.Mode().Perm()}, nil
+}
+
+var restoreFolder = func(path string, state folderState) error {
+	if err := os.Lchown(path, state.uid, state.gid); err != nil {
+		return err
+	}
+
+	return os.Chmod(path, state.mode)
 }
 
 // reownRefused says whether a share's folder holds data of containers whose
@@ -261,79 +317,232 @@ var isMountPoint = func(path string) bool {
 	return self.Dev != parent.Dev || self.Ino == parent.Ino
 }
 
-// shareWalks runs one re-owning walk at a time: two owner changes close
-// together would otherwise walk the same tree at once.
-var shareWalks sync.Mutex
+// sharesInside lists the roots of the other shares under path.
+func sharesInside(path string, shares []model2.SharesDBModel) []string {
+	inside := []string{}
 
-// reownShareContents runs a plan in the background. A variable so the tests
+	for _, share := range shares {
+		if strings.HasPrefix(share.Path, path+"/") {
+			inside = append(inside, share.Path)
+		}
+	}
+
+	return inside
+}
+
+// The walks run one at a time, in the order they were asked for, on one
+// worker: alice→bob then bob→carol must not run the other way round.
+var (
+	walksMu      sync.Mutex
+	walks        []reownPlan
+	walkerActive bool
+)
+
+// reownShareContents queues a plan for the worker. A variable so the tests
 // never chown anything.
-var reownShareContents = func(plan reownPlan) {
-	go runReown(plan)
+var reownShareContents = queueReown
+
+// runWalk runs one plan; a variable so the tests can watch the order.
+var runWalk = runReown
+
+func queueReown(plan reownPlan) {
+	walksMu.Lock()
+	defer walksMu.Unlock()
+
+	walks = append(walks, plan)
+	if !walkerActive {
+		walkerActive = true
+		go drainWalks()
+	}
+}
+
+func drainWalks() {
+	for {
+		walksMu.Lock()
+		if len(walks) == 0 {
+			walkerActive = false
+			walksMu.Unlock()
+
+			return
+		}
+
+		plan := walks[0]
+		walks = walks[1:]
+		walksMu.Unlock()
+
+		runWalk(plan)
+	}
 }
 
 func runReown(plan reownPlan) {
-	shareWalks.Lock()
-	defer shareWalks.Unlock()
-
-	// chown walks with fts relative to each directory and never follows a
-	// symlink (-R -h, -P by default), so a folder swapped for a link mid-walk
-	// cannot send it elsewhere. It goes on past a file it cannot change (EPERM,
-	// a read-only mount) and reports them at the end.
-	output, err := exec.Command("chown", reownArgs(plan)...).CombinedOutput()
+	// find walks with fts relative to each directory and never follows a
+	// symlink (-P); -execdir runs chown inside the file's own folder on ./name,
+	// and -h changes a link itself, so a folder swapped for a link mid-walk
+	// cannot send it elsewhere. -xdev stays off disks mounted inside, and other
+	// shares inside are pruned. chown goes on past a file it cannot change
+	// (EPERM, a read-only mount) and --from checks the owner once more.
+	output, err := exec.Command("find", reownArgs(plan, mountPointsUnder(plan.path))...).CombinedOutput()
 	if err != nil {
 		logger.Error("some of a share's files could not be handed to its new owner",
 			zap.String("path", plan.path), zap.String("output", strings.TrimSpace(string(output))), zap.Error(err))
 	}
 }
 
-// reownArgs are chown's arguments for a plan. The + makes chown read the ids as
-// numbers, never as names.
-func reownArgs(plan reownPlan) []string {
-	return []string{
-		"-R", "-h",
+// reownArgs are find's arguments for a plan; skip are folders not to enter
+// (other shares, mount points). The + makes chown read the ids as numbers,
+// never as names.
+func reownArgs(plan reownPlan, skip []string) []string {
+	args := []string{"-P", plan.path, "-xdev"}
+
+	prune := append(append([]string{}, plan.prune...), skip...)
+	if len(prune) > 0 {
+		args = append(args, "(")
+
+		for i, p := range prune {
+			if i > 0 {
+				args = append(args, "-o")
+			}
+
+			args = append(args, "-path", globEscape(p))
+		}
+
+		args = append(args, ")", "-prune", "-o")
+	}
+
+	return append(args,
+		"-uid", strconv.Itoa(plan.oldUID),
+		"-execdir", "chown", "-h",
 		fmt.Sprintf("--from=+%d", plan.oldUID),
 		fmt.Sprintf("+%d:+%d", plan.uid, plan.gid),
-		"--", plan.path,
+		"{}", "+")
+}
+
+// globEscape makes a path match itself in find's -path.
+func globEscape(path string) string {
+	var b strings.Builder
+
+	for _, r := range path {
+		if strings.ContainsRune(`*?[]\`, r) {
+			b.WriteByte('\\')
+		}
+
+		b.WriteRune(r)
 	}
+
+	return b.String()
+}
+
+// mountPointsUnder lists what is mounted under path, from the mount table: a
+// mount point's own folder belongs to the disk mounted there, which -xdev
+// alone would still change.
+var mountPointsUnder = func(path string) []string {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return nil
+	}
+
+	points := []string{}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+
+		point := unescapeMount(fields[4])
+		if strings.HasPrefix(point, path+"/") {
+			points = append(points, point)
+		}
+	}
+
+	return points
+}
+
+// unescapeMount reads the octal escapes (\040 for a space) of the mount table.
+func unescapeMount(s string) string {
+	var b strings.Builder
+
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+
+				continue
+			}
+		}
+
+		b.WriteByte(s[i])
+	}
+
+	return b.String()
 }
 
 // applyShareMembers changes who may mount one share, moving the directory to a
 // new owner first when needed and putting it back if Samba refuses the result.
-// leaving is an account about to be deleted, or "".
+// leaving is an account about to be deleted, or "". The walk it returns is left
+// to the caller, to start once every change it makes together has worked.
 func applyShareMembers(share model2.SharesDBModel, members []model2.ShareMember, timeMachine bool, leaving string) (model2.SharesDBModel, *reownPlan, *skippedReown, error) {
-	owner, err := chooseShareOwner(share.Username, members, leaving)
-	if err != nil {
-		return share, nil, nil, err
-	}
+	after, plan, skipped, _, err := applyShareMembersUndoable(share, members, timeMachine, leaving)
 
-	return applyShareMembersAs(share, members, timeMachine, owner)
+	return after, plan, skipped, err
 }
 
-// applyShareMembersAs is applyShareMembers with the owner chosen already. The
-// walk it returns is left to the caller, to start once every change it makes
-// together has worked.
-func applyShareMembersAs(share model2.SharesDBModel, members []model2.ShareMember, timeMachine bool, owner string) (model2.SharesDBModel, *reownPlan, *skippedReown, error) {
+// applyShareMembersUndoable is applyShareMembers that also returns how to put
+// the share and its folder back as they were. The folder goes back by number,
+// owner, group and mode, which works when its owner's account is gone.
+func applyShareMembersUndoable(share model2.SharesDBModel, members []model2.ShareMember, timeMachine bool, leaving string) (model2.SharesDBModel, *reownPlan, *skippedReown, func() error, error) {
+	owner, err := chooseShareOwner(share.Username, members, leaving)
+	if err != nil {
+		return share, nil, nil, nil, err
+	}
+
 	path, err := validateSharePath(share.Path)
 	if err != nil {
-		return share, nil, nil, err
+		return share, nil, nil, nil, err
+	}
+
+	moved := owner != share.Username
+
+	var folder folderState
+	if moved {
+		if folder, err = readFolder(path); err != nil {
+			return share, nil, nil, nil, err
+		}
+	}
+
+	putFolderBack := func() error {
+		if !moved {
+			return nil
+		}
+
+		return restoreFolder(path, folder)
 	}
 
 	plan, skipped, err := moveShareOwnership(path, share.Username, owner)
 	if err != nil {
-		return share, nil, nil, err
+		// it may have changed the folder before failing
+		_ = putFolderBack()
+
+		return share, nil, nil, nil, err
 	}
 
+	shares := service.MyService.Shares()
 	id := strconv.FormatUint(uint64(share.ID), 10)
-	if err := service.MyService.Shares().UpdateShare(id, owner, members, timeMachine); err != nil {
-		if owner != share.Username {
-			if share.Username == "" {
-				_ = releaseShare(path)
-			} else {
-				_ = restrictShare(path, share.Username)
-			}
-		}
 
-		return share, nil, nil, err
+	if err := shares.UpdateShare(id, owner, members, timeMachine); err != nil {
+		_ = putFolderBack()
+
+		return share, nil, nil, nil, err
+	}
+
+	if plan != nil {
+		plan.prune = sharesInside(path, shares.GetSharesList())
+	}
+
+	before := share
+	undo := func() error {
+		return errors.Join(shares.UpdateShare(id, before.Username, before.MemberList(), before.TimeMachine), putFolderBack())
 	}
 
 	share.Username = owner
@@ -341,7 +550,7 @@ func applyShareMembersAs(share model2.SharesDBModel, members []model2.ShareMembe
 	share.Anonymous = owner == ""
 	share.TimeMachine = timeMachine
 
-	return share, plan, skipped, nil
+	return share, plan, skipped, undo, nil
 }
 
 // shareChange is one share and the members it is to have.
@@ -355,25 +564,28 @@ type shareChange struct {
 // the shares as they were; what could not be put back is said in the error.
 // No file is re-owned until every change has worked, so putting one back only
 // gives the folder back. It returns the folders whose old owner's files were
-// left as they are (see reownRefused).
-func applyShareChanges(changes []shareChange, leaving string) ([]string, error) {
-	type done struct{ before, after model2.SharesDBModel }
+// left as they are.
+func applyShareChanges(changes []shareChange, leaving string) ([]skippedReown, error) {
+	type done struct {
+		path string
+		undo func() error
+	}
 
 	applied := []done{}
 	plans := []reownPlan{}
-	skipped := []string{}
+	skipped := []skippedReown{}
 
 	for _, c := range changes {
-		after, plan, skip, err := applyShareMembers(c.share, c.members, c.share.TimeMachine, leaving)
+		_, plan, skip, undo, err := applyShareMembersUndoable(c.share, c.members, c.share.TimeMachine, leaving)
 		if err == nil {
-			applied = append(applied, done{before: c.share, after: after})
+			applied = append(applied, done{path: c.share.Path, undo: undo})
 
 			if plan != nil {
 				plans = append(plans, *plan)
 			}
 
 			if skip != nil {
-				skipped = append(skipped, skip.path)
+				skipped = append(skipped, *skip)
 			}
 
 			continue
@@ -382,11 +594,9 @@ func applyShareChanges(changes []shareChange, leaving string) ([]string, error) 
 		notBack := []string{}
 
 		for i := len(applied) - 1; i >= 0; i-- {
-			d := applied[i]
-
-			// the members and the owner it had; its files never moved
-			if _, _, _, undoErr := applyShareMembersAs(d.after, d.before.MemberList(), d.before.TimeMachine, d.before.Username); undoErr != nil {
-				notBack = append(notBack, d.before.Path)
+			// the members, the owner and the folder it had; its files never moved
+			if undoErr := applied[i].undo(); undoErr != nil {
+				notBack = append(notBack, applied[i].path)
 			}
 		}
 
@@ -405,14 +615,35 @@ func applyShareChanges(changes []shareChange, leaving string) ([]string, error) 
 }
 
 // skippedMessage is the success message, saying which folders kept the old
-// owner's files.
-func skippedMessage(skipped []string) string {
-	if len(skipped) == 0 {
+// owner's files, and why.
+func skippedMessage(skipped []skippedReown) string {
+	containers, notOwned := []string{}, []string{}
+
+	for _, s := range skipped {
+		if s.reason == skipNotOwned {
+			notOwned = append(notOwned, s.path)
+		} else {
+			containers = append(containers, s.path)
+		}
+	}
+
+	parts := []string{}
+
+	if len(containers) > 0 {
+		parts = append(parts, "the files the old owner had in "+strings.Join(containers, ", ")+
+			" keep their owner: containers may keep data there under the same uid, so they are not changed.")
+	}
+
+	if len(notOwned) > 0 {
+		parts = append(parts, "the files in "+strings.Join(notOwned, ", ")+
+			" keep their owner: the folder belonged to another account than the share's owner, so it is not known whose files are the share's.")
+	}
+
+	if len(parts) == 0 {
 		return common_err.GetMsg(common_err.SUCCESS)
 	}
 
-	return "the files the old owner had in " + strings.Join(skipped, ", ") +
-		" keep their owner: containers may keep data there under the same uid, so they are not changed. Hand them over by hand if needed."
+	return strings.Join(parts, " ") + " Hand them over by hand if needed."
 }
 
 // withMember returns members with username in or out as asked, keeping the

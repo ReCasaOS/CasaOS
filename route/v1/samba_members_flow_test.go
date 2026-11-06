@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -35,6 +37,16 @@ type fakeShares struct {
 
 func (f *fakeShares) GetSharesList() []model2.SharesDBModel {
 	return append([]model2.SharesDBModel{}, f.shares...)
+}
+
+func (f *fakeShares) GetShareByID(id string) (model2.SharesDBModel, bool) {
+	for _, share := range f.shares {
+		if strconv.FormatUint(uint64(share.ID), 10) == id {
+			return share, true
+		}
+	}
+
+	return model2.SharesDBModel{}, false
 }
 
 func (f *fakeShares) UpdateShare(id, owner string, members []model2.ShareMember, timeMachine bool) error {
@@ -63,6 +75,9 @@ type fakeSharesRepository struct {
 
 func (f fakeSharesRepository) Shares() service.SharesService { return f.shares }
 
+// folderUIDs is who owns each share folder in a sharesRig, by uid.
+var folderUIDs map[string]int
+
 // sharesRig puts the shares in a fake service and records, in order, what the
 // changes do to the system instead of doing it.
 func sharesRig(t *testing.T, shares ...model2.SharesDBModel) (*fakeShares, *[]string) {
@@ -72,12 +87,27 @@ func sharesRig(t *testing.T, shares ...model2.SharesDBModel) (*fakeShares, *[]st
 	log := &[]string{}
 
 	previous := service.MyService
-	saved := []interface{}{isShareAccount, deleteShareAccount, validateSharePath, restrictShare, releaseShare, shareFolderOwner, isMountPoint, reownShareContents}
+	saved := []interface{}{isShareAccount, deleteShareAccount, validateSharePath, restrictShare, releaseShare, readFolder, restoreFolder, isMountPoint, reownShareContents}
 
-	// who owns each folder, as restrictShare leaves it
-	owners := map[string]string{}
+	// the uid that owns each folder, as restrictShare leaves it; an account
+	// that does not exist owns its folder as uid 4242
+	uidOf := func(name string) int {
+		if name == "" {
+			return 0
+		}
+
+		account, err := user.Lookup(name)
+		if err != nil {
+			return 4242
+		}
+
+		uid, _ := strconv.Atoi(account.Uid)
+
+		return uid
+	}
+	folderUIDs = map[string]int{}
 	for _, share := range shares {
-		owners[share.Path] = share.Username
+		folderUIDs[share.Path] = uidOf(share.Username)
 	}
 
 	service.MyService = fakeSharesRepository{shares: fake}
@@ -88,30 +118,30 @@ func sharesRig(t *testing.T, shares ...model2.SharesDBModel) (*fakeShares, *[]st
 	}
 	validateSharePath = func(path string) (string, error) { return path, nil }
 	restrictShare = func(path, name string) error {
-		owners[path] = name
+		folderUIDs[path] = uidOf(name)
 		*log = append(*log, "own "+path+" "+name)
 		return nil
 	}
 	releaseShare = func(path string) error {
-		owners[path] = ""
+		folderUIDs[path] = 0
 		*log = append(*log, "release "+path)
 		return nil
 	}
-	shareFolderOwner = func(path string) (int, error) {
-		if owners[path] == "" {
-			return 0, nil
-		}
-
-		account, err := user.Lookup(owners[path])
-		if err != nil {
-			return 0, err
-		}
-
-		return strconv.Atoi(account.Uid)
+	readFolder = func(path string) (folderState, error) {
+		return folderState{uid: folderUIDs[path], gid: folderUIDs[path], mode: 0o770}, nil
+	}
+	restoreFolder = func(path string, state folderState) error {
+		folderUIDs[path] = state.uid
+		*log = append(*log, fmt.Sprintf("restore %s %d", path, state.uid))
+		return nil
 	}
 	isMountPoint = func(string) bool { return false }
 	reownShareContents = func(plan reownPlan) {
-		*log = append(*log, fmt.Sprintf("reown %s %d->%d", plan.path, plan.oldUID, plan.uid))
+		entry := fmt.Sprintf("reown %s %d->%d", plan.path, plan.oldUID, plan.uid)
+		if len(plan.prune) > 0 {
+			entry += " but " + strings.Join(plan.prune, ",")
+		}
+		*log = append(*log, entry)
 	}
 
 	t.Cleanup(func() {
@@ -121,9 +151,10 @@ func sharesRig(t *testing.T, shares ...model2.SharesDBModel) (*fakeShares, *[]st
 		validateSharePath = saved[2].(func(string) (string, error))
 		restrictShare = saved[3].(func(string, string) error)
 		releaseShare = saved[4].(func(string) error)
-		shareFolderOwner = saved[5].(func(string) (int, error))
-		isMountPoint = saved[6].(func(string) bool)
-		reownShareContents = saved[7].(func(reownPlan))
+		readFolder = saved[5].(func(string) (folderState, error))
+		restoreFolder = saved[6].(func(string, folderState) error)
+		isMountPoint = saved[7].(func(string) bool)
+		reownShareContents = saved[8].(func(reownPlan))
 	})
 
 	return fake, log
@@ -395,7 +426,8 @@ func TestNoWalkWhenALaterShareFails(t *testing.T) {
 		}
 	}
 
-	if (*log)[len(*log)-1] != "own /DATA/A "+alice {
+	a, _ := user.Lookup(alice)
+	if (*log)[len(*log)-1] != "restore /DATA/A "+a.Uid {
 		t.Errorf("share A's folder is not back with alice: %v", *log)
 	}
 }
@@ -404,7 +436,6 @@ func TestNoWalkWhenALaterShareFails(t *testing.T) {
 // the old owner is whoever owns the folder
 func TestAShareWhoseOwnerIsGoneCanChange(t *testing.T) {
 	fake, log := sharesRig(t, protected(1, "/DATA/Media", "gone-account-xyz", "gone-account-xyz:rw "+bob+":rw"))
-	shareFolderOwner = func(string) (int, error) { return 4242, nil }
 
 	code, body := callShares(t, PutSambaUserShares, http.MethodPut, bob, `[{"id":1,"read_only":true}]`)
 	if code != http.StatusOK {
@@ -454,8 +485,13 @@ func TestNoWalkWhereContainersKeepTheirData(t *testing.T) {
 }
 
 func TestReownArgs(t *testing.T) {
-	got := strings.Join(reownArgs(reownPlan{path: "/DATA/Media", oldUID: 899, uid: 898, gid: 897}), " ")
-	if got != "-R -h --from=+899 +898:+897 -- /DATA/Media" {
+	got := strings.Join(reownArgs(reownPlan{path: "/DATA/Media", oldUID: 899, uid: 898, gid: 897}, nil), " ")
+	if got != "-P /DATA/Media -xdev -uid 899 -execdir chown -h --from=+899 +898:+897 {} +" {
+		t.Errorf("got %q", got)
+	}
+
+	got = strings.Join(reownArgs(reownPlan{path: "/DATA/Media", oldUID: 899, uid: 898, gid: 897, prune: []string{"/DATA/Media/Movies [4K]"}}, []string{"/DATA/Media/USB"}), " ")
+	if got != `-P /DATA/Media -xdev ( -path /DATA/Media/Movies \[4K\] -o -path /DATA/Media/USB ) -prune -o -uid 899 -execdir chown -h --from=+899 +898:+897 {} +` {
 		t.Errorf("got %q", got)
 	}
 }
@@ -480,7 +516,13 @@ func TestRunReownWithChown(t *testing.T) {
 	}
 	os.Lchown(filepath.Join(root, "theirs"), 999, 999)
 
-	runReown(reownPlan{path: root, oldUID: 4001, uid: 4002, gid: 4003})
+	nested := filepath.Join(root, "nested [x]")
+	os.MkdirAll(nested, 0o755)
+	os.WriteFile(filepath.Join(nested, "kept"), nil, 0o644)
+	os.Lchown(nested, 4001, 4001)
+	os.Lchown(filepath.Join(nested, "kept"), 4001, 4001)
+
+	runReown(reownPlan{path: root, oldUID: 4001, uid: 4002, gid: 4003, prune: []string{nested}})
 
 	owner := func(p string) int {
 		info, _ := os.Lstat(p)
@@ -493,6 +535,9 @@ func TestRunReownWithChown(t *testing.T) {
 		filepath.Join(root, "link"):        4002,
 		filepath.Join(root, "theirs"):      999,
 		outside:                            4001,
+		nested:                             4001,
+		filepath.Join(nested, "kept"):      4001,
+		root:                               0,
 	} {
 		if got := owner(p); got != want {
 			t.Errorf("%s is %d's, want %d's", p, got, want)
@@ -507,5 +552,169 @@ func TestIsMountPoint(t *testing.T) {
 
 	if !isMountPoint("/does/not/exist") {
 		t.Error("a path it cannot read counts as a mount point")
+	}
+}
+
+// a folder the owner no longer owns (chowned to a person's login since) keeps
+// its files: that uid's files are not the share's to hand over
+func TestAFolderGivenToAnotherAccountKeepsItsFiles(t *testing.T) {
+	_, log := sharesRig(t, protected(1, "/DATA/Downloads", alice, alice+":rw "+bob+":rw"))
+	folderUIDs["/DATA/Downloads"] = 3
+
+	code, body := callShares(t, DeleteSambaUser, http.MethodDelete, alice, "")
+	if code != http.StatusOK || !strings.Contains(body, "belonged to another account") {
+		t.Fatalf("%d %s", code, body)
+	}
+
+	for _, entry := range *log {
+		if strings.HasPrefix(entry, "reown") {
+			t.Fatalf("%v", *log)
+		}
+	}
+}
+
+// an owner deleted from the shell, and its folder's uid now an account's: no walk
+func TestAGhostOwnersFolderOfAnotherAccountKeepsItsFiles(t *testing.T) {
+	_, log := sharesRig(t, protected(1, "/DATA/Media", "gone-account-xyz", "gone-account-xyz:rw "+bob+":rw"))
+	folderUIDs["/DATA/Media"] = 3
+
+	code, body := callShares(t, PutSambaUserShares, http.MethodPut, bob, `[{"id":1,"read_only":true}]`)
+	if code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+
+	for _, entry := range *log {
+		if strings.HasPrefix(entry, "reown") {
+			t.Fatalf("%v", *log)
+		}
+	}
+}
+
+// a share inside another: the outer walk does not enter it, it has its own
+func TestTheWalkOfAShareSkipsTheSharesInside(t *testing.T) {
+	_, log := sharesRig(t,
+		protected(1, "/DATA/Media", alice, alice+":rw "+bob+":rw"),
+		protected(2, "/DATA/Media/Movies", alice, alice+":rw "+bob+":rw"),
+		protected(3, "/DATA/Mediateca", alice, alice+":rw "+bob+":rw"),
+	)
+
+	if code, body := callShares(t, DeleteSambaUser, http.MethodDelete, alice, ""); code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+
+	a, _ := user.Lookup(alice)
+	b, _ := user.Lookup(bob)
+	walks := []string{}
+
+	for _, entry := range *log {
+		if strings.HasPrefix(entry, "reown") {
+			walks = append(walks, entry)
+		}
+	}
+
+	want := []string{
+		"reown /DATA/Media " + a.Uid + "->" + b.Uid + " but /DATA/Media/Movies",
+		"reown /DATA/Media/Movies " + a.Uid + "->" + b.Uid,
+		"reown /DATA/Mediateca " + a.Uid + "->" + b.Uid,
+	}
+	if fmt.Sprint(walks) != fmt.Sprint(want) {
+		t.Errorf("walks %v", walks)
+	}
+}
+
+// a member whose account is gone, sent back as it is, stays
+func TestPutSambaShareKeepsAMemberWhoseAccountIsGone(t *testing.T) {
+	fake, _ := sharesRig(t, protected(1, "/DATA/Media", bob, "gone-account-xyz:rw "+bob+":rw"))
+
+	e := echo.New()
+	body := `{"members":[{"username":"gone-account-xyz","read_only":false},{"username":"` + bob + `","read_only":true}]}`
+	request := httptest.NewRequest(http.MethodPut, "/v1/samba/shares/1", strings.NewReader(body))
+	request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	recorder := httptest.NewRecorder()
+	ctx := e.NewContext(request, recorder)
+	ctx.SetParamNames("id")
+	ctx.SetParamValues("1")
+
+	if err := PutSambaShare(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if recorder.Code != http.StatusOK || fake.shares[0].Members != "gone-account-xyz:rw "+bob+":ro" {
+		t.Fatalf("%d %s %+v", recorder.Code, recorder.Body.String(), fake.shares[0])
+	}
+
+	// a new member still has to exist
+	if err := validateShareMembers([]model2.ShareMember{{Username: "another-gone-xyz"}}); err == nil {
+		t.Error("a new member without an account was taken")
+	}
+}
+
+// a batch that fails puts a folder back by number, even when its owner is gone
+func TestAFolderWhoseOwnerIsGoneIsPutBackByNumber(t *testing.T) {
+	fake, log := sharesRig(t,
+		protected(1, "/DATA/A", "gone-account-xyz", "gone-account-xyz:rw "+bob+":rw"),
+		protected(2, "/DATA/B", alice, alice+":rw "+bob+":rw"),
+	)
+	fake.failOn[2] = true
+
+	callShares(t, PutSambaUserShares, http.MethodPut, bob, `[{"id":1,"read_only":true},{"id":2,"read_only":true}]`)
+
+	if folderUIDs["/DATA/A"] != 4242 || fake.shares[0].Username != "gone-account-xyz" {
+		t.Errorf("not put back: uid %d, %+v, %v", folderUIDs["/DATA/A"], fake.shares[0], *log)
+	}
+}
+
+// the walks run one at a time, in the order they were asked for
+func TestTheWalksRunInOrder(t *testing.T) {
+	saved := runWalk
+	t.Cleanup(func() { runWalk = saved })
+
+	var mu sync.Mutex
+	ran := []string{}
+	running := 0
+	runWalk = func(plan reownPlan) {
+		mu.Lock()
+		running++
+		if running > 1 {
+			t.Error("two walks at once")
+		}
+		mu.Unlock()
+
+		time.Sleep(5 * time.Millisecond)
+
+		mu.Lock()
+		running--
+		ran = append(ran, plan.path)
+		mu.Unlock()
+	}
+
+	for _, p := range []string{"/DATA/1", "/DATA/2", "/DATA/3", "/DATA/4"} {
+		queueReown(reownPlan{path: p})
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(ran)
+		mu.Unlock()
+
+		if n == 4 || time.Now().After(deadline) {
+			break
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if strings.Join(ran, " ") != "/DATA/1 /DATA/2 /DATA/3 /DATA/4" {
+		t.Errorf("ran %v", ran)
+	}
+}
+
+func TestUnescapeMount(t *testing.T) {
+	if got := unescapeMount(`/media/my\040disk`); got != "/media/my disk" {
+		t.Errorf("got %q", got)
 	}
 }
