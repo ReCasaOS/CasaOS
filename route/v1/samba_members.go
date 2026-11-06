@@ -47,8 +47,9 @@ var (
 
 // resolveShareMembers reads who may mount a share from a request. A client that
 // predates members sends Username alone, which keeps meaning one account with
-// write access; an empty result means a guest share.
-func resolveShareMembers(request model.Shares) ([]model2.ShareMember, error) {
+// write access; an empty result means a guest share. kept are the members the
+// share has already, which stay allowed whatever account they are.
+func resolveShareMembers(request model.Shares, kept ...model2.ShareMember) ([]model2.ShareMember, error) {
 	members := request.Members
 	if members == nil {
 		members = []model2.ShareMember{}
@@ -58,7 +59,7 @@ func resolveShareMembers(request model.Shares) ([]model2.ShareMember, error) {
 		}
 	}
 
-	if err := validateShareMembers(members); err != nil {
+	if err := validateShareMembers(members, kept...); err != nil {
 		return nil, err
 	}
 
@@ -66,9 +67,16 @@ func resolveShareMembers(request model.Shares) ([]model2.ShareMember, error) {
 }
 
 // validateShareMembers checks every name before any of them reaches an
-// smb.conf line or the account tooling.
-func validateShareMembers(members []model2.ShareMember) error {
+// smb.conf line or the account tooling. A new member must be a share account;
+// one of kept, the members a share has already (an older share made on
+// another account), stays, so a change of anything else does not drop it.
+func validateShareMembers(members []model2.ShareMember, kept ...model2.ShareMember) error {
 	seen := map[string]bool{}
+	already := map[string]bool{}
+
+	for _, member := range kept {
+		already[member.Username] = true
+	}
 
 	for _, member := range members {
 		if err := service.ValidateSambaUsername(member.Username); err != nil {
@@ -80,7 +88,7 @@ func validateShareMembers(members []model2.ShareMember) error {
 		}
 
 		// a member may become the owner: never root, www-data or a person's login
-		if !isShareAccount(member.Username) {
+		if !already[member.Username] && !isShareAccount(member.Username) {
 			return errShareMemberNotShareAccount
 		}
 

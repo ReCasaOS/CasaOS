@@ -245,6 +245,12 @@ func TestOnlyShareAccountsCanBeMembers(t *testing.T) {
 	if err := validateShareMembers([]model2.ShareMember{{Username: alice}, {Username: bob, ReadOnly: true}}); err != nil {
 		t.Errorf("two share accounts: %v", err)
 	}
+
+	// a member the share has already stays, whatever account it is: an older
+	// share made on another account is not broken by a change of anything else
+	if err := validateShareMembers([]model2.ShareMember{{Username: "root"}, {Username: alice}}, model2.ShareMember{Username: "root"}); err != nil {
+		t.Errorf("a member kept: %v", err)
+	}
 }
 
 func TestChooseShareOwnerPassesOverTheAccountBeingDeleted(t *testing.T) {

@@ -199,7 +199,7 @@ func PutSambaShare(ctx echo.Context) error {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
 	}
 
-	members, err := resolveShareMembers(request)
+	members, err := resolveShareMembers(request, share.MemberList()...)
 	if err != nil {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
 	}
