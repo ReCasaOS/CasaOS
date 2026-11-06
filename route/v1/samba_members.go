@@ -242,21 +242,29 @@ func moveShareOwnership(path, from, to string) (*reownPlan, *skippedReown, error
 // previousOwnerUID is the uid whose files an owner change hands over, and
 // whether the folder is still that owner's.
 func previousOwnerUID(from string, folderUID int) (int, bool) {
-	if account, err := user.Lookup(from); err == nil {
+	account, err := lookupUser(from)
+	if err == nil {
 		uid, err := strconv.Atoi(account.Uid)
 
 		return uid, err == nil && uid == folderUID
 	}
 
-	// the account is gone: the folder's uid is its, unless an account has it
-	if _, err := lookupUID(strconv.Itoa(folderUID)); err == nil {
+	// only an account that is known to be gone hands its folder's uid over: a
+	// lookup that failed (NSS down, an unreadable passwd) says nothing
+	if !errors.As(err, new(user.UnknownUserError)) {
 		return folderUID, false
 	}
 
-	return folderUID, true
+	// the account is gone: the folder's uid is its, unless an account has it
+	_, err = lookupUID(strconv.Itoa(folderUID))
+
+	return folderUID, errors.As(err, new(user.UnknownUserIdError))
 }
 
-var lookupUID = user.LookupId
+var (
+	lookupUser = user.Lookup
+	lookupUID  = user.LookupId
+)
 
 // folderState is a share folder's owner and mode, as an undo puts it back.
 type folderState struct {
@@ -277,7 +285,7 @@ var readFolder = func(path string) (folderState, error) {
 		return folderState{}, errors.New("cannot read the owner of " + path)
 	}
 
-	return folderState{uid: int(stat.Uid), gid: int(stat.Gid), mode: info.Mode().Perm()}, nil
+	return folderState{uid: int(stat.Uid), gid: int(stat.Gid), mode: info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)}, nil
 }
 
 var restoreFolder = func(path string, state folderState) error {
@@ -322,7 +330,9 @@ func sharesInside(path string, shares []model2.SharesDBModel) []string {
 	inside := []string{}
 
 	for _, share := range shares {
-		if strings.HasPrefix(share.Path, path+"/") {
+		// a guest share inside has no walk of its own: the outer
+		// owner's files in it are handed over with the rest
+		if share.Username != "" && strings.HasPrefix(share.Path, path+"/") {
 			inside = append(inside, share.Path)
 		}
 	}
