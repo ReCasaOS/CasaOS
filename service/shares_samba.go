@@ -254,8 +254,8 @@ var removableRoots = []string{"/mnt", "/media"}
 var ErrSharePathNotOnDisk = errors.New("under /media and /mnt only a folder on a mounted disk can be shared")
 
 // ValidateNewSharePath is ValidateSharePath for a folder about to be shared:
-// under /media and /mnt the folder must be on a disk mounted there, not on the
-// system disk the mount points themselves live on. Existing shares are only
+// under /media and /mnt the folder must be on a mounted disk, not on the
+// system disk (the one / is on). Existing shares are only
 // checked with ValidateSharePath, so one made before this rule can still be
 // changed or removed.
 func ValidateNewSharePath(path string) (string, error) {
@@ -269,7 +269,9 @@ func ValidateNewSharePath(path string) (string, error) {
 			continue
 		}
 
-		if sameFilesystem(resolved, root) {
+		// the system disk is the one / is on: a disk mounted on /mnt or /media
+		// itself is a disk, and every folder on it may be shared
+		if sameFilesystem(resolved, "/") {
 			return "", ErrSharePathNotOnDisk
 		}
 	}

@@ -4,7 +4,6 @@ import (
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/common_err"
 	"github.com/ReCasaOS/CasaOS/service"
-	model2 "github.com/ReCasaOS/CasaOS/service/model"
 	"github.com/labstack/echo/v4"
 )
 
@@ -52,7 +51,7 @@ func PutSambaUserPassword(ctx echo.Context) error {
 }
 
 // DeleteSambaUser removes a share account, taking it out of every share it may
-// mount first. A share it owns passes to another member, files included.
+// mount first. A share it owns passes to another member, with the files it owned.
 //
 // It refuses while the account is the only member of a share. Removing it
 // anyway would leave that share with a "valid users" entry that no longer
@@ -64,12 +63,7 @@ func DeleteSambaUser(ctx echo.Context) error {
 
 	username := ctx.Param("username")
 
-	type change struct {
-		share   model2.SharesDBModel
-		members []model2.ShareMember
-	}
-
-	changes := []change{}
+	changes := []shareChange{}
 
 	for _, share := range service.MyService.Shares().GetSharesList() {
 		current := share.MemberList()
@@ -86,19 +80,19 @@ func DeleteSambaUser(ctx echo.Context) error {
 			})
 		}
 
-		changes = append(changes, change{share: share, members: members})
+		changes = append(changes, shareChange{share: share, members: members})
 	}
 
-	// The account goes first: once it no longer exists, applyShareMembers sees
-	// the owner is gone and hands its shares, files included, to a member.
-	if err := service.DeleteSambaUser(username); err != nil {
+	// The shares first, while the account still exists: its files can then be
+	// found by its uid and handed to the next owner, and a share Samba refuses
+	// puts the others back with the account still there to own them. The
+	// account goes last, once no share names it any more.
+	if err := applyShareChanges(changes, username); err != nil {
+		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+	}
+
+	if err := deleteShareAccount(username); err != nil {
 		return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
-	}
-
-	for _, c := range changes {
-		if _, err := applyShareMembers(c.share, c.members, c.share.TimeMachine); err != nil {
-			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
-		}
 	}
 
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: username})

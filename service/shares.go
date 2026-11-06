@@ -334,12 +334,33 @@ func (s *sharesStruct) MergeDuplicateShares() error {
 		return err
 	}
 
-	for _, share := range kept {
-		s.db.Model(&model2.SharesDBModel{}).Where("id = ?", share.ID).
-			Updates(map[string]interface{}{"username": share.Username, "members": share.Members, "anonymous": share.Anonymous, "time_machine": share.TimeMachine})
+	// A guest row merged with a protected one makes a protected share of a
+	// folder still left open (root, 0777): it goes to the owner first, and the
+	// rows stay as they were if it cannot.
+	for _, share := range newlyProtected(shares, kept) {
+		path, err := ValidateSharePath(share.Path)
+		if err != nil {
+			return err
+		}
+
+		if err := RestrictShareToUser(path, share.Username); err != nil {
+			return err
+		}
 	}
 
-	s.db.Where("id IN ?", removed).Delete(&model2.SharesDBModel{})
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		for _, share := range kept {
+			if err := tx.Model(&model2.SharesDBModel{}).Where("id = ?", share.ID).
+				Updates(map[string]interface{}{"username": share.Username, "members": share.Members, "anonymous": share.Anonymous, "time_machine": share.TimeMachine}).Error; err != nil {
+				return err
+			}
+		}
+
+		return tx.Where("id IN ?", removed).Delete(&model2.SharesDBModel{}).Error
+	})
+	if err != nil {
+		return err
+	}
 
 	return s.applyConfig(kept, false)
 }
@@ -390,6 +411,28 @@ func mergeDuplicateShares(shares []model2.SharesDBModel) ([]model2.SharesDBModel
 	}
 
 	return kept, removed
+}
+
+// newlyProtected returns the kept shares that a merge made protected: their
+// oldest row was a guest share, so their folder is still everybody's.
+func newlyProtected(before, kept []model2.SharesDBModel) []model2.SharesDBModel {
+	oldest := map[string]string{}
+
+	for _, share := range before {
+		if _, seen := oldest[share.Path]; !seen {
+			oldest[share.Path] = share.Username
+		}
+	}
+
+	result := []model2.SharesDBModel{}
+
+	for _, share := range kept {
+		if oldest[share.Path] == "" && share.Username != "" {
+			result = append(result, share)
+		}
+	}
+
+	return result
 }
 
 func NewSharesService(db *gorm.DB) SharesService {

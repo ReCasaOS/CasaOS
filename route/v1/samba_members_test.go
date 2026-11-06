@@ -26,20 +26,20 @@ func TestWithMember(t *testing.T) {
 }
 
 func TestChooseShareOwner(t *testing.T) {
-	if owner := chooseShareOwner("root", []model2.ShareMember{{Username: "alice"}}); owner != "root" {
+	if owner := chooseShareOwner("root", []model2.ShareMember{{Username: "alice"}}, ""); owner != "root" {
 		t.Errorf("an owner whose account exists stays, got %q", owner)
 	}
 
 	members := []model2.ShareMember{{Username: "bob", ReadOnly: true}, {Username: "alice"}}
-	if owner := chooseShareOwner("gone-account-xyz", members); owner != "alice" {
+	if owner := chooseShareOwner("gone-account-xyz", members, ""); owner != "alice" {
 		t.Errorf("a missing owner should pass to a member who can write, got %q", owner)
 	}
 
-	if owner := chooseShareOwner("", []model2.ShareMember{{Username: "bob", ReadOnly: true}}); owner != "bob" {
+	if owner := chooseShareOwner("", []model2.ShareMember{{Username: "bob", ReadOnly: true}}, ""); owner != "bob" {
 		t.Errorf("with only read-only members the first one owns, got %q", owner)
 	}
 
-	if owner := chooseShareOwner("root", nil); owner != "" {
+	if owner := chooseShareOwner("root", nil, ""); owner != "" {
 		t.Errorf("a share with no members has no owner, got %q", owner)
 	}
 }

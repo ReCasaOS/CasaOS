@@ -300,3 +300,40 @@ func TestValidateNewSharePathRefusesTheSystemDisk(t *testing.T) {
 		t.Errorf("/mnt itself should be refused, got %v", err)
 	}
 }
+
+// An older guest row merged with a protected one: the share becomes protected,
+// and its folder, still open to everybody, is handed to the owner.
+func TestMergeDuplicateSharesProtectsAGuestFolder(t *testing.T) {
+	before := []model2.SharesDBModel{
+		{ID: 1, Path: "/DATA/Media", Anonymous: true},
+		{ID: 2, Path: "/DATA/Media", Username: "pippo", Members: "pippo:rw"},
+		{ID: 3, Path: "/DATA/Docs", Username: "anna", Members: "anna:rw"},
+		{ID: 4, Path: "/DATA/Docs", Username: "anna", Members: "anna:rw pippo:ro"},
+		{ID: 5, Path: "/DATA/Public", Anonymous: true},
+		{ID: 6, Path: "/DATA/Public", Anonymous: true},
+	}
+
+	kept, _ := mergeDuplicateShares(before)
+	got := newlyProtected(before, kept)
+
+	if len(got) != 1 || got[0].Path != "/DATA/Media" || got[0].Username != "pippo" || got[0].Anonymous {
+		t.Fatalf("only /DATA/Media changed from guest to protected, got %+v", got)
+	}
+}
+
+// A disk mounted on /mnt itself is a disk: what is on it may be shared. The
+// system disk is the one / is on.
+func TestValidateNewSharePathComparesWithTheSystemDisk(t *testing.T) {
+	if _, err := os.Stat("/mnt"); err != nil {
+		t.Skip("no /mnt here")
+	}
+
+	_, err := ValidateNewSharePath("/mnt")
+	if sameFilesystem("/mnt", "/") {
+		if err != ErrSharePathNotOnDisk {
+			t.Errorf("/mnt on the system disk should be refused, got %v", err)
+		}
+	} else if err == ErrSharePathNotOnDisk {
+		t.Errorf("a disk mounted on /mnt itself should be accepted")
+	}
+}

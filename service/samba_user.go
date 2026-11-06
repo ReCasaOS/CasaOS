@@ -182,3 +182,10 @@ func DeleteSambaUser(username string) error {
 
 	return nil
 }
+
+// IsSambaShareAccount says whether username is a share account this code made:
+// a member of a share may become its owner, so never root, a service account
+// or a person's own login.
+func IsSambaShareAccount(username string) bool {
+	return isCasaOSManagedAccount(username)
+}

@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -67,53 +66,6 @@ func GetSambaSharesList(ctx echo.Context) error {
 		})
 	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: shareList})
-}
-
-// restrictShareToUser hands the shared directory to the account allowed to mount
-// it.
-//
-// Without this the directory stays root-owned, while the Samba session runs as
-// that account: the share would authenticate correctly and then refuse every
-// write, which reads as a broken feature rather than a permissions problem.
-//
-// path must already have been through service.ValidateSharePath.
-func restrictShareToUser(path, username string) error {
-	account, err := user.Lookup(username)
-	if err != nil {
-		return err
-	}
-
-	uid, err := strconv.Atoi(account.Uid)
-	if err != nil {
-		return err
-	}
-
-	gid, err := strconv.Atoi(account.Gid)
-	if err != nil {
-		return err
-	}
-
-	if err := os.Chown(path, uid, gid); err != nil {
-		return err
-	}
-
-	return os.Chmod(path, 0o770)
-}
-
-// releaseShareFromUser gives a directory back to root when its share goes away.
-//
-// Leaving it owned by a share account would keep that account in control of the
-// folder long after the share, and the account itself, are gone.
-func releaseShareFromUser(path string) error {
-	if _, err := service.ValidateSharePath(path); err != nil {
-		return err
-	}
-
-	if err := os.Chown(path, 0, 0); err != nil {
-		return err
-	}
-
-	return os.Chmod(path, 0o755)
 }
 
 func PostSambaSharesCreate(ctx echo.Context) error {
@@ -186,7 +138,7 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 	for i, v := range shares {
 		path := resolved[i]
 		members := memberLists[i]
-		owner := chooseShareOwner("", members)
+		owner := chooseShareOwner("", members, "")
 
 		shareDBModel := model2.SharesDBModel{
 			Anonymous:   owner == "",
@@ -205,7 +157,7 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 			// Unchanged from before authenticated shares existed: a guest share has
 			// no owner to speak of, so the directory stays world-writable.
 			os.Chmod(path, 0o777)
-		} else if err := restrictShareToUser(path, owner); err != nil {
+		} else if err := service.RestrictShareToUser(path, owner); err != nil {
 			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 		}
 
@@ -265,8 +217,8 @@ func PutSambaShare(ctx echo.Context) error {
 	// Ownership moves first. If Samba then refuses the configuration the share
 	// keeps working as it did, and the directory is put back. A request that
 	// only flips the Time Machine flag leaves the directory alone:
-	// releaseShareFromUser would drop a guest folder from 0777 to 0755.
-	share, err = applyShareMembers(share, members, request.TimeMachine)
+	// ReleaseShareFromUser would drop a guest folder from 0777 to 0755.
+	share, err = applyShareMembers(share, members, request.TimeMachine, "")
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 	}
@@ -310,7 +262,7 @@ func DeleteSambaShares(ctx echo.Context) error {
 	shares := service.MyService.Shares().GetSharesList()
 	for _, share := range shares {
 		if strconv.FormatUint(uint64(share.ID), 10) == id && share.Username != "" && !pathSharedElsewhere(shares, share) {
-			if err := releaseShareFromUser(share.Path); err != nil {
+			if err := service.ReleaseShareFromUser(share.Path); err != nil {
 				return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 			}
 		}
