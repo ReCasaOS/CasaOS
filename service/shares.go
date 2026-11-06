@@ -33,11 +33,12 @@ type SharesService interface {
 	GetSharesByName(name string) (shares []model2.SharesDBModel)
 	CreateShare(share model2.SharesDBModel) error
 	GetShareByID(id string) (share model2.SharesDBModel, found bool)
-	UpdateShare(id string, username string, timeMachine bool) error
+	UpdateShare(id string, owner string, members []model2.ShareMember, timeMachine bool) error
 	DeleteShare(id string) error
 	UpdateConfigFile() error
 	InitSambaConfig()
 	DeleteShareByPath(path string) error
+	MergeDuplicateShares() error
 }
 
 type sharesStruct struct {
@@ -111,24 +112,27 @@ func (s *sharesStruct) GetShareByID(id string) (share model2.SharesDBModel, foun
 	return share, result.Error == nil
 }
 
-// UpdateShare moves a share between guest access and a named account, in either
-// direction, and sets its Time Machine flag. An empty username makes it a guest
-// share again.
+// UpdateShare sets who may mount a share and its Time Machine flag. owner is
+// the account the directory belongs to and every session runs as; an empty
+// owner, with no members, makes it a guest share again.
 //
 // As with creation, the configuration is written and accepted before the row is
 // changed, so a rejected result leaves the share exactly as it was rather than
 // half converted.
-func (s *sharesStruct) UpdateShare(id string, username string, timeMachine bool) error {
+func (s *sharesStruct) UpdateShare(id string, owner string, members []model2.ShareMember, timeMachine bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	shares := []model2.SharesDBModel{}
 	s.db.Find(&shares)
 
+	column := model2.FormatMembers(members)
+
 	for i := range shares {
 		if strconv.FormatUint(uint64(shares[i].ID), 10) == id {
-			shares[i].Username = username
-			shares[i].Anonymous = username == ""
+			shares[i].Username = owner
+			shares[i].Members = column
+			shares[i].Anonymous = owner == ""
 			shares[i].TimeMachine = timeMachine
 		}
 	}
@@ -139,7 +143,7 @@ func (s *sharesStruct) UpdateShare(id string, username string, timeMachine bool)
 
 	return s.db.Model(&model.SharesDBModel{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{"username": username, "anonymous": username == "", "time_machine": timeMachine}).
+		Updates(map[string]interface{}{"username": owner, "members": column, "anonymous": owner == "", "time_machine": timeMachine}).
 		Error
 }
 
@@ -308,6 +312,127 @@ func (s *sharesStruct) initSambaConfig() bool {
 		return true
 	}
 	return false
+}
+
+// MergeDuplicateShares folds rows that share the same folder into the oldest
+// one. A create that was not serialised could insert the same folder several
+// times; smbd then keeps only the first section of each name, while the
+// dashboard lists them all.
+func (s *sharesStruct) MergeDuplicateShares() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	shares := []model2.SharesDBModel{}
+	s.db.Order("id").Find(&shares)
+
+	kept, removed := mergeDuplicateShares(shares)
+	if len(removed) == 0 {
+		return nil
+	}
+	// in external mode a row deleted while smb.conf lacks the include would come back once it is added
+	if err := checkExternalMainConfig(); err != nil {
+		return err
+	}
+
+	// A guest row merged with a protected one makes a protected share of a
+	// folder still left open (root, 0777): it goes to the owner first, and the
+	// rows stay as they were if it cannot.
+	for _, share := range newlyProtected(shares, kept) {
+		path, err := ValidateSharePath(share.Path)
+		if err != nil {
+			return err
+		}
+
+		if err := RestrictShareToUser(path, share.Username); err != nil {
+			return err
+		}
+	}
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		for _, share := range kept {
+			if err := tx.Model(&model2.SharesDBModel{}).Where("id = ?", share.ID).
+				Updates(map[string]interface{}{"username": share.Username, "members": share.Members, "anonymous": share.Anonymous, "time_machine": share.TimeMachine}).Error; err != nil {
+				return err
+			}
+		}
+
+		return tx.Where("id IN ?", removed).Delete(&model2.SharesDBModel{}).Error
+	})
+	if err != nil {
+		return err
+	}
+
+	return s.applyConfig(kept, false)
+}
+
+// mergeDuplicateShares returns the shares with one row per folder, and the ids
+// of the rows folded away. The oldest row stays; it gains every member the
+// others had, with write access if any of them gave it, and Time Machine if
+// any of them had it.
+func mergeDuplicateShares(shares []model2.SharesDBModel) ([]model2.SharesDBModel, []uint) {
+	kept := []model2.SharesDBModel{}
+	removed := []uint{}
+	index := map[string]int{}
+
+	for _, share := range shares {
+		i, seen := index[share.Path]
+		if !seen {
+			index[share.Path] = len(kept)
+			kept = append(kept, share)
+			continue
+		}
+
+		first := &kept[i]
+		members := first.MemberList()
+
+		for _, extra := range share.MemberList() {
+			found := false
+
+			for j := range members {
+				if members[j].Username == extra.Username {
+					members[j].ReadOnly = members[j].ReadOnly && extra.ReadOnly
+					found = true
+				}
+			}
+
+			if !found {
+				members = append(members, extra)
+			}
+		}
+
+		if first.Username == "" {
+			first.Username = share.Username
+		}
+
+		first.Members = model2.FormatMembers(members)
+		first.Anonymous = first.Username == ""
+		first.TimeMachine = first.TimeMachine || share.TimeMachine
+		removed = append(removed, share.ID)
+	}
+
+	return kept, removed
+}
+
+// newlyProtected returns the kept shares that a merge made protected: their
+// oldest row was a guest share, so their folder is still everybody's.
+func newlyProtected(before, kept []model2.SharesDBModel) []model2.SharesDBModel {
+	oldest := map[string]string{}
+
+	for _, share := range before {
+		if _, seen := oldest[share.Path]; !seen {
+			oldest[share.Path] = share.Username
+		}
+	}
+
+	result := []model2.SharesDBModel{}
+
+	for _, share := range kept {
+		if oldest[share.Path] == "" && share.Username != "" {
+			result = append(result, share)
+		}
+	}
+
+	return result
 }
 
 func NewSharesService(db *gorm.DB) SharesService {

@@ -25,6 +25,11 @@ const (
 	sambaAccountComment = "CasaOS share account"
 )
 
+// shareAccountIDs is the range new share accounts take their uid and gid from,
+// highest first. It stays clear of the ids containers commonly run as (999,
+// 1000 and up, linuxserver's 911, a few well-known service ids below 500).
+var shareAccountIDs = struct{ min, max string }{"800", "899"}
+
 var (
 	// sambaUsernamePattern is deliberately narrower than what useradd accepts.
 	// These names reach useradd, smbpasswd and an smb.conf "valid users" line, so
@@ -105,9 +110,16 @@ func CreateSambaUser(username, password string) error {
 		return ErrSambaUserExists
 	}
 
+	// The ids come from shareAccountIDs rather than the usual system range,
+	// which starts at 999: postgres, mysql and redis write their data as 999
+	// in their official images, and a share account's files are found by uid.
 	output, err := exec.Command(
 		"useradd",
 		"--system",
+		"-K", "SYS_UID_MIN="+shareAccountIDs.min,
+		"-K", "SYS_UID_MAX="+shareAccountIDs.max,
+		"-K", "SYS_GID_MIN="+shareAccountIDs.min,
+		"-K", "SYS_GID_MAX="+shareAccountIDs.max,
 		"--no-create-home",
 		"--shell", sambaNologinShell,
 		"--comment", sambaAccountComment,
@@ -181,4 +193,11 @@ func DeleteSambaUser(username string) error {
 	}
 
 	return nil
+}
+
+// IsSambaShareAccount says whether username is a share account this code made:
+// a member of a share may become its owner, so never root, a service account
+// or a person's own login.
+func IsSambaShareAccount(username string) bool {
+	return isCasaOSManagedAccount(username)
 }

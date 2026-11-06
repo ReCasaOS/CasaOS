@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -80,6 +81,7 @@ func TestSambaSectionAuthenticated(t *testing.T) {
 		"guest ok = No",
 		"public = No",
 		"valid users = alice",
+		"write list = alice",
 		"create mask = 0660",
 		"directory mask = 0770",
 		"force user = alice",
@@ -100,6 +102,64 @@ func TestSambaSectionAuthenticated(t *testing.T) {
 		if strings.Contains(section, unwanted) {
 			t.Errorf("authenticated section still contains %q:\n%s", unwanted, section)
 		}
+	}
+}
+
+func TestSambaSectionMembers(t *testing.T) {
+	section := sambaSection(model2.SharesDBModel{
+		Path:     "/DATA/Family",
+		Username: "alice",
+		Members:  "alice:rw bob:ro carol:rw",
+	})
+
+	for _, want := range []string{
+		"read only = Yes",
+		"valid users = alice bob carol",
+		"write list = alice carol",
+		"force user = alice",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("members section is missing %q:\n%s", want, section)
+		}
+	}
+}
+
+func TestSambaSectionReadOnlyMembersOnly(t *testing.T) {
+	section := sambaSection(model2.SharesDBModel{Path: "/DATA/Photos", Username: "alice", Members: "bob:ro"})
+
+	// An empty "write list =" line would be harmless, but no line at all is what
+	// says nobody writes.
+	if strings.Contains(section, "write list") {
+		t.Errorf("a share with read-only members only has a write list:\n%s", section)
+	}
+
+	if !strings.Contains(section, "valid users = bob\n") {
+		t.Errorf("the read-only member is not let in:\n%s", section)
+	}
+}
+
+func TestShareMembersRoundTrip(t *testing.T) {
+	members := []model2.ShareMember{{Username: "alice"}, {Username: "bob", ReadOnly: true}}
+	share := model2.SharesDBModel{Members: model2.FormatMembers(members)}
+
+	if share.Members != "alice:rw bob:ro" {
+		t.Fatalf("unexpected column value %q", share.Members)
+	}
+
+	got := share.MemberList()
+	if len(got) != 2 || got[0] != members[0] || got[1] != members[1] {
+		t.Fatalf("members did not survive the column: %+v", got)
+	}
+}
+
+func TestShareMembersLegacyRow(t *testing.T) {
+	got := (&model2.SharesDBModel{Username: "alice"}).MemberList()
+	if len(got) != 1 || got[0] != (model2.ShareMember{Username: "alice"}) {
+		t.Fatalf("a row from before members should give its account write access, got %+v", got)
+	}
+
+	if got := (&model2.SharesDBModel{}).MemberList(); len(got) != 0 {
+		t.Fatalf("a guest share has no members, got %+v", got)
 	}
 }
 
@@ -197,5 +257,83 @@ func TestADeleteRefusedForAMissingIncludeKeepsTheShare(t *testing.T) {
 	db.Model(&model2.SharesDBModel{}).Count(&count)
 	if count != 1 {
 		t.Errorf("%d shares left, want the refused one kept", count)
+	}
+}
+
+func TestMergeDuplicateShares(t *testing.T) {
+	kept, removed := mergeDuplicateShares([]model2.SharesDBModel{
+		{ID: 1, Path: "/DATA/AppData", Username: "pippo", Members: "pippo:rw"},
+		{ID: 2, Path: "/DATA/Downloads", Username: "pippo", Members: "pippo:ro"},
+		{ID: 3, Path: "/DATA/Downloads", Username: "pippo", Members: "pippo:rw anna:ro"},
+		{ID: 4, Path: "/DATA/Downloads", Username: "pippo", Members: "pippo:ro", TimeMachine: true},
+	})
+
+	if len(removed) != 2 || removed[0] != 3 || removed[1] != 4 {
+		t.Fatalf("the newer duplicates should go, got %v", removed)
+	}
+
+	if len(kept) != 2 {
+		t.Fatalf("one row per folder should stay, got %+v", kept)
+	}
+
+	downloads := kept[1]
+	if downloads.ID != 2 || downloads.Members != "pippo:rw anna:ro" || !downloads.TimeMachine || downloads.Username != "pippo" {
+		t.Errorf("the oldest row should gain what the others gave, got %+v", downloads)
+	}
+}
+
+func TestMergeDuplicateSharesNothingToDo(t *testing.T) {
+	_, removed := mergeDuplicateShares([]model2.SharesDBModel{{ID: 1, Path: "/DATA/A"}, {ID: 2, Path: "/DATA/B"}})
+	if len(removed) != 0 {
+		t.Errorf("distinct folders are left alone, got %v", removed)
+	}
+}
+
+func TestValidateNewSharePathRefusesTheSystemDisk(t *testing.T) {
+	// /mnt and its folders sit on the system disk in any container or CI
+	// runner; only a disk mounted there may be shared.
+	if _, err := os.Stat("/mnt"); err != nil {
+		t.Skip("no /mnt here")
+	}
+
+	if _, err := ValidateNewSharePath("/mnt"); err != ErrSharePathNotOnDisk {
+		t.Errorf("/mnt itself should be refused, got %v", err)
+	}
+}
+
+// An older guest row merged with a protected one: the share becomes protected,
+// and its folder, still open to everybody, is handed to the owner.
+func TestMergeDuplicateSharesProtectsAGuestFolder(t *testing.T) {
+	before := []model2.SharesDBModel{
+		{ID: 1, Path: "/DATA/Media", Anonymous: true},
+		{ID: 2, Path: "/DATA/Media", Username: "pippo", Members: "pippo:rw"},
+		{ID: 3, Path: "/DATA/Docs", Username: "anna", Members: "anna:rw"},
+		{ID: 4, Path: "/DATA/Docs", Username: "anna", Members: "anna:rw pippo:ro"},
+		{ID: 5, Path: "/DATA/Public", Anonymous: true},
+		{ID: 6, Path: "/DATA/Public", Anonymous: true},
+	}
+
+	kept, _ := mergeDuplicateShares(before)
+	got := newlyProtected(before, kept)
+
+	if len(got) != 1 || got[0].Path != "/DATA/Media" || got[0].Username != "pippo" || got[0].Anonymous {
+		t.Fatalf("only /DATA/Media changed from guest to protected, got %+v", got)
+	}
+}
+
+// A disk mounted on /mnt itself is a disk: what is on it may be shared. The
+// system disk is the one / is on.
+func TestValidateNewSharePathComparesWithTheSystemDisk(t *testing.T) {
+	if _, err := os.Stat("/mnt"); err != nil {
+		t.Skip("no /mnt here")
+	}
+
+	_, err := ValidateNewSharePath("/mnt")
+	if sameFilesystem("/mnt", "/") {
+		if err != ErrSharePathNotOnDisk {
+			t.Errorf("/mnt on the system disk should be refused, got %v", err)
+		}
+	} else if err == ErrSharePathNotOnDisk {
+		t.Errorf("a disk mounted on /mnt itself should be accepted")
 	}
 }

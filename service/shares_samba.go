@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	model2 "github.com/ReCasaOS/CasaOS/service/model"
@@ -24,6 +25,9 @@ const (
 // A share with no Username is written exactly as CasaOS has always written it,
 // field for field and line for line. Every row predating authenticated shares
 // carries an empty Username, so an upgrade regenerates their sections unchanged.
+//
+// A protected share lets in its members only, writing for those allowed to,
+// and runs every session as the account that owns the directory.
 //
 // An authenticated share drops the guest access, the world-writable masks and
 // the root ownership together. Leaving any single one behind would make the
@@ -59,14 +63,35 @@ func sambaSection(share model2.SharesDBModel) string {
 			"force user = root\n" + timeMachine + "\n"
 	}
 
+	// Samba decides who may write from the account that connected, before
+	// "force user" swaps in the owner for the file operations themselves. So the
+	// share is read-only by default and "write list" opens it to the members
+	// allowed to write, while every file on disk still belongs to one account and
+	// stays readable and writable for all of them.
+	valid, writers := []string{}, []string{}
+
+	for _, member := range share.MemberList() {
+		valid = append(valid, member.Username)
+
+		if !member.ReadOnly {
+			writers = append(writers, member.Username)
+		}
+	}
+
+	writeList := ""
+	if len(writers) > 0 {
+		writeList = "write list = " + strings.Join(writers, " ") + "\n"
+	}
+
 	return "\n[" + name + "]\n" +
 		"comment = CasaOS share " + name + "\n" +
 		"public = No\n" +
 		"path = " + share.Path + "\n" +
 		"browseable = Yes\n" +
-		"read only = No\n" +
+		"read only = Yes\n" +
+		writeList +
 		"guest ok = No\n" +
-		"valid users = " + share.Username + "\n" +
+		"valid users = " + strings.Join(valid, " ") + "\n" +
 		"create mask = 0660\n" +
 		"directory mask = 0770\n" +
 		"force user = " + share.Username + "\n" + timeMachine + "\n"
@@ -221,6 +246,39 @@ var shareRoots = []string{
 	"/srv",
 }
 
+// removableRoots hold mounted disks, but on a desktop also the per-user
+// folders udisks mounts USB drives into (/media/<user>), which belong to that
+// user's session and must not be handed to a share account.
+var removableRoots = []string{"/mnt", "/media"}
+
+var ErrSharePathNotOnDisk = errors.New("under /media and /mnt only a folder on a mounted disk can be shared")
+
+// ValidateNewSharePath is ValidateSharePath for a folder about to be shared:
+// under /media and /mnt the folder must be on a mounted disk, not on the
+// system disk (the one / is on). Existing shares are only
+// checked with ValidateSharePath, so one made before this rule can still be
+// changed or removed.
+func ValidateNewSharePath(path string) (string, error) {
+	resolved, err := ValidateSharePath(path)
+	if err != nil {
+		return "", err
+	}
+
+	for _, root := range removableRoots {
+		if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+			continue
+		}
+
+		// the system disk is the one / is on: a disk mounted on /mnt or /media
+		// itself is a disk, and every folder on it may be shared
+		if sameFilesystem(resolved, "/") {
+			return "", ErrSharePathNotOnDisk
+		}
+	}
+
+	return resolved, nil
+}
+
 var (
 	ErrSharePathNotDirectory = errors.New("only a directory can be shared")
 	ErrSharePathOutsideRoots = errors.New("a share must live under /DATA, /mnt, /media or /srv")
@@ -258,4 +316,16 @@ func ValidateSharePath(path string) (string, error) {
 	}
 
 	return "", ErrSharePathOutsideRoots
+}
+
+// sameFilesystem reports whether a and b live on the same device. When either
+// cannot be read it says yes, which refuses the share rather than risk one.
+func sameFilesystem(a, b string) bool {
+	var sa, sb syscall.Stat_t
+
+	if syscall.Stat(a, &sa) != nil || syscall.Stat(b, &sb) != nil {
+		return true
+	}
+
+	return sa.Dev == sb.Dev
 }
