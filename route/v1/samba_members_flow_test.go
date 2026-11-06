@@ -2,12 +2,15 @@ package v1
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -69,7 +72,13 @@ func sharesRig(t *testing.T, shares ...model2.SharesDBModel) (*fakeShares, *[]st
 	log := &[]string{}
 
 	previous := service.MyService
-	saved := []interface{}{isShareAccount, deleteShareAccount, validateSharePath, restrictShare, releaseShare}
+	saved := []interface{}{isShareAccount, deleteShareAccount, validateSharePath, restrictShare, releaseShare, shareFolderOwner, isMountPoint, reownShareContents}
+
+	// who owns each folder, as restrictShare leaves it
+	owners := map[string]string{}
+	for _, share := range shares {
+		owners[share.Path] = share.Username
+	}
 
 	service.MyService = fakeSharesRepository{shares: fake}
 	isShareAccount = func(name string) bool { return name == alice || name == bob }
@@ -79,12 +88,30 @@ func sharesRig(t *testing.T, shares ...model2.SharesDBModel) (*fakeShares, *[]st
 	}
 	validateSharePath = func(path string) (string, error) { return path, nil }
 	restrictShare = func(path, name string) error {
+		owners[path] = name
 		*log = append(*log, "own "+path+" "+name)
 		return nil
 	}
 	releaseShare = func(path string) error {
+		owners[path] = ""
 		*log = append(*log, "release "+path)
 		return nil
+	}
+	shareFolderOwner = func(path string) (int, error) {
+		if owners[path] == "" {
+			return 0, nil
+		}
+
+		account, err := user.Lookup(owners[path])
+		if err != nil {
+			return 0, err
+		}
+
+		return strconv.Atoi(account.Uid)
+	}
+	isMountPoint = func(string) bool { return false }
+	reownShareContents = func(plan reownPlan) {
+		*log = append(*log, fmt.Sprintf("reown %s %d->%d", plan.path, plan.oldUID, plan.uid))
 	}
 
 	t.Cleanup(func() {
@@ -94,6 +121,9 @@ func sharesRig(t *testing.T, shares ...model2.SharesDBModel) (*fakeShares, *[]st
 		validateSharePath = saved[2].(func(string) (string, error))
 		restrictShare = saved[3].(func(string, string) error)
 		releaseShare = saved[4].(func(string) error)
+		shareFolderOwner = saved[5].(func(string) (int, error))
+		isMountPoint = saved[6].(func(string) bool)
+		reownShareContents = saved[7].(func(reownPlan))
 	})
 
 	return fake, log
@@ -254,49 +284,228 @@ func TestOnlyShareAccountsCanBeMembers(t *testing.T) {
 }
 
 func TestChooseShareOwnerPassesOverTheAccountBeingDeleted(t *testing.T) {
+	sharesRig(t)
+
 	members := []model2.ShareMember{{Username: bob, ReadOnly: true}}
-	if owner := chooseShareOwner(alice, members, alice); owner != bob {
-		t.Errorf("got %q, want %q", owner, bob)
+	if owner, err := chooseShareOwner(alice, members, alice); err != nil || owner != bob {
+		t.Errorf("got %q %v, want %q", owner, err, bob)
 	}
 }
 
-// Only the old owner's files change hands: a share on /DATA or AppData holds
-// the files of containers, which keep theirs.
-func TestWalkOwnedByVisitsOnlyTheOwnersFiles(t *testing.T) {
-	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, "sub"), 0o755)
-	os.WriteFile(filepath.Join(root, "sub", "file"), []byte("x"), 0o644)
-	outside := t.TempDir()
-	os.Symlink(outside, filepath.Join(root, "link"))
+// a member kept from an older share on another account never becomes the
+// owner: every session would write as it
+func TestChooseShareOwnerPicksOnlyShareAccounts(t *testing.T) {
+	sharesRig(t)
 
-	me := os.Getuid()
-
-	visited := []string{}
-	if err := walkOwnedBy(root, me, func(path string) error {
-		visited = append(visited, strings.TrimPrefix(path, root))
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	members := []model2.ShareMember{{Username: "root"}, {Username: bob, ReadOnly: true}}
+	if owner, err := chooseShareOwner("gone-account-xyz", members, ""); err != nil || owner != bob {
+		t.Errorf("got %q %v, want %q", owner, err, bob)
 	}
 
-	want := map[string]bool{"": true, "/link": true, "/sub": true, "/sub/file": true}
-	if len(visited) != len(want) {
-		t.Fatalf("visited %v", visited)
+	if _, err := chooseShareOwner("gone-account-xyz", []model2.ShareMember{{Username: "root"}}, ""); !errors.Is(err, errShareWithoutOwner) {
+		t.Errorf("only root left: %v", err)
+	}
+}
+
+func TestPutSambaUserSharesRefusesAnAccountThatIsNotAShareAccount(t *testing.T) {
+	fake, log := sharesRig(t, protected(1, "/DATA/Media", alice, alice+":rw"))
+
+	code, body := callShares(t, PutSambaUserShares, http.MethodPut, "root", `[{"id":1}]`)
+	if code == http.StatusOK || !strings.Contains(body, "only a share account") {
+		t.Fatalf("%d %s", code, body)
 	}
 
-	for _, v := range visited {
-		if !want[v] {
-			t.Errorf("visited %q", v)
+	if len(fake.updates) > 0 || len(*log) > 0 {
+		t.Fatalf("%v %v", fake.updates, *log)
+	}
+}
+
+// nothing changes before the account is known to be deletable
+func TestDeleteSambaUserRefusesAnotherAccountBeforeTouchingAnything(t *testing.T) {
+	fake, log := sharesRig(t, protected(1, "/DATA/Old", "root", "root:rw "+bob+":rw"))
+
+	code, body := callShares(t, DeleteSambaUser, http.MethodDelete, "root", "")
+	if code == http.StatusOK || !strings.Contains(body, "not created by CasaOS") {
+		t.Fatalf("%d %s", code, body)
+	}
+
+	if len(fake.updates) > 0 || len(*log) > 0 {
+		t.Fatalf("%v %v", fake.updates, *log)
+	}
+}
+
+func TestDeleteSambaUserSaysTheSharesChangedWhenTheAccountStays(t *testing.T) {
+	_, _ = sharesRig(t, protected(1, "/DATA/Media", alice, alice+":rw "+bob+":rw"))
+	deleteShareAccount = func(string) error { return errors.New("userdel: user alice is currently used by process 42") }
+
+	code, body := callShares(t, DeleteSambaUser, http.MethodDelete, alice, "")
+	if code == http.StatusOK || !strings.Contains(body, "delete it again") {
+		t.Fatalf("%d %s", code, body)
+	}
+}
+
+// the walk takes the ids it was planned with, and runs only once Samba took
+// the change
+func TestTheWalkIsPlannedWithIDsAndStartsAfterUpdateShare(t *testing.T) {
+	fake, log := sharesRig(t, protected(1, "/DATA/Media", alice, alice+":rw "+bob+":rw"))
+
+	if code, body := callShares(t, DeleteSambaUser, http.MethodDelete, alice, ""); code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+
+	a, _ := user.Lookup(alice)
+	b, _ := user.Lookup(bob)
+	want := "reown /DATA/Media " + a.Uid + "->" + b.Uid
+
+	if fmt.Sprint(*log) != fmt.Sprint([]string{"own /DATA/Media " + bob, want, "delete " + alice}) {
+		t.Errorf("log %v", *log)
+	}
+
+	if len(fake.updates) != 1 {
+		t.Errorf("updates %v", fake.updates)
+	}
+}
+
+func TestNoWalkWhenUpdateShareFails(t *testing.T) {
+	fake, log := sharesRig(t, protected(1, "/DATA/Media", alice, alice+":rw "+bob+":rw"))
+	fake.failOn[1] = true
+
+	callShares(t, DeleteSambaUser, http.MethodDelete, alice, "")
+
+	for _, entry := range *log {
+		if strings.HasPrefix(entry, "reown") {
+			t.Fatalf("a walk started for a share Samba refused: %v", *log)
+		}
+	}
+}
+
+// a batch that fails puts the folders back and starts no walk at all
+func TestNoWalkWhenALaterShareFails(t *testing.T) {
+	fake, log := sharesRig(t,
+		protected(1, "/DATA/A", alice, alice+":rw "+bob+":rw"),
+		protected(2, "/DATA/B", alice, alice+":rw "+bob+":rw"),
+	)
+	fake.failOn[2] = true
+
+	callShares(t, DeleteSambaUser, http.MethodDelete, alice, "")
+
+	for _, entry := range *log {
+		if strings.HasPrefix(entry, "reown") {
+			t.Fatalf("%v", *log)
 		}
 	}
 
-	none := 0
-	walkOwnedBy(root, me+12345, func(string) error {
-		none++
-		return nil
-	})
+	if (*log)[len(*log)-1] != "own /DATA/A "+alice {
+		t.Errorf("share A's folder is not back with alice: %v", *log)
+	}
+}
 
-	if none != 0 {
-		t.Errorf("%d files of another uid were visited", none)
+// a share whose owning account was deleted from the shell can still change:
+// the old owner is whoever owns the folder
+func TestAShareWhoseOwnerIsGoneCanChange(t *testing.T) {
+	fake, log := sharesRig(t, protected(1, "/DATA/Media", "gone-account-xyz", "gone-account-xyz:rw "+bob+":rw"))
+	shareFolderOwner = func(string) (int, error) { return 4242, nil }
+
+	code, body := callShares(t, PutSambaUserShares, http.MethodPut, bob, `[{"id":1,"read_only":true}]`)
+	if code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+
+	if fake.shares[0].Username != bob {
+		t.Errorf("owner %q", fake.shares[0].Username)
+	}
+
+	b, _ := user.Lookup(bob)
+	if (*log)[len(*log)-1] != "reown /DATA/Media 4242->"+b.Uid {
+		t.Errorf("log %v", *log)
+	}
+}
+
+// /DATA, AppData and disk roots keep the old owner's files: a container may
+// write there as the same uid, and the answer says so
+func TestNoWalkWhereContainersKeepTheirData(t *testing.T) {
+	for _, path := range []string{"/DATA", "/DATA/AppData", "/DATA/AppData/postgres", "/mnt"} {
+		t.Run(path, func(t *testing.T) {
+			_, log := sharesRig(t, protected(1, path, alice, alice+":rw "+bob+":rw"))
+
+			code, body := callShares(t, DeleteSambaUser, http.MethodDelete, alice, "")
+			if code != http.StatusOK || !strings.Contains(body, "keep their owner") {
+				t.Fatalf("%d %s", code, body)
+			}
+
+			for _, entry := range *log {
+				if strings.HasPrefix(entry, "reown") {
+					t.Fatalf("%v", *log)
+				}
+			}
+		})
+	}
+
+	_, log := sharesRig(t, protected(1, "/DATA/Disk", alice, alice+":rw "+bob+":rw"))
+	isMountPoint = func(path string) bool { return path == "/DATA/Disk" }
+
+	callShares(t, DeleteSambaUser, http.MethodDelete, alice, "")
+
+	for _, entry := range *log {
+		if strings.HasPrefix(entry, "reown") {
+			t.Fatalf("a disk root was walked: %v", *log)
+		}
+	}
+}
+
+func TestReownArgs(t *testing.T) {
+	got := strings.Join(reownArgs(reownPlan{path: "/DATA/Media", oldUID: 899, uid: 898, gid: 897}), " ")
+	if got != "-R -h --from=+899 +898:+897 -- /DATA/Media" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// the real chown, as root only (the golang container): the old owner's files
+// change hands, everybody else's and a link's target stay
+func TestRunReownWithChown(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("needs root")
+	}
+
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "target")
+	os.WriteFile(outside, nil, 0o644)
+	os.MkdirAll(filepath.Join(root, "sub"), 0o755)
+	os.WriteFile(filepath.Join(root, "sub", "mine"), nil, 0o644)
+	os.WriteFile(filepath.Join(root, "theirs"), nil, 0o644)
+	os.Symlink(outside, filepath.Join(root, "link"))
+
+	for _, p := range []string{outside, filepath.Join(root, "sub"), filepath.Join(root, "sub", "mine"), filepath.Join(root, "link")} {
+		os.Lchown(p, 4001, 4001)
+	}
+	os.Lchown(filepath.Join(root, "theirs"), 999, 999)
+
+	runReown(reownPlan{path: root, oldUID: 4001, uid: 4002, gid: 4003})
+
+	owner := func(p string) int {
+		info, _ := os.Lstat(p)
+		return int(info.Sys().(*syscall.Stat_t).Uid)
+	}
+
+	for p, want := range map[string]int{
+		filepath.Join(root, "sub"):         4002,
+		filepath.Join(root, "sub", "mine"): 4002,
+		filepath.Join(root, "link"):        4002,
+		filepath.Join(root, "theirs"):      999,
+		outside:                            4001,
+	} {
+		if got := owner(p); got != want {
+			t.Errorf("%s is %d's, want %d's", p, got, want)
+		}
+	}
+}
+
+func TestIsMountPoint(t *testing.T) {
+	if !isMountPoint("/") {
+		t.Error("/ is a mount point")
+	}
+
+	if !isMountPoint("/does/not/exist") {
+		t.Error("a path it cannot read counts as a mount point")
 	}
 }

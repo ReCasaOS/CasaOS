@@ -26,21 +26,34 @@ func TestWithMember(t *testing.T) {
 }
 
 func TestChooseShareOwner(t *testing.T) {
-	if owner := chooseShareOwner("root", []model2.ShareMember{{Username: "alice"}}, ""); owner != "root" {
-		t.Errorf("an owner whose account exists stays, got %q", owner)
+	saved := isShareAccount
+	isShareAccount = func(name string) bool { return name == "alice" || name == "bob" }
+	t.Cleanup(func() { isShareAccount = saved })
+
+	owner := func(current string, members []model2.ShareMember) string {
+		got, err := chooseShareOwner(current, members, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return got
+	}
+
+	if got := owner("root", []model2.ShareMember{{Username: "alice"}}); got != "root" {
+		t.Errorf("an owner whose account exists stays, got %q", got)
 	}
 
 	members := []model2.ShareMember{{Username: "bob", ReadOnly: true}, {Username: "alice"}}
-	if owner := chooseShareOwner("gone-account-xyz", members, ""); owner != "alice" {
-		t.Errorf("a missing owner should pass to a member who can write, got %q", owner)
+	if got := owner("gone-account-xyz", members); got != "alice" {
+		t.Errorf("a missing owner should pass to a member who can write, got %q", got)
 	}
 
-	if owner := chooseShareOwner("", []model2.ShareMember{{Username: "bob", ReadOnly: true}}, ""); owner != "bob" {
-		t.Errorf("with only read-only members the first one owns, got %q", owner)
+	if got := owner("", []model2.ShareMember{{Username: "bob", ReadOnly: true}}); got != "bob" {
+		t.Errorf("with only read-only members the first one owns, got %q", got)
 	}
 
-	if owner := chooseShareOwner("root", nil, ""); owner != "" {
-		t.Errorf("a share with no members has no owner, got %q", owner)
+	if got := owner("root", nil); got != "" {
+		t.Errorf("a share with no members has no owner, got %q", got)
 	}
 }
 

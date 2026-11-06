@@ -138,7 +138,10 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 	for i, v := range shares {
 		path := resolved[i]
 		members := memberLists[i]
-		owner := chooseShareOwner("", members, "")
+		owner, err := chooseShareOwner("", members, "")
+		if err != nil {
+			return ctx.JSON(common_err.CLIENT_ERROR, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
+		}
 
 		shareDBModel := model2.SharesDBModel{
 			Anonymous:   owner == "",
@@ -178,11 +181,11 @@ func PostSambaSharesCreate(ctx echo.Context) error {
 // The body replaces all of it, so a client that omits time_machine clears it.
 //
 // Moving between guest access and accounts re-owns only the shared directory
-// itself, never its contents. A media
-// share can hold millions of files and walking them inside an HTTP request is
-// not something a NAS should be asked to do. It is not needed either: files
-// created under a guest share are world-readable, and files created under a
-// protected share stay reachable by root, which is who a guest session maps to.
+// itself, never its contents: files created under a guest share are
+// world-readable, and files created under a protected share stay reachable by
+// root, which is who a guest session maps to. A change from one owning account
+// to another also hands the old owner's files over, in the background after
+// the answer (see moveShareOwnership).
 func PutSambaShare(ctx echo.Context) error {
 	sharesMutex.Lock()
 	defer sharesMutex.Unlock()
@@ -218,12 +221,21 @@ func PutSambaShare(ctx echo.Context) error {
 	// keeps working as it did, and the directory is put back. A request that
 	// only flips the Time Machine flag leaves the directory alone:
 	// ReleaseShareFromUser would drop a guest folder from 0777 to 0755.
-	share, err = applyShareMembers(share, members, request.TimeMachine, "")
+	share, plan, skipped, err := applyShareMembers(share, members, request.TimeMachine, "")
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 	}
 
-	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: shareResponse(share)})
+	if plan != nil {
+		reownShareContents(*plan)
+	}
+
+	message := common_err.GetMsg(common_err.SUCCESS)
+	if skipped != nil {
+		message = skippedMessage([]string{skipped.path})
+	}
+
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: message, Data: shareResponse(share)})
 }
 
 // shareResponse is a share as the API returns it.
