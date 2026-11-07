@@ -11,7 +11,17 @@ var (
 	errRemoteAdvanced   = errors.New("the master runs at an address typed by hand: move it onto a relay to get remote access")
 	errRemoteIsMaster   = errors.New("remote access goes with the master: disable the master to turn it off")
 	errRemoteOtherRelay = errors.New("remote access already runs over another relay: turn it off first")
+
+	// ErrRemoteOn: Join would end remote access, which only a confirmed request may do.
+	ErrRemoteOn = errors.New("this box has remote access: joining a fleet turns it off and its phones and PCs lose access; confirm to go on")
 )
+
+// remoteAlone says remote access is on for a box alone: relay.json is remote
+// and finished (it has the box's address) and the master role is off. A remote
+// relay.json without NetAddr is an unfinished enable, a leftover.
+func remoteAlone(rs RelayState, masterOn bool) bool {
+	return rs.Remote && rs.NetAddr != "" && !masterOn
+}
 
 // EnableRemote gives a box with no fleet remote access: a fleet of one is
 // created at the relay (DefaultRelayURL when relayURL is empty) and this box
@@ -57,7 +67,7 @@ func (f *Fleet) EnableRemote(ctx context.Context, relayURL string) error {
 		return nil
 	case on:
 		return errRemoteAdvanced
-	case haveRelay && rs.Remote && rs.NetAddr != "": // without NetAddr the enable did not finish: leftover below
+	case haveRelay && remoteAlone(rs, on): // without NetAddr the enable did not finish: leftover below
 		if sameURL(rs.Relay, relayURL) {
 			return nil
 		}
@@ -94,7 +104,7 @@ func (f *Fleet) DisableRemote(ctx context.Context) error {
 	if on {
 		return errRemoteIsMaster
 	}
-	if haveRelay && rs.Remote {
+	if haveRelay && remoteAlone(rs, false) {
 		f.leaveRelay(context.WithoutCancel(ctx), rs, true)
 	}
 	return nil

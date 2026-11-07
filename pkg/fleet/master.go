@@ -316,6 +316,13 @@ var errMemberElsewhere = errors.New("this box is a member of a fleet: leave it b
 func (f *Fleet) EnableMaster(address string) error {
 	f.relayMu.Lock()
 	defer f.relayMu.Unlock()
+	f.mu.Lock()
+	_, on := f.master()
+	rs, haveRelay := f.loadRelay()
+	f.mu.Unlock()
+	if haveRelay && remoteAlone(rs, on) {
+		return errors.New("this box has remote access over a relay: enable the master on that relay, or turn remote access off first")
+	}
 	return f.enableMaster(address, "", "", "")
 }
 
@@ -399,6 +406,17 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 			return nil
 		}
 		return errors.New("the master already runs over another relay: change the relay instead")
+	}
+	if haveRelay && remoteAlone(rs, on) {
+		// remote access already made the fleet and the network: the master takes them over, devices kept
+		if !sameURL(relayURL, rs.Relay) {
+			return errors.New("remote access runs over another relay: enable the master on that relay, or turn remote access off first")
+		}
+		ns, err := n.State(ctx)
+		if err != nil || !ns.Connected || ns.Addr == "" || !sameURL(ns.LoginServer, rs.Relay) {
+			return errRelayNotUp
+		}
+		return f.enableMaster(relayAddress(ns.Addr, port), rs.Relay, rs.FleetID, ns.Addr)
 	}
 	if haveRelay {
 		// left by an enable that did not finish: that fleet and its network go first

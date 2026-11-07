@@ -1,6 +1,9 @@
 package fleet
 
 import (
+	"encoding/json"
+	"os"
+	"strings"
 	"context"
 	"errors"
 	"sync"
@@ -198,5 +201,119 @@ func TestDisableRemoteRefusesMaster(t *testing.T) {
 	}
 	if err := f.DisableRemote(context.Background()); !errors.Is(err, errRemoteIsMaster) || r.count(&r.deletes) != 0 {
 		t.Fatalf("%v, deletes %d", err, r.count(&r.deletes))
+	}
+}
+
+func readJSONFile(t *testing.T, path string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestEnableMasterRelayReusesRemoteNetwork(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	n.after.LoginServer = r.URL // the network the relay announced
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	ups := 0
+	for _, c := range n.calls {
+		if strings.HasPrefix(c, "up ") {
+			ups++
+		}
+	}
+	if r.count(&r.creates) != 1 || ups != 1 {
+		t.Fatalf("creates %d, calls %v", r.count(&r.creates), n.calls)
+	}
+	m := readJSONFile(t, f.masterPath())
+	if m["relay"] != r.URL || m["fleet_id"] != "fl1" || m["net_addr"] != "100.64.0.7" {
+		t.Fatalf("%v", m)
+	}
+	if rs, ok := f.loadRelay(); !ok || !rs.Remote {
+		t.Fatalf("%+v %v", rs, ok)
+	}
+}
+
+func TestEnableMasterRelayRemoteOtherRelay(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	err := f.EnableMasterRelay(context.Background(), "https://other.example")
+	if err == nil || !strings.Contains(err.Error(), "remote access runs over another relay") || exists(t, f.masterPath()) || r.count(&r.creates) != 1 {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestEnableMasterRelayRemoteNetworkDown(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	n.up, n.before = false, NetState{}
+	n.mu.Unlock()
+	if err := f.EnableMasterRelay(context.Background(), r.URL); !errors.Is(err, errRelayNotUp) || exists(t, f.masterPath()) {
+		t.Fatalf("%v", err)
+	}
+	if _, ok := f.loadRelay(); !ok || r.count(&r.creates) != 1 {
+		t.Fatal("relay.json lost or a new fleet")
+	}
+}
+
+func TestEnableMasterAdvancedRefusedWhileRemoteOn(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	err := f.EnableMaster("https://box.example")
+	if err == nil || !strings.Contains(err.Error(), "this box has remote access over a relay") || exists(t, f.masterPath()) {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestJoinRefusesWhileRemoteOn(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	before := len(n.calls)
+	for _, c := range []Code{
+		{MasterURL: "https://master.example", BoxID: "b", Key: "k"},
+		{MasterURL: "https://master.example", BoxID: "b", Key: "k", Relay: r.URL, JoinKey: testJoinKey, Fleet: "fl9"},
+	} {
+		if err := f.Join(c.String()); !errors.Is(err, ErrRemoteOn) {
+			t.Fatalf("%v", err)
+		}
+	}
+	if rs, ok := f.loadRelay(); !ok || !rs.Remote || exists(t, f.memberPath()) || len(n.calls) != before || len(n.downs) != 0 {
+		t.Fatalf("changed: %+v, calls %v", rs, n.calls)
+	}
+}
+
+func TestDisableMasterAfterRemoteDeletesFleet(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	n.after.LoginServer = r.URL // the network the relay announced
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.DisableMaster(); err != nil {
+		t.Fatal(err)
+	}
+	if r.count(&r.deletes) != 1 || exists(t, f.relayPath()) {
+		t.Fatalf("deletes %d", r.count(&r.deletes))
 	}
 }

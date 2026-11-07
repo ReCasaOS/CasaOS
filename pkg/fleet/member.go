@@ -125,7 +125,12 @@ func (f *Fleet) Join(code string) error {
 		defer f.relayMu.Unlock()
 		f.mu.Lock()
 		old, member := f.loadMember()
+		_, on := f.master()
+		rs, haveRelay := f.loadRelay()
 		f.mu.Unlock()
+		if haveRelay && remoteAlone(rs, on) {
+			return ErrRemoteOn
+		}
 		if err := f.enrol(st); err != nil {
 			return err
 		}
@@ -145,9 +150,13 @@ func (f *Fleet) Join(code string) error {
 	f.mu.Lock()
 	_, on := f.master()
 	old, member := f.loadMember()
+	rs, haveRelay := f.loadRelay()
 	f.mu.Unlock()
 	if on {
 		return errIsMaster
+	}
+	if haveRelay && remoteAlone(rs, on) {
+		return ErrRemoteOn
 	}
 	ctx := context.Background()
 	ns, err := n.State(ctx)
