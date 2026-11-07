@@ -279,6 +279,10 @@ func InitV1Router() http.Handler {
 			v1FleetGroup.POST("/boxes/:id/code", v1.PostFleetBoxCode, headerTokenOnly)
 			v1FleetGroup.GET("/boxes/:id/relay/*", v1.FleetRelay)
 			v1FleetGroup.Match([]string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete}, "/boxes/:id/relay/*", v1.FleetRelay, headerTokenOnly)
+			v1FleetGroup.PUT("/remote", v1.PutFleetRemote, headerTokenOnly)
+			v1FleetGroup.GET("/remote", v1.GetFleetRemote)
+			v1FleetGroup.POST("/remote/devices", v1.PostFleetRemoteDevice, headerTokenOnly)
+			v1FleetGroup.DELETE("/remote/devices/:id", v1.DeleteFleetRemoteDevice, headerTokenOnly)
 			v1FleetGroup.PUT("/member", v1.PutFleetMember, headerTokenOnly)
 			v1FleetGroup.DELETE("/member", v1.DeleteFleetMember, headerTokenOnly)
 		}

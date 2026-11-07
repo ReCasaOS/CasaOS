@@ -54,6 +54,8 @@ type RelayState struct {
 	Relay   string `json:"relay"`
 	FleetID string `json:"fleet_id"`
 	Secret  string `json:"secret"`
+	Remote  bool   `json:"remote,omitempty"`
+	NetAddr string `json:"net_addr,omitempty"`
 }
 
 func (f *Fleet) relayPath() string { return filepath.Join(f.Root, StateDir, "relay.json") }
