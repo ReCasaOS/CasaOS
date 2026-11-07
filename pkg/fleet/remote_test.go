@@ -224,6 +224,40 @@ func TestDisableRemote(t *testing.T) {
 	}
 }
 
+func TestDisableRemoteKeepsRelayJSONWhenDownFails(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("tailscale logout: boom")
+	n.mu.Lock()
+	n.downErr = boom
+	n.mu.Unlock()
+	err := f.DisableRemote(context.Background())
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "cannot leave the remote access network") {
+		t.Fatal(err)
+	}
+	if rs, ok := f.loadRelay(); !ok || !rs.Remote || r.count(&r.deletes) != 1 {
+		t.Fatalf("%+v %v, deletes %d", rs, ok, r.count(&r.deletes))
+	}
+}
+
+func TestDisableRemoteLeavesAMembersNetwork(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.saveMember(MemberState{MasterURL: "https://other.example", BoxID: "b", Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.DisableRemote(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r.count(&r.deletes) != 1 || n.called("down") || exists(t, f.relayPath()) {
+		t.Fatalf("deletes %d, calls %v", r.count(&r.deletes), n.calls)
+	}
+}
+
 func TestDisableRemoteRefusesMaster(t *testing.T) {
 	f, _, r, _ := relayMaster(t)
 	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {

@@ -97,22 +97,36 @@ func (f *Fleet) EnableRemote(ctx context.Context, relayURL string) error {
 }
 
 // DisableRemote turns remote access off: the fleet of one is deleted at the
-// relay, the private network left and relay.json removed. A master's fleet is
-// not touched, and no remote access is not an error.
+// relay (best-effort), the private network left and relay.json removed. When
+// the network cannot be left, relay.json is kept and the error returned: the box
+// never sits on a network nothing records. The network of a member.json naming
+// another fleet may be that member's: it is not left. A master's fleet is not
+// touched, and no remote access is not an error.
 func (f *Fleet) DisableRemote(ctx context.Context) error {
 	f.relayMu.Lock()
 	defer f.relayMu.Unlock()
 	f.mu.Lock()
 	_, on := f.master()
 	rs, haveRelay := f.loadRelay()
+	m, isMember := f.loadMember()
+	member := isMember && !f.namesSelf(m)
 	f.mu.Unlock()
 	if on {
 		return errRemoteIsMaster
 	}
-	if haveRelay && rs.Remote { // any remote relay.json, an unfinished enable too
-		f.leaveRelay(context.WithoutCancel(ctx), rs, true)
+	if !haveRelay || !rs.Remote { // any remote relay.json goes, an unfinished enable too
+		return nil
 	}
-	return nil
+	bg := context.WithoutCancel(ctx)
+	if err := f.RelayAPI.DeleteFleet(bg, rs.Relay, rs.FleetID, rs.Secret); err != nil {
+		f.Log("fleet: cannot delete the fleet at the relay; the relay removes it on its own once idle", err)
+	}
+	if !member && f.Net != nil {
+		if err := f.Net.Down(bg, rs.Relay); err != nil {
+			return fmt.Errorf("cannot leave the remote access network: %w", err)
+		}
+	}
+	return f.clearRelay()
 }
 
 // remoteFleet is the relay fleet behind devices: a master's over its relay, or
