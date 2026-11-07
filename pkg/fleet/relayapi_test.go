@@ -445,9 +445,13 @@ func TestDeviceCodeOldRelay(t *testing.T) {
 	}
 	for name, call := range calls {
 		t.Run(name, func(t *testing.T) {
+			want := ErrRelayNoDevices
+			if name == "FleetNodes" { // its path exists on every relay version: any 404 is a gone fleet
+				want = ErrRelayFleetGone
+			}
 			c, relay := relayFor(t, plain404)
-			if err := call(c, relay); !errors.Is(err, ErrRelayNoDevices) {
-				t.Errorf("old relay: err = %v, want ErrRelayNoDevices", err)
+			if err := call(c, relay); !errors.Is(err, want) {
+				t.Errorf("plain 404: err = %v, want %v", err, want)
 			}
 			c, relay = relayFor(t, func(w http.ResponseWriter, r *http.Request) {
 				jsonReply(w, 404, map[string]string{"error": "fleet not found"})

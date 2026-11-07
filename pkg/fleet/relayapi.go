@@ -21,14 +21,15 @@ import (
 // sent back: a response body is never quoted.
 var (
 	// ErrRelayBusy: 429, 502 or 503. Retry later; the error is a *RelayBusyError carrying
-	// the relay's Retry-After, when it gave one.
+	// the relay's Retry-After, when it gave one. A 503 "relay full" on CreateFleet is ErrRelayFull.
 	ErrRelayBusy = errors.New("the relay is busy, try again later")
 	// ErrRelayQuota: 409. The fleet is at its node quota, or holds too many unused join keys.
 	ErrRelayQuota = errors.New("the relay refused: this fleet has reached its limit of boxes or unused join keys")
 	// ErrRelayAuth: 401. The relay rejected the fleet secret (or, for CreateFleet, the box's signature,
 	// which includes a clock too far off).
 	ErrRelayAuth = errors.New("the relay rejected this box's credentials")
-	// ErrRelayFleetGone: 404 on JoinKey or RemoveNode. The relay no longer knows the fleet, for
+	// ErrRelayFleetGone: 404 on JoinKey, RemoveNode or FleetNodes, and the relay's JSON "fleet not
+	// found" 404 on DeviceCode, Devices and RemoveDevice. The relay no longer knows the fleet, for
 	// instance after it idled out.
 	ErrRelayFleetGone = errors.New("the relay no longer knows this fleet")
 	// ErrRelayFailed: another 5xx, the relay's own failure; the error names the status.
@@ -183,9 +184,9 @@ var errNoFleet = errors.New("the fleet id and its secret are required")
 
 // CreateFleet asks the relay for a new fleet, signing with the box's key (made on first use in
 // c.Dir): POST /v1/fleets, answered 201. Errors: ErrRelayAuth (signature or clock refused),
-// ErrRelayBusy (rate limit, relay full: 429, 503), ErrRelayUnreachable, or an error naming the
-// status or saying the answer was not valid. The login server it returns is checked as a master
-// address, since boxes pass it to tailscale up.
+// ErrRelayFull (503 "relay full"), ErrRelayBusy (429, another 503), ErrRelayUnreachable, or an
+// error naming the status or saying the answer was not valid. The login server it returns is
+// checked as a master address, since boxes pass it to tailscale up.
 func (c *RelayClient) CreateFleet(ctx context.Context, relay string) (FleetCreds, error) {
 	if err := ValidMasterURL(relay); err != nil { // before the key file is touched
 		return FleetCreds{}, fmt.Errorf("the relay address is not valid: %w", err)
@@ -406,7 +407,8 @@ func (c *RelayClient) RemoveDevice(ctx context.Context, relay, fleetID, secret, 
 	return r.statusError()
 }
 
-// FleetNodes lists the fleet's boxes: GET /v1/fleets/{id}, answered 200. Errors as Devices.
+// FleetNodes lists the fleet's boxes: GET /v1/fleets/{id}, answered 200. Errors as Devices, but
+// any 404 is ErrRelayFleetGone: that path exists on every relay version.
 func (c *RelayClient) FleetNodes(ctx context.Context, relay, fleetID, secret string) ([]FleetNode, error) {
 	if fleetID == "" || secret == "" {
 		return nil, errNoFleet
@@ -418,7 +420,7 @@ func (c *RelayClient) FleetNodes(ctx context.Context, relay, fleetID, secret str
 	switch r.status {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return nil, fleetGone(r)
+		return nil, ErrRelayFleetGone
 	default:
 		return nil, r.statusError()
 	}
