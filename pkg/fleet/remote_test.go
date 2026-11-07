@@ -1,11 +1,11 @@
 package fleet
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
-	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
