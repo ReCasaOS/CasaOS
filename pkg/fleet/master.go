@@ -535,7 +535,8 @@ func relayAddress(addr, port string) string {
 // master's own member.json pointed at this box's own gateway, which goes with
 // the master, so it is cleared too; a member.json of another fleet is left.
 // Over a relay, the fleet is then deleted there and the private network left,
-// best-effort: the local disable never fails because the relay is down.
+// best-effort: the local disable never fails because the relay is down. With no
+// master on, the remote access of a box alone is left as it is.
 func (f *Fleet) DisableMaster() error {
 	f.relayMu.Lock()
 	defer f.relayMu.Unlock()
@@ -559,7 +560,8 @@ func (f *Fleet) DisableMaster() error {
 	if selfGone {
 		f.pokeMember()
 	}
-	if haveRelay || st.Relay != "" { // a damaged relay.json still leaves a network to go down
+	// a damaged relay.json still leaves a network to go down; remote access of a box alone is not the master's
+	if (haveRelay && !remoteAlone(rs, st.Enabled)) || st.Relay != "" {
 		f.leaveRelay(context.Background(), rs, true)
 	}
 	if errors.Is(err, fs.ErrNotExist) {

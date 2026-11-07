@@ -318,6 +318,20 @@ func TestDisableMasterAfterRemoteDeletesFleet(t *testing.T) {
 	}
 }
 
+func TestDisableMasterOffKeepsRemote(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.DisableMaster(); err != nil {
+		t.Fatal(err)
+	}
+	rs, ok := f.loadRelay()
+	if r.count(&r.deletes) != 0 || n.called("down") || !ok || !rs.Remote || rs.NetAddr == "" {
+		t.Fatalf("deletes %d, calls %v, relay.json %+v %v", r.count(&r.deletes), n.calls, rs, ok)
+	}
+}
+
 func TestDisableRemoteCleansUnfinishedEnable(t *testing.T) {
 	f, n, r, _ := relayMaster(t)
 	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
