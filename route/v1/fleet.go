@@ -255,7 +255,8 @@ func FleetRelay(ctx echo.Context) error {
 	return ctx.Blob(res.Status, contentType, res.Body)
 }
 
-// PutFleetMember joins (or re-joins) a fleet from a pasted code.
+// PutFleetMember joins (or re-joins) a fleet from a pasted code. A box with
+// remote access answers 409 until leave_remote confirms that joining turns it off.
 //
 // @Summary fleet: join a fleet
 // @Accept application/json
@@ -266,12 +267,22 @@ func FleetRelay(ctx echo.Context) error {
 // @Router /fleet/member [put]
 func PutFleetMember(ctx echo.Context) error {
 	var body struct {
-		Code string `json:"code"`
+		Code        string `json:"code"`
+		LeaveRemote bool   `json:"leave_remote"`
 	}
 	if err := ctx.Bind(&body); err != nil {
 		return bad(ctx, err)
 	}
-	if err := fleet.Default.Join(body.Code); err != nil {
+	err := fleet.Default.Join(body.Code)
+	if errors.Is(err, fleet.ErrRemoteOn) && body.LeaveRemote {
+		// confirmed: remote access goes, then the join. Only now, so a bad code costs nothing.
+		c, cancel := detached(ctx)
+		defer cancel()
+		if err = fleet.Default.DisableRemote(c); err == nil {
+			err = fleet.Default.Join(body.Code)
+		}
+	}
+	if err != nil {
 		return bad(ctx, err)
 	}
 	return ok(ctx, fleetStatus())
@@ -290,6 +301,88 @@ func DeleteFleetMember(ctx echo.Context) error {
 		return oops(ctx, err)
 	}
 	return ok(ctx, fleetStatus())
+}
+
+// PutFleetRemote turns remote access on, over the relay given (the official one
+// when empty), or off.
+//
+// @Summary fleet: turn remote access on or off
+// @Accept application/json
+// @Produce application/json
+// @Tags fleet
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /fleet/remote [put]
+func PutFleetRemote(ctx echo.Context) error {
+	var body struct {
+		Enabled bool   `json:"enabled"`
+		Relay   string `json:"relay"`
+	}
+	if err := ctx.Bind(&body); err != nil {
+		return bad(ctx, err)
+	}
+	c, cancel := detached(ctx)
+	defer cancel()
+	var err error
+	if body.Enabled {
+		err = fleet.Default.EnableRemote(c, body.Relay)
+	} else {
+		err = fleet.Default.DisableRemote(c)
+	}
+	if err != nil {
+		return bad(ctx, err)
+	}
+	return ok(ctx, fleetStatus())
+}
+
+// GetFleetRemote asks the relay for the devices on this box's network and, on a
+// master, its boxes' addresses. The dashboard calls it on demand (the remote
+// access page opening, a refresh button), never on a timer: the relay limits
+// Bearer calls to 60 an hour per IP, shared with join keys.
+//
+// @Summary fleet: remote access devices and addresses
+// @Produce application/json
+// @Tags fleet
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /fleet/remote [get]
+func GetFleetRemote(ctx echo.Context) error {
+	v, err := fleet.Default.RemoteView(ctx.Request().Context())
+	if err != nil {
+		return bad(ctx, err)
+	}
+	return ok(ctx, v)
+}
+
+// PostFleetRemoteDevice gives a one-time code a phone or PC joins the network with.
+//
+// @Summary fleet: add a phone or PC, get its code
+// @Produce application/json
+// @Tags fleet
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /fleet/remote/devices [post]
+func PostFleetRemoteDevice(ctx echo.Context) error {
+	code, err := fleet.Default.NewDeviceCode(ctx.Request().Context())
+	if err != nil {
+		return bad(ctx, err)
+	}
+	return ok(ctx, code)
+}
+
+// DeleteFleetRemoteDevice takes a phone or PC off the network.
+//
+// @Summary fleet: remove a phone or PC
+// @Produce application/json
+// @Tags fleet
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /fleet/remote/devices/{id} [delete]
+func DeleteFleetRemoteDevice(ctx echo.Context) error {
+	if err := fleet.Default.RemoveDevice(ctx.Request().Context(), ctx.Param("id")); err != nil {
+		return bad(ctx, err)
+	}
+	return ok(ctx, nil)
 }
 
 // FleetTunnel is the box's end of a tunnel: a WebSocket, outside the JWT group,
@@ -349,8 +442,11 @@ func fail(ctx echo.Context, status int, err error) error {
 	msg := err.Error()
 	var busy *fleet.RelayBusyError
 	switch {
-	case errors.Is(err, fleet.ErrOtherNetwork), errors.Is(err, fleet.ErrRelayQuota), errors.Is(err, fleet.ErrRelayAuth), errors.Is(err, fleet.ErrRelayFleetGone):
-		status = http.StatusConflict // ErrFleetFull and ErrFleetGone wrap the relay's quota and gone
+	case errors.Is(err, fleet.ErrOtherNetwork), errors.Is(err, fleet.ErrRelayQuota), errors.Is(err, fleet.ErrRelayAuth), errors.Is(err, fleet.ErrRelayFleetGone),
+		errors.Is(err, fleet.ErrRemoteOn), errors.Is(err, fleet.ErrRemoteOff), errors.Is(err, fleet.ErrRemoteGone), errors.Is(err, fleet.ErrTooManyDeviceCodes), errors.Is(err, fleet.ErrRelayNoDevices):
+		status = http.StatusConflict // ErrFleetFull and ErrFleetGone wrap the relay's quota and gone; ErrRemoteGone wraps ErrRelayFleetGone
+	case errors.Is(err, fleet.ErrRelayFull):
+		status = http.StatusServiceUnavailable
 	case errors.Is(err, fleet.ErrNoSystemctl): // its own message: tailscale is there
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, fleet.ErrNoPrivateNet), errors.Is(err, exec.ErrNotFound):
