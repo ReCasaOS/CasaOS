@@ -47,10 +47,13 @@ func (h HopSpec) ForRefresh() HopSpec {
 func (h HopSpec) FromName() string { return "Debian " + h.FromVersion }
 func (h HopSpec) ToName() string   { return "Debian " + h.ToVersion }
 
-// planHops is the one table of the hops a plan can be made for. Debian 12 to 13 (its .sources files are read with Deb822) and
-// Ubuntu are later rungs: every other hop is hop_not_planned.
+// planHops is the one table of the hops a plan can be made for: every other hop is hop_not_planned (Ubuntu is a later rung).
+// The hop from Debian 12 reads the .sources files (Deb822): the images of Debian 12 and Docker's own install page write them. It
+// keeps Firmware: a box that came from Debian 11 may have non-free without non-free-firmware. The hop from Debian 11 does not
+// read them, and is what was measured.
 var planHops = []HopSpec{
 	{ID: osreadiness.HopDebian11to12, From: "bullseye", To: "bookworm", FromVersion: "11", ToVersion: "12", Later: []string{"trixie", "forky"}, Firmware: true},
+	{ID: osreadiness.HopDebian12to13, From: "bookworm", To: "trixie", FromVersion: "12", ToVersion: "13", Later: []string{"forky", "duke"}, Firmware: true, Deb822: true},
 }
 
 // PlannedHop is the hop of a box's identity, when a plan can be made for it.

@@ -24,9 +24,9 @@ var theCodes = []string{
 	// the sources
 	"sources_cdrom", "sources_alias", "sources_pin", "sources_proposed", "sources_format", "sources_third_party", "sources_backports", "sources_firmware", "sources_network_checked_later",
 	// the packages
-	"foreign_arch", "keyring_old", "openssh_old", "host_services", "dkms", "modules",
+	"foreign_arch", "keyring_old", "openssh_old", "ssh_dsa_hostkey", "host_services", "dkms", "modules",
 	// the disks and the start
-	"merged_usr", "cgroup1", "bootloader", "root_zfs", "root_luks", "md_degraded", "smart_failed", "fstab_unresolved", "fstab_network", "log_on_tmpfs", "disk_root", "disk_archives", "disk_boot", "ram", "power",
+	"merged_usr", "cgroup1", "bootloader", "root_zfs", "root_luks", "md_degraded", "smart_failed", "fstab_unresolved", "fstab_network", "log_on_tmpfs", "cryptsetup_missing", "sysctl_conf", "tmp_tmpfs", "disk_root", "disk_archives", "disk_boot", "ram", "power",
 	// the network
 	"network_uplink", "network_names",
 	// Docker and the apps
@@ -57,7 +57,7 @@ func TestTheTableHasTheCodesOfTheSpecAndNoOther(t *testing.T) {
 }
 
 // notOfThisHop are the checks that a Debian 11 box does not run: they are for other hops.
-var notOfDebian11 = []string{"openssh_old", "cgroup1", "hold_until", "not_offered"}
+var notOfDebian11 = []string{"openssh_old", "cgroup1", "hold_until", "not_offered", "ssh_dsa_hostkey", "cryptsetup_missing", "sysctl_conf", "tmp_tmpfs"}
 
 func TestTheReportOfAHealthyDebian11BoxIsReadyAndEveryCheckKnows(t *testing.T) {
 	f := newBox(t)
@@ -164,6 +164,11 @@ func dirty(f *fakeProbe) {
 	f.on(pkgArch("libc6", "i386", "2.31")+pkg("libc6", "2.31")+held("libc6")+held("nfs-common")+held("docker-ce"), 0, argvQuery()...)
 	f.on("i386\n", 0, argvForeign...)
 	f.on("zfs/2.0.3, 5.10.0-35-amd64, x86_64: installed\n", 0, "dkms", "status")
+	// an SSH server that only has a DSA host key, settings in sysctl.conf and an encrypted volume (the hop from Debian 12 reads them)
+	f.installed(pkg("openssh-server", "1:9.2p1-2+deb12u7"), "openssh-server")
+	f.set(sshdConfig, "HostKey /etc/ssh/ssh_host_dsa_key\n")
+	f.set(sysctlConf, "net.ipv4.ip_forward=1\n")
+	f.set(crypttabPath, "sda5_crypt UUID=1234 none luks\n")
 
 	// the disks and the start
 	f.remove("/bin")
