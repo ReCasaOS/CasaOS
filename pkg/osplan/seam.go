@@ -10,7 +10,8 @@
 // machine (service/) adds the job, the clock and the HTTP shape; it decides nothing that is a rule.
 //
 // What this rung does not do: run the hop (that is the button of the next rungs), plan any hop but Debian 11 to 12
-// (planHops is the one table of them), read deb822 (.sources) files, or keep a plan anywhere but in memory.
+// (planHops is the one table of them), read deb822 (.sources) files for a hop that does not say Deb822, or keep a plan anywhere
+// but in memory.
 package osplan
 
 import (
