@@ -336,3 +336,196 @@ func TestDisableRemoteCleansUnfinishedEnable(t *testing.T) {
 		t.Fatalf("deletes %d, calls %v", r.count(&r.deletes), n.calls)
 	}
 }
+
+func remoteAloneBox(t *testing.T) (*Fleet, *fakeRelay) {
+	t.Helper()
+	f, _, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	return f, r
+}
+
+func TestNewDeviceCodeAlone(t *testing.T) {
+	f, r := remoteAloneBox(t)
+	c, err := f.NewDeviceCode(context.Background())
+	if err != nil || c.Code != "ABCD-2345" || r.count(&r.codes) != 1 {
+		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+func TestNewDeviceCodeMaster(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := f.NewDeviceCode(context.Background()); err != nil || c.Code != "ABCD-2345" { // the fake needs relay.json's Bearer secret
+		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+func TestNewDeviceCodeRemoteOff(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if _, err := f.NewDeviceCode(context.Background()); !errors.Is(err, ErrRemoteOff) || r.count(&r.codes) != 0 {
+		t.Fatal(err)
+	}
+	if err := f.EnableMaster("https://box.example"); err != nil { // advanced master: no relay
+		t.Fatal(err)
+	}
+	if _, err := f.NewDeviceCode(context.Background()); !errors.Is(err, ErrRemoteOff) {
+		t.Fatal(err)
+	}
+}
+
+func TestNewDeviceCodeMemberRefused(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if err := f.saveMember(MemberState{MasterURL: "https://other.example", BoxID: "b", Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.NewDeviceCode(context.Background()); !errors.Is(err, errRemoteMember) || r.count(&r.codes) != 0 {
+		t.Fatal(err)
+	}
+}
+
+func TestNewDeviceCodeGoneAlone(t *testing.T) {
+	f, r := remoteAloneBox(t)
+	r.set(func(r *fakeRelay) { r.gone = true })
+	_, err := f.NewDeviceCode(context.Background())
+	if !errors.Is(err, ErrRemoteGone) || !errors.Is(err, ErrRelayFleetGone) {
+		t.Fatal(err)
+	}
+}
+
+func TestNewDeviceCodeGoneMaster(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	r.set(func(r *fakeRelay) { r.gone = true })
+	if _, err := f.NewDeviceCode(context.Background()); !errors.Is(err, ErrFleetGone) {
+		t.Fatal(err)
+	}
+}
+
+func TestDevicesAndRemove(t *testing.T) {
+	f, r := remoteAloneBox(t)
+	ds, err := f.Devices(context.Background())
+	if err != nil || len(ds) != 1 || ds[0].ID != "5" || ds[0].IP != "100.64.0.20" {
+		t.Fatalf("%+v %v", ds, err)
+	}
+	if err := f.RemoveDevice(context.Background(), "5"); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.devRemoved) != 1 || r.devRemoved[0] != "5" {
+		t.Fatalf("%v", r.devRemoved)
+	}
+}
+
+func TestRemoteViewMasterMapsBoxes(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	ctx := context.Background()
+	if err := f.EnableMasterRelay(ctx, r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.AddBox("this box", "", true); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := f.snapshot()
+	box := Box{ID: "abc", Name: "garage"}
+	other := Box{ID: "def", Name: "attic"}
+	st.Boxes = append(st.Boxes, box, other)
+	if err := f.saveMaster(st); err != nil {
+		t.Fatal(err)
+	}
+	r.set(func(r *fakeRelay) {
+		r.nodes = []map[string]any{{"hostname": "b-abc", "ip": "100.64.0.8", "online": true}}
+	})
+	v, err := f.RemoteView(ctx)
+	if err != nil || v.Relay != r.URL || len(v.Devices) != 1 || len(v.Boxes) != 3 {
+		t.Fatalf("%+v %v", v, err)
+	}
+	got := map[string]RemoteBox{}
+	for _, b := range v.Boxes {
+		got[b.Name] = b
+	}
+	if b := got["this box"]; b.Addr != "100.64.0.7" || !b.Online {
+		t.Fatalf("self %+v", b)
+	}
+	if b := got["garage"]; b.Addr != "100.64.0.8" || !b.Online || b.ID != "abc" {
+		t.Fatalf("garage %+v", b)
+	}
+	if b := got["attic"]; b.Addr != "" || b.Online {
+		t.Fatalf("attic %+v", b)
+	}
+}
+
+func TestRemoteViewAlone(t *testing.T) {
+	f, _ := remoteAloneBox(t)
+	v, err := f.RemoteView(context.Background())
+	if err != nil || v.Addr != "100.64.0.7" || len(v.Devices) != 1 || v.Boxes != nil {
+		t.Fatalf("%+v %v", v, err)
+	}
+}
+
+func TestStatusRemoteAlone(t *testing.T) {
+	f, n, r := func() (*Fleet, *fakeNet, *fakeRelay) {
+		f, n, r, _ := relayMaster(t)
+		if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+			t.Fatal(err)
+		}
+		return f, n, r
+	}()
+	n.mu.Lock()
+	n.after = NetState{Connected: true, Addr: "100.64.0.7", LoginServer: r.URL}
+	n.mu.Unlock()
+	s := f.Status()
+	if s.Remote == nil || !s.Remote.Alone || s.Remote.Addr != "100.64.0.7" || s.Remote.Relay != r.URL || !s.Remote.Connected || s.Remote.Error != "" {
+		t.Fatalf("%+v", s.Remote)
+	}
+	if r.count(&r.listings)+r.count(&r.codes) != 0 {
+		t.Fatal("Status asked the relay")
+	}
+}
+
+func TestStatusRemoteAloneOffNetwork(t *testing.T) {
+	f, n, _ := func() (*Fleet, *fakeNet, *fakeRelay) {
+		f, n, r, _ := relayMaster(t)
+		if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+			t.Fatal(err)
+		}
+		return f, n, r
+	}()
+	n.mu.Lock()
+	n.up, n.before = false, NetState{}
+	n.mu.Unlock()
+	s := f.Status()
+	if s.Remote == nil || s.Remote.Connected || s.Remote.Error != "this box is off its remote access network: turn remote access off and on again" {
+		t.Fatalf("%+v", s.Remote)
+	}
+}
+
+func TestStatusRemoteMaster(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	s := f.Status()
+	if s.Remote == nil || s.Remote.Alone || s.Remote.Relay != r.URL || s.Remote.Addr != "100.64.0.7" {
+		t.Fatalf("%+v", s.Remote)
+	}
+}
+
+func TestStatusNoRemote(t *testing.T) {
+	f, _, _, _ := relayMaster(t)
+	if s := f.Status(); s.Remote != nil {
+		t.Fatalf("%+v", s.Remote)
+	}
+	if err := f.EnableMaster("https://box.example"); err != nil {
+		t.Fatal(err)
+	}
+	if s := f.Status(); s.Remote != nil {
+		t.Fatalf("advanced master: %+v", s.Remote)
+	}
+}

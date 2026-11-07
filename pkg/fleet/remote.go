@@ -12,6 +12,10 @@ var (
 	errRemoteIsMaster   = errors.New("remote access goes with the master: disable the master to turn it off")
 	errRemoteOtherRelay = errors.New("remote access already runs over another relay: turn it off first")
 
+	ErrRemoteOff = errors.New("remote access is off on this box")
+	// ErrRemoteGone: the relay forgot a box's network; wraps ErrRelayFleetGone.
+	ErrRemoteGone error = &relayError{"the relay no longer knows this box's network (it deletes networks idle for 30 days): turn remote access off and on again, then add your devices again", ErrRelayFleetGone}
+
 	// ErrRemoteOn: Join would end remote access, which only a confirmed request may do.
 	ErrRemoteOn = errors.New("this box has remote access: joining a fleet turns it off and its phones and PCs lose access; confirm to go on")
 )
@@ -108,4 +112,123 @@ func (f *Fleet) DisableRemote(ctx context.Context) error {
 		f.leaveRelay(context.WithoutCancel(ctx), rs, true)
 	}
 	return nil
+}
+
+// remoteFleet is the relay fleet behind devices: a master's over its relay, or
+// the one of a box alone (alone true). The caller holds relayMu.
+func (f *Fleet) remoteFleet(ctx context.Context) (rs RelayState, st MasterState, alone bool, err error) {
+	f.mu.Lock()
+	st, on := f.master()
+	rs, haveRelay := f.loadRelay()
+	m, isMember := f.loadMember()
+	f.mu.Unlock()
+	switch {
+	case isMember && !f.namesSelf(m):
+		err = errRemoteMember
+	case on && st.Relay != "":
+		rs, err = f.relayFor(ctx, st)
+	case haveRelay && remoteAlone(rs, on):
+		alone = true
+	default:
+		err = ErrRemoteOff
+	}
+	return rs, st, alone, err
+}
+
+// goneErr says ErrRelayFleetGone the way the role does.
+func goneErr(err error, alone bool) error {
+	switch {
+	case !errors.Is(err, ErrRelayFleetGone):
+		return err
+	case alone:
+		return ErrRemoteGone
+	}
+	return ErrFleetGone
+}
+
+// NewDeviceCode asks the relay for a code a phone or PC joins the network with.
+func (f *Fleet) NewDeviceCode(ctx context.Context) (DeviceCode, error) {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	rs, _, alone, err := f.remoteFleet(ctx)
+	if err != nil {
+		return DeviceCode{}, err
+	}
+	c, err := f.RelayAPI.DeviceCode(ctx, rs.Relay, rs.FleetID, rs.Secret)
+	return c, goneErr(err, alone)
+}
+
+// Devices lists the phones and PCs on the network.
+func (f *Fleet) Devices(ctx context.Context) ([]Device, error) {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	rs, _, alone, err := f.remoteFleet(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ds, err := f.RelayAPI.Devices(ctx, rs.Relay, rs.FleetID, rs.Secret)
+	return ds, goneErr(err, alone)
+}
+
+// RemoveDevice takes one phone or PC off the network.
+func (f *Fleet) RemoveDevice(ctx context.Context, id string) error {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	rs, _, alone, err := f.remoteFleet(ctx)
+	if err != nil {
+		return err
+	}
+	return goneErr(f.RelayAPI.RemoveDevice(ctx, rs.Relay, rs.FleetID, rs.Secret, id), alone)
+}
+
+// RemoteBox is a box of the master's fleet on the private network.
+type RemoteBox struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Addr   string `json:"addr"`
+	Online bool   `json:"online"`
+}
+
+// RemoteView is what the dashboard shows of remote access: the devices, and for a master its boxes.
+type RemoteView struct {
+	Relay   string      `json:"relay"`
+	Addr    string      `json:"addr"`
+	Devices []Device    `json:"devices"`
+	Boxes   []RemoteBox `json:"boxes,omitempty"`
+}
+
+// RemoteView asks the relay for the devices and, on a master, the boxes' nodes.
+func (f *Fleet) RemoteView(ctx context.Context) (RemoteView, error) {
+	f.relayMu.Lock()
+	defer f.relayMu.Unlock()
+	rs, st, alone, err := f.remoteFleet(ctx)
+	if err != nil {
+		return RemoteView{}, err
+	}
+	devs, err := f.RelayAPI.Devices(ctx, rs.Relay, rs.FleetID, rs.Secret)
+	if err != nil {
+		return RemoteView{}, goneErr(err, alone)
+	}
+	v := RemoteView{Relay: rs.Relay, Addr: rs.NetAddr, Devices: devs}
+	if alone {
+		return v, nil
+	}
+	nodes, err := f.RelayAPI.FleetNodes(ctx, rs.Relay, rs.FleetID, rs.Secret)
+	if err != nil {
+		return RemoteView{}, goneErr(err, alone)
+	}
+	v.Addr = st.NetAddr
+	for _, b := range st.Boxes {
+		rb := RemoteBox{ID: b.ID, Name: b.Name}
+		if b.Self {
+			rb.Addr, rb.Online = st.NetAddr, true
+		}
+		for _, n := range nodes {
+			if !b.Self && n.Hostname == nodeName(b.ID, "") {
+				rb.Addr, rb.Online = n.IP, n.Online
+			}
+		}
+		v.Boxes = append(v.Boxes, rb)
+	}
+	return v, nil
 }
