@@ -388,3 +388,167 @@ func TestCreateFleetNeedsADirectory(t *testing.T) {
 		t.Fatal("no Dir, no box key")
 	}
 }
+
+func plain404(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	w.Write([]byte("404 page not found\n"))
+}
+
+func TestDeviceCode(t *testing.T) {
+	var gotPath, gotAuth, gotMethod string
+	reply := func(status int, v any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			gotPath, gotAuth, gotMethod = r.URL.Path, r.Header.Get("Authorization"), r.Method
+			jsonReply(w, status, v)
+		}
+	}
+	c, relay := relayFor(t, reply(201, map[string]string{"code": "ABCD-EFGH", "expires_at": "2026-11-03T12:10:00Z"}))
+	got, err := c.DeviceCode(context.Background(), relay, "f1", "s3")
+	if err != nil || got.Code != "ABCD-EFGH" || !got.ExpiresAt.Equal(testNow.Add(10*time.Minute)) {
+		t.Fatalf("DeviceCode = %+v, %v", got, err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v1/fleets/f1/device-codes" || gotAuth != "Bearer s3" {
+		t.Fatalf("request = %s %s %q", gotMethod, gotPath, gotAuth)
+	}
+	for _, code := range []string{"abcd-efgh", "ABCD-EFG", "ABCD-EFGO", "ABCD-EFG1", "ABCDEFGH", ""} {
+		c, relay := relayFor(t, reply(201, map[string]string{"code": code, "expires_at": "2026-11-03T12:10:00Z"}))
+		if _, err := c.DeviceCode(context.Background(), relay, "f1", "s3"); err == nil || !strings.Contains(err.Error(), "not valid") {
+			t.Errorf("code %q: err = %v, want a 'not valid' error", code, err)
+		}
+	}
+	for status, want := range map[int]error{409: ErrTooManyDeviceCodes, 401: ErrRelayAuth, 429: ErrRelayBusy} {
+		c, relay := relayFor(t, reply(status, map[string]string{"error": "x"}))
+		if _, err := c.DeviceCode(context.Background(), relay, "f1", "s3"); !errors.Is(err, want) {
+			t.Errorf("status %d: err = %v, want %v", status, err, want)
+		}
+	}
+}
+
+func TestDeviceCodeOldRelay(t *testing.T) {
+	calls := map[string]func(c *RelayClient, relay string) error{
+		"DeviceCode": func(c *RelayClient, relay string) error {
+			_, err := c.DeviceCode(context.Background(), relay, "f1", "s3")
+			return err
+		},
+		"Devices": func(c *RelayClient, relay string) error {
+			_, err := c.Devices(context.Background(), relay, "f1", "s3")
+			return err
+		},
+		"RemoveDevice": func(c *RelayClient, relay string) error {
+			return c.RemoveDevice(context.Background(), relay, "f1", "s3", "12")
+		},
+		"FleetNodes": func(c *RelayClient, relay string) error {
+			_, err := c.FleetNodes(context.Background(), relay, "f1", "s3")
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			c, relay := relayFor(t, plain404)
+			if err := call(c, relay); !errors.Is(err, ErrRelayNoDevices) {
+				t.Errorf("old relay: err = %v, want ErrRelayNoDevices", err)
+			}
+			c, relay = relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+				jsonReply(w, 404, map[string]string{"error": "fleet not found"})
+			})
+			if err := call(c, relay); !errors.Is(err, ErrRelayFleetGone) {
+				t.Errorf("fleet not found: err = %v, want ErrRelayFleetGone", err)
+			}
+		})
+	}
+}
+
+func TestDevices(t *testing.T) {
+	var gotPath, gotMethod string
+	c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		jsonReply(w, 200, map[string]any{"devices": []map[string]any{
+			{"id": "12", "hostname": "iphone", "ip": "100.64.0.9", "online": true, "last_seen": "2026-11-03T11:00:00Z"},
+			{"id": "13", "hostname": "pc", "ip": "100.64.0.10", "online": false, "last_seen": ""},
+		}})
+	})
+	got, err := c.Devices(context.Background(), relay, "f1", "s3")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("Devices = %+v, %v", got, err)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/v1/fleets/f1/devices" {
+		t.Fatalf("request = %s %s", gotMethod, gotPath)
+	}
+	if got[0].ID != "12" || got[0].Hostname != "iphone" || got[0].IP != "100.64.0.9" || !got[0].Online || !got[0].LastSeen.Equal(testNow.Add(-time.Hour)) {
+		t.Errorf("device 0 = %+v", got[0])
+	}
+	if got[1].ID != "13" || got[1].Online || !got[1].LastSeen.IsZero() {
+		t.Errorf("device 1 = %+v", got[1])
+	}
+
+	c, relay = relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"devices":null}`))
+	})
+	got, err = c.Devices(context.Background(), relay, "f1", "s3")
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("null devices = %#v, %v, want an empty non-nil slice", got, err)
+	}
+}
+
+func TestRemoveDevice(t *testing.T) {
+	var reqs []string
+	c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+		reqs = append(reqs, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := c.RemoveDevice(context.Background(), relay, "f1", "s3", "12"); err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 || reqs[0] != "DELETE /v1/fleets/f1/devices/12 Bearer s3" {
+		t.Fatalf("requests = %q", reqs)
+	}
+	for _, id := range []string{"1/2", "a", "", "../x"} {
+		if err := c.RemoveDevice(context.Background(), relay, "f1", "s3", id); err == nil {
+			t.Errorf("id %q accepted", id)
+		}
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("a bad id reached the relay: %q", reqs)
+	}
+}
+
+func TestFleetNodes(t *testing.T) {
+	var gotPath string
+	c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		jsonReply(w, 200, map[string]any{"nodes": []map[string]any{
+			{"hostname": "box1", "ip": "100.64.0.1", "online": true},
+			{"hostname": "box2", "ip": "100.64.0.2", "online": false},
+		}, "nodes_max": 50, "state": "ok"})
+	})
+	got, err := c.FleetNodes(context.Background(), relay, "f1", "s3")
+	want := []FleetNode{{"box1", "100.64.0.1", true}, {"box2", "100.64.0.2", false}}
+	if err != nil || len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("FleetNodes = %+v, %v", got, err)
+	}
+	if gotPath != "/v1/fleets/f1" {
+		t.Fatalf("path = %q", gotPath)
+	}
+}
+
+func TestCreateFleetRelayFull(t *testing.T) {
+	for body, wantFull := range map[string]bool{
+		`{"error":"relay full, retry later"}`: true,
+		`{"error":"overloaded"}`:              false,
+		`busy`:                                false,
+	} {
+		c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(body))
+		})
+		_, err := c.CreateFleet(context.Background(), relay)
+		if wantFull && (!errors.Is(err, ErrRelayFull) || errors.Is(err, ErrRelayBusy)) {
+			t.Errorf("%s: err = %v, want ErrRelayFull only", body, err)
+		}
+		if !wantFull && !errors.Is(err, ErrRelayBusy) {
+			t.Errorf("%s: err = %v, want ErrRelayBusy", body, err)
+		}
+	}
+}

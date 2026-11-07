@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,14 @@ var (
 	// ErrRelayUnreachable wraps every transport failure (and the caller's cancelled context);
 	// the cause stays reachable with errors.Is.
 	ErrRelayUnreachable = errors.New("the relay cannot be reached")
+	// ErrRelayNoDevices: 404 without the relay's JSON error on a device call. A relay older than
+	// remote access answers an unknown path with Go's plain "404 page not found".
+	ErrRelayNoDevices = errors.New("this relay does not offer remote access yet: its operator must update it")
+	// ErrRelayFull: 503 "relay full, retry later" on CreateFleet. Unlike ErrRelayBusy, waiting a few
+	// seconds does not help.
+	ErrRelayFull = errors.New("the relay is full and takes no new network for now: try again later, or use another relay")
+	// ErrTooManyDeviceCodes: 409 on DeviceCode.
+	ErrTooManyDeviceCodes = errors.New("too many codes not used yet: use one, or wait until they expire (10 minutes)")
 )
 
 // RelayBusyError is the ErrRelayBusy a client gets, with how long the relay asked to wait
@@ -143,6 +152,27 @@ func (r relayReply) statusError() error {
 	return fmt.Errorf("the relay answered with status %d", r.status)
 }
 
+// errorText is the "error" field of a JSON body, "" when the body is anything else. It is only
+// compared, never quoted.
+func (r relayReply) errorText() string {
+	var v struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(r.body, &v) != nil {
+		return ""
+	}
+	return v.Error
+}
+
+// fleetGone reads a 404 on a call a relay older than remote access does not have: the relay's own
+// JSON "fleet not found" is ErrRelayFleetGone, anything else (Go's plain 404) is ErrRelayNoDevices.
+func fleetGone(r relayReply) error {
+	if r.errorText() == "fleet not found" {
+		return ErrRelayFleetGone
+	}
+	return ErrRelayNoDevices
+}
+
 func bearer(secret string) http.Header {
 	return http.Header{"Authorization": {"Bearer " + secret}}
 }
@@ -176,6 +206,9 @@ func (c *RelayClient) CreateFleet(ctx context.Context, relay string) (FleetCreds
 	}
 	if r.status == http.StatusUnauthorized { // the signature carries this box's clock
 		return FleetCreds{}, fmt.Errorf("%w: check that this box's clock is right", ErrRelayAuth)
+	}
+	if r.status == http.StatusServiceUnavailable && r.errorText() == "relay full, retry later" {
+		return FleetCreds{}, ErrRelayFull
 	}
 	if r.status != http.StatusCreated {
 		return FleetCreds{}, r.statusError()
@@ -256,4 +289,152 @@ func (c *RelayClient) DeleteFleet(ctx context.Context, relay, fleetID, secret st
 		return nil
 	}
 	return r.statusError()
+}
+
+// DeviceCode is a one-time code a phone or PC types to join the fleet's network.
+type DeviceCode struct {
+	Code      string    `json:"code"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Device is a phone or PC that joined with a code.
+type Device struct {
+	ID       string    `json:"id"`
+	Hostname string    `json:"hostname"`
+	IP       string    `json:"ip"`
+	Online   bool      `json:"online"`
+	LastSeen time.Time `json:"last_seen,omitzero"`
+}
+
+// FleetNode is a box of the fleet as the relay sees it.
+type FleetNode struct {
+	Hostname, IP string
+	Online       bool
+}
+
+var (
+	deviceCodeRe = regexp.MustCompile(`^[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}$`)
+	deviceIDRe   = regexp.MustCompile(`^[0-9]+$`)
+)
+
+// DeviceCode asks for a device code: POST /v1/fleets/{id}/device-codes, answered 201. Errors:
+// ErrRelayAuth, ErrRelayFleetGone, ErrRelayNoDevices (old relay), ErrTooManyDeviceCodes (409),
+// ErrRelayBusy, ErrRelayUnreachable.
+func (c *RelayClient) DeviceCode(ctx context.Context, relay, fleetID, secret string) (DeviceCode, error) {
+	if fleetID == "" || secret == "" {
+		return DeviceCode{}, errNoFleet
+	}
+	r, err := c.do(ctx, http.MethodPost, relay, fleetPath(fleetID)+"/device-codes", bearer(secret))
+	if err != nil {
+		return DeviceCode{}, err
+	}
+	switch r.status {
+	case http.StatusCreated:
+	case http.StatusNotFound:
+		return DeviceCode{}, fleetGone(r)
+	case http.StatusConflict:
+		return DeviceCode{}, ErrTooManyDeviceCodes
+	default:
+		return DeviceCode{}, r.statusError()
+	}
+	var v DeviceCode
+	if json.Unmarshal(r.body, &v) != nil || !deviceCodeRe.MatchString(v.Code) || v.ExpiresAt.IsZero() {
+		return DeviceCode{}, errors.New("the relay's answer to a device code request is not valid")
+	}
+	return v, nil
+}
+
+// Devices lists the fleet's devices: GET /v1/fleets/{id}/devices, answered 200. Errors as DeviceCode,
+// minus ErrTooManyDeviceCodes. The slice is never nil on success.
+func (c *RelayClient) Devices(ctx context.Context, relay, fleetID, secret string) ([]Device, error) {
+	if fleetID == "" || secret == "" {
+		return nil, errNoFleet
+	}
+	r, err := c.do(ctx, http.MethodGet, relay, fleetPath(fleetID)+"/devices", bearer(secret))
+	if err != nil {
+		return nil, err
+	}
+	switch r.status {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, fleetGone(r)
+	default:
+		return nil, r.statusError()
+	}
+	var v struct {
+		Devices []struct {
+			Device
+			LastSeen string `json:"last_seen"` // "" when never seen, which time.Time does not decode
+		} `json:"devices"`
+	}
+	bad := errors.New("the relay's answer to a device list is not valid")
+	if json.Unmarshal(r.body, &v) != nil {
+		return nil, bad
+	}
+	devs := make([]Device, 0, len(v.Devices))
+	for _, d := range v.Devices {
+		if d.LastSeen != "" {
+			t, err := time.Parse(time.RFC3339, d.LastSeen)
+			if err != nil {
+				return nil, bad
+			}
+			d.Device.LastSeen = t
+		}
+		devs = append(devs, d.Device)
+	}
+	return devs, nil
+}
+
+// RemoveDevice removes one device: DELETE /v1/fleets/{id}/devices/{id}, answered 204. The id is the
+// relay's node number, digits only; anything else is refused before a request leaves.
+func (c *RelayClient) RemoveDevice(ctx context.Context, relay, fleetID, secret, id string) error {
+	if fleetID == "" || secret == "" {
+		return errNoFleet
+	}
+	if !deviceIDRe.MatchString(id) {
+		return errors.New("the device id is not valid")
+	}
+	r, err := c.do(ctx, http.MethodDelete, relay, fleetPath(fleetID)+"/devices/"+id, bearer(secret))
+	switch {
+	case err != nil:
+		return err
+	case r.status == http.StatusNoContent:
+		return nil
+	case r.status == http.StatusNotFound:
+		return fleetGone(r)
+	}
+	return r.statusError()
+}
+
+// FleetNodes lists the fleet's boxes: GET /v1/fleets/{id}, answered 200. Errors as Devices.
+func (c *RelayClient) FleetNodes(ctx context.Context, relay, fleetID, secret string) ([]FleetNode, error) {
+	if fleetID == "" || secret == "" {
+		return nil, errNoFleet
+	}
+	r, err := c.do(ctx, http.MethodGet, relay, fleetPath(fleetID), bearer(secret))
+	if err != nil {
+		return nil, err
+	}
+	switch r.status {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, fleetGone(r)
+	default:
+		return nil, r.statusError()
+	}
+	var v struct {
+		Nodes []struct {
+			Hostname string `json:"hostname"`
+			IP       string `json:"ip"`
+			Online   bool   `json:"online"`
+		} `json:"nodes"`
+	}
+	if json.Unmarshal(r.body, &v) != nil {
+		return nil, errors.New("the relay's answer to a fleet request is not valid")
+	}
+	nodes := make([]FleetNode, 0, len(v.Nodes))
+	for _, n := range v.Nodes {
+		nodes = append(nodes, FleetNode{n.Hostname, n.IP, n.Online})
+	}
+	return nodes, nil
 }
