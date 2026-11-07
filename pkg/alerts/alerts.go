@@ -22,6 +22,7 @@
 // the owner is told once for each state of each release, from a look every day: the
 // last one told is kept in os-support.notified, written once a message has gone out,
 // so that a state is looked at again, every day, until a channel has taken it.
+// A Raspbian 32-bit box, which has no state, is told once that Docker 28 is its last.
 package alerts
 
 import (
