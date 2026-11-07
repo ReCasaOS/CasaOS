@@ -88,6 +88,7 @@ type fakeRelay struct {
 	loginServer            string   // what a fleet creation names as login server; the relay's own URL when empty
 	removed                []string // the hostnames removed from the fleet
 	gone                   bool     // device and fleet-status calls answer 404 "fleet not found"
+	noDevices              bool     // a relay older than remote access: the device list answers Go's plain 404
 	nodes                  []map[string]any
 	devRemoved             []string // the device ids removed
 	codes, listings        int      // device-code requests, fleet-status and device list requests
@@ -139,6 +140,8 @@ func newFakeRelay(t *testing.T) *fakeRelay {
 		case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets/fl1/device-codes" && authed:
 			r.codes++
 			jsonReply(w, http.StatusCreated, map[string]any{"code": "ABCD-2345", "expires_at": time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)})
+		case r.noDevices && req.URL.Path == "/v1/fleets/fl1/devices":
+			http.NotFound(w, req)
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/fleets/fl1/devices" && authed:
 			r.listings++
 			jsonReply(w, http.StatusOK, map[string]any{"devices": []map[string]any{{"id": "5", "hostname": "phone", "ip": "100.64.0.20", "online": true, "last_seen": ""}}})

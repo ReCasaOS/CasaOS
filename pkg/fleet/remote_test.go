@@ -105,6 +105,25 @@ func TestEnableRemoteRefusesLoopbackGateway(t *testing.T) {
 	}
 }
 
+func TestEnableRemoteRefusesRelayWithoutDevices(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	r.set(func(r *fakeRelay) { r.noDevices = true })
+	if err := f.EnableRemote(context.Background(), r.URL); !errors.Is(err, ErrRelayNoDevices) {
+		t.Fatal(err)
+	}
+	if r.count(&r.deletes) != 1 || n.called("up ") || exists(t, f.relayPath()) {
+		t.Fatalf("deletes %d, calls %v", r.count(&r.deletes), n.calls)
+	}
+}
+
+func TestEnableMasterRelayDoesNotAskForDevices(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	r.set(func(r *fakeRelay) { r.noDevices = true })
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil || r.count(&r.listings) != 0 {
+		t.Fatalf("%v, listings %d", err, r.count(&r.listings))
+	}
+}
+
 func TestEnableRemoteRollsBackWhenUpFails(t *testing.T) {
 	f, n, r, _ := relayMaster(t)
 	n.upErr = errors.New("tailscale up: boom")
@@ -494,11 +513,12 @@ func TestStatusRemoteAlone(t *testing.T) {
 	n.mu.Lock()
 	n.after = NetState{Connected: true, Addr: "100.64.0.7", LoginServer: r.URL}
 	n.mu.Unlock()
+	asked := r.count(&r.listings) + r.count(&r.codes) // EnableRemote's own check of the device routes
 	s := f.Status()
 	if s.Remote == nil || !s.Remote.Alone || s.Remote.Addr != "100.64.0.7" || s.Remote.Relay != r.URL || !s.Remote.Connected || s.Remote.Error != "" {
 		t.Fatalf("%+v", s.Remote)
 	}
-	if r.count(&r.listings)+r.count(&r.codes) != 0 {
+	if r.count(&r.listings)+r.count(&r.codes) != asked {
 		t.Fatal("Status asked the relay")
 	}
 }

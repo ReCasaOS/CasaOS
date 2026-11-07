@@ -464,6 +464,12 @@ func (f *Fleet) joinOwnNet(ctx context.Context, n Net, relayURL, hostname string
 		undo(false)
 		return RelayState{}, nil, err
 	}
+	if remote { // a relay older than remote access has no device routes (ErrRelayNoDevices): no network then
+		if _, err := f.RelayAPI.Devices(ctx, relayURL, creds.FleetID, creds.Secret); err != nil {
+			undo(false)
+			return RelayState{}, nil, err
+		}
+	}
 	key, _, err := f.RelayAPI.JoinKey(ctx, relayURL, creds.FleetID, creds.Secret)
 	if err != nil {
 		undo(false)
