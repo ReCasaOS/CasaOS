@@ -11,6 +11,7 @@ var (
 	errRemoteAdvanced   = errors.New("the master runs at an address typed by hand: move it onto a relay to get remote access")
 	errRemoteIsMaster   = errors.New("remote access goes with the master: disable the master to turn it off")
 	errRemoteOtherRelay = errors.New("remote access already runs over another relay: turn it off first")
+	errRemoteLoopback   = errors.New("the gateway listens on this box's loopback only, so your phones and PCs cannot reach it: set its address to 0.0.0.0 (or leave it empty)")
 
 	ErrRemoteOff = errors.New("remote access is off on this box")
 	// ErrRemoteGone: the relay forgot a box's network; wraps ErrRelayFleetGone.
@@ -49,8 +50,8 @@ func (f *Fleet) EnableRemote(ctx context.Context, relayURL string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := httpsPort(info); err != nil { // loopback-only: no phone could reach this box
-		return err
+	if info.LoopbackOnly { // HTTP is fine: phones reach the dashboard inside the encrypted network
+		return errRemoteLoopback
 	}
 	hostname, err := f.Hostname()
 	if err != nil {

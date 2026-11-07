@@ -100,8 +100,19 @@ func TestEnableRemoteOtherRelay(t *testing.T) {
 func TestEnableRemoteRefusesLoopbackGateway(t *testing.T) {
 	f, _, r, _ := relayMaster(t)
 	f.Gateway = func() (GatewayInfo, error) { return GatewayInfo{LoopbackOnly: true}, nil }
-	if err := f.EnableRemote(context.Background(), r.URL); !errors.Is(err, errLoopbackGateway) || r.count(&r.creates) != 0 {
+	if err := f.EnableRemote(context.Background(), r.URL); !errors.Is(err, errRemoteLoopback) || r.count(&r.creates) != 0 {
 		t.Fatalf("%v, creates %d", err, r.count(&r.creates))
+	}
+}
+
+func TestEnableRemoteWithoutHTTPS(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	f.Gateway = func() (GatewayInfo, error) { return GatewayInfo{Public: mustURL(t, "http://127.0.0.1:80")}, nil }
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if rs, ok := f.loadRelay(); !ok || !remoteAlone(rs, false) {
+		t.Fatalf("%+v %v", rs, ok)
 	}
 }
 
