@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestEnableRemoteJoinsAlone(t *testing.T) {
@@ -107,8 +108,65 @@ func TestEnableRemoteRollsBackWhenUpFails(t *testing.T) {
 	if err := f.EnableRemote(context.Background(), r.URL); err == nil {
 		t.Fatal("no error")
 	}
-	if r.count(&r.deletes) != 1 || exists(t, f.relayPath()) {
-		t.Fatalf("deletes %d", r.count(&r.deletes))
+	if r.count(&r.deletes) != 1 || exists(t, f.relayPath()) || n.called("down") {
+		t.Fatalf("deletes %d, calls %v", r.count(&r.deletes), n.calls)
+	}
+}
+
+func TestEnableRemoteRollsBackWhenNoAddress(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	n.after = NetState{Connected: true} // up, but never an address
+	oldWait, oldStep := addrWait, addrStep
+	t.Cleanup(func() { addrWait, addrStep = oldWait, oldStep })
+	addrWait, addrStep = 20*time.Millisecond, 5*time.Millisecond
+	if err := f.EnableRemote(context.Background(), r.URL); err == nil {
+		t.Fatal("no error")
+	}
+	if r.count(&r.deletes) != 1 || !n.called("down") || exists(t, f.relayPath()) {
+		t.Fatalf("deletes %d, calls %v", r.count(&r.deletes), n.calls)
+	}
+}
+
+func TestEnableRemoteFinishesInterruptedEnable(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	if err := f.saveRelay(RelayState{Relay: r.URL, FleetID: "fl1", Secret: testSecret, Remote: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	rs, _ := f.loadRelay()
+	if r.count(&r.deletes) != 1 || r.count(&r.creates) != 1 || rs.NetAddr != "100.64.0.7" || !n.called("up ") {
+		t.Fatalf("%+v deletes %d creates %d", rs, r.count(&r.deletes), r.count(&r.creates))
+	}
+}
+
+func TestEnableRemoteSelfEnrolledMaster(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if err := f.EnableMasterRelay(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.AddBox("this box", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.loadMember(); !ok {
+		t.Fatal("self-enrolment left no member.json: the test proves nothing")
+	}
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil || r.count(&r.creates) != 1 {
+		t.Fatalf("%v, creates %d", err, r.count(&r.creates))
+	}
+}
+
+func TestEnableRemoteSelfEnrolledAdvancedMaster(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	if err := f.EnableMaster("https://box.example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.AddBox("this box", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.EnableRemote(context.Background(), r.URL); !errors.Is(err, errRemoteAdvanced) {
+		t.Fatal(err)
 	}
 }
 

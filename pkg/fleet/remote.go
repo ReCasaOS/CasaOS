@@ -47,7 +47,8 @@ func (f *Fleet) EnableRemote(ctx context.Context, relayURL string) error {
 	f.mu.Lock()
 	st, on := f.master()
 	rs, haveRelay := f.loadRelay()
-	_, member := f.loadMember()
+	m, isMember := f.loadMember()
+	member := isMember && !f.namesSelf(m) // a self-enrolled master is no member
 	f.mu.Unlock()
 	switch {
 	case member:
@@ -56,7 +57,7 @@ func (f *Fleet) EnableRemote(ctx context.Context, relayURL string) error {
 		return nil
 	case on:
 		return errRemoteAdvanced
-	case haveRelay && rs.Remote:
+	case haveRelay && rs.Remote && rs.NetAddr != "": // without NetAddr the enable did not finish: leftover below
 		if sameURL(rs.Relay, relayURL) {
 			return nil
 		}
@@ -94,7 +95,7 @@ func (f *Fleet) DisableRemote(ctx context.Context) error {
 		return errRemoteIsMaster
 	}
 	if haveRelay && rs.Remote {
-		f.leaveRelay(ctx, rs, true)
+		f.leaveRelay(context.WithoutCancel(ctx), rs, true)
 	}
 	return nil
 }
