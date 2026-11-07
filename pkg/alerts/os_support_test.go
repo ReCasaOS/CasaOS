@@ -635,3 +635,51 @@ func TestRunStartsTheDailyLook(t *testing.T) {
 		t.Fatalf("sent %q", got)
 	}
 }
+
+const raspbianSentence = "Docker 28 is the last Docker for Raspberry Pi OS 32-bit: this box will not get Docker 29. Raspberry Pi OS 64-bit keeps it updated."
+
+func raspbian(h *Hub, now *time.Time) {
+	h.OSSupport = func() ossupport.Report {
+		return ossupport.Describe(map[string]string{"ID": "raspbian", "ID_LIKE": "debian", "VERSION_ID": "12"}, "arm", *now, nil)
+	}
+}
+
+func TestRaspbianIsToldDocker28IsItsLast(t *testing.T) {
+	h, o, now := newHub(t)
+	raspbian(h, now)
+	onDay(t, now, "2026-10-10")
+
+	h.checkOSSupport()
+	h.sending.Wait()
+
+	if got := o.texts(phone); len(got) != 1 || got[0] != raspbianSentence+"\nhttp://192.168.1.20" {
+		t.Fatalf("sent %q", got)
+	}
+	if o.sent[0].title != "ReCasaOS · box · updates" {
+		t.Fatalf("title = %q", o.sent[0].title)
+	}
+	if got := osMarker(h); got != "raspbian-docker28\n" {
+		t.Fatalf("marker = %q", got)
+	}
+}
+
+func TestRaspbianIsToldOnce(t *testing.T) {
+	h, o, now := newHub(t)
+	raspbian(h, now)
+	onDay(t, now, "2026-10-10")
+
+	h.checkOSSupport()
+	h.checkOSSupport()
+	h.sending.Wait()
+	if got := o.texts(phone); len(got) != 1 {
+		t.Fatalf("sent %q, want one", got)
+	}
+
+	again := restarted(h, o)
+	raspbian(again, now)
+	again.checkOSSupport()
+	again.sending.Wait()
+	if got := o.texts(phone); len(got) != 1 {
+		t.Fatalf("after the restart: sent %q", got)
+	}
+}
