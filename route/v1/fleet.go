@@ -263,7 +263,10 @@ func FleetRelay(ctx echo.Context) error {
 // @Produce application/json
 // @Tags fleet
 // @Security ApiKeyAuth
+// @Param code body string true "the code pasted from the master"
+// @Param leave_remote body bool false "confirms that joining turns this box's remote access off"
 // @Success 200 {object} model.Result
+// @Failure 409 {object} model.Result "this box has remote access: send leave_remote true to join anyway"
 // @Router /fleet/member [put]
 func PutFleetMember(ctx echo.Context) error {
 	var body struct {
