@@ -18,13 +18,13 @@ func TestSSHDSAHostKey(t *testing.T) {
 			key("/etc/ssh/ssh_host_ed25519_key", "ssh-ed25519 AAAA root@box\n"), key("/etc/ssh/ssh_host_rsa_key", "ssh-rsa AAAA root@box\n")), severity: OK},
 		{name: "an ECDSA key whose public half is not there", setup: after(debian12, sshServer, conf("HostKey /etc/ssh/ssh_host_ecdsa_key\n")), severity: OK},
 		{name: "only a DSA key", setup: after(debian12, sshServer, conf("HostKey /etc/ssh/ssh_host_dsa_key\n"), key("/etc/ssh/ssh_host_dsa_key", "ssh-dss AAAA root@box\n")),
-			severity: Refuse, data: D{"keys": []string{"/etc/ssh/ssh_host_dsa_key"}}, action: ActionNone},
+			severity: Refuse, data: D{"files": []string{"/etc/ssh/ssh_host_dsa_key"}}, action: ActionNone},
 		{name: "a DSA key by its name, in sshd_config.d, written with an equals sign", setup: after(debian12, sshServer, func(f *fakeProbe) {
 			f.set(sshdConfigDir+"/old.conf", "hostkey=/etc/ssh/ssh_host_dsa_key\n")
 		}), severity: Refuse},
 		{name: "a DSA key beside an Ed25519 one", setup: after(debian12, sshServer, conf("HostKey /etc/ssh/ssh_host_ed25519_key\nHostKey /etc/ssh/ssh_host_dsa_key\n"),
 			key("/etc/ssh/ssh_host_ed25519_key", "ssh-ed25519 AAAA\n"), key("/etc/ssh/ssh_host_dsa_key", "ssh-dss AAAA\n")),
-			severity: Warn, data: D{"keys": []string{"/etc/ssh/ssh_host_dsa_key"}}},
+			severity: Warn, data: D{"files": []string{"/etc/ssh/ssh_host_dsa_key"}}},
 		{name: "an sshd_config that cannot be read", setup: after(debian12, sshServer, func(f *fakeProbe) {
 			f.fail(sshdConfig, &fs.PathError{Op: "open", Path: sshdConfig, Err: fs.ErrPermission})
 		}), severity: Refuse, unknown: ReasonUnreadable},

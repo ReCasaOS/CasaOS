@@ -129,13 +129,13 @@ func checkSSHDSAHostKey(ctx context.Context, p Probe) Result {
 		return Result{
 			Severity: Refuse, Title: "The SSH server has only DSA host keys",
 			Detail: "The OpenSSH of Debian 13 no longer loads DSA keys, and every host key that sshd_config names is one: the SSH server would have no key after the restart, and a machine that is reached over SSH would be lost. Make an Ed25519 key (ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ''), name it with HostKey, restart ssh, and check again.",
-			Data:   D{"keys": dsa}, Action: ActionNone,
+			Data:   D{"files": dsa}, Action: ActionNone,
 		}
 	}
 	return Result{
 		Severity: Warn, Title: "The SSH server has a DSA host key",
 		Detail: "The OpenSSH of Debian 13 no longer loads DSA keys: the SSH server will start with its other host keys, and log an error for this one. Remove its HostKey line.",
-		Data:   D{"keys": dsa}, Action: ActionNone,
+		Data:   D{"files": dsa}, Action: ActionNone,
 	}
 }
 
