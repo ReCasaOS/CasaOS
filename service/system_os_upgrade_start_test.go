@@ -1432,6 +1432,9 @@ func TestAHalfDoneFolderOfEitherHopIsFoundAndAnEndedOneOf11To12IsNot(t *testing.
 	osUpgradeBackups = dir
 	t.Cleanup(func() { osUpgradeBackups = saved })
 	mk := func(name string, files map[string]string) {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		for f, content := range files {
 			rewrite(t, filepath.Join(dir, name, f), content)
 		}
