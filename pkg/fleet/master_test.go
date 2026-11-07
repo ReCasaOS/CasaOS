@@ -713,6 +713,7 @@ func TestAttachKeepsOnlyAValidDashboardAddress(t *testing.T) {
 		{"http", "8080", "http", "8080"},
 		{"https", "443", "https", "443"},
 		{"http", "65535", "http", "65535"},
+		{"http", "00080", "http", "80"},
 		{"ftp", "80", "", ""},
 		{"http", "0", "", ""},
 		{"http", "65536", "", ""},

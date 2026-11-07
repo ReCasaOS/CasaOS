@@ -108,10 +108,11 @@ func validWeb(scheme, port string) (string, string) {
 	if defaultPort[scheme] == "" || port == "" || len(port) > 5 || strings.Trim(port, "0123456789") != "" {
 		return "", ""
 	}
-	if n, _ := strconv.Atoi(port); n < 1 || n > 65535 {
+	n, _ := strconv.Atoi(port)
+	if n < 1 || n > 65535 {
 		return "", ""
 	}
-	return scheme, port
+	return scheme, strconv.Itoa(n)
 }
 
 // webURL is scheme://addr[:port], the port left out when it is the scheme's default;

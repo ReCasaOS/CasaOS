@@ -625,6 +625,7 @@ func TestRemoteViewBoxURLs(t *testing.T) {
 		Box{ID: "b", Name: "b", WebScheme: "http", WebPort: "80"},
 		Box{ID: "c", Name: "c", WebScheme: "https", WebPort: "443"},
 		Box{ID: "d", Name: "d"},
+		Box{ID: "h", Name: "h", WebScheme: "http", WebPort: "00080"},
 		Box{ID: "e", Name: "e", WebScheme: "http", WebPort: "8080"},
 		Box{ID: "g", Name: "g", WebScheme: "http", WebPort: "8080"}, // offline: no address
 	)
@@ -637,6 +638,7 @@ func TestRemoteViewBoxURLs(t *testing.T) {
 			{"hostname": "b-b", "ip": "100.64.0.8", "online": true},
 			{"hostname": "b-c", "ip": "100.64.0.8", "online": true},
 			{"hostname": "b-d", "ip": "100.64.0.8", "online": true},
+			{"hostname": "b-h", "ip": "100.64.0.9", "online": true},
 			{"hostname": "b-e", "ip": "fd7a::8", "online": true},
 		}
 	})
@@ -654,6 +656,7 @@ func TestRemoteViewBoxURLs(t *testing.T) {
 		"b":        "http://100.64.0.8",
 		"c":        "https://100.64.0.8",
 		"d":        "",
+		"h":        "http://100.64.0.9",
 		"e":        "http://[fd7a::8]:8080",
 		"g":        "",
 	}
