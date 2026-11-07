@@ -217,6 +217,7 @@ func (f *Fleet) attach(t *tunnel, hello frame) bool {
 	old := f.tunnels[t.boxID]
 	f.tunnels[t.boxID] = t
 	st.Boxes[i].LastSeen, st.Boxes[i].Hostname, st.Boxes[i].Version = f.Now(), cut(hello.Hostname), cut(hello.Version)
+	st.Boxes[i].WebScheme, st.Boxes[i].WebPort = validWeb(hello.WebScheme, hello.WebPort)
 	err := f.saveMaster(st)
 	f.mu.Unlock()
 	if err != nil {
@@ -316,6 +317,13 @@ var errMemberElsewhere = errors.New("this box is a member of a fleet: leave it b
 func (f *Fleet) EnableMaster(address string) error {
 	f.relayMu.Lock()
 	defer f.relayMu.Unlock()
+	f.mu.Lock()
+	_, on := f.master()
+	rs, haveRelay := f.loadRelay()
+	f.mu.Unlock()
+	if haveRelay && remoteAlone(rs, on) {
+		return errors.New("this box has remote access over a relay: enable the master on that relay, or turn remote access off first")
+	}
 	return f.enableMaster(address, "", "", "")
 }
 
@@ -400,6 +408,17 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 		}
 		return errors.New("the master already runs over another relay: change the relay instead")
 	}
+	if haveRelay && remoteAlone(rs, on) {
+		// remote access already made the fleet and the network: the master takes them over, devices kept
+		if !sameURL(relayURL, rs.Relay) {
+			return errors.New("remote access runs over another relay: enable the master on that relay, or turn remote access off first")
+		}
+		ns, err := n.State(ctx)
+		if err != nil || !ns.Connected || ns.Addr == "" || !sameURL(ns.LoginServer, rs.Relay) {
+			return errRelayNotUp
+		}
+		return f.enableMaster(relayAddress(ns.Addr, port), rs.Relay, rs.FleetID, ns.Addr)
+	}
 	if haveRelay {
 		// left by an enable that did not finish: that fleet and its network go first
 		f.leaveRelay(ctx, rs, true)
@@ -414,38 +433,64 @@ func (f *Fleet) EnableMasterRelay(ctx context.Context, relayURL string) error {
 	if ns.LoginServer != "" { // in a network, even stopped: the owner's, not ours
 		return ErrOtherNetwork
 	}
-	creds, err := f.RelayAPI.CreateFleet(ctx, relayURL)
+	rs, undo, err := f.joinOwnNet(ctx, n, relayURL, hostname, false)
 	if err != nil {
 		return err
 	}
-	rs = RelayState{Relay: relayURL, FleetID: creds.FleetID, Secret: creds.Secret}
-	undo := func(down bool) { f.leaveRelay(context.WithoutCancel(ctx), rs, down) }
-	if ValidMasterURL(creds.LoginServer) != nil || !sameURL(creds.LoginServer, relayURL) {
-		undo(false)
-		return errLoginServer
-	}
-	if err := f.saveRelay(rs); err != nil { // saved before anything else: a crash never loses the secret
-		undo(false)
-		return err
-	}
-	key, _, err := f.RelayAPI.JoinKey(ctx, relayURL, creds.FleetID, creds.Secret)
-	if err != nil {
-		undo(false)
-		return err
-	}
-	if err := n.Up(ctx, relayURL, key, netHostname(hostname)); err != nil { // our validated address: sameURL as the announced one
-		undo(false) // Up undid itself: a Down here could log out a network that is not ours
-		return err
-	}
-	addr, err := waitAddr(ctx, n)
-	if err == nil {
-		err = f.enableMaster(relayAddress(addr, port), relayURL, creds.FleetID, addr)
-	}
-	if err != nil {
+	if err := f.enableMaster(relayAddress(rs.NetAddr, port), relayURL, rs.FleetID, rs.NetAddr); err != nil {
 		undo(true)
 		return err
 	}
 	return nil
+}
+
+// joinOwnNet creates a fleet at relayURL and puts this box on its private
+// network, as the first and only box: the fleet is saved in relay.json (flagged
+// remote when it is for remote access) and the returned state carries this box's
+// address on it. undo ends it all again, down when the network is to be left too;
+// the caller calls it on a later failure. The caller holds relayMu, not mu, and
+// has checked this box is on no network.
+func (f *Fleet) joinOwnNet(ctx context.Context, n Net, relayURL, hostname string, remote bool) (RelayState, func(down bool), error) {
+	creds, err := f.RelayAPI.CreateFleet(ctx, relayURL)
+	if err != nil {
+		return RelayState{}, nil, err
+	}
+	rs := RelayState{Relay: relayURL, FleetID: creds.FleetID, Secret: creds.Secret, Remote: remote}
+	undo := func(down bool) { f.leaveRelay(context.WithoutCancel(ctx), rs, down) }
+	if ValidMasterURL(creds.LoginServer) != nil || !sameURL(creds.LoginServer, relayURL) {
+		undo(false)
+		return RelayState{}, nil, errLoginServer
+	}
+	if err := f.saveRelay(rs); err != nil { // saved before anything else: a crash never loses the secret
+		undo(false)
+		return RelayState{}, nil, err
+	}
+	if remote { // a relay older than remote access has no device routes (ErrRelayNoDevices): no network then
+		if _, err := f.RelayAPI.Devices(ctx, relayURL, creds.FleetID, creds.Secret); err != nil {
+			undo(false)
+			return RelayState{}, nil, err
+		}
+	}
+	key, _, err := f.RelayAPI.JoinKey(ctx, relayURL, creds.FleetID, creds.Secret)
+	if err != nil {
+		undo(false)
+		return RelayState{}, nil, err
+	}
+	if err := n.Up(ctx, relayURL, key, netHostname(hostname)); err != nil { // our validated address: sameURL as the announced one
+		undo(false) // Up undid itself: a Down here could log out a network that is not ours
+		return RelayState{}, nil, err
+	}
+	addr, err := waitAddr(ctx, n)
+	if err == nil && remote { // only a remote fleet keeps the address: a master's lives in master.json
+		rs.NetAddr = addr
+		err = f.saveRelay(rs)
+	}
+	if err != nil {
+		undo(true)
+		return RelayState{}, nil, err
+	}
+	rs.NetAddr = addr
+	return rs, undo, nil
 }
 
 // waitAddr asks the private network for this box's address until it has one,
@@ -497,7 +542,8 @@ func relayAddress(addr, port string) string {
 // master's own member.json pointed at this box's own gateway, which goes with
 // the master, so it is cleared too; a member.json of another fleet is left.
 // Over a relay, the fleet is then deleted there and the private network left,
-// best-effort: the local disable never fails because the relay is down.
+// best-effort: the local disable never fails because the relay is down. With no
+// master on, the remote access of a box alone is left as it is.
 func (f *Fleet) DisableMaster() error {
 	f.relayMu.Lock()
 	defer f.relayMu.Unlock()
@@ -521,7 +567,8 @@ func (f *Fleet) DisableMaster() error {
 	if selfGone {
 		f.pokeMember()
 	}
-	if haveRelay || st.Relay != "" { // a damaged relay.json still leaves a network to go down
+	// a damaged relay.json still leaves a network to go down; remote access of a box alone is not the master's
+	if (haveRelay && !remoteAlone(rs, st.Enabled)) || st.Relay != "" {
 		f.leaveRelay(context.Background(), rs, true)
 	}
 	if errors.Is(err, fs.ErrNotExist) {

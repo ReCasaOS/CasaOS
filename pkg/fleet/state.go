@@ -25,6 +25,9 @@ type Box struct {
 	LastSeen  time.Time `json:"last_seen,omitzero"`
 	Hostname  string    `json:"hostname"`
 	Version   string    `json:"version"`
+	// WebScheme and WebPort: where the box says its dashboard listens (validated hello), empty if unknown.
+	WebScheme string `json:"web_scheme,omitempty"`
+	WebPort   string `json:"web_port,omitempty"`
 	// NeedsRecode: the master changed relay since this box's code was made, so the box
 	// still looks for it on the old relay's network; cleared by RotateCode.
 	NeedsRecode bool `json:"needs_recode,omitempty"`

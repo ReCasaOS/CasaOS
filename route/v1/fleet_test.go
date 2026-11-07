@@ -359,6 +359,8 @@ type fakeRelay struct {
 	keyStatus    int    // when set, what a join key request is answered
 	retryAfter   string // the Retry-After of a refusal
 	down         bool   // every request fails in transport
+	full         bool   // a fleet creation is answered "relay full"
+	oldRelay     bool   // the device calls are answered by a relay older than remote access (plain 404)
 }
 
 func (r *fakeRelay) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -378,6 +380,17 @@ func (r *fakeRelay) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	authed := req.Header.Get("Authorization") == "Bearer "+relaySecret
 	switch {
+	case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets" && r.full:
+		rec.WriteHeader(http.StatusServiceUnavailable)
+		rec.WriteString(`{"error":"relay full, retry later"}`)
+	case authed && r.oldRelay && strings.Contains(req.URL.Path, "/device"):
+		rec.WriteHeader(http.StatusNotFound)
+		rec.WriteString("404 page not found\n")
+	case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets/fl1/device-codes" && authed:
+		rec.WriteHeader(http.StatusCreated)
+		json.NewEncoder(rec).Encode(map[string]any{"code": "ABCD-EFGH", "expires_at": time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)})
+	case req.Method == http.MethodGet && req.URL.Path == "/v1/fleets/fl1/devices" && authed:
+		json.NewEncoder(rec).Encode(map[string]any{"devices": []map[string]any{{"id": "7", "hostname": "phone", "ip": "100.64.0.20", "online": true, "last_seen": ""}}})
 	case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets" && r.createStatus != 0:
 		refuse(r.createStatus)
 	case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets":
@@ -737,4 +750,92 @@ func TestRouteErrorsCarryNoSecret(t *testing.T) {
 		t.Errorf("join, network refused = %d, want 400", rec.Code)
 	}
 	leaks("join", rec)
+}
+
+func TestFleetRemoteOnOff(t *testing.T) {
+	relayFixture(t)
+	code, res := callFleet(t, PutFleetRemote, http.MethodPut, "/v1/fleet/remote", `{"enabled":true,"relay":"https://relay.example"}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("on = %d %q", code, res.Message)
+	}
+	remote, _ := res.Data.(map[string]any)["remote"].(map[string]any)
+	if remote["alone"] != true || remote["relay"] != "https://relay.example" {
+		t.Fatalf("status after on: %v", res.Data)
+	}
+	code, res = callFleet(t, PutFleetRemote, http.MethodPut, "/v1/fleet/remote", `{"enabled":false}`, nil)
+	if code != http.StatusOK {
+		t.Fatalf("off = %d %q", code, res.Message)
+	}
+	if _, has := res.Data.(map[string]any)["remote"]; has {
+		t.Fatalf("status after off still has remote: %v", res.Data)
+	}
+}
+
+func TestFleetRemoteDevices(t *testing.T) {
+	relayFixture(t)
+	if code, _ := callFleet(t, PostFleetRemoteDevice, http.MethodPost, "/v1/fleet/remote/devices", "", nil); code != http.StatusConflict {
+		t.Fatalf("code with remote off = %d, want 409", code)
+	}
+	if code, res := callFleet(t, PutFleetRemote, http.MethodPut, "/v1/fleet/remote", `{"enabled":true,"relay":"https://relay.example"}`, nil); code != http.StatusOK {
+		t.Fatalf("on = %d %q", code, res.Message)
+	}
+	code, res := callFleet(t, PostFleetRemoteDevice, http.MethodPost, "/v1/fleet/remote/devices", "", nil)
+	if data, _ := res.Data.(map[string]any); code != http.StatusOK || data["code"] != "ABCD-EFGH" || data["expires_at"] == nil {
+		t.Fatalf("device code = %d %v", code, res.Data)
+	}
+	code, res = callFleet(t, GetFleetRemote, http.MethodGet, "/v1/fleet/remote", "", nil)
+	data, _ := res.Data.(map[string]any)
+	devices, _ := data["devices"].([]any)
+	if code != http.StatusOK || len(devices) != 1 || devices[0].(map[string]any)["hostname"] != "phone" {
+		t.Fatalf("remote view = %d %v", code, res.Data)
+	}
+	if code, res := callFleet(t, DeleteFleetRemoteDevice, http.MethodDelete, "/v1/fleet/remote/devices/7", "", map[string]string{"id": "7"}); code != http.StatusOK {
+		t.Fatalf("remove = %d %q", code, res.Message)
+	}
+}
+
+func TestFleetMemberJoinLeavesRemoteWhenConfirmed(t *testing.T) {
+	f, _, _ := relayFixture(t)
+	if code, res := callFleet(t, PutFleetRemote, http.MethodPut, "/v1/fleet/remote", `{"enabled":true,"relay":"https://relay.example"}`, nil); code != http.StatusOK {
+		t.Fatalf("on = %d %q", code, res.Message)
+	}
+	relayJSON := filepath.Join(f.Root, fleet.StateDir, "relay.json")
+	join := `{"code":"` + relayCode() + `"`
+	code, res := callFleet(t, PutFleetMember, http.MethodPut, "/v1/fleet/member", join+`}`, nil)
+	if code != http.StatusConflict || !strings.Contains(res.Message, fleet.ErrRemoteOn.Error()) {
+		t.Fatalf("join without confirmation = %d %q", code, res.Message)
+	}
+	if _, err := os.Stat(relayJSON); err != nil {
+		t.Fatalf("an unconfirmed join touched remote access: %v", err)
+	}
+	// a bad code costs nothing, confirmed or not
+	if code, _ := callFleet(t, PutFleetMember, http.MethodPut, "/v1/fleet/member", `{"code":"!!!","leave_remote":true}`, nil); code != http.StatusBadRequest {
+		t.Fatalf("bad code = %d, want 400", code)
+	}
+	if _, err := os.Stat(relayJSON); err != nil {
+		t.Fatalf("a bad code ended remote access: %v", err)
+	}
+	code, res = callFleet(t, PutFleetMember, http.MethodPut, "/v1/fleet/member", join+`,"leave_remote":true}`, nil)
+	if code != http.StatusOK || res.Data.(map[string]any)["role"] != "member" {
+		t.Fatalf("confirmed join = %d %q %v", code, res.Message, res.Data)
+	}
+	if _, err := os.Stat(relayJSON); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("relay.json after the join: %v", err)
+	}
+}
+
+func TestFleetRemoteErrorStatuses(t *testing.T) {
+	_, _, r := relayFixture(t)
+	r.set(func(r *fakeRelay) { r.full = true })
+	if code, res := callFleet(t, PutFleetRemote, http.MethodPut, "/v1/fleet/remote", `{"enabled":true,"relay":"https://relay.example"}`, nil); code != http.StatusServiceUnavailable || !strings.Contains(res.Message, fleet.ErrRelayFull.Error()) {
+		t.Fatalf("relay full = %d %q", code, res.Message)
+	}
+	r.set(func(r *fakeRelay) { r.full = false })
+	if code, res := callFleet(t, PutFleetRemote, http.MethodPut, "/v1/fleet/remote", `{"enabled":true,"relay":"https://relay.example"}`, nil); code != http.StatusOK {
+		t.Fatalf("on = %d %q", code, res.Message)
+	}
+	r.set(func(r *fakeRelay) { r.oldRelay = true })
+	if code, res := callFleet(t, PostFleetRemoteDevice, http.MethodPost, "/v1/fleet/remote/devices", "", nil); code != http.StatusConflict || !strings.Contains(res.Message, fleet.ErrRelayNoDevices.Error()) {
+		t.Fatalf("old relay = %d %q", code, res.Message)
+	}
 }

@@ -706,3 +706,37 @@ func TestAddBoxRefusesACertificateThatIsNotOne(t *testing.T) {
 		t.Fatal("a file with no certificate in it was accepted")
 	}
 }
+
+// The master keeps a hello's dashboard scheme and port only when both are valid.
+func TestAttachKeepsOnlyAValidDashboardAddress(t *testing.T) {
+	for _, c := range []struct{ scheme, port, wantScheme, wantPort string }{
+		{"http", "8080", "http", "8080"},
+		{"https", "443", "https", "443"},
+		{"http", "65535", "http", "65535"},
+		{"http", "00080", "http", "80"},
+		{"ftp", "80", "", ""},
+		{"http", "0", "", ""},
+		{"http", "65536", "", ""},
+		{"http", "80a", "", ""},
+		{"http", "+80", "", ""},
+		{"http", "", "", ""},
+		{"", "80", "", ""},
+		{"HTTP", "80", "", ""},
+	} {
+		f, srv := newMaster(t)
+		code := addBox(t, f, "Maison")
+		conn, _, err := dialTunnel(srv, code.BoxID, code.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.WriteJSON(frame{T: "hello", Hostname: "h", WebScheme: c.scheme, WebPort: c.port}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "online", online(f, code.BoxID))
+		st, _ := f.snapshot()
+		if b := st.Boxes[0]; b.WebScheme != c.wantScheme || b.WebPort != c.wantPort {
+			t.Errorf("%q/%q kept as %q/%q, want %q/%q", c.scheme, c.port, b.WebScheme, b.WebPort, c.wantScheme, c.wantPort)
+		}
+		conn.Close()
+	}
+}
