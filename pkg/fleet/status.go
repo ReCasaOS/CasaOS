@@ -41,7 +41,7 @@ func (f *Fleet) Status() Status {
 		if ok && remoteAlone(rs, false) {
 			r := &RemoteStatus{Relay: rs.Relay, Addr: rs.NetAddr, Alone: true}
 			f.m.netMu.Lock()
-			r.Connected, r.Error = f.netStatus(rs.Relay, "this box is off its remote access network: turn remote access off and on again")
+			r.Connected, r.Error = f.netStatus(rs.Relay, "this box is not on its remote access network right now; after a restart, wait a minute. If this lasts, turn remote access off and on again (your devices will have to be added again)")
 			f.m.netMu.Unlock()
 			s.Remote = r
 		}

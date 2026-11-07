@@ -546,7 +546,7 @@ func TestStatusRemoteAloneOffNetwork(t *testing.T) {
 	n.up, n.before = false, NetState{}
 	n.mu.Unlock()
 	s := f.Status()
-	if s.Remote == nil || s.Remote.Connected || s.Remote.Error != "this box is off its remote access network: turn remote access off and on again" {
+	if s.Remote == nil || s.Remote.Connected || s.Remote.Error != "this box is not on its remote access network right now; after a restart, wait a minute. If this lasts, turn remote access off and on again (your devices will have to be added again)" {
 		t.Fatalf("%+v", s.Remote)
 	}
 }
