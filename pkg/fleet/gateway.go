@@ -5,11 +5,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/go-ini/ini"
 )
@@ -84,4 +86,45 @@ func CertFingerprint(certFile string) (string, error) {
 		return "", err
 	}
 	return Fingerprint(cert), nil
+}
+
+// webAddr is the scheme and port (default filled in) of a dashboard URL; empty when u is nil or not http(s).
+func webAddr(u *url.URL) (scheme, port string) {
+	if u == nil {
+		return "", ""
+	}
+	port = u.Port()
+	if port == "" {
+		port = defaultPort[u.Scheme]
+	}
+	return validWeb(u.Scheme, port)
+}
+
+var defaultPort = map[string]string{"http": "80", "https": "443"}
+
+// validWeb keeps a scheme and port only when both are well formed: "http" or
+// "https", and 1-65535 in plain digits. It is the only door for what a hello says.
+func validWeb(scheme, port string) (string, string) {
+	if defaultPort[scheme] == "" || port == "" || len(port) > 5 || strings.Trim(port, "0123456789") != "" {
+		return "", ""
+	}
+	if n, _ := strconv.Atoi(port); n < 1 || n > 65535 {
+		return "", ""
+	}
+	return scheme, port
+}
+
+// webURL is scheme://addr[:port], the port left out when it is the scheme's default;
+// empty without an address or a valid scheme and port.
+func webURL(addr, scheme, port string) string {
+	if scheme, port = validWeb(scheme, port); addr == "" || scheme == "" {
+		return ""
+	}
+	if port == defaultPort[scheme] {
+		if strings.Contains(addr, ":") {
+			addr = "[" + addr + "]"
+		}
+		return scheme + "://" + addr
+	}
+	return scheme + "://" + net.JoinHostPort(addr, port)
 }

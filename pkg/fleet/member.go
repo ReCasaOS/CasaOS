@@ -479,7 +479,11 @@ func (f *Fleet) session(ctx context.Context, st MemberState) outcome {
 	hostname, _ := f.Hostname()
 	conn.SetReadLimit(maxFrame)
 	conn.SetWriteDeadline(time.Now().Add(writeWait))
-	if err := conn.WriteJSON(frame{T: "hello", Hostname: cut(hostname), Version: cut(f.Version())}); err != nil {
+	var scheme, port string
+	if gw, err := f.Gateway(); err == nil {
+		scheme, port = webAddr(gw.Public)
+	}
+	if err := conn.WriteJSON(frame{T: "hello", Hostname: cut(hostname), Version: cut(f.Version()), WebScheme: scheme, WebPort: port}); err != nil {
 		f.m.failed(err.Error())
 		return failed
 	}

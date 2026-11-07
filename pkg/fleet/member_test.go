@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/pem"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -454,4 +455,35 @@ func TestJoinDuringASessionIsNotLost(t *testing.T) {
 	waitFor(t, "connected to the second master", online(second, code2.BoxID))
 	// and no longer to the first
 	waitFor(t, "left the first master", func() bool { return !online(first, code1.BoxID)() })
+}
+
+func TestMemberHelloCarriesTheDashboardPort(t *testing.T) {
+	shortWaits(t)
+	for _, c := range []struct {
+		name, public, scheme, port string
+		gwErr                      bool
+	}{
+		{"http port", "http://127.0.0.1:8080", "http", "8080", false},
+		{"https default", "https://127.0.0.1", "https", "443", false},
+		{"http default", "http://127.0.0.1", "http", "80", false},
+		{"gateway fails", "", "", "", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			master, _ := newMaster(t)
+			member := newMember(t, &fakeGateway{status: 200})
+			member.Gateway = func() (GatewayInfo, error) {
+				if c.gwErr {
+					return GatewayInfo{}, errors.New("no gateway.ini")
+				}
+				return GatewayInfo{Public: mustURL(t, c.public)}, nil
+			}
+			code := join(t, master, member, "Maison")
+			st, _ := master.snapshot()
+			for _, b := range st.Boxes {
+				if b.ID == code.BoxID && (b.WebScheme != c.scheme || b.WebPort != c.port) {
+					t.Fatalf("%+v", b)
+				}
+			}
+		})
+	}
 }

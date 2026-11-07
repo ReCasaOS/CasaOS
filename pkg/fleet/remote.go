@@ -202,6 +202,7 @@ type RemoteBox struct {
 	Name   string `json:"name"`
 	Addr   string `json:"addr"`
 	Online bool   `json:"online"`
+	URL    string `json:"url,omitempty"` // where the dashboard is, when the box told its scheme and port
 }
 
 // RemoteView is what the dashboard shows of remote access: the devices, and for a master its boxes.
@@ -233,6 +234,10 @@ func (f *Fleet) RemoteView(ctx context.Context) (RemoteView, error) {
 		return RemoteView{}, goneErr(err, alone)
 	}
 	v.Addr = st.NetAddr
+	selfScheme, selfPort := "", ""
+	if gw, err := f.Gateway(); err == nil {
+		selfScheme, selfPort = webAddr(gw.Public)
+	}
 	for _, b := range st.Boxes {
 		rb := RemoteBox{ID: b.ID, Name: b.Name}
 		if b.Self {
@@ -243,6 +248,11 @@ func (f *Fleet) RemoteView(ctx context.Context) (RemoteView, error) {
 				rb.Addr, rb.Online = n.IP, n.Online
 			}
 		}
+		scheme, port := b.WebScheme, b.WebPort
+		if b.Self {
+			scheme, port = selfScheme, selfPort
+		}
+		rb.URL = webURL(rb.Addr, scheme, port)
 		v.Boxes = append(v.Boxes, rb)
 	}
 	return v, nil

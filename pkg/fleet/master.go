@@ -217,6 +217,7 @@ func (f *Fleet) attach(t *tunnel, hello frame) bool {
 	old := f.tunnels[t.boxID]
 	f.tunnels[t.boxID] = t
 	st.Boxes[i].LastSeen, st.Boxes[i].Hostname, st.Boxes[i].Version = f.Now(), cut(hello.Hostname), cut(hello.Version)
+	st.Boxes[i].WebScheme, st.Boxes[i].WebPort = validWeb(hello.WebScheme, hello.WebPort)
 	err := f.saveMaster(st)
 	f.mu.Unlock()
 	if err != nil {

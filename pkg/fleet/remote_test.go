@@ -608,3 +608,58 @@ func TestStatusNoRemote(t *testing.T) {
 		t.Fatalf("advanced master: %+v", s.Remote)
 	}
 }
+
+func TestRemoteViewBoxURLs(t *testing.T) {
+	f, _, r, _ := relayMaster(t)
+	ctx := context.Background()
+	if err := f.EnableMasterRelay(ctx, r.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.AddBox("this box", "", true); err != nil {
+		t.Fatal(err)
+	}
+	f.Gateway = func() (GatewayInfo, error) { return GatewayInfo{Public: mustURL(t, "https://127.0.0.1:8443")}, nil }
+	st, _ := f.snapshot()
+	st.Boxes = append(st.Boxes,
+		Box{ID: "a", Name: "a", WebScheme: "http", WebPort: "8080"},
+		Box{ID: "b", Name: "b", WebScheme: "http", WebPort: "80"},
+		Box{ID: "c", Name: "c", WebScheme: "https", WebPort: "443"},
+		Box{ID: "d", Name: "d"},
+		Box{ID: "e", Name: "e", WebScheme: "http", WebPort: "8080"},
+		Box{ID: "g", Name: "g", WebScheme: "http", WebPort: "8080"}, // offline: no address
+	)
+	if err := f.saveMaster(st); err != nil {
+		t.Fatal(err)
+	}
+	r.set(func(r *fakeRelay) {
+		r.nodes = []map[string]any{
+			{"hostname": "b-a", "ip": "100.64.0.8", "online": true},
+			{"hostname": "b-b", "ip": "100.64.0.8", "online": true},
+			{"hostname": "b-c", "ip": "100.64.0.8", "online": true},
+			{"hostname": "b-d", "ip": "100.64.0.8", "online": true},
+			{"hostname": "b-e", "ip": "fd7a::8", "online": true},
+		}
+	})
+	v, err := f.RemoteView(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, b := range v.Boxes {
+		got[b.Name] = b.URL
+	}
+	want := map[string]string{
+		"this box": "https://100.64.0.7:8443",
+		"a":        "http://100.64.0.8:8080",
+		"b":        "http://100.64.0.8",
+		"c":        "https://100.64.0.8",
+		"d":        "",
+		"e":        "http://[fd7a::8]:8080",
+		"g":        "",
+	}
+	for n, u := range want {
+		if got[n] != u {
+			t.Errorf("%s: url %q, want %q", n, got[n], u)
+		}
+	}
+}
