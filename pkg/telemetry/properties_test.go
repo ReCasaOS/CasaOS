@@ -63,6 +63,7 @@ func TestPropertiesOfABox(t *testing.T) {
 		"core":                    "v" + common.VERSION,
 		"arch":                    arch(runtime.GOARCH, buildSettings()),
 		"os":                      "ubuntu 24.04",
+		"os_variant":              "none",
 		"kernel":                  "6.8",
 		"virtualization":          "none",
 		"model":                   "Raspberry Pi 5 Model B Rev 1.0",
@@ -134,6 +135,39 @@ func TestOSRelease(t *testing.T) {
 	}
 	if got := New(t.TempDir()).osRelease(); got != "unknown" {
 		t.Errorf("osRelease() with no /etc/os-release = %q, want unknown", got)
+	}
+}
+
+func TestOSVariant(t *testing.T) {
+	const debian = "ID=debian\nVERSION_ID=\"12\"\n"
+	cases := []struct {
+		name, osRelease, marker, want string
+	}{
+		{"raspberrypi", debian, "/etc/rpi-issue", "raspberrypi"},
+		{"armbian", debian, "/etc/armbian-release", "armbian"},
+		{"dietpi", debian, "/boot/dietpi.txt", "dietpi"},
+		{"proxmox", debian, "/usr/bin/pveversion", "proxmox"},
+		{"openmediavault", debian, "/etc/openmediavault", "openmediavault"},
+		{"truenas", debian, "/usr/bin/middlewared", "truenas"},
+		{"proxmox_backup", debian, "/usr/sbin/proxmox-backup-manager", "proxmox_backup"},
+		{"proxmox_mail", debian, "/usr/bin/pmgversion", "proxmox_mail"},
+		{"plain debian", debian, "", "none"},
+		{"other ID ignores markers", "ID=linuxmint\n", "/etc/rpi-issue", "none"},
+		{"no os-release", "", "", "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.osRelease != "" {
+				write(t, root, "/etc/os-release", tc.osRelease)
+			}
+			if tc.marker != "" {
+				write(t, root, tc.marker, "x")
+			}
+			if got := New(root).osVariant(); got != tc.want {
+				t.Fatalf("osVariant() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
