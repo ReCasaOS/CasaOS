@@ -232,8 +232,8 @@ func TestEnableMasterRelayReusesRemoteNetwork(t *testing.T) {
 			ups++
 		}
 	}
-	if r.count(&r.creates) != 1 || ups != 1 {
-		t.Fatalf("creates %d, calls %v", r.count(&r.creates), n.calls)
+	if r.count(&r.creates) != 1 || ups != 1 || r.count(&r.deletes) != 0 || n.called("down") {
+		t.Fatalf("creates %d, deletes %d, calls %v", r.count(&r.creates), r.count(&r.deletes), n.calls)
 	}
 	m := readJSONFile(t, f.masterPath())
 	if m["relay"] != r.URL || m["fleet_id"] != "fl1" || m["net_addr"] != "100.64.0.7" {
@@ -296,7 +296,7 @@ func TestJoinRefusesWhileRemoteOn(t *testing.T) {
 			t.Fatalf("%v", err)
 		}
 	}
-	if rs, ok := f.loadRelay(); !ok || !rs.Remote || exists(t, f.memberPath()) || len(n.calls) != before || len(n.downs) != 0 {
+	if rs, ok := f.loadRelay(); !ok || !rs.Remote || exists(t, f.memberPath()) || exists(t, f.netOwnPath()) || len(n.calls) != before || len(n.downs) != 0 {
 		t.Fatalf("changed: %+v, calls %v", rs, n.calls)
 	}
 }
@@ -315,5 +315,24 @@ func TestDisableMasterAfterRemoteDeletesFleet(t *testing.T) {
 	}
 	if r.count(&r.deletes) != 1 || exists(t, f.relayPath()) {
 		t.Fatalf("deletes %d", r.count(&r.deletes))
+	}
+}
+
+func TestDisableRemoteCleansUnfinishedEnable(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	rs, _ := f.loadRelay()
+	rs.NetAddr = "" // as an enable that did not finish leaves it
+	if err := f.saveRelay(rs); err != nil {
+		t.Fatal(err)
+	}
+	n.calls = nil
+	if err := f.DisableRemote(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r.count(&r.deletes) != 1 || !n.called("down") || exists(t, f.relayPath()) {
+		t.Fatalf("deletes %d, calls %v", r.count(&r.deletes), n.calls)
 	}
 }

@@ -104,7 +104,7 @@ func (f *Fleet) DisableRemote(ctx context.Context) error {
 	if on {
 		return errRemoteIsMaster
 	}
-	if haveRelay && remoteAlone(rs, false) {
+	if haveRelay && rs.Remote { // any remote relay.json, an unfinished enable too
 		f.leaveRelay(context.WithoutCancel(ctx), rs, true)
 	}
 	return nil
