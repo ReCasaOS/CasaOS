@@ -653,8 +653,8 @@ now="$(update-alternatives --query iptables 2> /dev/null | awk '/^Value:/ { prin
 if command -v sshd > /dev/null 2>&1; then
   [ -d /run/sshd ] || mkdir -p -m 755 /run/sshd
   sshd -t || { AUTOCLASS=barrier_sshd; echo "STOP: sshd does not accept its configuration: the machine would not be reachable after a boot. What sshd -t printed above says which file and which line; put it right, then run this block again."; exit 1; }
-  sshd -T 2> /dev/null | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication) ' | sort > "$BK/sshd-keys-now.txt" || true
-  grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication) ' "$BK/sshd-keys.txt" | sort > "$BK/sshd-keys-before.txt" || true
+  sshd -T 2> /dev/null | grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication) ' | sed 's/^permitrootlogin without-password$/permitrootlogin prohibit-password/' | sort > "$BK/sshd-keys-now.txt" || true
+  grep -E '^(port|listenaddress|permitrootlogin|passwordauthentication) ' "$BK/sshd-keys.txt" | sed 's/^permitrootlogin without-password$/permitrootlogin prohibit-password/' | sort > "$BK/sshd-keys-before.txt" || true
   [ "$(cat "$BK/sshd-keys-before.txt")" = "$(cat "$BK/sshd-keys-now.txt")" ] || { AUTOCLASS=barrier_sshd; echo "STOP: the settings of sshd (port, address, root login, passwords) are not the ones of before: compare $BK/sshd-keys.txt with sshd -T."; exit 1; }
   echo "The algorithms that sshd accepts for keys are named differently by Ubuntu 26.04, and its defaults changed: look at them yourself."
   echo "  before:  $(grep -E '^pubkeyaccepted' "$BK/sshd-keys.txt" || echo none)"

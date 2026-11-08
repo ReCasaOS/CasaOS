@@ -88,6 +88,16 @@ func (h HopSpec) firstStepName() string {
 	return "the minimal upgrade"
 }
 
+// sshdAliases is what the comparison of sshd's settings before and after the hop puts through, so that a setting that the new sshd only names differently is the same: OpenSSH 9.6
+// of Ubuntu 24.04 prints "permitrootlogin without-password", OpenSSH 10.2 of 26.04 its other name "prohibit-password", for the same setting (sshd -T in the image ubuntu:24.04
+// before and after the hop, 2026-11-09; the QEMU proof of the cloud image stopped on it before its restart). The texts of Debian are as they were measured.
+func (h HopSpec) sshdAliases() string {
+	if h.Distro != "Ubuntu" {
+		return ""
+	}
+	return " | sed 's/^permitrootlogin without-password$/permitrootlogin prohibit-password/'"
+}
+
 // PlannedHop is the hop of a box's identity, when a plan can be made for it.
 func PlannedHop(id osreadiness.HopID) (HopSpec, bool) {
 	for _, h := range planHops {

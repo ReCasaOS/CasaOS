@@ -194,3 +194,28 @@ func TestBlock5Of24To26RunsTheWholeUpgrade(t *testing.T) {
 		}
 	}
 }
+
+// OpenSSH 10 of 26.04 names "permitrootlogin without-password" of 24.04 by its other name: block 7 compares them as the same setting, and a real change still stops it.
+func TestBlock7Of24To26ReadsTheOtherNameOfARootLoginSetting(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh on this machine (Windows without Git Bash): the filter is proved on Linux")
+	}
+	hop := withUbuntuTestHop(t)
+	norm := func(s string) string {
+		out, err := exec.Command(sh, "-c", "printf '%s\n' \"$1\""+hop.sshdAliases()+" | sort", "sh", s).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	if norm("permitrootlogin without-password") != norm("permitrootlogin prohibit-password") || norm("permitrootlogin yes") == norm("permitrootlogin prohibit-password") {
+		t.Error("the filter does not read without-password as prohibit-password, or reads yes as it")
+	}
+	if !strings.Contains(buildFor(t, u24Plan(t)).Text, hop.sshdAliases()+" | sort > \"$BK/sshd-keys-now.txt\"") {
+		t.Error("block 7 does not put sshd -T through the filter")
+	}
+	if _, rb11 := realRunbook(t); strings.Contains(rb11.Text, "without-password/") || strings.Contains(buildFor(t, d12Plan(t)).Text, "without-password/") {
+		t.Error("a runbook of Debian has the filter")
+	}
+}
