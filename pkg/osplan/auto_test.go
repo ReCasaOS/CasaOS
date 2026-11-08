@@ -379,6 +379,8 @@ func TestEveryStopLineOfTheAutoTextHasOneClassAndEveryKeyOfTheTableIsUsed(t *tes
 	for name, p := range planVariants(t) {
 		texts[name] = autoOf(t, p, AutoParams{RunID: testRunID, Hostname: testHostname})
 	}
+	// the hop of the tests that is not Debian's: its identity STOP line has a key of its own
+	texts["the Ubuntu hop of the tests"] = autoOf(t, planFor(t, withUbuntuTestHop(t)), AutoParams{RunID: testRunID, Hostname: testHostname})
 	for name, ar := range texts {
 		for _, blk := range everyAutoBlock(ar) {
 			// outside a heredoc, every STOP line has a class, once; inside, none has one (the restore script is copied as it is)

@@ -114,7 +114,7 @@ func TestARefreshThatTheChecksLetThroughWritesTheRunAndStartsItsUnit(t *testing.
 	if err := json.Unmarshal([]byte(readText(t, filepath.Join(run.Dir, "plan.json"))), &record); err != nil || record.Hop != "debian-11-12" || len(record.Tree) != 1 || len(record.Paused) != 1 || record.HashCurrent != strings.Repeat("a", 64) || record.AcceptReleaseInfo {
 		t.Errorf("plan.json is %+v, %v", record, err)
 	}
-	if got := readText(t, filepath.Join(run.Dir, "manual-runbook.sh")); got != osUpgradeRefreshManual {
+	if got := readText(t, filepath.Join(run.Dir, "manual-runbook.sh")); got != osUpgradeRefreshManual(mustPlannedHop(t)) || !strings.Contains(got, "the sources of Debian that") {
 		t.Errorf("manual-runbook.sh is %q", got)
 	}
 	// ... and the runbook of the run is not asked for text that it has not got

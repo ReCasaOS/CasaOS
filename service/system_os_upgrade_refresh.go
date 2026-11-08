@@ -43,8 +43,10 @@ func osRefreshStands(code string) bool {
 }
 
 // osUpgradeRefreshManual is what the owner who takes a refresh over is given: there is nothing to run by hand (a refresh is apt-get update and apt-get dist-upgrade, and it ends by
-// putting the sources and the timers back, which the unit does whether it ended or stopped).
-const osUpgradeRefreshManual = "# This run is a refresh of the old release: apt-get update and apt-get dist-upgrade, with the sources of Debian that the machine has and nothing else.\n# It has no text for the owner to run by hand. When it ends, or stops, the unit puts the sources and the timers of apt back as they were.\n"
+// putting the sources and the timers back, which the unit does whether it ended or stopped). It names the distribution of the hop.
+func osUpgradeRefreshManual(hop osplan.HopSpec) string {
+	return "# This run is a refresh of the old release: apt-get update and apt-get dist-upgrade, with the sources of " + hop.Distro + " that the machine has and nothing else.\n# It has no text for the owner to run by hand. When it ends, or stops, the unit puts the sources and the timers of apt back as they were.\n"
+}
 
 // osUpgradeRefreshRecord is plan.json of a refresh: there is no plan, and what the run kept of the sources is what it needs to be read again, the owner's own lines included.
 type osUpgradeRefreshRecord struct {
@@ -125,7 +127,7 @@ func (s *systemService) StartSystemOSUpgradeRefresh(req OSUpgradeRefreshRequest)
 			Blocks: osUpgradeBlockInfos(auto.Blocks, auto.Forward),
 		},
 		// no facts: the judge compares a machine with itself across a restart, and a refresh has nothing to judge
-		Driver: osrun.Driver, Blocks: auto.Blocks, Forward: auto.Forward, Plan: record, Manual: osUpgradeRefreshManual, Facts: osverify.Facts{},
+		Driver: osrun.Driver, Blocks: auto.Blocks, Forward: auto.Forward, Plan: record, Manual: osUpgradeRefreshManual(hop), Facts: osverify.Facts{},
 	}
 	return s.osUpgradeStartRun(ctx, probe, spec, nonce, osrun.PhaseRefresh, osrun.StateRefreshing)
 }

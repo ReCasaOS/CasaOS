@@ -21,6 +21,8 @@ import (
 // them.
 type HopSpec struct {
 	ID osreadiness.HopID
+	// Distro is the distribution of both releases, as the texts of the blocks name it ("Debian", "Ubuntu").
+	Distro string
 	// From and To are the codenames of the releases ("bullseye", "bookworm").
 	From, To string
 	// FromVersion and ToVersion are the numbers of the releases ("11", "12"), which the texts of the blocks name them by.
@@ -43,17 +45,17 @@ func (h HopSpec) ForRefresh() HopSpec {
 	return h
 }
 
-// FromName and ToName are the releases as the texts of the blocks say them: "Debian 11".
-func (h HopSpec) FromName() string { return "Debian " + h.FromVersion }
-func (h HopSpec) ToName() string   { return "Debian " + h.ToVersion }
+// FromName and ToName are the releases as the texts of the blocks say them: "Debian 11", "Ubuntu 24.04".
+func (h HopSpec) FromName() string { return h.Distro + " " + h.FromVersion }
+func (h HopSpec) ToName() string   { return h.Distro + " " + h.ToVersion }
 
 // planHops is the one table of the hops a plan can be made for: every other hop is hop_not_planned (Ubuntu is a later rung).
 // The hop from Debian 12 reads the .sources files (Deb822): the images of Debian 12 and Docker's own install page write them. It
 // keeps Firmware: a box that came from Debian 11 may have non-free without non-free-firmware. The hop from Debian 11 does not
 // read them, and is what was measured.
 var planHops = []HopSpec{
-	{ID: osreadiness.HopDebian11to12, From: "bullseye", To: "bookworm", FromVersion: "11", ToVersion: "12", Later: []string{"trixie", "forky"}, Firmware: true},
-	{ID: osreadiness.HopDebian12to13, From: "bookworm", To: "trixie", FromVersion: "12", ToVersion: "13", Later: []string{"forky", "duke"}, Firmware: true, Deb822: true},
+	{ID: osreadiness.HopDebian11to12, Distro: "Debian", From: "bullseye", To: "bookworm", FromVersion: "11", ToVersion: "12", Later: []string{"trixie", "forky"}, Firmware: true},
+	{ID: osreadiness.HopDebian12to13, Distro: "Debian", From: "bookworm", To: "trixie", FromVersion: "12", ToVersion: "13", Later: []string{"forky", "duke"}, Firmware: true, Deb822: true},
 }
 
 // PlannedHop is the hop of a box's identity, when a plan can be made for it.

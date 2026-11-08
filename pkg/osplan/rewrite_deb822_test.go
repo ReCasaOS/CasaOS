@@ -10,7 +10,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 )
 
-var bookwormToTrixie = HopSpec{ID: osreadiness.HopDebian12to13, From: "bookworm", To: "trixie", FromVersion: "12", ToVersion: "13", Later: []string{"forky", "duke"}, Firmware: true, Deb822: true}
+var bookwormToTrixie = HopSpec{ID: osreadiness.HopDebian12to13, Distro: "Debian", From: "bookworm", To: "trixie", FromVersion: "12", ToVersion: "13", Later: []string{"forky", "duke"}, Firmware: true, Deb822: true}
 
 // mirrorDecider is fakeDecider with the lists of mirrors of Debian's cloud images: a list is the distribution's, unless its
 // address is in undecided.

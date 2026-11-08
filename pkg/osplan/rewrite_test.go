@@ -16,7 +16,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 )
 
-var bullseyeToBookworm = HopSpec{ID: osreadiness.HopDebian11to12, From: "bullseye", To: "bookworm", FromVersion: "11", ToVersion: "12", Later: []string{"trixie", "forky"}, Firmware: true}
+var bullseyeToBookworm = HopSpec{ID: osreadiness.HopDebian11to12, Distro: "Debian", From: "bullseye", To: "bookworm", FromVersion: "11", ToVersion: "12", Later: []string{"trixie", "forky"}, Firmware: true}
 
 // fakeDecider says what the report would say of the hosts it names: official hosts are the distribution's, a host that
 // is in mirrors has a Release file that says so, the others are third parties, and a host in undecided is one it cannot
