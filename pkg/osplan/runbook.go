@@ -166,7 +166,7 @@ func newRbCtx(p Plan) (*rbCtx, []blockSpec, error) {
 // may one have a word that stands for a release (names): it would be changed in the copy that the text writes, and no longer be the file whose hash the plan holds.
 func treeIsSafe(tree []TreeFile) bool {
 	for _, f := range tree {
-		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK", "@from@", "@to@", "@tov@", "@distro@"} {
+		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK", "@from@", "@to@", "@tov@", "@distro@", "@first@", "@minimal@"} {
 			if strings.Contains(f.Content, bad) {
 				return false
 			}
@@ -874,7 +874,8 @@ func (c *rbCtx) restoreText() string {
 // names is s with the releases of the hop of c in place of the words that stand for them in the texts of the blocks: @from@ and @to@ are the releases ("Debian 11"),
 // @tov@ the number of the one reached ("Debian 11 and 12 are mixed"), @distro@ the distribution ("Debian"). Every text is written with them and goes through here once, before it is hashed or shown.
 func (c *rbCtx) names(s string) string {
-	return strings.NewReplacer("@from@", c.hop.FromName(), "@to@", c.hop.ToName(), "@tov@", c.hop.ToVersion, "@distro@", c.hop.Distro).Replace(s)
+	return strings.NewReplacer("@from@", c.hop.FromName(), "@to@", c.hop.ToName(), "@tov@", c.hop.ToVersion, "@distro@", c.hop.Distro, "@first@", c.hop.firstStep(),
+		"@minimal@", c.hop.firstStepName()).Replace(s)
 }
 
 // shSourcesBackup is what a block does before it changes a file of /etc/apt: it writes the restore script and reads it back, and copies /etc/apt whole (or not at all). Block 3
@@ -1212,32 +1213,32 @@ var aptBlocks = []blockSpec{
 		},
 	},
 	{
-		RunbookBlock: RunbookBlock{ID: "download", Title: "download the packages of the minimal upgrade, while the applications run"},
+		RunbookBlock: RunbookBlock{ID: "download", Title: "download the packages of @minimal@, while the applications run"},
 		prose: []string{
 			"Only downloads. Nothing is installed, and the applications keep running. Once block 5 has begun this block stops: the packages are being installed, and the way is forward.",
 		},
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(beganCheck("this block only downloads for the minimal upgrade, which is block 5's, and block 5 downloads what it still needs."))
+			b.WriteString(beganCheck("this block only downloads for @minimal@, which is block 5's, and block 5 downloads what it still needs."))
 			b.WriteString(c.aptq())
 			// where the owner goes from a stop, decided when the stop is said: the marker says whether the upgrade has begun (it is not there when this block begins, and a block 5 run
 			// in another terminal may write it while this one downloads)
 			b.WriteString("whereto() { if [ -e \"$BK/begun-upgrade\" ]; then echo \"The upgrade has begun (block 5 was started): do not restore anything. Only forward: " + forwardWords + "\"; else echo \"No package has been installed or removed yet: run this block again, or put the sources back with sh $BK/restore-sources.sh\"; fi; }\n")
 			b.WriteString("echo \"Block 4: downloading.\"\n")
-			b.WriteString("aptq --download-only upgrade || { echo \"STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above). $(whereto)\"; exit 1; }\n")
+			b.WriteString("aptq --download-only @first@ || { echo \"STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above). $(whereto)\"; exit 1; }\n")
 			b.WriteString("ls /var/cache/apt/archives/*.deb > /dev/null 2>&1 || { echo \"STOP: no package was downloaded: apt had nothing to fetch, or the cache of downloaded packages was emptied (apt-get clean), or the download did not go through (see what apt printed above). $(whereto)\"; exit 1; }\n")
 			b.WriteString(c.done("download", 4))
 			return b.String()
 		},
 	},
 	{
-		RunbookBlock: RunbookBlock{ID: "minimal", Title: "THE POINT OF NO RETURN: the minimal upgrade, then the protected packages", PointOfNoReturn: true},
+		RunbookBlock: RunbookBlock{ID: "minimal", Title: "THE POINT OF NO RETURN: @minimal@, then the protected packages", PointOfNoReturn: true},
 		prose: []string{
 			"From here on nothing is undone by going back: the packages of @from@ and of @to@ are mixed until the end of block 6, and the way out is forward.",
 			"The libc6 upgrade restarts services during this block (ssh, smbd and cron were restarted in the measured hop): run it in tmux or screen, or on the console. The block stops if you do not.",
 			"Have the snapshot, or the console. Type I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON between the quotes of CONFIRM to go on.",
-			"It stops the timers again, stops while a package manager is at work, writes the marker begun-upgrade (from then on the restore script and blocks 2, 3 and 4 refuse), and runs apt-get upgrade. When apt-get upgrade",
+			"It stops the timers again, stops while a package manager is at work, writes the marker begun-upgrade (from then on the restore script and blocks 2, 3 and 4 refuse), and runs apt-get @first@. When apt-get @first@",
 			"fails before it has changed anything (a lock, no room, a download that failed: dpkg's records are as they were), the block says that nothing was installed and takes the marker back. Then apt simulates the",
 			"full upgrade again, and the block stops if it would remove a protected package or an essential one, or downgrade anything.",
 		},
@@ -1260,10 +1261,10 @@ var aptBlocks = []blockSpec{
 			b.WriteString(": > \"$BK/begun-upgrade\"\n")
 			b.WriteString(c.syncAfterMarker())
 			b.WriteString("echo \"BLOCK 5: THE POINT OF NO RETURN. THE UPGRADE BEGINS NOW.\"\n")
-			b.WriteString("if ! aptq upgrade; then\n")
+			b.WriteString("if ! aptq @first@; then\n")
 			b.WriteString("  if [ \"$fresh\" = yes ] && [ \"$before\" = \"$(dpkgstate)\" ]; then\n")
 			b.WriteString("    rm -f \"$BK/begun-upgrade\"\n")
-			b.WriteString("    " + stop("apt-get upgrade failed before it changed any package (dpkg's records are as they were): nothing was installed or removed, and the marker of the point of no return is taken back. A lock held by another package manager, no room on the disk, or a download that failed are the usual causes: see what apt printed above. Fix it, then run this block again (type the confirmation again), or put the sources back: sh $BK/restore-sources.sh") + "\n")
+			b.WriteString("    " + stop("apt-get @first@ failed before it changed any package (dpkg's records are as they were): nothing was installed or removed, and the marker of the point of no return is taken back. A lock held by another package manager, no room on the disk, or a download that failed are the usual causes: see what apt printed above. Fix it, then run this block again (type the confirmation again), or put the sources back: sh $BK/restore-sources.sh") + "\n")
 			b.WriteString("  fi\n")
 			b.WriteString("  echo \"STOP: the minimal upgrade failed, and it has begun: do not restore anything. Run: " + forwardCommands + "   then type the confirmation again and run this block again. " + c.logWords() + "\"; exit 1\n")
 			b.WriteString("fi\n")

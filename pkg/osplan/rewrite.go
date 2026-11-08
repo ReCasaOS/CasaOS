@@ -36,6 +36,9 @@ type HopSpec struct {
 	// SimBroken are the packages whose "E: Conf Broken" ends apt's simulation of the full upgrade (status 100) when the real upgrade goes through: the order that apt's simulator
 	// takes for them is not the one dpkg takes. Each was seen both ways, simulated and run, on the release that is left (withoutSimBroken, and sim_ok in the texts).
 	SimBroken []string
+	// OneStep says that block 5 runs the whole upgrade (dist-upgrade) and not a minimal one first, as do-release-upgrade does: a minimal upgrade leaves the init system of the release
+	// that is left under packages of the next one (firstStep).
+	OneStep bool
 	// Refresh says that the sources are written for bringing the release that is left up to its last state, and not for the next one: the lines of that release are kept as they are
 	// (its suite, its host, its components, its backports), and what is not the distribution's is put aside as it is for a hop. Only ForRefresh sets it.
 	Refresh bool
@@ -63,7 +66,26 @@ var planHops = []HopSpec{
 	// upgrade on coreutils-from-uutils, and the move of sudo to sudo-rs on sudo-common (a box that has sudo: every cloud image), before the minimal upgrade and after it, and the
 	// real upgrade goes through (the image ubuntu:24.04, apt 2.8.3, 2026-11-08: testdata/real/docker-u24-26-*; sudo-common was found by the QEMU proof on the cloud image).
 	{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04", Later: []string{"stonking", "tenacious"}, Deb822: true,
-		SimBroken: []string{"coreutils-from-uutils", "sudo-common"}},
+		SimBroken: []string{"coreutils-from-uutils", "sudo-common"}, OneStep: true},
+}
+
+// firstStep is the verb of apt that block 5 runs, and block 4 downloads for. Debian's release notes say a minimal upgrade first; Canonical's do-release-upgrade runs the whole one.
+// On Ubuntu the minimal one upgrades tcpdump of 26.04, whose sysusers.d file has the modifier "u!", while systemd 255 of 24.04 is still there: its systemd-sysusers refuses it,
+// the configuration of tcpdump fails and the block stops (the QEMU proof of the cloud image, 2026-11-08; reproduced in the image ubuntu:24.04 with systemd and tcpdump, where
+// dist-upgrade at once goes through).
+func (h HopSpec) firstStep() string {
+	if h.OneStep {
+		return "dist-upgrade"
+	}
+	return "upgrade"
+}
+
+// firstStepName is block 5's step as the titles say it.
+func (h HopSpec) firstStepName() string {
+	if h.OneStep {
+		return "the whole upgrade in one step, as do-release-upgrade runs it"
+	}
+	return "the minimal upgrade"
 }
 
 // PlannedHop is the hop of a box's identity, when a plan can be made for it.

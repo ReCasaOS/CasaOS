@@ -510,7 +510,7 @@ echo "Block 3 done."
 # <<< END BLOCK 3
 
 # ==============================
-# BLOCK 4 (of the blocks 0 to 8): download the packages of the minimal upgrade, while the applications run
+# BLOCK 4 (of the blocks 0 to 8): download the packages of the whole upgrade in one step, as do-release-upgrade runs it, while the applications run
 # Only downloads. Nothing is installed, and the applications keep running. Once block 5 has begun this block stops: the packages are being installed, and the way is forward.
 # ==============================
 # >>> BLOCK 4 download
@@ -528,12 +528,12 @@ done
 [ -e "$BK/done-sources" ] || { echo "STOP: the block before this one (sources) did not end: run it first (ls $BK shows how far you got)."; exit 1; }
 mkdir -p -m 700 "$BK"; chmod 700 "$BK"
 printf '%s\n' 'ubuntu-24.04-26.04' > "$BK/hop"
-if [ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ]; then echo "STOP: the upgrade has begun (block 5 was started): this block only downloads for the minimal upgrade, which is block 5's, and block 5 downloads what it still needs. Do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; exit 1; fi
+if [ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ]; then echo "STOP: the upgrade has begun (block 5 was started): this block only downloads for the whole upgrade in one step, as do-release-upgrade runs it, which is block 5's, and block 5 downloads what it still needs. Do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; exit 1; fi
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
 aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 whereto() { if [ -e "$BK/begun-upgrade" ]; then echo "The upgrade has begun (block 5 was started): do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; else echo "No package has been installed or removed yet: run this block again, or put the sources back with sh $BK/restore-sources.sh"; fi; }
 echo "Block 4: downloading."
-aptq --download-only upgrade || { echo "STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above). $(whereto)"; exit 1; }
+aptq --download-only dist-upgrade || { echo "STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above). $(whereto)"; exit 1; }
 ls /var/cache/apt/archives/*.deb > /dev/null 2>&1 || { echo "STOP: no package was downloaded: apt had nothing to fetch, or the cache of downloaded packages was emptied (apt-get clean), or the download did not go through (see what apt printed above). $(whereto)"; exit 1; }
 : > "$BK/done-download"
 echo "Block 4 done."
@@ -541,12 +541,12 @@ echo "Block 4 done."
 # <<< END BLOCK 4
 
 # ==============================
-# BLOCK 5 (of the blocks 0 to 8): THE POINT OF NO RETURN: the minimal upgrade, then the protected packages
+# BLOCK 5 (of the blocks 0 to 8): THE POINT OF NO RETURN: the whole upgrade in one step, as do-release-upgrade runs it, then the protected packages
 # THIS BLOCK IS THE POINT OF NO RETURN.
 # From here on nothing is undone by going back: the packages of Ubuntu 24.04 and of Ubuntu 26.04 are mixed until the end of block 6, and the way out is forward.
 # The libc6 upgrade restarts services during this block (ssh, smbd and cron were restarted in the measured hop): run it in tmux or screen, or on the console. The block stops if you do not.
 # Have the snapshot, or the console. Type I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON between the quotes of CONFIRM to go on.
-# It stops the timers again, stops while a package manager is at work, writes the marker begun-upgrade (from then on the restore script and blocks 2, 3 and 4 refuse), and runs apt-get upgrade. When apt-get upgrade
+# It stops the timers again, stops while a package manager is at work, writes the marker begun-upgrade (from then on the restore script and blocks 2, 3 and 4 refuse), and runs apt-get dist-upgrade. When apt-get dist-upgrade
 # fails before it has changed anything (a lock, no room, a download that failed: dpkg's records are as they were), the block says that nothing was installed and takes the marker back. Then apt simulates the
 # full upgrade again, and the block stops if it would remove a protected package or an essential one, or downgrade anything.
 # ==============================
@@ -619,10 +619,10 @@ fresh=yes
 before="$(dpkgstate)"
 : > "$BK/begun-upgrade"
 echo "BLOCK 5: THE POINT OF NO RETURN. THE UPGRADE BEGINS NOW."
-if ! aptq upgrade; then
+if ! aptq dist-upgrade; then
   if [ "$fresh" = yes ] && [ "$before" = "$(dpkgstate)" ]; then
     rm -f "$BK/begun-upgrade"
-    { echo "STOP: apt-get upgrade failed before it changed any package (dpkg's records are as they were): nothing was installed or removed, and the marker of the point of no return is taken back. A lock held by another package manager, no room on the disk, or a download that failed are the usual causes: see what apt printed above. Fix it, then run this block again (type the confirmation again), or put the sources back: sh $BK/restore-sources.sh"; exit 1; }
+    { echo "STOP: apt-get dist-upgrade failed before it changed any package (dpkg's records are as they were): nothing was installed or removed, and the marker of the point of no return is taken back. A lock held by another package manager, no room on the disk, or a download that failed are the usual causes: see what apt printed above. Fix it, then run this block again (type the confirmation again), or put the sources back: sh $BK/restore-sources.sh"; exit 1; }
   fi
   echo "STOP: the minimal upgrade failed, and it has begun: do not restore anything. Run: DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confdef --force-confold   then:   DEBIAN_FRONTEND=noninteractive apt-get -s -f install   (read it first: a line that starts with Remv is a package that it would remove; if it is one that the plan does not name, or one that this text protects, do not go on and ask for help)   then:   DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -f install   then type the confirmation again and run this block again. What dpkg and the scripts of the packages printed is in /var/log/apt/term.log; what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each. The lines of apt itself (the ones that start with E:) are on the terminal only: copy what the terminal shows too."; exit 1
 fi
