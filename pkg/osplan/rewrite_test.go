@@ -38,6 +38,9 @@ func (d *fakeDecider) Suite(_ context.Context, uri, suite string) (bool, bool, e
 		return false, true, nil
 	case host == "debian.org" || strings.HasSuffix(host, ".debian.org"):
 		return true, true, nil
+	case host == "archive.ubuntu.com" || strings.HasSuffix(host, ".archive.ubuntu.com") || host == "security.ubuntu.com":
+		// as the real decider: by their names (esm.ubuntu.com is not one, and its Release file says UbuntuESMApps)
+		return true, true, nil
 	case slices.Contains(d.mirrors, host):
 		return true, true, nil
 	case slices.Contains(d.undecided, host):

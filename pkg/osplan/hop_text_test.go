@@ -129,7 +129,7 @@ func TestASourceWithAWordThatStandsForAReleaseIsRefused(t *testing.T) {
 // withUbuntuTestHop is a hop of Ubuntu in the two tables for the time of a test: no hop of Ubuntu is planned yet, and the texts must already name it.
 func withUbuntuTestHop(t *testing.T) HopSpec {
 	t.Helper()
-	hop := HopSpec{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04", Deb822: true}
+	hop := nobleToResolute
 	if _, ok := PlannedHop(hop.ID); ok {
 		t.Fatal("the hop from Ubuntu 24.04 is planned already: this test hop is no longer needed")
 	}
@@ -152,13 +152,10 @@ func TestTheTextOfAnUbuntuHopNamesUbuntu(t *testing.T) {
 		t.Fatal(err)
 	}
 	auto := autoOf(t, p, AutoParams{RunID: testRunID, Hostname: testHostname})
-	box := d11Box(t)
-	for i := range box {
-		box[i].Content = []byte(strings.ReplaceAll(string(box[i].Content), "bullseye", "noble"))
-	}
-	rw, err := RewriteSources(context.Background(), hop.ForRefresh(), orderLikeTheBox(box), &fakeDecider{})
+	box := []osreadiness.SourceFile{realSource(t, "sources.list", "ubuntu-24.04-image-sources.list"), realSource(t, "ubuntu.sources", "ubuntu-24.04-image-ubuntu.sources")}
+	rw, err := RewriteSources(context.Background(), hop.ForRefresh(), box, &fakeDecider{})
 	if err != nil {
-		t.Fatalf("the sources of the real box: %v", err)
+		t.Fatalf("the sources of the image of Ubuntu 24.04: %v", err)
 	}
 	refresh, err := BuildRefresh(RefreshInputs{Hop: hop.ForRefresh(), Rewritten: rw, RunID: testRunID, Hostname: testHostname})
 	if err != nil {

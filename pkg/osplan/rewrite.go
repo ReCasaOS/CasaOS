@@ -34,7 +34,7 @@ type HopSpec struct {
 	// Deb822 says that the plan reads the .sources files (deb822) of the box: without it, a box that has one is refused.
 	Deb822 bool
 	// Refresh says that the sources are written for bringing the release that is left up to its last state, and not for the next one: the lines of that release are kept as they are
-	// (its suite, its host, its components, its backports), and what is not Debian's is put aside as it is for a hop. Only ForRefresh sets it.
+	// (its suite, its host, its components, its backports), and what is not the distribution's is put aside as it is for a hop. Only ForRefresh sets it.
 	Refresh bool
 }
 
@@ -187,6 +187,10 @@ func reasonText(reason string) string {
 		return "a line is not a field of a stanza (a name, a colon, a value), nor goes on from one"
 	case "undecided":
 		return "whether this repository is the distribution's own cannot be known from the files apt keeps of it: run apt-get update first"
+	case "other_distro":
+		return "the source is the archive of another distribution than the machine's: it cannot be upgraded with the machine, remove it"
+	case "ubuntu_pro":
+		return "the machine is attached to Ubuntu Pro (esm.ubuntu.com): the pro client rewrites its sources during an upgrade, and this plan does not"
 	}
 	return "this is not a form the plan reads (" + reason + ")"
 }
@@ -324,6 +328,22 @@ func isPrintableASCII(s string) bool {
 		}
 	}
 	return true
+}
+
+// proHost says whether an address is Ubuntu Pro's (esm.ubuntu.com). Its Release files say an origin of their own, so the decider takes it for a third party's, which the hop would
+// put aside and give back, after the hop, with the suites of the release that is left: it is refused before anyone is asked.
+func proHost(uri string) bool {
+	host := osreadiness.SourceHost(uri)
+	return host == "esm.ubuntu.com" || strings.HasSuffix(host, ".esm.ubuntu.com")
+}
+
+// otherDistroHost says whether an address is on a host of a distribution that is not the hop's: Debian's in a hop of Ubuntu, Canonical's in a hop of Debian. Such a line is
+// refused, whatever its suite says.
+func (h HopSpec) otherDistroHost(uri string) bool {
+	host := osreadiness.SourceHost(uri)
+	debian := host == "debian.org" || strings.HasSuffix(host, ".debian.org")
+	ubuntu := host == "ubuntu.com" || strings.HasSuffix(host, ".ubuntu.com")
+	return h.Distro == "Ubuntu" && debian || h.Distro == "Debian" && ubuntu
 }
 
 // distroProblem checks a line that is the distribution's own beyond the shape: what it says is words the rewrite can put
@@ -583,6 +603,9 @@ func RewriteSources(ctx context.Context, hop HopSpec, files []osreadiness.Source
 			if totalRepos++; totalRepos > osreadiness.MaxSourceEntries {
 				return nil, &Failure{Code: CodeSourcesFormat, Detail: "more sources than a machine has", Data: map[string]any{"file": name, "line": l.n, "reason": "too_many"}}
 			}
+			if proHost(l.uri) {
+				return nil, lineProblem{CodeSourcesFormat, "ubuntu_pro"}.failure(name, l.n)
+			}
 			distro, decided, err := decider.Suite(ctx, l.uri, l.suite)
 			if err != nil {
 				return nil, err
@@ -665,6 +688,9 @@ func RewriteSources(ctx context.Context, hop HopSpec, files []osreadiness.Source
 				}
 				out.Paused = append(out.Paused, Paused{File: name, Line: l.n, Hosts: lineHosts, Docker: osreadiness.SourceHost(l.uri) == osreadiness.DockerHost})
 			default:
+				if hop.otherDistroHost(l.uri) {
+					return nil, lineProblem{CodeSourcesFormat, "other_distro"}.failure(name, l.n)
+				}
 				if p := distroProblem(&c.lines[i]); p != nil {
 					return nil, p.failure(name, l.n)
 				}

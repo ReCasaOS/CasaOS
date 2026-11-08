@@ -85,8 +85,10 @@ func AptSourceName(name string) bool { return aptSourceName.MatchString(name) }
 // httpredir.debian.org, ftp.debian.org and the country mirrors of Debian's own list (ftp.<cc>.debian.org, ftp2.<cc>...).
 // Not every host under debian.org is one (snapshot.debian.org is a frozen copy and people.debian.org is a person's
 // directory): the report counts them all as the distribution's, and the plan, which rewrites what it takes for the
-// distribution's, does not.
-var archiveHost = regexp.MustCompile(`^(?:(?:deb|security|archive|httpredir|ftp)\.debian\.org|ftp[0-9]?\.[a-z]{2}\.debian\.org|cdn-[a-z]+\.deb\.debian\.org)$`)
+// distribution's, does not. Ubuntu's are archive.ubuntu.com with its mirrors by country and by cloud (fr.archive.ubuntu.com,
+// eu-west-1.ec2.archive.ubuntu.com), and security.ubuntu.com; esm.ubuntu.com (Ubuntu Pro) is not one, and its Release file
+// says another origin.
+var archiveHost = regexp.MustCompile(`^(?:(?:deb|security|archive|httpredir|ftp)\.debian\.org|ftp[0-9]?\.[a-z]{2}\.debian\.org|cdn-[a-z]+\.deb\.debian\.org|(?:[a-z0-9-]+\.)*archive\.ubuntu\.com|security\.ubuntu\.com)$`)
 
 // mirrorListURI is the address of a list of mirrors that Debian's own cloud images write in their debian.sources (Debian 12
 // and 13: mirror+file:///etc/apt/mirrors/debian.list and debian-security.list). apt keeps no Release file under a name that
@@ -136,7 +138,7 @@ func mirrorListDistro(ctx context.Context, p Probe, uri string) (distro, decided
 
 // DistroDecider says whether a repository is the distribution's own archive, as the report decides it (see markDistro),
 // with the differences that a plan, which rewrites the sources and must not guess, needs: the address decides only for
-// Debian's own archive hosts (archiveHost) and for a disc, and the Release file apt kept of the suite decides for any
+// the archive hosts of Debian and Ubuntu (archiveHost) and for a disc, and the Release file apt kept of the suite decides for any
 // other; when there is no such file the answer is "not known", and not "not the distribution's". It answers for the
 // Release files it looks at, which are at most MaxSourceLookups in all.
 type DistroDecider struct {

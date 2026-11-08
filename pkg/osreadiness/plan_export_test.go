@@ -97,6 +97,10 @@ func TestTheDistroDeciderAnswersAsTheReportDoesWhereItKnows(t *testing.T) {
 		{"Docker's, which needs no Release file", "https://download.docker.com/linux/debian", "bullseye", false, true},
 		{"Docker's, wherever its address is written", "HTTPS://User@Download.Docker.com:443/linux/debian", "bullseye", false, true},
 		{"a flat repository, which the archive is not", "http://mirror.example.edu/debian", "./", false, true},
+		{"Ubuntu's archive", "http://archive.ubuntu.com/ubuntu/", "noble", true, true},
+		{"a country mirror of Ubuntu's archive", "http://fr.archive.ubuntu.com/ubuntu", "noble-updates", true, true},
+		{"a cloud mirror of Ubuntu's archive", "http://eu-west-1.ec2.archive.ubuntu.com/ubuntu/", "jammy", true, true},
+		{"Ubuntu's security archive", "http://security.ubuntu.com/ubuntu/", "noble-security", true, true},
 	} {
 		distro, decided, err := d.Suite(ctx, tc.uri, tc.suite)
 		if err != nil || distro != tc.distro || decided != tc.decided {
@@ -122,6 +126,9 @@ func TestTheDistroDeciderDoesNotKnowWhatItHasNoReleaseFileOf(t *testing.T) {
 		{"a suite that is a variable", "http://nofile.example.org/debian", "$(ARCH)"},
 		{"an address with no host", "http:///debian", "bullseye"},
 		{"a host of Debian's that is not the archive", "http://people.debian.org/~someone/repo", "bullseye"},
+		{"Ubuntu Pro, which is not the archive", "https://esm.ubuntu.com/apps/ubuntu", "noble-apps-security"},
+		{"a host that only ends like Ubuntu's archive", "http://notarchive.ubuntu.com.example.org/ubuntu", "noble"},
+		{"a PPA", "https://ppa.launchpadcontent.net/someone/ppa/ubuntu", "noble"},
 		{"another suite of a mirror that has one Release file", "http://mirror.example.edu/debian", "bullseye-updates"},
 	} {
 		// asked twice: what was looked at is not decided by having been looked at
