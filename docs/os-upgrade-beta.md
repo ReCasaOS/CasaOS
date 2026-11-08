@@ -2,7 +2,7 @@
 
 This is the guide for the person who switches the feature on. It says what the feature does, how to run it, what to do when it stops, and, before all that, how much of it has been seen to work.
 
-The feature takes a Debian 11 (bullseye) machine to Debian 12 (bookworm) with the procedure that Debian documents, run by a transient systemd unit that the core starts, and shows where it stands. It is **off by default**, and nothing changes on a machine that never switches it on.
+The feature takes a Debian 11 (bullseye) machine to Debian 12 (bookworm), and a Debian 12 machine to Debian 13 (trixie) (see "The hop from Debian 12 to 13" below), with the procedure that Debian documents, run by a transient systemd unit that the core starts, and shows where it stands. It is **off by default**, and nothing changes on a machine that never switches it on.
 
 **There is no way back from the point of no return, except a snapshot of the machine or a console to repair it from.** Debian does not document a downgrade. Take the snapshot before you start, and be where you can see the machine's screen or console when it restarts: a machine that does not come back cannot show its own dashboard.
 
@@ -36,7 +36,48 @@ Said here so that nobody is surprised by it:
 - AppManagement's side of the flag (see "What is held" below), which is another repository's release;
 - the refresh of a repository whose release information changed (its Origin, Label or Codename; apt 2.2.4 takes a new Suite or Version without a word): the question and the option exist, and the text of apt for it comes from apt's own strings and one trial in a Debian 11 root with a Release file made for the purpose, never from a real mirror's change;
 - the timers of apt under a real systemd in a refresh (the refresh was run for real in a root that has no systemd: every unit was inactive);
-- Debian 12 to 13, and Ubuntu.
+- Ubuntu; and Debian 12 to 13 beyond what the next section says was run.
+
+### The hop from Debian 12 to 13
+
+Since core v0.4.98 (installer v0.5.100), a Debian 12 (bookworm) machine has a plan, a runbook and a run to Debian 13 (trixie), with the same blocks, calls and states as the hop from Debian 11. What differs:
+
+- the sources can be deb822 `.sources` files. Debian's cloud image of Debian 12 ships `/etc/apt/sources.list.d/debian.sources`, which names the archive through `mirror+file:///etc/apt/mirrors/debian.list`, and a `sources.list` that is only a comment. The hop rewrites the codename on the `Suites` lines and keeps the address as it is. A file that names only a repository that is not Debian's is put aside whole, as a `.list` file is. A stanza that has only backports gets `Enabled: no`;
+- block 8 looks for trixie in the `Suites` of the `.sources` files too;
+- the report has four more checks, from the release notes of Debian 13. `ssh_dsa_hostkey` refuses when every `HostKey` is DSA and warns when one is. `cryptsetup_missing`, `sysctl_conf` and `tmp_tmpfs` warn;
+- the refresh meets no archive gap. Debian 12's security line is still served, so the reading of `security.debian.org` as `archive.debian.org` (see "Before you start") does not apply.
+
+**[M] measured on 2026-11-08**, by the workflow `os-upgrade-proof` of CasaOS-Install with `hop: debian-12-13`, on installer v0.5.100. The guest was Debian's own cloud image of Debian 12 (genericcloud, amd64, apt 2.6.1, systemd 252), under QEMU with KVM, with Docker 29.9.3 from Docker's repository (`docker.list`):
+
+- **the path of a person** ([run 42475572832](https://github.com/ReCasaOS/CasaOS-Install/actions/runs/42475572832)): 12 of 12 verdicts pass. The leg ran these steps:
+  - the switch;
+  - the refresh: 8 packages upgraded, in 11 s;
+  - the plan;
+  - the rehearsal and its unwind;
+  - the five refusals;
+  - the call-off before the point of no return;
+  - the hop.
+
+  The hop took 4 min 4 s from `start` to `awaiting_reboot`. Its two upgrade blocks took 57 s (minimal) and 2 min 55 s (full). The guest downloaded 208 MiB and was away 14 s at the restart, and the run reached `succeeded` 76 s after `reboot`.
+
+  After the hop:
+  - os-release says 13 and the kernel went from 6.1.0-54 to 6.12.115+deb13.1;
+  - the sources name trixie only. Docker's source was paused during the hop and is back after the check, on trixie;
+  - ssh, Docker and every ReCasaOS service are active;
+  - the four witness containers are running again.
+
+  The judge found only information: new `.ucf-dist` files for `sshd_config`, `50unattended-upgrades` and `listchanges.conf`, and a source of a third party left paused;
+- **the hop with faults** ([run 42478316704](https://github.com/ReCasaOS/CasaOS-Install/actions/runs/42478316704)): the four verdicts pass. Each fault started from Debian 12, refreshed, rehearsed and put back, with the plan live:
+  - the unit killed before the point of no return: `failed` 60 s after the kill;
+  - the unit killed after it while dpkg worked, then `resume`;
+  - the network cut after it;
+  - a power cut during block 6, while dpkg worked, then the repair.
+
+  Every one that went past the point of no return ended on Debian 13 and `succeeded`, 65 to 77 s after `reboot`.
+
+  Twice the answer to `POST reboot` was lost (HTTP 502, or no answer at all), and the machine restarted all the same. The core asks systemd for the restart as soon as it accepts, and the shutdown can cut the answer. If your call to `reboot` gets no answer, wait for the machine and read the status: do not take the missing answer for a refusal.
+
+The two cases about the security line of Debian 11 at `security.debian.org` are not part of this hop: they are reported not testable, with that reason. Not run on this hop: a machine whose sources are the one-line `sources.list` only, a machine installed with Debian's installer rather than from the cloud image, and everything the list above names.
 
 ## Switching it on, and off
 
