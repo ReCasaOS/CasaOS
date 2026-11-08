@@ -84,6 +84,7 @@ func newMember(t *testing.T, gw http.Handler) *Fleet {
 	f.Version = func() string { return "v1.2.3" }
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	f.backupFirst, f.backupEvery, f.backupSettle = time.Hour, time.Hour, time.Hour // no backup poll reaches the fake gateway
 	go func() { f.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 	return f
@@ -297,6 +298,7 @@ func selfFleet(t *testing.T) (*Fleet, *fakeGateway) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	f.backupFirst, f.backupEvery, f.backupSettle = time.Hour, time.Hour, time.Hour // no backup poll reaches the fake gateway
 	go func() { f.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 	return f, gw

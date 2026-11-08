@@ -8,24 +8,15 @@ import (
 	"time"
 )
 
-// The master polls its online boxes every backupEvery, the first time
-// backupFirst after it starts (its tunnels come back meanwhile), and a box
-// whose tunnel just attached backupSettle after it did.
-var (
-	backupEvery  = 5 * time.Minute
-	backupFirst  = 10 * time.Second
-	backupSettle = 2 * time.Second
-)
-
 // backupsAtOnce is how many boxes one pass polls at the same time.
 const backupsAtOnce = 4
 
 // watchBackups polls the boxes until ctx ends. A node that is not a master has
 // no boxes: each pass finds none.
 func (f *Fleet) watchBackups(ctx context.Context) {
-	first := time.NewTimer(backupFirst)
+	first := time.NewTimer(f.backupFirst)
 	defer first.Stop()
-	tick := time.NewTicker(backupEvery)
+	tick := time.NewTicker(f.backupEvery)
 	defer tick.Stop()
 	for {
 		select {
@@ -39,7 +30,7 @@ func (f *Fleet) watchBackups(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backupSettle):
+			case <-time.After(f.backupSettle):
 			}
 			f.pollBoxes(ctx, id)
 		}
@@ -92,11 +83,13 @@ func (f *Fleet) pollBoxes(ctx context.Context, only string) {
 // alertBackups raises each problem of a box's fresh answer, every pass while
 // it lasts (the hub says it once in six hours), and resolves the ones this box
 // had and no longer has. An answer that is not fresh (box offline, poll failed
-// or cut short) says nothing either way: the old problems stay as they were.
-// A sentence is made of the box's name, the app, the destination and fixed
-// words: never of a text the box sent.
+// or cut short: pollBox sets Error for each) says nothing either way: the old
+// problems stay as they were. A failed verification lasts until a restore test
+// passes, is not_verifiable, or its couple goes: a test running or a state the
+// pass could not read does not end it. A sentence is made of the box's name,
+// the app, the destination and fixed words: never of a text the box sent.
 func (f *Fleet) alertBackups(b BoxBackups) {
-	if !b.Online || b.Error != "" {
+	if b.Error != "" {
 		return
 	}
 	type call struct {
@@ -104,6 +97,7 @@ func (f *Fleet) alertBackups(b BoxBackups) {
 		problem       bool
 	}
 	var calls []call
+	var carried []string       // verification keys kept as they are if up
 	now := map[string]string{} // key: its resolution
 	prefix := "fleet:" + b.BoxID + ":"
 	for _, c := range b.Couples {
@@ -117,16 +111,29 @@ func (f *Fleet) alertBackups(b BoxBackups) {
 			calls = append(calls, call{backup + "late", "Backup of " + what + " is late: its last scheduled slot has passed. See the Fleet page.", true})
 			now[backup+"late"] = "Resolved: the backup of " + what + " is no longer late."
 		}
-		if c.Verify.State == "failed" {
-			key := prefix + "verify:" + c.App + ":" + c.Destination
+		key := prefix + "verify:" + c.App + ":" + c.Destination
+		switch c.Verify.State {
+		case "failed":
 			calls = append(calls, call{key, "Verification of the backup of " + what + " failed. See the Fleet page.", true})
 			now[key] = "Resolved: the verification of the backup of " + what + " no longer fails."
+		case "passed", "not_verifiable":
+		default:
+			carried = append(carried, key)
 		}
 	}
 	var gone []string
 	f.backupMu.Lock()
+	if f.backupGone[b.BoxID] {
+		f.backupMu.Unlock()
+		return // removed while it was polled
+	}
 	if f.backupProblems == nil {
 		f.backupProblems = map[string]string{}
+	}
+	for _, key := range carried {
+		if resolution, up := f.backupProblems[key]; up {
+			now[key] = resolution
+		}
 	}
 	for key := range f.backupProblems {
 		if _, still := now[key]; strings.HasPrefix(key, prefix) && !still {
@@ -148,10 +155,16 @@ func (f *Fleet) alertBackups(b BoxBackups) {
 }
 
 // forgetBackups drops a removed box's snapshot and its problems, without a
-// word: like its offline alert, nothing came back, the owner took it out.
+// word: like its offline alert, nothing came back, the owner took it out. The
+// id stays known as gone, so a poll still on its way stores and says nothing
+// (box ids are never reused).
 func (f *Fleet) forgetBackups(boxID string) {
 	f.backupMu.Lock()
 	defer f.backupMu.Unlock()
+	if f.backupGone == nil {
+		f.backupGone = map[string]bool{}
+	}
+	f.backupGone[boxID] = true
 	delete(f.backups, boxID)
 	for key := range f.backupProblems {
 		if strings.HasPrefix(key, "fleet:"+boxID+":") {

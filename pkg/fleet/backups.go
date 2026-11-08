@@ -253,6 +253,9 @@ func (f *Fleet) storeBackups(b BoxBackups) {
 	}
 	f.backupMu.Lock()
 	defer f.backupMu.Unlock()
+	if f.backupGone[b.BoxID] {
+		return // removed while it was polled
+	}
 	if f.backups == nil {
 		f.backups = map[string]BoxBackups{}
 	}

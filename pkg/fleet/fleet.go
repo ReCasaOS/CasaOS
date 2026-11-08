@@ -50,7 +50,11 @@ type Fleet struct {
 	backups  map[string]BoxBackups // the last answer of each box, by id; in memory only
 	// backupProblems are the alerts raised since the master started, by key, each with its resolution
 	backupProblems map[string]string
-	backupWake     chan string // a box to poll soon: its tunnel just attached
+	backupGone     map[string]bool // the boxes removed: a poll on its way stores and says nothing
+	backupWake     chan string     // a box to poll soon: its tunnel just attached
+	// the master polls its online boxes every backupEvery, the first time backupFirst after it
+	// starts (its tunnels come back meanwhile), and a box backupSettle after its tunnel attached
+	backupEvery, backupFirst, backupSettle time.Duration
 }
 
 // New makes a Fleet rooted at root, with the box's defaults.
@@ -81,6 +85,9 @@ func New(root string) *Fleet {
 		BackupProblem: func(string, string, bool) {},
 		Notifies:      func() bool { return false },
 		backupWake:    make(chan string, 16),
+		backupEvery:   5 * time.Minute,
+		backupFirst:   10 * time.Second,
+		backupSettle:  2 * time.Second,
 	}
 	f.call = func(ctx context.Context, boxID, method, path string) (Response, error) {
 		return f.Relay(ctx, boxID, method, path, "", "", nil)

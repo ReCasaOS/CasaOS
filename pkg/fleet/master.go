@@ -565,6 +565,9 @@ func (f *Fleet) DisableMaster() error {
 	for _, t := range tunnels {
 		t.close()
 	}
+	for _, b := range st.Boxes { // master.json is gone: re-enabling starts with new boxes
+		f.forgetBackups(b.ID)
+	}
 	if selfGone {
 		f.pokeMember()
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -123,16 +124,16 @@ func TestAFailedBackupRaisesOnceAndResolvesWhenGreen(t *testing.T) {
 	wantCalls(t, log.take(), failed)
 
 	// still failed five minutes later: the same key again, which the hub keeps quiet for 6 h
-	now = now.Add(backupEvery)
+	now = now.Add(5 * time.Minute)
 	f.passBackups(context.Background())
 	wantCalls(t, log.take(), failed)
 
-	now = now.Add(backupEvery)
+	now = now.Add(5 * time.Minute)
 	boxes[ids[0]].set(oneCouple("", false, ""))
 	f.passBackups(context.Background())
 	wantCalls(t, log.take(), hookCall{key, "Resolved: the backup of jarvis on Maison to GDrive no longer fails.", false})
 
-	now = now.Add(backupEvery)
+	now = now.Add(5 * time.Minute)
 	f.passBackups(context.Background())
 	wantCalls(t, log.take())
 }
@@ -286,11 +287,9 @@ func TestAttachWakesThePoller(t *testing.T) {
 	}
 }
 
-// setDelays shortens the poller's delays for one test.
-func setDelays(t *testing.T, first, every, settle time.Duration) {
-	oldFirst, oldEvery, oldSettle := backupFirst, backupEvery, backupSettle
-	backupFirst, backupEvery, backupSettle = first, every, settle
-	t.Cleanup(func() { backupFirst, backupEvery, backupSettle = oldFirst, oldEvery, oldSettle })
+// setDelays shortens the poller's delays of f, before its loop starts.
+func setDelays(f *Fleet, first, every, settle time.Duration) {
+	f.backupFirst, f.backupEvery, f.backupSettle = first, every, settle
 }
 
 // runWatch runs watchBackups until stop says so, then stops it and waits for it.
@@ -305,22 +304,201 @@ func runWatch(t *testing.T, f *Fleet, what string, stop func() bool) {
 
 func TestWatchBackupsRunsAtTheInterval(t *testing.T) {
 	t.Run("first pass after the start delay", func(t *testing.T) {
-		setDelays(t, 10*time.Millisecond, time.Hour, time.Hour)
 		f, ids, boxes, _ := backupMaster(t, "Maison")
+		setDelays(f, 10*time.Millisecond, time.Hour, time.Hour)
 		runWatch(t, f, "the first pass", func() bool { return boxes[ids[0]].asked("/backup/runs") == 1 })
 	})
 	t.Run("then at the interval", func(t *testing.T) {
-		setDelays(t, time.Hour, 10*time.Millisecond, time.Hour)
 		f, ids, boxes, _ := backupMaster(t, "Maison")
+		setDelays(f, time.Hour, 10*time.Millisecond, time.Hour)
 		runWatch(t, f, "three passes", func() bool { return boxes[ids[0]].asked("/backup/runs") >= 3 })
 	})
 	t.Run("a wake polls that box only", func(t *testing.T) {
-		setDelays(t, time.Hour, time.Hour, 10*time.Millisecond)
 		f, ids, boxes, _ := backupMaster(t, "Maison", "Bureau")
+		setDelays(f, time.Hour, time.Hour, 10*time.Millisecond)
 		f.RefreshBackups(ids[1])
 		runWatch(t, f, "the woken box's pass", func() bool { return boxes[ids[1]].asked("/backup/runs") == 1 })
 		if n := boxes[ids[0]].asked("/backup/runs"); n != 0 {
 			t.Fatalf("the other box was polled %d times", n)
 		}
 	})
+}
+
+func TestNewFleetPollsEveryFiveMinutes(t *testing.T) {
+	f := New(t.TempDir())
+	if f.backupEvery != 5*time.Minute || f.backupFirst != 10*time.Second || f.backupSettle != 2*time.Second {
+		t.Fatalf("delays %v %v %v", f.backupEvery, f.backupFirst, f.backupSettle)
+	}
+}
+
+// verifyCalls counts the raises and the resolutions of verification keys.
+func verifyCalls(calls []hookCall) (raises, resolves int) {
+	for _, c := range calls {
+		switch {
+		case !strings.Contains(c.key, ":verify:"):
+		case c.problem:
+			raises++
+		default:
+			resolves++
+		}
+	}
+	return raises, resolves
+}
+
+// A verification alert lasts until a restore test passes (or the couple goes):
+// a test running, or a pass that cannot read the verifications, does not end
+// it. A resolution then would be false, and would let the hub tell the same
+// failure again as new.
+func TestAVerificationAlertLastsUntilATestPasses(t *testing.T) {
+	failedThen := func(t *testing.T, between map[string]Response) []hookCall {
+		f, ids, boxes, log := backupMaster(t, "Maison")
+		boxes[ids[0]].set(oneCouple("", false, "failed"))
+		f.passBackups(context.Background())
+		boxes[ids[0]].set(between)
+		f.passBackups(context.Background())
+		boxes[ids[0]].set(oneCouple("", false, "failed"))
+		f.passBackups(context.Background())
+		return log.take()
+	}
+	t.Run("a test running", func(t *testing.T) {
+		calls := failedThen(t, oneCouple("", false, "running"))
+		// said at each failed pass (the hub sends it once), never resolved
+		if raises, resolves := verifyCalls(calls); raises != 2 || resolves != 0 {
+			t.Fatalf("%+v", calls)
+		}
+	})
+	t.Run("the optional routes failing", func(t *testing.T) {
+		routes := oneCouple("", false, "")
+		routes[am+"/backup/verifications"] = Response{Status: 500}
+		routes[am+"/backup/destinations/GDrive/restic"] = Response{Status: 500}
+		calls := failedThen(t, routes)
+		if raises, resolves := verifyCalls(calls); raises != 2 || resolves != 0 {
+			t.Fatalf("%+v", calls)
+		}
+	})
+	t.Run("a test passing", func(t *testing.T) {
+		f, ids, boxes, log := backupMaster(t, "Maison")
+		boxes[ids[0]].set(oneCouple("", false, "failed"))
+		f.passBackups(context.Background())
+		for range 2 {
+			boxes[ids[0]].set(oneCouple("", false, "passed"))
+			f.passBackups(context.Background())
+		}
+		if raises, resolves := verifyCalls(log.take()); raises != 1 || resolves != 1 {
+			t.Fatalf("raises %d resolves %d", raises, resolves)
+		}
+	})
+	t.Run("the couple removed", func(t *testing.T) {
+		f, ids, boxes, log := backupMaster(t, "Maison")
+		boxes[ids[0]].set(oneCouple("", false, "failed"))
+		f.passBackups(context.Background())
+		gone := oneCouple("", false, "")
+		gone[am+"/backup/schedules"] = ok(`{"data":[]}`)
+		for range 2 {
+			boxes[ids[0]].set(gone)
+			f.passBackups(context.Background())
+		}
+		if raises, resolves := verifyCalls(log.take()); raises != 1 || resolves != 1 {
+			t.Fatalf("raises %d resolves %d", raises, resolves)
+		}
+	})
+}
+
+// gate makes each box's first request of a pass (its runs) wait for release;
+// entered gets the box's id as it starts waiting.
+type gate struct {
+	mu       sync.Mutex
+	inFlight int
+	max      int
+	entered  chan string
+	release  chan struct{}
+}
+
+func newGate(f *Fleet, n int) *gate {
+	g := &gate{entered: make(chan string, n), release: make(chan struct{})}
+	next := f.call
+	f.call = func(ctx context.Context, id, method, path string) (Response, error) {
+		if strings.HasSuffix(path, "/backup/runs") {
+			g.mu.Lock()
+			g.inFlight++
+			g.max = max(g.max, g.inFlight)
+			g.mu.Unlock()
+			g.entered <- id
+			<-g.release
+			g.mu.Lock()
+			g.inFlight--
+			g.mu.Unlock()
+		}
+		return next(ctx, id, method, path)
+	}
+	return g
+}
+
+func TestAPassPollsFourBoxesAtOnceInIDOrder(t *testing.T) {
+	f, ids, _, _ := backupMaster(t, "a", "b", "c", "d", "e", "f")
+	g := newGate(f, len(ids))
+	done := make(chan struct{})
+	go func() { f.passBackups(context.Background()); close(done) }()
+
+	started := map[string]bool{}
+	for range 4 {
+		started[<-g.entered] = true
+	}
+	select {
+	case id := <-g.entered:
+		t.Fatalf("a fifth box started while four were polled: %s", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+	sorted := append([]string(nil), ids...)
+	sort.Strings(sorted)
+	for _, id := range sorted[:4] {
+		if !started[id] {
+			t.Fatalf("started %v, want the four first ids %v", started, sorted[:4])
+		}
+	}
+	close(g.release)
+	<-done
+	if g.max != 4 {
+		t.Fatalf("at most %d at once, want 4", g.max)
+	}
+}
+
+// A box removed while its poll is on its way: the answer arrives for nothing.
+func TestARemovedBoxsPollInFlightLeavesNothing(t *testing.T) {
+	f, ids, boxes, log := backupMaster(t, "Maison")
+	boxes[ids[0]].set(oneCouple("token=abc", false, "failed"))
+	g := newGate(f, 1)
+	done := make(chan struct{})
+	go func() { f.passBackups(context.Background()); close(done) }()
+	<-g.entered
+	if err := f.RemoveBox(ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	close(g.release)
+	<-done
+	wantCalls(t, log.take())
+	f.backupMu.Lock()
+	defer f.backupMu.Unlock()
+	if len(f.backups) != 0 || len(f.backupProblems) != 0 {
+		t.Fatalf("left: %v %v", f.backups, f.backupProblems)
+	}
+}
+
+func TestDisableMasterForgetsTheBackups(t *testing.T) {
+	f, ids, boxes, log := backupMaster(t, "Maison", "Bureau")
+	for _, id := range ids {
+		boxes[id].set(oneCouple("token=abc", false, ""))
+	}
+	f.passBackups(context.Background())
+	if got := log.take(); len(got) != 2 {
+		t.Fatalf("%+v", got)
+	}
+	if err := f.DisableMaster(); err != nil {
+		t.Fatal(err)
+	}
+	f.backupMu.Lock()
+	defer f.backupMu.Unlock()
+	if len(f.backups) != 0 || len(f.backupProblems) != 0 {
+		t.Fatalf("left: %v %v", f.backups, f.backupProblems)
+	}
 }
