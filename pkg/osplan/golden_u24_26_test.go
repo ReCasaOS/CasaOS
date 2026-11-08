@@ -68,7 +68,7 @@ func TestTheRunbookOf24To26WritesTheSourcesOfResoluteAndLetsTheMoveOfCoreutilsTh
 		"Suites: resolute-security\n",
 		"mv -f \"$APT_ETC/sources.list.d/docker.sources\" \"$APT_ETC/sources.list.d/docker.sources.casaos-paused\"",
 		"NO HOP FROM UBUNTU 24.04 TO UBUNTU 26.04 WAS MEASURED. Canonical does not prescribe these commands",
-		"sim_ok() { [ \"$1\" = 100 ] && grep -q '^E: ' \"$2\" && ! grep '^E: ' \"$2\" | grep -Evq '^E: Conf Broken (coreutils-from-uutils):[a-z0-9]+$'; }\n",
+		"sim_ok() { [ \"$1\" = 100 ] && grep -q '^E: ' \"$2\" && ! grep '^E: ' \"$2\" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }\n",
 		"aptq -s dist-upgrade > \"$BK/resim.txt\" 2>&1 || sim_ok $? \"$BK/resim.txt\" || {",
 		"aptq -s dist-upgrade > \"$BK/after-minimal.txt\" 2>&1 || sim_ok $? \"$BK/after-minimal.txt\" || {",
 	} {
@@ -112,12 +112,13 @@ func TestSimOKLetsOnlyTheMoveOfCoreutilsThrough(t *testing.T) {
 		text   string
 		ok     bool
 	}{
-		"the real simulation":                   {"100", real, true},
-		"another error as well":                 {"100", real + "E: Unable to correct problems, you have held broken packages.\n", false},
-		"the Conf Broken of another package":    {"100", strings.ReplaceAll(real, "E: Conf Broken coreutils-from-uutils", "E: Conf Broken libc6"), false},
-		"a name that only starts like it":       {"100", strings.ReplaceAll(real, "E: Conf Broken coreutils-from-uutils", "E: Conf Broken coreutils-from-uutils-x"), false},
-		"another status":                        {"1", real, false},
-		"status 100 and no error (apt crashed)": {"100", "Reading package lists...\n", false},
+		"the real simulation":                    {"100", real, true},
+		"the real simulation of a box with sudo": {"100", realFile(t, "docker-u24-26-sudo-dist-upgrade.txt"), true},
+		"another error as well":                  {"100", real + "E: Unable to correct problems, you have held broken packages.\n", false},
+		"the Conf Broken of another package":     {"100", strings.ReplaceAll(real, "E: Conf Broken coreutils-from-uutils", "E: Conf Broken libc6"), false},
+		"a name that only starts like it":        {"100", strings.ReplaceAll(real, "E: Conf Broken coreutils-from-uutils", "E: Conf Broken coreutils-from-uutils-x"), false},
+		"another status":                         {"1", real, false},
+		"status 100 and no error (apt crashed)":  {"100", "Reading package lists...\n", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := filepath.Join(t.TempDir(), "sim.txt")

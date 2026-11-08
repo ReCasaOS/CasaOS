@@ -223,7 +223,7 @@ export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_
 aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
 removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
 removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
-sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils):[a-z0-9]+$'; }
+sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }
 notup_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 2); exit }' "$1"; }
 srchash() {
   nl="$(printf '\nx')"; nl="${nl%x}"
@@ -450,7 +450,7 @@ export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_
 aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
 removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
 removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
-sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils):[a-z0-9]+$'; }
+sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }
 guard_removals() {
   what="${2:-the full upgrade}"
   for name in $(removed_of "$1"); do
@@ -523,7 +523,7 @@ export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_
 aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
 removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
 removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
-sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils):[a-z0-9]+$'; }
+sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }
 guard_removals() {
   what="${2:-the full upgrade}"
   for name in $(removed_of "$1"); do
@@ -795,7 +795,7 @@ export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_
 aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
 removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
 removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
-sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils):[a-z0-9]+$'; }
+sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }
 guard_removals() {
   what="${2:-the full upgrade}"
   for name in $(removed_of "$1"); do
