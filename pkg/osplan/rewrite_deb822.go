@@ -117,6 +117,9 @@ func readDeb822File(ctx context.Context, name string, content []byte, decider De
 			if !anyURI.MatchString(uri) && !osreadiness.IsMirrorList(uri) {
 				return nil, lineProblem{CodeSourcesFormat, "uri"}.failure(name, uriLine)
 			}
+			if proHost(uri) {
+				return nil, lineProblem{CodeSourcesFormat, "ubuntu_pro"}.failure(name, uriLine)
+			}
 		}
 		distros, asked := 0, 0
 		for _, uri := range s.uris {
@@ -285,6 +288,11 @@ func (h HopSpec) rewriteDeb822(name string, f *deb822File, out *Rewritten, kept 
 		s := &f.stanzas[i]
 		if p, n := deb822Problem(s); p != nil {
 			return "", false, nil, p.failure(name, n)
+		}
+		for _, uri := range s.uris {
+			if h.otherDistroHost(uri) {
+				return "", false, nil, lineProblem{CodeSourcesFormat, "other_distro"}.failure(name, s.fields["uris"].First)
+			}
 		}
 		var suites []string
 		dropped := 0
