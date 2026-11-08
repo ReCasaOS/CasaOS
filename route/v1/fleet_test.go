@@ -268,6 +268,7 @@ type fakeGateway struct {
 	mu   sync.Mutex
 	got  int
 	seen string
+	fail bool // answer 503 instead of 200
 }
 
 func (g *fakeGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -276,13 +277,18 @@ func (g *fakeGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.seen = r.URL.RequestURI()
 	g.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	if g.fail {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
 	w.Write([]byte(`{"ok":true}`))
 }
 
-func TestFleetRelayPassesTheAnswerThrough(t *testing.T) {
-	f := useFleetFixture(t)
-	gw := &fakeGateway{}
+// onlineSelfBox makes the fixture fleet a master with one box, this one, online
+// through a real tunnel to gw, which stands for the box's gateway.
+func onlineSelfBox(t *testing.T, f *fleet.Fleet, gw *fakeGateway) fleet.Box {
+	t.Helper()
 	cert := writeSelfSignedCert(t)
 	mux := http.NewServeMux()
 	var handlers sync.WaitGroup
@@ -331,6 +337,13 @@ func TestFleetRelayPassesTheAnswerThrough(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	return box
+}
+
+func TestFleetRelayPassesTheAnswerThrough(t *testing.T) {
+	f := useFleetFixture(t)
+	gw := &fakeGateway{}
+	box := onlineSelfBox(t, f, gw)
 	code, res := callFleet(t, FleetRelay, http.MethodGet, "/v1/fleet/boxes/"+box.ID+"/relay/v1/sys/os?token=x", "", map[string]string{"id": box.ID, "*": "v1/sys/os"})
 	if code != http.StatusOK {
 		t.Fatalf("relay = %d %q", code, res.Message)
@@ -837,5 +850,81 @@ func TestFleetRemoteErrorStatuses(t *testing.T) {
 	r.set(func(r *fakeRelay) { r.oldRelay = true })
 	if code, res := callFleet(t, PostFleetRemoteDevice, http.MethodPost, "/v1/fleet/remote/devices", "", nil); code != http.StatusConflict || !strings.Contains(res.Message, fleet.ErrRelayNoDevices.Error()) {
 		t.Fatalf("old relay = %d %q", code, res.Message)
+	}
+}
+
+func TestGetFleetBackups(t *testing.T) {
+	f := useFleetFixture(t)
+	if code, res := callFleet(t, GetFleetBackups, http.MethodGet, "/v1/fleet/backups", "", nil); code != http.StatusConflict || res.Message != fleet.ErrMasterOff.Error() {
+		t.Fatalf("not a master = %d %q, want 409", code, res.Message)
+	}
+	if err := f.EnableMaster("https://m.example"); err != nil {
+		t.Fatal(err)
+	}
+	box, _, err := f.AddBox("Maison", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, notify := range []bool{true, false} {
+		f.Notifies = func() bool { return notify }
+		code, res := callFleet(t, GetFleetBackups, http.MethodGet, "/v1/fleet/backups?token=abc", "", nil)
+		if code != http.StatusOK {
+			t.Fatalf("backups = %d %q", code, res.Message)
+		}
+		raw, _ := json.Marshal(res.Data)
+		var got struct {
+			Notify          bool             `json:"notify"`
+			IntervalSeconds int              `json:"interval_seconds"`
+			Boxes           []map[string]any `json:"boxes"`
+		}
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Notify != notify || got.IntervalSeconds != 300 || len(got.Boxes) != 1 {
+			t.Fatalf("data = %s", raw)
+		}
+		b := got.Boxes[0]
+		if _, polled := b["polled_at"]; polled || b["box_id"] != box.ID || b["name"] != "Maison" || b["state"] != "unknown" || b["green"] != false || b["online"] != false || b["stale"] != false {
+			t.Errorf("box = %v", b)
+		}
+		if c, isList := b["couples"].([]any); !isList || len(c) != 0 {
+			t.Errorf("couples = %v, want []", b["couples"])
+		}
+	}
+}
+
+// A relayed backup action that worked wakes the poller for that box; a read, a
+// failure and any other route do not.
+func TestARelayedBackupActionWakesThePoller(t *testing.T) {
+	f := useFleetFixture(t)
+	gw := &fakeGateway{}
+	box := onlineSelfBox(t, f, gw)
+	var woken []string
+	original := refreshBackups
+	refreshBackups = func(id string) { woken = append(woken, id) }
+	t.Cleanup(func() { refreshBackups = original })
+
+	const run = "/v2/app_management/backup/schedules/run"
+	for _, c := range []struct {
+		name, method, path string
+		fail               bool
+		want               []string
+	}{
+		{"a backup action", http.MethodPost, run, false, []string{box.ID}},
+		{"a backup read", http.MethodGet, "/v2/app_management/backup/runs", false, nil},
+		{"a backup action the box refuses", http.MethodPost, run, true, nil},
+		{"an action on another route", http.MethodPost, "/v2/app_management/compose/updates", false, nil},
+	} {
+		woken = nil
+		gw.mu.Lock()
+		gw.fail = c.fail
+		gw.mu.Unlock()
+		code, _ := callFleet(t, FleetRelay, c.method, "/v1/fleet/boxes/"+box.ID+"/relay"+c.path, "{}", map[string]string{"id": box.ID, "*": strings.TrimPrefix(c.path, "/")})
+		if c.fail != (code == http.StatusServiceUnavailable) || (!c.fail && code >= 300) {
+			t.Fatalf("%s: relay = %d", c.name, code)
+		}
+		if strings.Join(woken, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%s: woken = %v, want %v", c.name, woken, c.want)
+		}
 	}
 }

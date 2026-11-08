@@ -265,3 +265,60 @@ func (f *Fleet) storeBackups(b BoxBackups) {
 	}
 	f.backups[b.BoxID] = b
 }
+
+// BackupsView is GET /v1/fleet/backups: every box of the fleet, and what the
+// page needs to say who hears about a problem and how often boxes are read.
+type BackupsView struct {
+	Notify          bool         `json:"notify"`
+	IntervalSeconds int          `json:"interval_seconds"`
+	Boxes           []BoxBackups `json:"boxes"`
+}
+
+// BackupsView lists one entry per box of the fleet, in the master's order, from
+// the last snapshots. Online is the tunnel at this moment; a box never polled
+// is "unknown"; a snapshot older than staleAfter is stale. Only an online,
+// fresh, error-free box can be green. false: this box is not a master.
+func (f *Fleet) BackupsView() (BackupsView, bool) {
+	f.mu.Lock()
+	st, on := f.master()
+	if !on {
+		f.mu.Unlock()
+		return BackupsView{}, false
+	}
+	boxes := make([]Box, len(st.Boxes))
+	online := make([]bool, len(st.Boxes))
+	for i, b := range st.Boxes {
+		boxes[i], online[i] = b, f.tunnels[b.ID] != nil
+	}
+	f.mu.Unlock()
+
+	v := BackupsView{IntervalSeconds: int(f.backupEvery / time.Second), Boxes: []BoxBackups{}}
+	if f.Notifies != nil {
+		v.Notify = f.Notifies()
+	}
+	now := f.Now()
+	f.backupMu.Lock()
+	defer f.backupMu.Unlock()
+	for i, b := range boxes {
+		out, polled := f.backups[b.ID]
+		if !polled {
+			out = BoxBackups{State: "unknown"}
+		}
+		out.BoxID, out.Name, out.Online = b.ID, b.Name, online[i]
+		out.Stale = polled && now.Sub(out.PolledAt) > staleAfter
+		out.Green = out.Green && out.Online && !out.Stale
+		out.Couples = append([]Couple{}, out.Couples...)
+		for j, c := range out.Couples {
+			if c.ResticCheck != nil {
+				rc := *c.ResticCheck
+				out.Couples[j].ResticCheck = &rc
+			}
+		}
+		if out.VerificationSchedule != nil {
+			vs := *out.VerificationSchedule
+			out.VerificationSchedule = &vs
+		}
+		v.Boxes = append(v.Boxes, out)
+	}
+	return v, true
+}
