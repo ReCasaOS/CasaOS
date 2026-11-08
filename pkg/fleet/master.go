@@ -226,6 +226,7 @@ func (f *Fleet) attach(t *tunnel, hello frame) bool {
 	if old != nil {
 		old.close()
 	}
+	f.RefreshBackups(t.boxID)
 	return true
 }
 
@@ -687,6 +688,7 @@ func (f *Fleet) RemoveBox(id string) error {
 	if t != nil {
 		t.close()
 	}
+	f.forgetBackups(id)
 	if err == nil {
 		f.removeNode(st, box)
 	}

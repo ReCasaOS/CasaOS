@@ -33,6 +33,10 @@ type Fleet struct {
 	RelayAPI    *RelayClient                           // the relay's enrolment API; boxkey.json in the state directory
 	call        boxCaller                              // how the backup poller asks a box: Relay, replaced by tests
 
+	// BackupProblem is the alerts hub's hook: a box's backup problem, raised at every pass while it lasts, or resolved.
+	BackupProblem func(key, sentence string, problem bool)
+	Notifies      func() bool // whether the hub would send a Fleet alert anywhere: said by the page, never asked by the poller
+
 	mu      sync.Mutex         // master.json, member.json and tunnels
 	relayMu sync.Mutex         // one master enable, disable, relay change or box enrolment/removal at a time; relay.json and master.json's relay fields written only under it; its network calls run outside mu
 	tunnels map[string]*tunnel // the live tunnel of each box, by id
@@ -44,6 +48,9 @@ type Fleet struct {
 
 	backupMu sync.Mutex            // the backup snapshots only, never mu
 	backups  map[string]BoxBackups // the last answer of each box, by id; in memory only
+	// backupProblems are the alerts raised since the master started, by key, each with its resolution
+	backupProblems map[string]string
+	backupWake     chan string // a box to poll soon: its tunnel just attached
 }
 
 // New makes a Fleet rooted at root, with the box's defaults.
@@ -70,6 +77,10 @@ func New(root string) *Fleet {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 			Transport:     &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}, //nolint:gosec // see above
 		},
+
+		BackupProblem: func(string, string, bool) {},
+		Notifies:      func() bool { return false },
+		backupWake:    make(chan string, 16),
 	}
 	f.call = func(ctx context.Context, boxID, method, path string) (Response, error) {
 		return f.Relay(ctx, boxID, method, path, "", "", nil)
