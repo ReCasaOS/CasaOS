@@ -121,6 +121,7 @@ type blockSpec struct {
 // runbookHops is the table of the hops that have a runbook: adding a hop is adding its blocks here.
 var runbookHops = map[osreadiness.HopID][]blockSpec{
 	osreadiness.HopDebian11to12: debianBlocks,
+	osreadiness.HopDebian12to13: debianBlocks,
 }
 
 // backupFoldersScopedByHop says whether head() and otherPlans() look only at the backup folders of their own hop. They do: a hop other than the first writes its id in
@@ -302,6 +303,10 @@ func provenance(c *rbCtx) string {
 	b.WriteString("#  - The apt COMMANDS of blocks 3 to 6 below, and their order (update, the download and the minimal upgrade, the download and the full upgrade, the simulation that finds nothing left), are\n")
 	b.WriteString("#    the ones of a hop from Debian 11 to Debian 12 that was measured in a virtual machine, on a clean cloud image with ReCasaOS and Docker installed, and that ended with the machine up on Debian 12,\n")
 	b.WriteString("#    but for one option: the measured hop ran them with Dpkg::Use-Pty=0, and this text leaves apt's pty on, so that /var/log/apt/term.log holds what dpkg and the scripts of the packages print.\n")
+	if c.hop.ID != osreadiness.HopDebian11to12 {
+		fmt.Fprintf(&b, "#  - NO HOP FROM %s TO %s WAS MEASURED. The release notes of %s prescribe the same commands in the same order, but its apt, kernel, OpenSSH and systemd\n", strings.ToUpper(c.hop.FromName()), strings.ToUpper(c.hop.ToName()), c.hop.ToName())
+		b.WriteString("#    are new to this text: what they do on a machine was never seen by it.\n")
+	}
 	b.WriteString("#  - APT'S OWN PTY, WHICH THIS TEXT LEAVES ON, WAS NOT RUN IN THE MEASURED HOP. It was tried in a copy of a Debian 11 system, under script, never in that virtual machine and never in a real tmux, screen or console.\n")
 	b.WriteString("#    With it apt takes the terminal over while dpkg runs (raw mode: what you type goes on to dpkg, and what was pasted before is dropped): type nothing and paste nothing until the block has ended.\n")
 	b.WriteString("#  - THE REPAIR LADDER AND THE CATCH-UP PASSES OF BLOCK 6 WERE NOT RUN IN THAT HOP: it did not need them. They come from the release notes of Debian 12 (dpkg --configure -a, apt-get -f install,\n")
@@ -1421,7 +1426,12 @@ var debianBlocks = []blockSpec{
 			b.WriteString("[ -n \"$want\" ] || " + stop("$BK/kernel is not there: block 7 writes it, and it did not end. Run block 7 first.") + "\n")
 			b.WriteString("[ \"$(uname -r)\" = \"$want\" ] || " + stop("the machine runs the kernel $(uname -r), not $want, the one block 7 looked at: it started on the old one (grub's default, or a choice in its menu). Fix: choose $want in the boot menu on the console, make it the default (GRUB_DEFAULT=0 in /etc/default/grub, or grub-set-default 0 when it is saved), run update-grub, restart, and run this block again.") + "\n")
 			// the sources of apt name the new release: a restore script run after the upgrade would have left Debian 11's
-			b.WriteString("cat \"$APT_ETC/sources.list\" \"$APT_ETC\"/sources.list.d/*.list 2> /dev/null | grep -Eq '^[[:space:]]*deb(-src)?[[:space:]].*" + c.hop.To + "' || " + stop("the sources of apt do not name "+c.hop.To+": they are not the ones block 3 wrote (the restore script run after the upgrade, or a change by hand). Write @to@'s sources again as block 3 does (its text has them), run apt-get update, then run this block again.") + "\n")
+			named := "cat \"$APT_ETC/sources.list\" \"$APT_ETC\"/sources.list.d/*.list 2> /dev/null | grep -Eq '^[[:space:]]*deb(-src)?[[:space:]].*" + c.hop.To + "'"
+			if c.hop.Deb822 {
+				// a box whose sources are .sources files (a cloud image's debian.sources) names the release in a Suites field, and its sources.list may be only a comment
+				named = "{ " + named + " || cat \"$APT_ETC\"/sources.list.d/*.sources 2> /dev/null | grep -Eiq '^suites:.*[[:space:]]" + c.hop.To + "([[:space:]-]|$)'; }"
+			}
+			b.WriteString(named + " || " + stop("the sources of apt do not name "+c.hop.To+": they are not the ones block 3 wrote (the restore script run after the upgrade, or a change by hand). Write @to@'s sources again as block 3 does (its text has them), run apt-get update, then run this block again.") + "\n")
 			b.WriteString("echo \"The machine runs: $(grep '^PRETTY_NAME=' /etc/os-release), kernel $(uname -r).\"\n")
 			b.WriteString("systemctl --failed --no-legend --plain 2> /dev/null | awk '{ print $1 }' | sort > \"$BK/failed-units-after.txt\" || true\n")
 			b.WriteString("echo \"--- units that fail now and did not before the hop (block 2 wrote down the ones that failed before, in $BK/failed-units.txt):\"\ncomm -13 \"$BK/failed-units.txt\" \"$BK/failed-units-after.txt\" || true\n")
@@ -1511,6 +1521,10 @@ func dockerByHand(c *rbCtx) string {
 	var parts []string
 	for _, pa := range c.plan.Paused {
 		switch {
+		case pa.Docker && pa.Line == 0 && strings.HasSuffix(pa.File, ".sources"):
+			// the codename is the last word of a Suites line, with no space after it
+			f := "/etc/apt/sources.list.d/" + pa.File
+			parts = append(parts, fmt.Sprintf(`mv %[1]s.casaos-paused %[1]s   then:   sed -i -E "s/ %[2]s( |$)/ %[3]s\1/" %[1]s`, f, c.hop.From, c.hop.To))
 		case pa.Docker && pa.Line == 0:
 			f := "/etc/apt/sources.list.d/" + pa.File
 			parts = append(parts, fmt.Sprintf(`mv %[1]s.casaos-paused %[1]s   then:   sed -i "s/ %[2]s / %[3]s /" %[1]s`, f, c.hop.From, c.hop.To))

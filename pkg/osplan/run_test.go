@@ -584,9 +584,6 @@ func TestEveryRefusalBeforeTheJobIsItsCode(t *testing.T) {
 		data map[string]any
 	}{
 		{"not root", func(b *testBox) { b.euid = 1000 }, CodeNotRoot, nil},
-		{"Debian 12", func(b *testBox) {
-			b.files["/etc/os-release"] = "ID=debian\nVERSION_ID=\"12\"\nVERSION_CODENAME=bookworm\nPRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\n"
-		}, CodeHopNotPlanned, map[string]any{"hop": "debian-12-13"}},
 		{"Ubuntu 22.04", func(b *testBox) {
 			b.files["/etc/os-release"] = "ID=ubuntu\nVERSION_ID=\"22.04\"\nVERSION_CODENAME=jammy\nPRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\n"
 		}, CodeHopNotPlanned, map[string]any{"hop": "ubuntu-22.04-24.04"}},

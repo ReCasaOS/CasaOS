@@ -14,18 +14,13 @@ func d11(s string) string { return (&rbCtx{hop: planHops[0]}).names(s) }
 // restoreScriptHash is the hash of the owner's restore script, as the runbook of the hop from Debian 11 to 12 writes it.
 func restoreScriptHash() string { return restoreScriptHashOf(d11(restoreScript)) }
 
-// withTestHop puts a second Debian hop in the two tables, with the blocks of the first, for the time of a test. No such row is in the tables yet: the tests of the text and of the
-// folders need one to look at.
+// withTestHop is the second Debian hop of the two tables, the one from Debian 12 to 13, which the tests of the text and of the folders look at.
 func withTestHop(t *testing.T) HopSpec {
 	t.Helper()
-	hop := HopSpec{ID: osreadiness.HopDebian12to13, From: "bookworm", To: "trixie", FromVersion: "12", ToVersion: "13", Later: []string{"forky", "duke"}, Firmware: true}
-	plan := planHops
-	planHops = append(append([]HopSpec(nil), planHops...), hop)
-	runbookHops[hop.ID] = debianBlocks
-	t.Cleanup(func() {
-		planHops = plan
-		delete(runbookHops, hop.ID)
-	})
+	hop, ok := PlannedHop(osreadiness.HopDebian12to13)
+	if !ok || len(runbookHops[hop.ID]) == 0 {
+		t.Fatal("the hop from Debian 12 to 13 is not in planHops and runbookHops")
+	}
 	return hop
 }
 

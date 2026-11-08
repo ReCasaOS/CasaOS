@@ -1423,3 +1423,33 @@ func TestTheStartOfAnUpgradeHoldsTheLockOfTheModuleAssistantWhileItPutsUpItsFlag
 		}
 	})
 }
+
+// The folders of backups are not told apart by their hop on this side, on purpose: a hop that is half done, of whichever hop, refuses the start of another, and the
+// folder that the beta left when it took the box from Debian 11 to 12, and that ended, refuses nothing on the way to 13.
+func TestAHalfDoneFolderOfEitherHopIsFoundAndAnEndedOneOf11To12IsNot(t *testing.T) {
+	dir := t.TempDir()
+	saved := osUpgradeBackups
+	osUpgradeBackups = dir
+	t.Cleanup(func() { osUpgradeBackups = saved })
+	mk := func(name string, files map[string]string) {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for f, content := range files {
+			rewrite(t, filepath.Join(dir, name, f), content)
+		}
+	}
+	mk("casaos-os-upgrade-p1-1111", map[string]string{"apt-orig": "x", "begun-upgrade": "", "done-after": ""})
+	if folder, err := osUpgradeManualFolder(nil); folder != "" || err != nil {
+		t.Fatalf("the ended folder of 11 to 12 is found: %q, %v", folder, err)
+	}
+	mk("casaos-os-upgrade-p1-2222", map[string]string{"hop": "debian-12-13\n", "apt-orig": "x", "done-verify": ""})
+	if folder, err := osUpgradeManualFolder(nil); folder != "casaos-os-upgrade-p1-2222" || err != nil {
+		t.Fatalf("the half done folder of 12 to 13 is %q, %v", folder, err)
+	}
+	os.RemoveAll(filepath.Join(dir, "casaos-os-upgrade-p1-2222"))
+	mk("casaos-os-upgrade-p1-3333", map[string]string{"apt-orig": "x", "begun-upgrade": ""})
+	if folder, err := osUpgradeManualFolder(nil); folder != "casaos-os-upgrade-p1-3333" || err != nil {
+		t.Fatalf("the half done folder of 11 to 12 is %q, %v", folder, err)
+	}
+}

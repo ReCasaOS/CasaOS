@@ -116,6 +116,8 @@ var autoSuite = []func(*testing.T){
 	TestTheEndsOfBlocks6And8SayWhatComesNextAndNotToAutoremoveBlindly,
 	TestEveryRoomStopOfBlock0SaysWhatToDo,
 	TestBlock3SendsToANewPlanOnlyWhenTheMachineIsNotWhatThePlanSaw,
+	TestABlockOfAnotherHopIgnoresTheFoldersOfTheHopBefore,
+	TestTheBlocksOf11To12WriteNoHopFile,
 }
 
 // manualOnly are the tests that stay on the owner's text, and why. Each is about a gate that only a person at a terminal has, or about the words and the header that only the
@@ -130,7 +132,7 @@ var manualOnly = map[string]string{
 }
 
 // execSuiteFiles are the files whose tests are in one of the two lists.
-var execSuiteFiles = []string{"runbook_exec_test.go", "runbook_states_test.go"}
+var execSuiteFiles = []string{"runbook_exec_test.go", "runbook_states_test.go", "hop_folders_test.go"}
 
 func TestEveryExecTestIsInTheAutoSetOrManualOnly(t *testing.T) {
 	inAuto := map[string]bool{}
