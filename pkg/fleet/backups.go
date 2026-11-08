@@ -66,22 +66,34 @@ type ResticCheck struct {
 	Error string    `json:"error,omitempty"`
 }
 
+// The row types carry the json names of the box's answers: only what is listed
+// here is ever read from a box.
 type runRow struct {
-	App, Destination, Stamp string
-	StartedAt, FinishedAt   time.Time
-	Restore                 bool
-	Error                   string
+	App         string    `json:"app"`
+	Destination string    `json:"destination"`
+	Stamp       string    `json:"stamp"`
+	StartedAt   time.Time `json:"started_at"`
+	FinishedAt  time.Time `json:"finished_at"`
+	Restore     bool      `json:"restore"`
+	Error       string    `json:"error"`
 }
 
 type scheduleRow struct {
-	App, Destination            string
-	Enabled                     bool
-	LastRun, LastSlot, NextSlot time.Time
+	App         string    `json:"app"`
+	Destination string    `json:"destination"`
+	Enabled     bool      `json:"enabled"`
+	LastRun     time.Time `json:"last_run"`
+	LastSlot    time.Time `json:"last_slot"`
+	NextSlot    time.Time `json:"next_slot"`
 }
 
 type verifyRow struct {
-	App, Destination, Stamp, Status, Error string
-	FinishedAt                             time.Time
+	App         string    `json:"app"`
+	Destination string    `json:"destination"`
+	Stamp       string    `json:"stamp"`
+	Status      string    `json:"status"`
+	Error       string    `json:"error"`
+	FinishedAt  time.Time `json:"finished_at"`
 }
 
 type resticRow struct {
@@ -89,7 +101,10 @@ type resticRow struct {
 	Check       *ResticCheck
 }
 
-type opRow struct{ App, Kind string }
+type opRow struct {
+	App  string `json:"app"`
+	Kind string `json:"kind"`
+}
 
 // backupInput is what one poll of a box returns, already decoded.
 type backupInput struct {
@@ -227,4 +242,20 @@ func verifyOf(in backupInput, c *Couple) CoupleVerify {
 		return CoupleVerify{State: last.Status, At: last.FinishedAt, Error: last.Error}
 	}
 	return CoupleVerify{State: "unknown", At: last.FinishedAt, Error: last.Error}
+}
+
+// storeBackups replaces the box's snapshot with b. A failed poll (b.Error set)
+// keeps the old content and only says what went wrong: the box is never green
+// on an answer that is not fresh, and PolledAt still tells how old it is.
+func (f *Fleet) storeBackups(b BoxBackups) {
+	f.backupMu.Lock()
+	defer f.backupMu.Unlock()
+	if f.backups == nil {
+		f.backups = map[string]BoxBackups{}
+	}
+	if prev, ok := f.backups[b.BoxID]; ok && b.Error != "" {
+		prev.Name, prev.Online, prev.Error, prev.Green = b.Name, b.Online, b.Error, false
+		b = prev
+	}
+	f.backups[b.BoxID] = b
 }

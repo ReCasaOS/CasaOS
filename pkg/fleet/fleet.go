@@ -5,6 +5,7 @@
 package fleet
 
 import (
+	"context"
 	"crypto/tls"
 	"net/http"
 	"os"
@@ -30,6 +31,7 @@ type Fleet struct {
 	Offline     func(boxID, name string, offline bool) // the alerts hub's hook: a box gone, or back
 	Net         Net                                    // the private network; nil in New: callers go through PrivateNet
 	RelayAPI    *RelayClient                           // the relay's enrolment API; boxkey.json in the state directory
+	call        boxCaller                              // how the backup poller asks a box: Relay, replaced by tests
 
 	mu      sync.Mutex         // master.json, member.json and tunnels
 	relayMu sync.Mutex         // one master enable, disable, relay change or box enrolment/removal at a time; relay.json and master.json's relay fields written only under it; its network calls run outside mu
@@ -39,11 +41,14 @@ type Fleet struct {
 	offline map[string]bool    // the boxes an offline alert is up for
 	started time.Time          // when the offline watch first ran: its grace period starts here
 	local   *http.Client       // how a member reaches its own gateway
+
+	backupMu sync.Mutex            // the backup snapshots only, never mu
+	backups  map[string]BoxBackups // the last answer of each box, by id; in memory only
 }
 
 // New makes a Fleet rooted at root, with the box's defaults.
 func New(root string) *Fleet {
-	return &Fleet{
+	f := &Fleet{
 		Root:        root,
 		RuntimePath: func() string { return constants.DefaultRuntimePath },
 		Now:         time.Now,
@@ -66,6 +71,10 @@ func New(root string) *Fleet {
 			Transport:     &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}, //nolint:gosec // see above
 		},
 	}
+	f.call = func(ctx context.Context, boxID, method, path string) (Response, error) {
+		return f.Relay(ctx, boxID, method, path, "", "", nil)
+	}
+	return f
 }
 
 // Default is this box's fleet, wired by main.
