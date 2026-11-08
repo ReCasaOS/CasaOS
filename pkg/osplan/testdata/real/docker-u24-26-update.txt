@@ -1,0 +1,17 @@
+Get:1 http://archive.ubuntu.com/ubuntu resolute InRelease [136 kB]
+Get:2 http://security.ubuntu.com/ubuntu resolute-security InRelease [137 kB]
+Get:3 http://archive.ubuntu.com/ubuntu resolute-updates InRelease [137 kB]
+Get:4 http://archive.ubuntu.com/ubuntu resolute/universe amd64 Packages [20.1 MB]
+Get:5 http://security.ubuntu.com/ubuntu resolute-security/universe amd64 Packages [261 kB]
+Get:6 http://archive.ubuntu.com/ubuntu resolute/multiverse amd64 Packages [352 kB]
+Get:7 http://archive.ubuntu.com/ubuntu resolute/restricted amd64 Packages [189 kB]
+Get:8 http://archive.ubuntu.com/ubuntu resolute/main amd64 Packages [1874 kB]
+Get:9 http://archive.ubuntu.com/ubuntu resolute-updates/universe amd64 Packages [475 kB]
+Get:10 http://archive.ubuntu.com/ubuntu resolute-updates/restricted amd64 Packages [703 kB]
+Get:11 http://archive.ubuntu.com/ubuntu resolute-updates/multiverse amd64 Packages [26.1 kB]
+Get:12 http://archive.ubuntu.com/ubuntu resolute-updates/main amd64 Packages [1041 kB]
+Get:13 http://security.ubuntu.com/ubuntu resolute-security/restricted amd64 Packages [648 kB]
+Get:14 http://security.ubuntu.com/ubuntu resolute-security/main amd64 Packages [805 kB]
+Get:15 http://security.ubuntu.com/ubuntu resolute-security/multiverse amd64 Packages [24.6 kB]
+Fetched 26.9 MB in 1s (21.0 MB/s)
+Reading package lists...

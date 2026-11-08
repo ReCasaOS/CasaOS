@@ -1,0 +1,26 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following NEW packages will be installed:
+  coreutils-from-uutils gcc-16-base gnu-coreutils libapt-pkg7.0 libbsd0
+  libc-gconv-modules-extra liblastlog2-2 libsqlite3-0 linux-sysctl-defaults
+  login.defs openssl-provider-legacy rust-coreutils util-linux-extra
+The following packages will be upgraded:
+  apt base-files base-passwd bash bsdutils coreutils dash debconf debianutils
+  diffutils dpkg e2fsprogs findutils gcc-14-base gpgv grep gzip hostname
+  init-system-helpers libacl1 libattr1 libaudit-common libaudit1 libblkid1
+  libbz2-1.0 libc-bin libc6 libcap-ng0 libcap2 libcom-err2 libcrypt1
+  libdb5.3t64 libdebconfclient0 libext2fs2t64 libffi8 libgcc-s1 libgcrypt20
+  libgmp10 libgnutls30t64 libgpg-error0 libhogweed6t64 libidn2-0 liblz4-1
+  liblzma5 libmd0 libmount1 libncursesw6 libnettle8t64 libnpth0t64 libp11-kit0
+  libpam-modules libpam-modules-bin libpam-runtime libpam0g libpcre2-8-0
+  libproc2-0 libseccomp2 libselinux1 libsemanage-common libsemanage2 libsepol2
+  libsmartcols1 libss2 libssl3t64 libstdc++6 libsystemd0 libtasn1-6 libtinfo6
+  libudev1 libunistring5 libuuid1 libxxhash0 libzstd1 login logsave mawk mount
+  ncurses-base ncurses-bin passwd perl-base procps sed sensible-utils
+  sysvinit-utils tar ubuntu-keyring unminimize util-linux zlib1g
+90 upgraded, 13 newly installed, 0 to remove and 0 not upgraded.
+Need to get 35.5 MB of archives.
+After this operation, 30.4 MB of additional disk space will be used.
+E: Trivial Only specified but this is not a trivial operation.

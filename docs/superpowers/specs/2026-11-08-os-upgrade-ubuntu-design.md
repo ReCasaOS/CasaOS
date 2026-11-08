@@ -127,7 +127,7 @@ La page ne connaît pas les releases, sauf dans les phrases. Elle a besoin des n
 1. La distribution vient du saut (section 1). **Aucun changement de comportement** : les golden Debian sont identiques.
 2. Les sources d'Ubuntu, derrière un saut de test (section 2), avec les fixtures des images cloud.
 3. Canonical offre le saut : la lecture de `meta-release-lts` au moment du plan (section 3).
-4. Jambe `os-plan-proof` Ubuntu 24.04 (et 22.04), et fixtures du parseur.
+4. Fixtures du parseur : la vraie sortie d'apt dans les images `ubuntu:22.04` et `ubuntu:24.04`, sources réécrites (fait le 2026-11-08). Une jambe `os-plan-proof` passe par le plan du cœur, qui répond `hop_not_planned` tant que la PR 5 n'a pas ajouté la ligne du saut : les jambes QEMU viennent donc après la PR 5, sur une pré-release.
 5. Le saut 24.04 → 26.04 : sa ligne dans les tables, ses contrôles, `Install`, le test sous `ubuntu:26.04` et ses golden. Il passe en premier parce qu'il concerne environ trois fois plus de boxes.
 6. Le saut 22.04 → 24.04 : sa ligne, ses contrôles et ses golden.
 7. Interface : les clés et la fixture.
@@ -141,6 +141,8 @@ Chaque PR passe `go test ./...` sous Linux. L'interface tourne avec Node 22 et p
 - Le corps des quirks marqués « à lire » : on lit leur code avant la PR de leur saut, et la décision est écrite dans la PR.
 
 ## Risques
+
+- **Trouvé le 2026-11-08, dans l'image `ubuntu:24.04` :** de 24.04 à 26.04, `apt-get -s dist-upgrade` finit en code 100 sur `E: Conf Broken coreutils-from-uutils:amd64`. C'est le passage de coreutils à rust-coreutils, et il se produit avant comme après le saut minimal. Le vrai `dist-upgrade` passe pourtant : code 0, la machine en 26.04.1, `dpkg --audit` propre. Le plan (`sandbox_solver_failed`) et les simulations des blocs 3, 5 et 6 du runbook (STOP) refuseraient donc chaque box. La PR 5 doit tolérer cette erreur, et elle seule, pour ce saut : dans `ParseSolver` comme dans le texte shell. Les golden Debian ne changent pas.
 
 - Ce n'est pas le chemin que Canonical teste. Une transition qu'apt seul résout mal (comme t64 l'a été pour Noble) ne se voit que dans la jambe de preuve, ou chez un propriétaire. C'est pour cela que la promotion est conditionnée aux jambes.
 - La lecture du réseau au moment du plan ajoute une panne possible. Elle échoue fermée.

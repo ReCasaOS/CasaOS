@@ -1,0 +1,30 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be REMOVED:
+  libapt-pkg6.0 libdb5.3 libext2fs2 libgnutls30 libhogweed6 libnettle8 libssl3
+  libtirpc3 usrmerge
+The following NEW packages will be installed:
+  gcc-14-base libapt-pkg6.0t64 libassuan0 libdb5.3t64 libext2fs2t64
+  libgnutls30t64 libhogweed6t64 libmd0 libnettle8t64 libnpth0t64 libproc2-0
+  libssl3t64 libtirpc3t64 libunistring5
+The following packages will be upgraded:
+  adduser apt base-files base-passwd bash bsdutils coreutils dash debconf
+  debianutils diffutils dpkg e2fsprogs findutils gcc-12-base gpgv grep gzip
+  hostname init-system-helpers libacl1 libattr1 libaudit-common libaudit1
+  libblkid1 libbz2-1.0 libc-bin libc6 libcap-ng0 libcap2 libcom-err2 libcrypt1
+  libdebconfclient0 libffi8 libgcc-s1 libgcrypt20 libgmp10 libgpg-error0
+  libgssapi-krb5-2 libidn2-0 libk5crypto3 libkeyutils1 libkrb5-3
+  libkrb5support0 liblz4-1 liblzma5 libmount1 libncurses6 libncursesw6 libnsl2
+  libp11-kit0 libpam-modules libpam-modules-bin libpam-runtime libpam0g
+  libpcre2-8-0 libpcre3 libseccomp2 libselinux1 libsemanage-common
+  libsemanage2 libsepol2 libsmartcols1 libss2 libstdc++6 libsystemd0
+  libtasn1-6 libtinfo6 libtirpc-common libudev1 libuuid1 libxxhash0 libzstd1
+  login logsave lsb-base mawk mount ncurses-base ncurses-bin passwd perl-base
+  procps sed sensible-utils sysvinit-utils tar ubuntu-keyring util-linux
+  zlib1g
+90 upgraded, 14 newly installed, 9 to remove and 0 not upgraded.
+Need to get 29.3 MB of archives.
+After this operation, 2221 kB of additional disk space will be used.
+E: Trivial Only specified but this is not a trivial operation.
