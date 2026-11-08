@@ -37,6 +37,16 @@ func TestAllowedTable(t *testing.T) {
 		{"POST", "/v2/app_management/image-updates", true, true},
 		{"POST", "/v2/virt_management/vms/0f1e-2d3c/start", false, true},
 		{"POST", "/v2/virt_management/vms/0f1e-2d3c/force-off", false, true},
+		{"GET", "/v2/app_management/backup/runs", false, true},
+		{"GET", "/v2/app_management/backup/schedules", false, true},
+		{"GET", "/v2/app_management/backup/verifications", false, true},
+		{"GET", "/v2/app_management/backup/verification-schedule", false, true},
+		{"POST", "/v2/app_management/backup/schedules/run", false, true},
+		{"POST", "/v2/app_management/backup/verifications", false, true},
+		{"POST", "/v2/app_management/backup/verifications/ABC123/cancel", false, true},
+		{"PUT", "/v2/app_management/backup/verification-schedule", false, true},
+		{"GET", "/v2/app_management/backup/destinations/GDrive/restic", false, true},
+		{"POST", "/v2/app_management/backup/destinations/GDrive/restic/check", false, true},
 		// refused
 		{"GET", "/v2/app_management/logs/settings", false, false},
 		{"PUT", "/v2/app_management/logs/settings", false, false},
@@ -49,6 +59,19 @@ func TestAllowedTable(t *testing.T) {
 		{"POST", "/v2/virt_management/vms/a/b/start", false, false},
 		{"GET", "/v2/app_management/compose/plex/logs", false, false},
 		{"POST", "/v1/sys/modules/virt/install", false, false},
+		{"GET", "/v2/app_management/backup/destinations/GDrive/restic/password", false, false},
+		{"PUT", "/v2/app_management/backup/destinations/GDrive/restic", false, false},
+		{"DELETE", "/v2/app_management/backup/destinations/GDrive/restic", false, false},
+		{"POST", "/v2/app_management/backup/destinations/GDrive/restic/enable", false, false},
+		{"GET", "/v2/app_management/backup/destinations", false, false},
+		{"GET", "/v2/app_management/backup/destinations/GDrive/runs", false, false},
+		{"POST", "/v2/app_management/backup/restore", false, false},
+		{"GET", "/v2/app_management/backup/browse", false, false},
+		{"DELETE", "/v2/app_management/backup/runs", false, false},
+		{"PUT", "/v2/app_management/backup/schedules", false, false},
+		{"POST", "/v2/app_management/backup/signin", false, false},
+		{"GET", "/v2/app_management/backup/destinations/my%20drive/restic", false, false},
+		{"GET", "/v2/app_management/backup/destinations/../restic", false, false},
 	} {
 		slow, ok := Allowed(c.method, c.path)
 		if slow != c.slow || ok != c.ok {
@@ -85,6 +108,14 @@ func TestAnIDIsOnePlainSegment(t *testing.T) {
 			if _, ok := Allowed(c.method, c.path); ok {
 				t.Errorf("%s %q passed", c.method, c.path)
 			}
+		}
+	}
+	for _, path := range []string{"/v2/app_management/backup/verifications//cancel", "/v2/app_management/backup/verifications/a/b/cancel", "/v2/app_management/backup/destinations//restic", "/v2/app_management/backup/destinations/a/b/restic/check"} {
+		if _, ok := Allowed("POST", path); ok {
+			t.Errorf("%q passed", path)
+		}
+		if _, ok := Allowed("GET", path); ok {
+			t.Errorf("GET %q passed", path)
 		}
 	}
 	for _, id := range []string{"plex", "big-bear-ayon", "my_app", "0f1e-2d3c", "vm.1", "Plex", "a"} {
