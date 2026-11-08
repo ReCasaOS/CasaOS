@@ -2,7 +2,6 @@ package osplan
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"testing"
 
@@ -126,20 +125,13 @@ func TestASourceWithAWordThatStandsForAReleaseIsRefused(t *testing.T) {
 	}
 }
 
-// withUbuntuTestHop is a hop of Ubuntu in the two tables for the time of a test: no hop of Ubuntu is planned yet, and the texts must already name it.
+// withUbuntuTestHop is the hop from Ubuntu 24.04 to 26.04 of the tables.
 func withUbuntuTestHop(t *testing.T) HopSpec {
 	t.Helper()
-	hop := nobleToResolute
-	if _, ok := PlannedHop(hop.ID); ok {
-		t.Fatal("the hop from Ubuntu 24.04 is planned already: this test hop is no longer needed")
+	hop, ok := PlannedHop(osreadiness.HopUbuntu2404to2604)
+	if !ok || len(runbookHops[hop.ID]) == 0 {
+		t.Fatal("the hop from Ubuntu 24.04 to 26.04 is not in planHops and runbookHops")
 	}
-	rows := planHops
-	planHops = append(slices.Clone(planHops), hop)
-	runbookHops[hop.ID] = debianBlocks
-	t.Cleanup(func() {
-		planHops = rows
-		delete(runbookHops, hop.ID)
-	})
 	return hop
 }
 

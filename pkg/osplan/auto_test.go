@@ -734,7 +734,7 @@ func TestBuildAutoRefusesWhatBuildRunbookRefusesAndWhatItCannotCarry(t *testing.
 		t.Errorf("a blocked plan: %v", err)
 	}
 	other := p
-	other.Hop = "ubuntu-24.04-26.04"
+	other.Hop = "ubuntu-22.04-24.04"
 	if _, err := BuildAuto(other, ok); !errors.Is(err, ErrNoRunbook) {
 		t.Errorf("a hop with no runbook: %v", err)
 	}
