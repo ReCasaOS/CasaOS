@@ -67,3 +67,19 @@ func TestThePlanOfUbuntu2404IsMadeWithTheRealOutputsOfApt(t *testing.T) {
 		t.Errorf("hop %s, counts %+v, estimates known %v", p.Hop, p.Counts.DistUpgrade, p.Estimates.Known)
 	}
 }
+
+// A box that has sudo (every cloud image of Ubuntu) moves it to sudo-rs as well: the simulation ends on the Conf Broken of sudo-common too, and the real upgrade goes through
+// (the image ubuntu:24.04 with sudo, 2026-11-08: sudo-rs 0.2.13 in place, sudo works, dpkg --audit clean). The QEMU proof on the cloud image found it.
+func TestTheSimulationOf24To26WithSudoIsRead(t *testing.T) {
+	out := withUbuntuTestHop(t).withoutSimBroken(realOutput(t, "docker-u24-26-sudo-dist-upgrade.txt"))
+	run, f := ParseSolver(out)
+	if f != nil {
+		t.Fatalf("ParseSolver: %v", f)
+	}
+	if run.Summary != (Summary{Upgraded: 92, New: 30}) || len(run.Removals()) != 0 {
+		t.Errorf("summary %+v, removals %v", run.Summary, run.Removals())
+	}
+	if !strings.Contains(" "+strings.Join(run.New, " ")+" ", " sudo-rs ") {
+		t.Errorf("sudo-rs is not among the new packages: %v", run.New)
+	}
+}

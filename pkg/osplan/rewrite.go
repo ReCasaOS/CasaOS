@@ -60,10 +60,10 @@ var planHops = []HopSpec{
 	{ID: osreadiness.HopDebian11to12, Distro: "Debian", From: "bullseye", To: "bookworm", FromVersion: "11", ToVersion: "12", Later: []string{"trixie", "forky"}, Firmware: true},
 	{ID: osreadiness.HopDebian12to13, Distro: "Debian", From: "bookworm", To: "trixie", FromVersion: "12", ToVersion: "13", Later: []string{"forky", "duke"}, Firmware: true, Deb822: true},
 	// the codenames after 26.04 are distro-info-data's (2026.10.12): 26.10 stonking, 27.04 tenacious. The move of coreutils to rust-coreutils ends apt's simulation of the full
-	// upgrade on coreutils-from-uutils, before the minimal upgrade and after it, and the real upgrade goes through (the image ubuntu:24.04, apt 2.8.3, 2026-11-08:
-	// testdata/real/docker-u24-26-*).
+	// upgrade on coreutils-from-uutils, and the move of sudo to sudo-rs on sudo-common (a box that has sudo: every cloud image), before the minimal upgrade and after it, and the
+	// real upgrade goes through (the image ubuntu:24.04, apt 2.8.3, 2026-11-08: testdata/real/docker-u24-26-*; sudo-common was found by the QEMU proof on the cloud image).
 	{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04", Later: []string{"stonking", "tenacious"}, Deb822: true,
-		SimBroken: []string{"coreutils-from-uutils"}},
+		SimBroken: []string{"coreutils-from-uutils", "sudo-common"}},
 }
 
 // PlannedHop is the hop of a box's identity, when a plan can be made for it.

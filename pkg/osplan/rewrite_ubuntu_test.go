@@ -13,7 +13,7 @@ import (
 var (
 	jammyToNoble    = HopSpec{ID: osreadiness.HopUbuntu2204to2404, Distro: "Ubuntu", From: "jammy", To: "noble", FromVersion: "22.04", ToVersion: "24.04", Later: []string{"resolute"}, Deb822: true}
 	nobleToResolute = HopSpec{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04",
-		Later: []string{"stonking", "tenacious"}, Deb822: true, SimBroken: []string{"coreutils-from-uutils"}}
+		Later: []string{"stonking", "tenacious"}, Deb822: true, SimBroken: []string{"coreutils-from-uutils", "sudo-common"}}
 )
 
 func TestTheHopFromUbuntu2404IsTheTables(t *testing.T) {
