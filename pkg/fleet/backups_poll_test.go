@@ -349,3 +349,24 @@ func TestAPollInterruptedByShutdownLeavesTheSnapshotAlone(t *testing.T) {
 		t.Errorf("the snapshot changed: %+v", after)
 	}
 }
+
+// A verifications route that fails for a while says nothing of the restore
+// tests: unknown, not "never tested". Only a 404 (an AppManagement without
+// them) is a box that has none to tell.
+func TestAVerificationsRouteThatFailsLeavesTheStateUnknown(t *testing.T) {
+	r := healthyRoutes()
+	r[am+"/backup/verifications"] = Response{Status: 500, Body: []byte(`{"message":"boom"}`)}
+	got := pollFleet(t, &fakeBox{routes: r}).pollBox(context.Background(), testBox)
+	for _, c := range got.Couples {
+		if c.Verify.State != "unknown" {
+			t.Fatalf("%+v", got.Couples)
+		}
+	}
+	delete(r, am+"/backup/verifications") // 404
+	got = pollFleet(t, &fakeBox{routes: r}).pollBox(context.Background(), testBox)
+	for _, c := range got.Couples {
+		if c.Verify.State != "none" {
+			t.Fatalf("%+v", got.Couples)
+		}
+	}
+}

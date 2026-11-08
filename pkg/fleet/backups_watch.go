@@ -73,8 +73,8 @@ func (f *Fleet) pollBoxes(ctx context.Context, only string) {
 		go func() {
 			defer func() { <-slots; all.Done() }()
 			b := f.pollBox(ctx, box)
+			f.alertBackups(&b) // first: an alert it keeps up makes the box not green
 			f.storeBackups(b)
-			f.alertBackups(b)
 		}()
 	}
 	all.Wait()
@@ -82,13 +82,17 @@ func (f *Fleet) pollBoxes(ctx context.Context, only string) {
 
 // alertBackups raises each problem of a box's fresh answer, every pass while
 // it lasts (the hub says it once in six hours), and resolves the ones this box
-// had and no longer has. An answer that is not fresh (box offline, poll failed
-// or cut short: pollBox sets Error for each) says nothing either way: the old
-// problems stay as they were. A failed verification lasts until a restore test
-// passes, is not_verifiable, or its couple goes: a test running or a state the
-// pass could not read does not end it. A sentence is made of the box's name,
-// the app, the destination and fixed words: never of a text the box sent.
-func (f *Fleet) alertBackups(b BoxBackups) {
+// had once this answer shows them over: a backup alert when its couple is ok
+// and no backup of the app is running (which would hide a late), a restore
+// test's when one passes or is not_verifiable, a repository's when its check
+// passes; any of them when its couple or its restic destination is gone. A
+// state that says nothing of the problem (suspended, unknown, never, a test
+// running, a route that failed) keeps it up without a word, and b is then not
+// green. An answer that is not fresh (box offline, poll failed or cut short:
+// pollBox sets Error for each) says nothing either way. A sentence is made of
+// the box's name, the app, the destination and fixed words: never of a text
+// the box sent.
+func (f *Fleet) alertBackups(b *BoxBackups) {
 	if b.Error != "" {
 		return
 	}
@@ -97,28 +101,46 @@ func (f *Fleet) alertBackups(b BoxBackups) {
 		problem       bool
 	}
 	var calls []call
-	var carried []string       // verification keys kept as they are if up
-	now := map[string]string{} // key: its resolution
+	now := map[string]string{}   // the keys up after this pass: their resolution
+	carried := map[string]bool{} // the keys kept as they are, if up
+	raise := func(key, sentence, resolution string) {
+		if _, done := now[key]; !done {
+			calls = append(calls, call{key, sentence, true})
+			now[key] = resolution
+		}
+	}
 	prefix := "fleet:" + b.BoxID + ":"
 	for _, c := range b.Couples {
 		what := c.App + " on " + b.Name + " to " + c.Destination
 		backup := prefix + "backup:" + c.App + ":" + c.Destination + ":"
-		switch c.State {
-		case "failed":
-			calls = append(calls, call{backup + "failed", "Backup of " + what + " failed. See the Fleet page.", true})
-			now[backup+"failed"] = "Resolved: the backup of " + what + " no longer fails."
-		case "late":
-			calls = append(calls, call{backup + "late", "Backup of " + what + " is late: its last scheduled slot has passed. See the Fleet page.", true})
-			now[backup+"late"] = "Resolved: the backup of " + what + " is no longer late."
+		switch {
+		case c.State == "failed":
+			raise(backup+"failed", "Backup of "+what+" failed. See the Fleet page.", "Resolved: the backup of "+what+" no longer fails.")
+		case c.State == "late":
+			raise(backup+"late", "Backup of "+what+" is late: its last scheduled slot has passed. See the Fleet page.", "Resolved: the backup of "+what+" is no longer late.")
+		case c.State != "ok" || c.Running:
+			carried[backup+"failed"], carried[backup+"late"] = true, true
+		}
+		repo := prefix + "verify:restic:" + c.Destination
+		if c.Restic {
+			switch {
+			case c.ResticCheck == nil:
+				carried[repo] = true
+			case !c.ResticCheck.OK:
+				where := b.Name + " at " + c.Destination
+				raise(repo, "The restic repository of "+where+" failed its check. See the Fleet page.", "Resolved: the restic repository of "+where+" no longer fails its check.")
+			}
+			continue
 		}
 		key := prefix + "verify:" + c.App + ":" + c.Destination
 		switch c.Verify.State {
 		case "failed":
-			calls = append(calls, call{key, "Verification of the backup of " + what + " failed. See the Fleet page.", true})
-			now[key] = "Resolved: the verification of the backup of " + what + " no longer fails."
+			raise(key, "Verification of the backup of "+what+" failed. See the Fleet page.", "Resolved: the verification of the backup of "+what+" no longer fails.")
 		case "passed", "not_verifiable":
-		default:
-			carried = append(carried, key)
+		case "none": // the destination answered that it keeps nothing in restic
+			carried[key] = true
+		default: // unknown or running: the restic state may not have been read
+			carried[key], carried[repo] = true, true
 		}
 	}
 	var gone []string
@@ -130,9 +152,12 @@ func (f *Fleet) alertBackups(b BoxBackups) {
 	if f.backupProblems == nil {
 		f.backupProblems = map[string]string{}
 	}
-	for _, key := range carried {
+	for key := range carried {
 		if resolution, up := f.backupProblems[key]; up {
-			now[key] = resolution
+			if _, raised := now[key]; !raised {
+				now[key] = resolution
+				b.Green = false
+			}
 		}
 	}
 	for key := range f.backupProblems {

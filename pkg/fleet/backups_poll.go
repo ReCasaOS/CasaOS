@@ -78,8 +78,11 @@ func (f *Fleet) pollBox(ctx context.Context, box Box) BoxBackups {
 	var v struct {
 		Data []verifyRow `json:"data"`
 	}
-	if f.fetch(ctx, box.ID, amPath+"/backup/verifications", &v) == nil {
+	switch err := f.fetch(ctx, box.ID, amPath+"/backup/verifications", &v); {
+	case err == nil:
 		in.Verifications = v.Data
+	case !errors.Is(err, statusError(http.StatusNotFound)):
+		in.VerifyUnread = true // a 404 is an AppManagement without restore tests: none to tell
 	}
 	var vs struct {
 		Data *VerificationSchedule `json:"data"`

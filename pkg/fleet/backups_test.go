@@ -115,6 +115,43 @@ func TestAssessCoupleState(t *testing.T) {
 			Schedules: []scheduleRow{sched(a, d, true, time.Time{}, ago(5*time.Hour))},
 		}, "never", false},
 	}
+	// The current slot in its grace hour: the slot before it, one interval
+	// (NextSlot - LastSlot) earlier, decides; a daylight-saving hour either way is tolerated.
+	within := func(lastRun time.Time, interval time.Duration, runs ...runRow) backupInput {
+		s := sched(a, d, true, lastRun, ago(30*time.Minute))
+		s.NextSlot = s.LastSlot.Add(interval)
+		return backupInput{Runs: runs, Schedules: []scheduleRow{s}}
+	}
+	upgrading := within(ago(48*time.Hour+30*time.Minute), 24*time.Hour, run(a, d, "", ago(48*time.Hour+30*time.Minute)))
+	upgrading.OSUpgradeOpen = true
+	cases = append(cases, []struct {
+		name    string
+		in      backupInput
+		want    string
+		running bool
+	}{
+		{"scheduler stopped, current slot in its grace hour", within(ago(48*time.Hour+30*time.Minute), 24*time.Hour, run(a, d, "", ago(48*time.Hour+30*time.Minute))), "late", false},
+		{"healthy, current slot in its grace hour", within(ago(24*time.Hour+30*time.Minute), 24*time.Hour, run(a, d, "", ago(24*time.Hour+30*time.Minute))), "ok", false},
+		{"healthy across a 23 h day", within(ago(24*time.Hour+30*time.Minute), 23*time.Hour, run(a, d, "", ago(24*time.Hour+30*time.Minute))), "ok", false},
+		{"healthy across a 25 h day", within(ago(24*time.Hour+30*time.Minute), 25*time.Hour, run(a, d, "", ago(24*time.Hour+30*time.Minute))), "ok", false},
+		{"scheduler stopped across a 23 h day", within(ago(48*time.Hour+30*time.Minute), 23*time.Hour, run(a, d, "", ago(48*time.Hour+30*time.Minute))), "late", false},
+		{"scheduler stopped in the grace hour, upgrade open", upgrading, "suspended", false},
+		{"scheduler stopped in the grace hour, backup running", backupInput{
+			Runs:       upgrading.Runs,
+			Schedules:  upgrading.Schedules,
+			Operations: []opRow{{App: a, Kind: "backup"}},
+		}, "ok", true},
+		// AM keeps the last 200 runs: a couple whose records rolled off is not "never"
+		{"no run record but the schedule ran, slot covered", backupInput{
+			Schedules: []scheduleRow{sched(a, d, true, ago(2*time.Hour), ago(2*time.Hour))},
+		}, "ok", false},
+		{"no run record but the schedule ran, slot missed", backupInput{
+			Schedules: []scheduleRow{sched(a, d, true, ago(26*time.Hour), ago(2*time.Hour))},
+		}, "late", false},
+		{"no run record but the schedule ran, slot unknown", backupInput{
+			Schedules: []scheduleRow{sched(a, d, true, ago(2*time.Hour), time.Time{})},
+		}, "unknown", false},
+	}...)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			couples, _, _, _ := assess(c.in, assessNow)
@@ -395,5 +432,28 @@ func TestAssessResticCheckOnlyForKept(t *testing.T) {
 	couples, _, _, _ := assess(in, assessNow)
 	if couples[0].Restic || couples[0].ResticCheck != nil {
 		t.Fatalf("restic fields on a destination that keeps nothing: %+v", couples[0])
+	}
+}
+
+// One repository check that failed is one problem of its destination, not one
+// per app kept there (a never-run couple there included).
+func TestAssessAFailedResticCheckIsOneProblemPerDestination(t *testing.T) {
+	in := backupInput{
+		Runs: []runRow{run("a", "d", "", ago(time.Hour)), run("b", "d", "", ago(time.Hour))},
+		Schedules: []scheduleRow{
+			sched("a", "d", true, ago(time.Hour), ago(time.Hour)),
+			sched("b", "d", true, ago(time.Hour), ago(time.Hour)),
+			sched("c", "d", true, time.Time{}, ago(time.Hour)),
+		},
+		Restic: map[string]resticRow{"d": {Known: true, Kept: true, Check: &ResticCheck{OK: false, Error: "token=abc"}}},
+	}
+	couples, _, green, problems := assess(in, assessNow)
+	if problems != 1 || green {
+		t.Fatalf("problems=%d green=%v, want 1 false", problems, green)
+	}
+	for _, c := range couples {
+		if c.Verify.State != "failed" { // the per-couple state the page shows stays as it was
+			t.Fatalf("%+v", c)
+		}
 	}
 }

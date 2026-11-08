@@ -111,6 +111,7 @@ type backupInput struct {
 	Runs           []runRow
 	Schedules      []scheduleRow
 	Verifications  []verifyRow
+	VerifyUnread   bool // the verifications route failed (not a 404): nothing is known of the tests
 	VerifySchedule *VerificationSchedule
 	Operations     []opRow
 	OSUpgradeOpen  bool
@@ -136,6 +137,17 @@ func assess(in backupInput, now time.Time) (couples []Couple, state string, gree
 		}
 		c := Couple{App: s.App, Destination: s.Destination, Running: backing[s.App], NextSlot: s.NextSlot}
 
+		// The slot judged: the last one, or while it is in its grace hour the one
+		// before it (a stopped scheduler is otherwise ok for that hour every
+		// day). That one is found one interval back; a run from up to an hour
+		// earlier (half an interval for short ones) still covers it, for the
+		// day that daylight saving makes 23 or 25 hours long.
+		due, floor := s.LastSlot, s.LastSlot
+		if interval := s.NextSlot.Sub(s.LastSlot); !s.LastSlot.IsZero() && now.Sub(s.LastSlot) <= lateAfter && interval > 0 {
+			due = s.LastSlot.Add(-interval)
+			floor = due.Add(-min(lateAfter, interval/2))
+		}
+
 		var last, lastOK *runRow
 		afterSlot := false
 		for i := range in.Runs {
@@ -149,7 +161,7 @@ func assess(in backupInput, now time.Time) (couples []Couple, state string, gree
 			if r.Error == "" && (lastOK == nil || r.StartedAt.After(lastOK.StartedAt)) {
 				lastOK = r
 			}
-			if !s.LastSlot.IsZero() && !r.StartedAt.Before(s.LastSlot) {
+			if !s.LastSlot.IsZero() && !r.StartedAt.Before(floor) {
 				afterSlot = true
 			}
 		}
@@ -166,11 +178,11 @@ func assess(in backupInput, now time.Time) (couples []Couple, state string, gree
 		switch {
 		case last != nil && last.Error != "":
 			c.State = "failed"
-		case last == nil:
-			c.State = "never"
+		case last == nil && s.LastRun.IsZero():
+			c.State = "never" // a schedule that ran has only lost its records (AM keeps 200)
 		case s.LastSlot.IsZero():
 			c.State = "unknown"
-		case now.Sub(s.LastSlot) > lateAfter && s.LastRun.Before(s.LastSlot) && !afterSlot && !c.Running:
+		case now.Sub(due) > lateAfter && s.LastRun.Before(floor) && !afterSlot && !c.Running:
 			c.State = "late"
 			if in.OSUpgradeOpen {
 				c.State = "suspended"
@@ -190,8 +202,13 @@ func assess(in backupInput, now time.Time) (couples []Couple, state string, gree
 	})
 
 	state, green = "none", len(couples) > 0
+	failedRepos := map[string]bool{} // a repository check is one problem of its destination
 	for _, c := range couples {
-		if c.State == "failed" || c.State == "late" || c.Verify.State == "failed" {
+		if c.State == "failed" || c.State == "late" || c.Verify.State == "failed" && !c.Restic {
+			problems++
+		}
+		if c.Restic && c.Verify.State == "failed" && !failedRepos[c.Destination] {
+			failedRepos[c.Destination] = true
 			problems++
 		}
 		if c.Verify.State == "failed" {
@@ -232,7 +249,7 @@ func verifyOf(in backupInput, c *Couple) CoupleVerify {
 		}
 	}
 	if last == nil {
-		if !asked || !rr.Known {
+		if !asked || !rr.Known || in.VerifyUnread {
 			return CoupleVerify{State: "unknown"}
 		}
 		return CoupleVerify{State: "none"}

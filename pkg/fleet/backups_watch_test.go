@@ -502,3 +502,144 @@ func TestDisableMasterForgetsTheBackups(t *testing.T) {
 		t.Fatalf("left: %v %v", f.backups, f.backupProblems)
 	}
 }
+
+// with is routes with the operations route answering ops.
+func with(routes map[string]Response, ops string) map[string]Response {
+	routes[am+"/operations"] = ok(ops)
+	return routes
+}
+
+const (
+	upgradeOpen = `{"operations":[],"os_upgrade_open":true}`
+	backingUp   = `{"operations":[{"app":"jarvis","kind":"backup"}],"os_upgrade_open":false}`
+)
+
+// countKey counts the raises and the resolutions of key.
+func countKey(calls []hookCall, key string) (raises, resolves int) {
+	for _, c := range calls {
+		switch {
+		case c.key != key:
+		case c.problem:
+			raises++
+		default:
+			resolves++
+		}
+	}
+	return raises, resolves
+}
+
+// A backup alert ends when its couple is ok again (and not hidden by a backup
+// running) or is gone: a state that says nothing of it (suspended during an OS
+// upgrade, unknown, never, a run of the app in progress) keeps it up quietly.
+// A resolution then would be false, and the hub would then hold back the
+// next raise of the same problem for six hours.
+func TestABackupAlertLastsUntilTheCoupleIsOK(t *testing.T) {
+	late := func() map[string]Response { return oneCouple("", true, "") }
+	run := func(t *testing.T, passes ...map[string]Response) (*Fleet, string, []hookCall) {
+		f, ids, boxes, log := backupMaster(t, "Maison")
+		for _, routes := range passes {
+			boxes[ids[0]].set(routes)
+			f.passBackups(context.Background())
+		}
+		return f, ids[0], log.take()
+	}
+	lateKey := func(id string) string { return "fleet:" + id + ":backup:jarvis:GDrive:late" }
+
+	t.Run("suspended by an OS upgrade, then late again", func(t *testing.T) {
+		_, id, calls := run(t, late(), with(late(), upgradeOpen), late())
+		if raises, resolves := countKey(calls, lateKey(id)); raises != 2 || resolves != 0 {
+			t.Fatalf("%+v", calls)
+		}
+	})
+	t.Run("hidden by a backup of the app running", func(t *testing.T) {
+		f, id, calls := run(t, late(), with(late(), backingUp))
+		if raises, resolves := countKey(calls, lateKey(id)); raises != 1 || resolves != 0 {
+			t.Fatalf("%+v", calls)
+		}
+		f.backupMu.Lock()
+		green := f.backups[id].Green
+		f.backupMu.Unlock()
+		if green {
+			t.Fatal("green while a late alert is up")
+		}
+	})
+	t.Run("ok again", func(t *testing.T) {
+		_, id, calls := run(t, late(), oneCouple("", false, ""), oneCouple("", false, ""))
+		if raises, resolves := countKey(calls, lateKey(id)); raises != 1 || resolves != 1 {
+			t.Fatalf("%+v", calls)
+		}
+	})
+	t.Run("the couple removed", func(t *testing.T) {
+		gone := oneCouple("", false, "")
+		gone[am+"/backup/schedules"] = ok(`{"data":[]}`)
+		_, id, calls := run(t, late(), gone, gone)
+		if raises, resolves := countKey(calls, lateKey(id)); raises != 1 || resolves != 1 {
+			t.Fatalf("%+v", calls)
+		}
+	})
+	t.Run("failed, then late", func(t *testing.T) {
+		_, id, calls := run(t, oneCouple("token=abc", false, ""), late())
+		failedKey := "fleet:" + id + ":backup:jarvis:GDrive:failed"
+		wantCalls(t, calls,
+			hookCall{failedKey, "Backup of jarvis on Maison to GDrive failed. See the Fleet page.", true},
+			hookCall{lateKey(id), "Backup of jarvis on Maison to GDrive is late: its last scheduled slot has passed. See the Fleet page.", true},
+			hookCall{failedKey, "Resolved: the backup of jarvis on Maison to GDrive no longer fails.", false})
+	})
+}
+
+// resticRoutes is a box with jarvis and immich kept by restic in GDrive; check
+// is the repository's last check (JSON, "null" for none), kept false for a
+// destination that keeps nothing in restic.
+func resticRoutes(kept bool, check string) map[string]Response {
+	r := oneCouple("", false, "")
+	r[am+"/backup/runs"] = ok(`{"data":[
+		{"app":"jarvis","destination":"GDrive","stamp":"s","started_at":"2026-11-08T10:00:10Z","finished_at":"2026-11-08T10:01:00Z"},
+		{"app":"immich","destination":"GDrive","stamp":"s","started_at":"2026-11-08T10:00:10Z","finished_at":"2026-11-08T10:01:00Z"}]}`)
+	r[am+"/backup/schedules"] = ok(`{"data":[
+		{"app":"jarvis","destination":"GDrive","enabled":true,"last_run":"2026-11-08T10:00:10Z","last_slot":"2026-11-08T10:00:00Z"},
+		{"app":"immich","destination":"GDrive","enabled":true,"last_run":"2026-11-08T10:00:10Z","last_slot":"2026-11-08T10:00:00Z"}]}`)
+	r[am+"/backup/destinations/GDrive/restic"] = ok(fmt.Sprintf(`{"data":{"available":true,"enabled":%v,"kept":%v,"last_check":%s}}`, kept, kept, check))
+	return r
+}
+
+const failedCheck = `{"at":"2026-11-08T11:00:00Z","ok":false,"error":"token=abc"}`
+
+// A repository check that failed is one alert for its destination, whatever
+// the number of apps kept there, carried while no newer check says otherwise.
+func TestAFailedResticCheckIsOneAlertPerDestination(t *testing.T) {
+	f, ids, boxes, log := backupMaster(t, "Maison")
+	key := "fleet:" + ids[0] + ":verify:restic:GDrive"
+	boxes[ids[0]].set(resticRoutes(true, failedCheck))
+	f.passBackups(context.Background())
+	wantCalls(t, log.take(), hookCall{key, "The restic repository of Maison at GDrive failed its check. See the Fleet page.", true})
+	f.backupMu.Lock()
+	problems := f.backups[ids[0]].Problems
+	f.backupMu.Unlock()
+	if problems != 1 {
+		t.Fatalf("problems = %d, want 1", problems)
+	}
+
+	// no check known (the route failing): carried, nothing said
+	unread := resticRoutes(true, failedCheck)
+	unread[am+"/backup/destinations/GDrive/restic"] = Response{Status: 500}
+	boxes[ids[0]].set(unread)
+	f.passBackups(context.Background())
+	wantCalls(t, log.take())
+
+	boxes[ids[0]].set(resticRoutes(true, `{"at":"2026-11-08T11:30:00Z","ok":true}`))
+	f.passBackups(context.Background())
+	f.passBackups(context.Background())
+	wantCalls(t, log.take(), hookCall{key, "Resolved: the restic repository of Maison at GDrive no longer fails its check.", false})
+}
+
+func TestAResticAlertEndsWhenTheDestinationKeepsNothingInRestic(t *testing.T) {
+	f, ids, boxes, log := backupMaster(t, "Maison")
+	boxes[ids[0]].set(resticRoutes(true, failedCheck))
+	f.passBackups(context.Background())
+	log.take()
+	boxes[ids[0]].set(resticRoutes(false, "null"))
+	f.passBackups(context.Background())
+	if raises, resolves := countKey(log.take(), "fleet:"+ids[0]+":verify:restic:GDrive"); raises != 0 || resolves != 1 {
+		t.Fatalf("raises %d resolves %d", raises, resolves)
+	}
+}
