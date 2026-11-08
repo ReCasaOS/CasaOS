@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ReCasaOS/CasaOS/common"
+	"github.com/ReCasaOS/CasaOS/pkg/ossupport"
 )
 
 const unknown = "unknown"
@@ -28,6 +29,7 @@ func (t *Telemetry) Properties() map[string]any {
 		"core":                    "v" + common.VERSION,
 		"arch":                    arch(runtime.GOARCH, buildSettings()),
 		"os":                      t.osRelease(),
+		"os_variant":              t.osVariant(),
 		"kernel":                  t.kernel(),
 		"virtualization":          t.virtualization(),
 		"model":                   t.model(),
@@ -71,12 +73,11 @@ func arch(goarch string, settings []debug.BuildSetting) string {
 	return goarch
 }
 
-// osRelease is ID and VERSION_ID from /etc/os-release, ID alone when there is
-// no VERSION_ID.
-func (t *Telemetry) osRelease() string {
+// osReleaseValues is /etc/os-release as key/value pairs, nil when unreadable.
+func (t *Telemetry) osReleaseValues() map[string]string {
 	data, err := os.ReadFile(t.path("/etc/os-release"))
 	if err != nil {
-		return unknown
+		return nil
 	}
 	values := map[string]string{}
 	for _, line := range strings.Split(string(data), "\n") {
@@ -84,6 +85,13 @@ func (t *Telemetry) osRelease() string {
 			values[key] = strings.Trim(value, `"'`)
 		}
 	}
+	return values
+}
+
+// osRelease is ID and VERSION_ID from /etc/os-release, ID alone when there is
+// no VERSION_ID.
+func (t *Telemetry) osRelease() string {
+	values := t.osReleaseValues()
 	switch {
 	case values["ID"] == "":
 		return unknown
@@ -92,6 +100,20 @@ func (t *Telemetry) osRelease() string {
 	default:
 		return values["ID"] + " " + values["VERSION_ID"]
 	}
+}
+
+// osVariant is what a debian or ubuntu box really is (raspberrypi, proxmox...),
+// "none" for plain debian/ubuntu or any other ID, "unknown" with no readable ID.
+func (t *Telemetry) osVariant() string {
+	values := t.osReleaseValues()
+	if values["ID"] == "" {
+		return unknown
+	}
+	exists := func(p string) bool { _, err := os.Stat(t.path(p)); return err == nil }
+	if variant := ossupport.Describe(values, runtime.GOARCH, time.Now(), exists).Variant; variant != "" {
+		return variant
+	}
+	return "none"
 }
 
 var majorMinor = regexp.MustCompile(`^\d+\.\d+`)

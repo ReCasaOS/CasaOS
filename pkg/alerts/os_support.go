@@ -14,7 +14,7 @@ import (
 )
 
 // OSSupportNotifiedFile holds the last state of the operating system's support that was told to the
-// owner, "<id>-<version_id>-<state>". It is the core's only memory of it: a restart changes nothing.
+// owner, "<id>-<version_id>-<state>", or "raspbian-docker28" for a Raspbian box. It is the core's only memory of it: a restart changes nothing.
 const OSSupportNotifiedFile = "/var/lib/casaos/os-support.notified"
 
 var (
@@ -27,7 +27,8 @@ var (
 )
 
 // watchOSSupport tells the owner when the operating system's security support is ending or has
-// ended, once for each state of each release: it looks five minutes after the start, then every day.
+// ended, once for each state of each release (a Raspbian box, which has no state, is told once that
+// Docker 28 is its last): it looks five minutes after the start, then every day.
 func (h *Hub) watchOSSupport(ctx context.Context) {
 	timer := time.NewTimer(osSupportFirst)
 	defer timer.Stop()
@@ -43,7 +44,7 @@ func (h *Hub) watchOSSupport(ctx context.Context) {
 }
 
 // checkOSSupport sends the one message of a state of support that is not told yet, and nothing for
-// "supported" or "unknown". The state is told once: the last one told is in memory and in the marker
+// "supported" or "unknown", except that a Raspbian box is told once that Docker 28 is its last. The state is told once: the last one told is in memory and in the marker
 // file. Unlike a Docker run, which is over, a state of support lasts for months, and a warning that
 // was lost is worse than one that comes twice: so the marker is written only after a message went
 // out. With no channel, with the Updates category off, or when every channel failed, nothing is
@@ -51,11 +52,16 @@ func (h *Hub) watchOSSupport(ctx context.Context) {
 // may tell the state once more. Any number of looks may run at once: one of them tells it.
 func (h *Hub) checkOSSupport() {
 	report := h.OSSupport()
-	state := report.Support.State
-	if state != ossupport.EndingSoon && state != ossupport.SecurityEnded {
-		return
+	var key, sentence string
+	if report.ID == "raspbian" { // no support state to tell for it, only this (the ID exists on 32-bit only)
+		key, sentence = "raspbian-docker28", "Docker 28 is the last Docker for Raspberry Pi OS 32-bit: this box will not get Docker 29. Raspberry Pi OS 64-bit keeps it updated."
+	} else {
+		state := report.Support.State
+		if state != ossupport.EndingSoon && state != ossupport.SecurityEnded {
+			return
+		}
+		key, sentence = report.ID+"-"+report.VersionID+"-"+state, osSupportSentence(report)
 	}
-	key := report.ID + "-" + report.VersionID + "-" + state
 
 	h.osMu.Lock()
 	defer h.osMu.Unlock()
@@ -68,7 +74,7 @@ func (h *Hub) checkOSSupport() {
 		return
 	}
 	// one key per state: the six hours an alert stays quiet are for repeats, not for the next state
-	if !h.raiseAs(alert{key: "os-support:" + key, category: Updates, sentence: osSupportSentence(report)}, true, "") {
+	if !h.raiseAs(alert{key: "os-support:" + key, category: Updates, sentence: sentence}, true, "") {
 		return
 	}
 	// ponytail: without the file (an unwritable state directory) a restart tells the state again.
