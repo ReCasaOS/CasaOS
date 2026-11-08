@@ -12,7 +12,7 @@ import (
 // unproven_arch already, as everything that is not amd64.
 func init() {
 	register(
-		Check{Code: "ssh_dsa_hostkey", Group: GroupPackages, Title: "The SSH server has a host key it can still load", Hops: []HopID{HopDebian12to13}, Run: checkSSHDSAHostKey},
+		Check{Code: "ssh_dsa_hostkey", Group: GroupPackages, Title: "The SSH server has a host key it can still load", Hops: []HopID{HopDebian12to13, HopUbuntu2404to2604}, Run: checkSSHDSAHostKey},
 		Check{Code: "cryptsetup_missing", Group: GroupFilesystem, Title: "The encrypted volumes will open after the upgrade", Hops: []HopID{HopDebian12to13}, Run: checkCrypttab},
 		Check{Code: "sysctl_conf", Group: GroupFilesystem, Title: "No setting is left in /etc/sysctl.conf", Hops: []HopID{HopDebian12to13}, Run: checkSysctlConf},
 		Check{Code: "tmp_tmpfs", Group: GroupFilesystem, Title: "/tmp stays where it is", Hops: []HopID{HopDebian12to13}, Run: checkTmpTmpfs},
@@ -128,13 +128,13 @@ func checkSSHDSAHostKey(ctx context.Context, p Probe) Result {
 	case len(dsa) == len(keys):
 		return Result{
 			Severity: Refuse, Title: "The SSH server has only DSA host keys",
-			Detail: "The OpenSSH of Debian 13 no longer loads DSA keys, and every host key that sshd_config names is one: the SSH server would have no key after the restart, and a machine that is reached over SSH would be lost. Make an Ed25519 key (ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ''), name it with HostKey, restart ssh, and check again.",
+			Detail: "The OpenSSH of the next release (OpenSSH 10: Debian 13, Ubuntu 26.04) no longer loads DSA keys, and every host key that sshd_config names is one: the SSH server would have no key after the restart, and a machine that is reached over SSH would be lost. Make an Ed25519 key (ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ''), name it with HostKey, restart ssh, and check again.",
 			Data:   D{"files": dsa}, Action: ActionNone,
 		}
 	}
 	return Result{
 		Severity: Warn, Title: "The SSH server has a DSA host key",
-		Detail: "The OpenSSH of Debian 13 no longer loads DSA keys: the SSH server will start with its other host keys, and log an error for this one. Remove its HostKey line.",
+		Detail: "The OpenSSH of the next release (OpenSSH 10: Debian 13, Ubuntu 26.04) no longer loads DSA keys: the SSH server will start with its other host keys, and log an error for this one. Remove its HostKey line.",
 		Data:   D{"files": dsa}, Action: ActionNone,
 	}
 }

@@ -79,25 +79,26 @@ C'est par ce fichier que Canonical a suspendu le saut 22.04 → 24.04 entre le 2
 
 ### 4. Les nouveaux contrôles de la readiness
 
-| Code | Saut | Rouge ou avertissement | Ce qu'il lit | Pourquoi |
-|---|---|---|---|---|
-| `ubuntu_pro` | les deux | rouge | une source `esm.ubuntu.com` active | le client `pro` réécrit ses sources pendant le saut, et le moteur ne le fait pas ; à lever plus tard en appelant `pro` dans le bloc 8 |
-| `ssh_dsa_hostkey` | + 24.04 → 26.04 | rouge | (existant, étendu) | 26.04 « Removes support for the weak DSA signature algorithm » |
-| `boot_partition` | 24.04 → 26.04 | rouge | à porter de `_test_and_fail_on_unsupported_boot_partition` | le releaser refuse ces machines |
-| `dbus_broker` | 24.04 → 26.04 | aucun : action du plan | — | le releaser force `dbus-broker` à la place de `dbus` (`_force_dbus_broker_install`) ; le plan l'ajoute aux paquets installés du bloc 6 (`HopSpec.Install`) |
-| `apt_key_weak` | 22.04 → 24.04 | avertissement | les clés des sources tierces mises de côté | l'apt de 24.04 refuse les clés RSA de moins de 2048 bits : la source revient au bloc 8 et `apt-get update` la refuse |
-| `ssh_socket` | 22.04 → 24.04 | à décider sur la jambe de preuve | `Port` et `ListenAddress` de `sshd_config` | en 24.04, sshd passe par `ssh.socket`, configuré par un générateur ; le bloc 7 compare les réglages de sshd d'avant et d'après |
+**Corrigé le 2026-11-08** après lecture de `DistUpgradeQuirks.py`, sur la branche `ubuntu/resolute-updates` d'`ubuntu-release-upgrader` : c'est l'outil qui fait le saut vers 26.04. La première version de cette section citait `_test_and_fail_on_unsupported_boot_partition` et `_force_dbus_broker_install`, deux fonctions que ce fichier n'a pas.
 
-Quirks du releaser écartés, avec leur raison :
+Ce que le releaser fait vers resolute, et ce qu'on en fait :
 
-- `_test_and_fail_on_armhf` et le reste des architectures sont couverts par la porte amd64.
-- `_test_and_fail_without_cgroupv2` est couvert par `cgroup1`.
-- `_test_and_fail_on_tpm_fde` est couvert par `root_luks`.
-- `_checkStoreConnectivity` et `_replaceDebsAndSnaps` (lxd en snap) ne s'appliquent pas : depuis 20.04, lxd est un snap sur Server, et apt ne touche pas aux snaps.
-- `_fix_lintian_resolver_deadlock` (Noble) est à lire. S'il ne touche que lintian, il donne un avertissement quand lintian est installé.
-- `_switch_openssh_to_gssapi` (LP #2167516) est à lire avant la PR du saut concerné.
-- Les paquets que le saut retire (freeradius vers 24.04, d'après les notes de Noble) sont déjà montrés par le plan, et les paquets protégés sont gardés.
-- Les serveurs qui ont leurs propres migrations (Squid, Samba AD DC et MySQL dans les notes de 26.04) : à vérifier contre la liste de `host_services`, et à y ajouter ce qui manque.
+| Quirk | Ici |
+|---|---|
+| `_test_and_fail_without_cgroupv2` | `cgroup1` (existant) |
+| `_test_and_fail_on_tpm_fde` | `root_luks` (existant) |
+| `_test_and_fail_mysql_server_using_mysql_native_password`, `_test_and_fail_rabbitmq_server_installed_and_not_upgradable` | `host_services` refuse déjà `mysql-server` et `rabbitmq-server` installés sur l'hôte, pour tous les sauts |
+| `_fix_lintian_resolver_deadlock` (depuis noble, quand lintian est installé) | apt garde lintian en arrière, et le plan bloque sur un paquet gardé : l'échec est fermé |
+| `_maybe_remove_gpg_wks_server` (gpg-wks-server sans MTA tire postfix) | le plan montre postfix parmi les paquets nouveaux |
+| `_install_linux_metapackage` | la garde du noyau des blocs 7 et 8 (`linux-image-[0-9]*`) |
+| `_force_dracut_install`, Pi, s390x, riscv | hors amd64 |
+| `_install_linux_sysctl_defaults` | ne vaut que depuis oracular |
+| snaps (`_checkStoreConnectivity`, `_replaceDebsAndSnaps`) | apt ne touche pas aux snaps |
+
+Contrôles ajoutés :
+- `ubuntu_pro` : refusé par le plan, au moment de lire les sources (PR 2).
+- `ssh_dsa_hostkey` est étendu au saut 24.04 → 26.04. L'OpenSSH de 26.04 est la 10.2p1 (lu dans l'image), qui ne charge plus les clés DSA.
+- Le saut 22.04 → 24.04 aura ses propres contrôles quand on lira les quirks de noble : `apt_key_weak`, `ssh_socket`.
 
 ### 5. Ce qui tourne après le saut : rust-coreutils, sudo-rs, apt 3.1
 
@@ -118,6 +119,7 @@ La page ne connaît pas les releases, sauf dans les phrases. Elle a besoin des n
 
 ### 8. Preuve et doc
 
+- **Fait le 2026-11-08 :** toute la suite `osplan` et `osrun` passe dans l'image `ubuntu:26.04`, avec ses rust-coreutils 0.10.0 et dash. Cela couvre les blocs, le driver et le script de restauration, exécutés en shell.
 - Une jambe `os-plan-proof` par saut, sur l'image cloud Ubuntu (22.04 et 24.04, avec `SHA256SUMS`). Elle donne la vraie sortie d'`apt-get -s` d'Ubuntu (origines `Ubuntu:24.04/noble-updates`) que `parse.go` doit lire. **Elle vient avant la PR des tables** : sans elle, le parseur n'a jamais lu une ligne d'Ubuntu.
 - Une jambe `os-upgrade-proof` par saut, qui garde les sources de l'image telles quelles (`ubuntu.sources` en 24.04).
 - `docs/os-upgrade-beta.md` gagne une section Ubuntu, avec tout en [N] tant que les jambes n'ont pas tourné.

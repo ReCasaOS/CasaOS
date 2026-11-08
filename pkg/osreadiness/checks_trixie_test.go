@@ -5,7 +5,9 @@ import (
 	"testing"
 )
 
-func sshServer(f *fakeProbe) { f.installed(pkg("openssh-server", "1:9.2p1-2+deb12u7"), "openssh-server") }
+func sshServer(f *fakeProbe) {
+	f.installed(pkg("openssh-server", "1:9.2p1-2+deb12u7"), "openssh-server")
+}
 
 func TestSSHDSAHostKey(t *testing.T) {
 	conf := func(text string) func(*fakeProbe) { return func(f *fakeProbe) { f.set(sshdConfig, text) } }
@@ -25,6 +27,9 @@ func TestSSHDSAHostKey(t *testing.T) {
 		{name: "a DSA key beside an Ed25519 one", setup: after(debian12, sshServer, conf("HostKey /etc/ssh/ssh_host_ed25519_key\nHostKey /etc/ssh/ssh_host_dsa_key\n"),
 			key("/etc/ssh/ssh_host_ed25519_key", "ssh-ed25519 AAAA\n"), key("/etc/ssh/ssh_host_dsa_key", "ssh-dss AAAA\n")),
 			severity: Warn, data: D{"files": []string{"/etc/ssh/ssh_host_dsa_key"}}},
+		// the OpenSSH of Ubuntu 26.04 is 10.2p1, which no longer loads them either
+		{name: "only a DSA key, on Ubuntu 24.04", setup: after(ubuntu2404, sshServer, conf("HostKey /etc/ssh/ssh_host_dsa_key\n"), key("/etc/ssh/ssh_host_dsa_key", "ssh-dss AAAA root@box\n")),
+			severity: Refuse, data: D{"files": []string{"/etc/ssh/ssh_host_dsa_key"}}, action: ActionNone},
 		{name: "an sshd_config that cannot be read", setup: after(debian12, sshServer, func(f *fakeProbe) {
 			f.fail(sshdConfig, &fs.PathError{Op: "open", Path: sshdConfig, Err: fs.ErrPermission})
 		}), severity: Refuse, unknown: ReasonUnreadable},
