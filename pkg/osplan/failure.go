@@ -18,6 +18,8 @@ const (
 	CodeSourcesTarget       = "sources_target"
 	CodeSourcesMixedFile    = "sources_mixed_file"
 	CodeSourcesCDROM        = "sources_cdrom"
+	// CodeNotOffered is a hop of Ubuntu that Canonical does not offer (MetaReleaseLTS), or whose offer could not be read (Data["unknown"]).
+	CodeNotOffered          = "not_offered"
 	CodeSandboxUpdateFailed = "sandbox_update_failed"
 	CodeSandboxSolverFailed = "sandbox_solver_failed"
 	CodePlanUnparsed        = "plan_unparsed"
@@ -29,7 +31,7 @@ const (
 // ErrorCodes are all the codes a plan can fail with.
 var ErrorCodes = []string{
 	CodeNotRoot, CodeHopNotPlanned, CodeIdentityUnsupported, CodeBusy, CodeNoRoom,
-	CodeSourcesFormat, CodeSourcesAlias, CodeSourcesTarget, CodeSourcesMixedFile, CodeSourcesCDROM,
+	CodeSourcesFormat, CodeSourcesAlias, CodeSourcesTarget, CodeSourcesMixedFile, CodeSourcesCDROM, CodeNotOffered,
 	CodeSandboxUpdateFailed, CodeSandboxSolverFailed, CodePlanUnparsed, CodeTimeout, CodeCanceled, CodeInternal,
 }
 
