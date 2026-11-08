@@ -48,11 +48,17 @@ func sandboxArgv(dir string, tail ...string) []string {
 // UpdateArgv is "apt-get update" of the sandbox: it fetches the metadata of the target release into the sandbox's lists.
 func UpdateArgv(dir string) []string { return sandboxArgv(dir, "update", "--error-on=any") }
 
+// sandboxPhased makes the simulations include Ubuntu's phased updates, as the hop's aptq does (HopSpec.phased): without it apt defers an update that Ubuntu hands out in waves,
+// or has halted at 0%, and the plan reads a section it does not know (the QEMU proof of Ubuntu 24.04, 2026-11-08). Debian has no phased updates: apt ignores it there.
+const sandboxPhased = "APT::Get::Always-Include-Phased-Updates=true"
+
 // UpgradeArgv is the simulation of the minimal upgrade.
-func UpgradeArgv(dir string) []string { return sandboxArgv(dir, "-s", "upgrade") }
+func UpgradeArgv(dir string) []string { return sandboxArgv(dir, "-o", sandboxPhased, "-s", "upgrade") }
 
 // DistUpgradeArgv is the simulation of the full upgrade.
-func DistUpgradeArgv(dir string) []string { return sandboxArgv(dir, "-s", "dist-upgrade") }
+func DistUpgradeArgv(dir string) []string {
+	return sandboxArgv(dir, "-o", sandboxPhased, "-s", "dist-upgrade")
+}
 
 // EstimateArgv reads the sizes. Whenever the transaction has an operation to do (a package to upgrade, to install, to remove or to
 // downgrade) or dpkg has work pending (a package half configured), apt stops at its prompt step with "E: Trivial Only specified
@@ -68,7 +74,7 @@ func DistUpgradeArgv(dir string) []string { return sandboxArgv(dir, "-s", "dist-
 // and with a small tmpfs on the archives testdata/real/chroot-d11-12-lowroom-size.txt). The guest of the measurement of the
 // hop was not asked it.
 func EstimateArgv(dir string) []string {
-	return sandboxArgv(dir, "-o", "APT::Get::Trivial-Only=true", "dist-upgrade")
+	return sandboxArgv(dir, "-o", sandboxPhased, "-o", "APT::Get::Trivial-Only=true", "dist-upgrade")
 }
 
 // AllowedSandboxArgv says whether argv is one of the four commands this rung runs, for the sandbox directory dir, and

@@ -71,6 +71,7 @@ func TestTheRunbookOf24To26WritesTheSourcesOfResoluteAndLetsTheMoveOfCoreutilsTh
 		"sim_ok() { [ \"$1\" = 100 ] && grep -q '^E: ' \"$2\" && ! grep '^E: ' \"$2\" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }\n",
 		"aptq -s dist-upgrade > \"$BK/resim.txt\" 2>&1 || sim_ok $? \"$BK/resim.txt\" || {",
 		"aptq -s dist-upgrade > \"$BK/after-minimal.txt\" 2>&1 || sim_ok $? \"$BK/after-minimal.txt\" || {",
+		"-o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true \"$@\"; }\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the runbook does not have %q", want)
@@ -88,6 +89,9 @@ func TestTheRunbookOf24To26WritesTheSourcesOfResoluteAndLetsTheMoveOfCoreutilsTh
 	_, rb11 := realRunbook(t)
 	if strings.Contains(rb11.Text, "sim_ok") || strings.Contains(buildFor(t, d12Plan(t)).Text, "sim_ok") {
 		t.Error("a text of Debian has sim_ok")
+	}
+	if strings.Contains(rb11.Text, "Phased") || strings.Contains(buildFor(t, d12Plan(t)).Text, "Phased") {
+		t.Error("a runbook of Debian includes the phased updates")
 	}
 }
 

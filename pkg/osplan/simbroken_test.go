@@ -2,6 +2,7 @@ package osplan
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -81,5 +82,26 @@ func TestTheSimulationOf24To26WithSudoIsRead(t *testing.T) {
 	}
 	if !strings.Contains(" "+strings.Join(run.New, " ")+" ", " sudo-rs ") {
 		t.Errorf("sudo-rs is not among the new packages: %v", run.New)
+	}
+}
+
+// A box of the cloud image has software-properties-common, whose update in resolute-updates Ubuntu halted at 0% (2026-11-08). Without the phased updates apt defers it, says so in a
+// section the parser does not know, and counts it as not upgraded: the QEMU proof found the plan_unparsed. With them (sandboxPhased) the simulation is read and nothing is left behind.
+func TestTheSimulationOf24To26WithPhasedUpdatesIsRead(t *testing.T) {
+	hop := withUbuntuTestHop(t)
+	if _, f := ParseSolver(hop.withoutSimBroken(realOutput(t, "docker-u24-26-phased-deferred-dist-upgrade.txt"))); f == nil || f.Data["reason"] != "unknown_line" {
+		t.Fatalf("the deferred simulation: %v; want unknown_line", f)
+	}
+	run, f := ParseSolver(hop.withoutSimBroken(realOutput(t, "docker-u24-26-phased-dist-upgrade.txt")))
+	if f != nil {
+		t.Fatalf("ParseSolver: %v", f)
+	}
+	if run.Summary != (Summary{Upgraded: 207, New: 40, Remove: 1}) || !slices.Contains(run.Upgraded, "software-properties-common") {
+		t.Errorf("summary %+v; software-properties-common upgraded: %v", run.Summary, slices.Contains(run.Upgraded, "software-properties-common"))
+	}
+	for _, argv := range [][]string{UpgradeArgv(SandboxParent + "/" + SandboxPrefix + "1"), DistUpgradeArgv(SandboxParent + "/" + SandboxPrefix + "1"), EstimateArgv(SandboxParent + "/" + SandboxPrefix + "1")} {
+		if !slices.Contains(argv, sandboxPhased) {
+			t.Errorf("%v does not include the phased updates", argv)
+		}
 	}
 }
