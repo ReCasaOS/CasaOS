@@ -20,6 +20,8 @@ type Options struct {
 	// Progress is told the phase that begins, from a goroutine that is Run's own.
 	Progress func(phase string)
 	Timeouts Timeouts
+	// MetaRelease reads Canonical's list of the upgrades it offers, for a hop of Ubuntu; nil is a GET of MetaReleaseLTS.
+	MetaRelease func(ctx context.Context) ([]byte, error)
 }
 
 func (o Options) progress(phase string) {
@@ -145,6 +147,9 @@ func Run(ctx context.Context, files Files, sb Sandbox, opts Options) (plan *Plan
 
 	hop, f := Preflight(ctx, files)
 	if f != nil {
+		return nil, f.at(PhaseSources)
+	}
+	if f := checkOffered(ctx, files, hop, opts); f != nil {
 		return nil, f.at(PhaseSources)
 	}
 	safe := osreadiness.Guard(files)
