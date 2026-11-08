@@ -276,6 +276,11 @@ func believed(cctx, report context.Context, result Result) Result {
 	if cctx.Err() != nil && !result.isUnknown() {
 		return unknownWith(endOf(report))
 	}
+	// a check that says it ran out of time when the report has (the identity, cut by the budget):
+	// it is the report's time that ended, whether its answer or its own end was seen first
+	if report.Err() != nil && result.Data["reason"] == ReasonTimeout {
+		return unknownWith(ReasonNotFinished)
+	}
 	return result
 }
 

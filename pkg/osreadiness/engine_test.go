@@ -459,6 +459,18 @@ func TestACheckLateWithItsAnswerIsNotBelieved(t *testing.T) {
 	if ended.Data["reason"] != ReasonNotFinished {
 		t.Fatalf("an answer after the end of the report = %+v", ended)
 	}
+	// a check that answers "it did not answer in time" (the identity cut by the report's budget) as
+	// fast as its own time ends: whichever of the two the engine sees first, the report ran out
+	for _, ctx := range []context.Context{expired, context.Background()} {
+		cut := finalize(Check{Code: "c", Title: "c"}, believed(ctx, expired, unknownWith(ReasonTimeout)))
+		if cut.Data["reason"] != ReasonNotFinished {
+			t.Fatalf("a timeout at the end of the report = %+v", cut)
+		}
+	}
+	other := finalize(Check{Code: "c", Title: "c"}, believed(expired, expired, unknownWith(ReasonMissing)))
+	if other.Data["reason"] != ReasonMissing {
+		t.Fatalf("an unknown that is not a timeout = %+v", other)
+	}
 }
 
 func TestRegisteringACodeTwiceStopsTheProgram(t *testing.T) {
