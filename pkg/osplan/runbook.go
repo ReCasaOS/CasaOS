@@ -165,7 +165,7 @@ func newRbCtx(p Plan) (*rbCtx, []blockSpec, error) {
 // may one have a word that stands for a release (names): it would be changed in the copy that the text writes, and no longer be the file whose hash the plan holds.
 func treeIsSafe(tree []TreeFile) bool {
 	for _, f := range tree {
-		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK", "@from@", "@to@", "@tov@"} {
+		for _, bad := range []string{heredocEnd, blockStart, blockEnd, ">>> BLOCK", "<<< END BLOCK", "@from@", "@to@", "@tov@", "@distro@"} {
 			if strings.Contains(f.Content, bad) {
 				return false
 			}
@@ -279,7 +279,7 @@ func runbookHeader(c *rbCtx) string {
 				names = append(names, fmt.Sprintf("line %d of %s", pa.Line, pa.File))
 			}
 		}
-		fmt.Fprintf(&b, "#  - Sources that are not Debian's are put aside for the hop: %s.\n", strings.Join(names, ", "))
+		fmt.Fprintf(&b, "#  - Sources that are not "+c.hop.Distro+"'s are put aside for the hop: %s.\n", strings.Join(names, ", "))
 	}
 	if p.Sources.DroppedBackports > 0 {
 		fmt.Fprintf(&b, "#  - %d line(s) of backports are dropped.\n", p.Sources.DroppedBackports)
@@ -296,6 +296,14 @@ func runbookHeader(c *rbCtx) string {
 	return b.String()
 }
 
+// canonicalOf is who publishes the distribution of a hop, as the provenance names it.
+func canonicalOf(h HopSpec) string {
+	if h.Distro == "Ubuntu" {
+		return "Canonical"
+	}
+	return h.Distro
+}
+
 // provenance is what the runbook says of where its commands were measured and tried. It names the releases of the measurement, which are not
 // always the ones of the hop: it is the one part of the text that keeps them as they were written.
 func provenance(c *rbCtx) string {
@@ -303,7 +311,11 @@ func provenance(c *rbCtx) string {
 	b.WriteString("#  - The apt COMMANDS of blocks 3 to 6 below, and their order (update, the download and the minimal upgrade, the download and the full upgrade, the simulation that finds nothing left), are\n")
 	b.WriteString("#    the ones of a hop from Debian 11 to Debian 12 that was measured in a virtual machine, on a clean cloud image with ReCasaOS and Docker installed, and that ended with the machine up on Debian 12,\n")
 	b.WriteString("#    but for one option: the measured hop ran them with Dpkg::Use-Pty=0, and this text leaves apt's pty on, so that /var/log/apt/term.log holds what dpkg and the scripts of the packages print.\n")
-	if c.hop.ID != osreadiness.HopDebian11to12 {
+	switch {
+	case c.hop.Distro != "Debian":
+		fmt.Fprintf(&b, "#  - NO HOP FROM %s TO %s WAS MEASURED. %s does not prescribe these commands: its own tool for the hop is do-release-upgrade, and its apt, kernel,\n", strings.ToUpper(c.hop.FromName()), strings.ToUpper(c.hop.ToName()), canonicalOf(c.hop))
+		b.WriteString("#    OpenSSH and systemd are new to this text: what they do on a machine was never seen by it.\n")
+	case c.hop.ID != osreadiness.HopDebian11to12:
 		fmt.Fprintf(&b, "#  - NO HOP FROM %s TO %s WAS MEASURED. The release notes of %s prescribe the same commands in the same order, but its apt, kernel, OpenSSH and systemd\n", strings.ToUpper(c.hop.FromName()), strings.ToUpper(c.hop.ToName()), c.hop.ToName())
 		b.WriteString("#    are new to this text: what they do on a machine was never seen by it.\n")
 	}
@@ -679,7 +691,7 @@ func checkSim(file, tail string) string {
 	return shLines(
 		fmt.Sprintf(`[ -n "$(removes_of "%[1]s")" ] || { echo "STOP: apt printed no summary line: see %[1]s. %[2]s"; exit 1; }`, file, tail),
 		fmt.Sprintf(`[ "$(removed_of "%[1]s" | awk 'END { print NR }')" = "$(removes_of "%[1]s")" ] || { echo "STOP: the packages that apt lists as removed are not as many as its summary says: see %[1]s. %[2]s"; exit 1; }`, file, tail),
-		fmt.Sprintf(`if grep -q '^The following packages will be DOWNGRADED:' "%[1]s" || grep -Eq ' [0-9]+ downgraded, ' "%[1]s"; then echo "STOP: apt would downgrade packages (a pin over 1000, a package on hold, a package from outside Debian): see %[1]s. %[2]s"; exit 1; fi`, file, tail),
+		fmt.Sprintf(`if grep -q '^The following packages will be DOWNGRADED:' "%[1]s" || grep -Eq ' [0-9]+ downgraded, ' "%[1]s"; then echo "STOP: apt would downgrade packages (a pin over 1000, a package on hold, a package from outside @distro@): see %[1]s. %[2]s"; exit 1; fi`, file, tail),
 	)
 }
 
@@ -859,9 +871,9 @@ func (c *rbCtx) restoreText() string {
 }
 
 // names is s with the releases of the hop of c in place of the words that stand for them in the texts of the blocks: @from@ and @to@ are the releases ("Debian 11"),
-// @tov@ the number of the one reached ("Debian 11 and 12 are mixed"). Every text is written with them and goes through here once, before it is hashed or shown.
+// @tov@ the number of the one reached ("Debian 11 and 12 are mixed"), @distro@ the distribution ("Debian"). Every text is written with them and goes through here once, before it is hashed or shown.
 func (c *rbCtx) names(s string) string {
-	return strings.NewReplacer("@from@", c.hop.FromName(), "@to@", c.hop.ToName(), "@tov@", c.hop.ToVersion).Replace(s)
+	return strings.NewReplacer("@from@", c.hop.FromName(), "@to@", c.hop.ToName(), "@tov@", c.hop.ToVersion, "@distro@", c.hop.Distro).Replace(s)
 }
 
 // shSourcesBackup is what a block does before it changes a file of /etc/apt: it writes the restore script and reads it back, and copies /etc/apt whole (or not at all). Block 3
@@ -1132,7 +1144,7 @@ var debianBlocks = []blockSpec{
 			"It first asks whether it was run before (pasted again, it says to run the restore script, or that it ended and the next is block 4), then looks again at what it relies on (the plan is inside its 24 hours,",
 			"the sources of apt are still the plan's: block 0 looked once, and hours may have passed), stops the timers again, stops while a package manager is at work, copies /etc/apt",
 			"(whole or not at all), writes the sources that the plan generated (exactly its text: it reads them back and compares their hash with the plan's, before and after it puts them in place), puts aside",
-			"the sources that are not Debian's, runs apt-get update, then simulates the upgrade again and compares what apt would remove with the plan. The counts may drift by a few; the NAMES of the removals",
+			"the sources that are not @distro@'s, runs apt-get update, then simulates the upgrade again and compares what apt would remove with the plan. The counts may drift by a few; the NAMES of the removals",
 			"may not, and neither may a package that apt keeps back or does not upgrade, or a downgrade (the plan has none).",
 			"It also looks at the folders that another plan of this machine left in /var/backups, as block 0 does: the sources of apt are the ones that plan's block 3 wrote, and its restore script is the way back.",
 			"Until block 5 begins, the sources can be put back with: sh /var/backups/casaos-os-upgrade-<plan id>/restore-sources.sh (it also lets you run this block again). From block 5 on it refuses: the way is forward.",
@@ -1183,7 +1195,7 @@ var debianBlocks = []blockSpec{
 			b.WriteString("echo \"apt says now:   $(grep -E '^[0-9]+ upgraded, ' \"$BK/resim.txt\" || echo 'no summary')\"\n")
 			b.WriteString(checkSim("$BK/resim.txt", "$undo"))
 			b.WriteString("if grep -q '^The following packages have been kept back:' \"$BK/resim.txt\" || [ \"$(notup_of \"$BK/resim.txt\")\" != 0 ]; then\n")
-			b.WriteString("  echo \"STOP: apt would now keep packages back, or not upgrade them, where the plan has none: something changed since the plan (a hold, a package from outside Debian, a mirror that moved). See $BK/resim.txt. $undo $changed\"\n")
+			b.WriteString("  echo \"STOP: apt would now keep packages back, or not upgrade them, where the plan has none: something changed since the plan (a hold, a package from outside @distro@, a mirror that moved). See $BK/resim.txt. $undo $changed\"\n")
 			b.WriteString("  exit 1\n")
 			b.WriteString("fi\n")
 			b.WriteString("removed_of \"$BK/resim.txt\" > \"$BK/resim-removed.txt\"\n")
@@ -1455,7 +1467,7 @@ var debianBlocks = []blockSpec{
 				b.WriteString("# 'not published' for 403, 404 and 410 and the server's own trouble for the others (429, 5xx); anything else is the network (6 no name, 7 no connection, 28 too\n")
 				b.WriteString("# slow) or no curl, and is no answer.\n")
 				b.WriteString("rc=0\ncode=000\n")
-				b.WriteString("if command -v curl > /dev/null 2>&1; then code=\"$(curl -fsI --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' https://download.docker.com/linux/debian/dists/" + c.hop.To + "/InRelease)\" || rc=$?; else rc=127; fi\n")
+				b.WriteString("if command -v curl > /dev/null 2>&1; then code=\"$(curl -fsI --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' https://download.docker.com/linux/" + strings.ToLower(c.hop.Distro) + "/dists/" + c.hop.To + "/InRelease)\" || rc=$?; else rc=127; fi\n")
 				b.WriteString("if [ \"$rc\" = 0 ]; then\n")
 				for _, pa := range c.plan.Paused {
 					switch {

@@ -101,6 +101,7 @@ var stopClasses = []stopClass{
 	{"the hop is over", osrun.ClassIdentity},
 	{"run this as root", osrun.ClassIdentity},
 	{"this machine is not Debian", osrun.ClassIdentity},
+	{"this machine is not Ubuntu", osrun.ClassIdentity},
 	{"this machine is called", osrun.ClassIdentity},
 	{"the machine has not been restarted", osrun.ClassIdentity},
 	{"the sources of apt do not name", osrun.ClassIdentity},
