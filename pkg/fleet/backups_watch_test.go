@@ -643,3 +643,52 @@ func TestAResticAlertEndsWhenTheDestinationKeepsNothingInRestic(t *testing.T) {
 		t.Fatalf("raises %d resolves %d", raises, resolves)
 	}
 }
+
+// oldRows answers the verifications route with an old rclone-style failed test
+// of each app kept in GDrive.
+func oldRows(r map[string]Response) map[string]Response {
+	r[am+"/backup/verifications"] = ok(`{"data":[
+		{"id":"v1","destination":"GDrive","app":"jarvis","stamp":"s","status":"failed","error":"token=abc","started_at":"2026-10-08T11:00:00Z","finished_at":"2026-10-08T11:02:00Z"},
+		{"id":"v2","destination":"GDrive","app":"immich","stamp":"s","status":"failed","error":"token=abc","started_at":"2026-10-08T11:00:00Z","finished_at":"2026-10-08T11:02:00Z"}]}`)
+	return r
+}
+
+// A restic route that fails for a pass says nothing of the repository: its
+// alert is carried, and the old rows of the verifications route, from before
+// restic, raise nothing.
+func TestAResticRouteThatFailsCarriesTheRepositoryAlert(t *testing.T) {
+	f, ids, boxes, log := backupMaster(t, "Maison")
+	key := "fleet:" + ids[0] + ":verify:restic:GDrive"
+	boxes[ids[0]].set(oldRows(resticRoutes(true, failedCheck)))
+	f.passBackups(context.Background())
+	wantCalls(t, log.take(), hookCall{key, "The restic repository of Maison at GDrive failed its check. See the Fleet page.", true})
+
+	unread := oldRows(resticRoutes(true, failedCheck))
+	unread[am+"/backup/destinations/GDrive/restic"] = Response{Status: 500}
+	boxes[ids[0]].set(unread)
+	f.passBackups(context.Background())
+	wantCalls(t, log.take())
+	f.backupMu.Lock()
+	green := f.backups[ids[0]].Green
+	f.backupMu.Unlock()
+	if green {
+		t.Fatal("green while the repository alert is carried")
+	}
+
+	boxes[ids[0]].set(oldRows(resticRoutes(true, `{"at":"2026-11-08T11:30:00Z","ok":true}`)))
+	f.passBackups(context.Background())
+	wantCalls(t, log.take(), hookCall{key, "Resolved: the restic repository of Maison at GDrive no longer fails its check.", false})
+}
+
+// An AppManagement without the restic route (404) has no repository: its
+// couples' restore tests alert as they always did.
+func TestWithoutTheResticRouteTheTestsAlertAsBefore(t *testing.T) {
+	f, ids, boxes, log := backupMaster(t, "Maison")
+	old := oldRows(resticRoutes(false, "null"))
+	delete(old, am+"/backup/destinations/GDrive/restic")
+	boxes[ids[0]].set(old)
+	f.passBackups(context.Background())
+	if raises, resolves := verifyCalls(log.take()); raises != 2 || resolves != 0 {
+		t.Fatalf("raises %d resolves %d", raises, resolves)
+	}
+}

@@ -110,8 +110,11 @@ func (f *Fleet) pollBox(ctx context.Context, box Box) BoxBackups {
 				LastCheck *ResticCheck `json:"last_check"`
 			} `json:"data"`
 		}
-		if f.fetch(ctx, box.ID, path, &rs) == nil {
+		switch err := f.fetch(ctx, box.ID, path, &rs); {
+		case err == nil:
 			in.Restic[d] = resticRow{Known: true, Kept: rs.Data.Kept, Check: rs.Data.LastCheck}
+		case !errors.Is(err, statusError(http.StatusNotFound)):
+			in.Restic[d] = resticRow{Unread: true} // a 404 is an AppManagement without restic: no repository
 		}
 	}
 

@@ -122,6 +122,11 @@ func (f *Fleet) alertBackups(b *BoxBackups) {
 			carried[backup+"failed"], carried[backup+"late"] = true, true
 		}
 		repo := prefix + "verify:restic:" + c.Destination
+		key := prefix + "verify:" + c.App + ":" + c.Destination
+		if c.resticUnread { // its verify state comes from rows that may predate restic: say nothing of either
+			carried[repo], carried[key] = true, true
+			continue
+		}
 		if c.Restic {
 			switch {
 			case c.ResticCheck == nil:
@@ -132,7 +137,6 @@ func (f *Fleet) alertBackups(b *BoxBackups) {
 			}
 			continue
 		}
-		key := prefix + "verify:" + c.App + ":" + c.Destination
 		switch c.Verify.State {
 		case "failed":
 			raise(key, "Verification of the backup of "+what+" failed. See the Fleet page.", "Resolved: the verification of the backup of "+what+" no longer fails.")

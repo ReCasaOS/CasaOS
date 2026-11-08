@@ -41,6 +41,8 @@ type Couple struct {
 	Restic      bool         `json:"restic"`
 	ResticCheck *ResticCheck `json:"restic_check"`
 	Verify      CoupleVerify `json:"verify"`
+
+	resticUnread bool // its destination's restic route failed this pass: its alerts are carried
 }
 
 // CoupleVerify is the last restore test of a couple: none, passed, failed,
@@ -98,6 +100,7 @@ type verifyRow struct {
 
 type resticRow struct {
 	Known, Kept bool
+	Unread      bool // the route was asked and failed (not a 404): the repository may be there
 	Check       *ResticCheck
 }
 
@@ -227,6 +230,7 @@ func assess(in backupInput, now time.Time) (couples []Couple, state string, gree
 // verifyOf fills the restic fields of c and returns its verification state.
 func verifyOf(in backupInput, c *Couple) CoupleVerify {
 	rr, asked := in.Restic[c.Destination]
+	c.resticUnread = rr.Unread
 	if rr.Kept {
 		c.Restic, c.ResticCheck = true, rr.Check
 		switch {
