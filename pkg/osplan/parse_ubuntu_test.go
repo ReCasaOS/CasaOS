@@ -32,8 +32,8 @@ func TestTheOutputsOfAptOnUbuntu2204To2404AreRead(t *testing.T) {
 }
 
 // From 24.04 to 26.04 apt's simulation of the full upgrade ends with status 100 and "E: Conf Broken coreutils-from-uutils:amd64": the order it simulates for the move of coreutils to
-// rust-coreutils (coreutils-from-uutils Breaks coreutils) is one that dpkg does not take. The real hop goes through. It does so after the minimal upgrade too. Until the hop is planned
-// with a way through it (the PR of the hop), the plan says what it is: a solver that failed. This test is there so that the change is seen when it comes.
+// rust-coreutils (coreutils-from-uutils Breaks coreutils) is one that dpkg does not take. The real hop goes through. It does so after the minimal upgrade too. ParseSolver alone
+// reads it as a solver that failed: the plan reads it through the hop's SimBroken (simbroken_test.go).
 func TestTheSimulationOfUbuntu2404To2604EndsOnTheMoveOfCoreutils(t *testing.T) {
 	if f := ParseUpdate(realOutput(t, "docker-u24-26-update.txt")); f != nil {
 		t.Errorf("update: %v", f)

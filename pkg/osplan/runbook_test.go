@@ -1250,7 +1250,7 @@ func TestThereIsNoRunbookForABlockedPlanAnUnknownHopOrAnUnsafeTree(t *testing.T)
 	base := *realPlan(t)
 	cases := map[string]func(p *Plan){
 		"a blocked plan": func(p *Plan) { p.Verdict = VerdictBlocked },
-		"another hop":    func(p *Plan) { p.Hop = "ubuntu-24.04-26.04" },
+		"another hop":    func(p *Plan) { p.Hop = "ubuntu-22.04-24.04" },
 		"no hop":         func(p *Plan) { p.Hop = "" },
 		"no tree":        func(p *Plan) { p.Sources.Tree = nil },
 		"a bad id":       func(p *Plan) { p.PlanID = "p1-x; rm -rf /" },

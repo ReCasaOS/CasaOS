@@ -33,6 +33,9 @@ type HopSpec struct {
 	Firmware bool
 	// Deb822 says that the plan reads the .sources files (deb822) of the box: without it, a box that has one is refused.
 	Deb822 bool
+	// SimBroken are the packages whose "E: Conf Broken" ends apt's simulation of the full upgrade (status 100) when the real upgrade goes through: the order that apt's simulator
+	// takes for them is not the one dpkg takes. Each was seen both ways, simulated and run, on the release that is left (withoutSimBroken, and sim_ok in the texts).
+	SimBroken []string
 	// Refresh says that the sources are written for bringing the release that is left up to its last state, and not for the next one: the lines of that release are kept as they are
 	// (its suite, its host, its components, its backports), and what is not the distribution's is put aside as it is for a hop. Only ForRefresh sets it.
 	Refresh bool
@@ -49,13 +52,18 @@ func (h HopSpec) ForRefresh() HopSpec {
 func (h HopSpec) FromName() string { return h.Distro + " " + h.FromVersion }
 func (h HopSpec) ToName() string   { return h.Distro + " " + h.ToVersion }
 
-// planHops is the one table of the hops a plan can be made for: every other hop is hop_not_planned (Ubuntu is a later rung).
+// planHops is the one table of the hops a plan can be made for: every other hop is hop_not_planned.
 // The hop from Debian 12 reads the .sources files (Deb822): the images of Debian 12 and Docker's own install page write them. It
 // keeps Firmware: a box that came from Debian 11 may have non-free without non-free-firmware. The hop from Debian 11 does not
 // read them, and is what was measured.
 var planHops = []HopSpec{
 	{ID: osreadiness.HopDebian11to12, Distro: "Debian", From: "bullseye", To: "bookworm", FromVersion: "11", ToVersion: "12", Later: []string{"trixie", "forky"}, Firmware: true},
 	{ID: osreadiness.HopDebian12to13, Distro: "Debian", From: "bookworm", To: "trixie", FromVersion: "12", ToVersion: "13", Later: []string{"forky", "duke"}, Firmware: true, Deb822: true},
+	// the codenames after 26.04 are distro-info-data's (2026.10.12): 26.10 stonking, 27.04 tenacious. The move of coreutils to rust-coreutils ends apt's simulation of the full
+	// upgrade on coreutils-from-uutils, before the minimal upgrade and after it, and the real upgrade goes through (the image ubuntu:24.04, apt 2.8.3, 2026-11-08:
+	// testdata/real/docker-u24-26-*).
+	{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04", Later: []string{"stonking", "tenacious"}, Deb822: true,
+		SimBroken: []string{"coreutils-from-uutils"}},
 }
 
 // PlannedHop is the hop of a box's identity, when a plan can be made for it.

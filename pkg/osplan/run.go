@@ -210,6 +210,7 @@ func Run(ctx context.Context, files Files, sb Sandbox, opts Options) (plan *Plan
 	if f != nil {
 		return nil, f
 	}
+	distOut = hop.withoutSimBroken(distOut)
 	if f := solverFailure(distOut); f != nil {
 		return nil, f.at(PhaseDistUpgrade)
 	}

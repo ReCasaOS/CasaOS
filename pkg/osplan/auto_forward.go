@@ -25,7 +25,7 @@ const forwardUnits = "apt-daily.timer apt-daily-upgrade.timer apt-daily.service 
 func autoForward(c *rbCtx) string {
 	var b strings.Builder
 	b.WriteString(head(c, ""))
-	b.WriteString(c.aptq() + shSim + c.guard() + c.help() + shDpkgState)
+	b.WriteString(c.aptq() + shSim + c.hop.simOK() + c.guard() + c.help() + shDpkgState)
 	b.WriteString("echo \"Block F: mending what an interrupted upgrade left half done.\"\n")
 	b.WriteString(shTimersOf(forwardUnits))
 	b.WriteString(busyCheck("The upgrade has begun: do not undo anything."))

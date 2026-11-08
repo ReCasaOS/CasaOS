@@ -120,8 +120,9 @@ type blockSpec struct {
 
 // runbookHops is the table of the hops that have a runbook: adding a hop is adding its blocks here.
 var runbookHops = map[osreadiness.HopID][]blockSpec{
-	osreadiness.HopDebian11to12: debianBlocks,
-	osreadiness.HopDebian12to13: debianBlocks,
+	osreadiness.HopDebian11to12:     aptBlocks,
+	osreadiness.HopDebian12to13:     aptBlocks,
+	osreadiness.HopUbuntu2404to2604: aptBlocks,
 }
 
 // backupFoldersScopedByHop says whether head() and otherPlans() look only at the backup folders of their own hop. They do: a hop other than the first writes its id in
@@ -532,7 +533,7 @@ func (c *rbCtx) repairLadder(opts string, more func(file string) string) string 
 	b.WriteString("  guard_removals \"$BK/repair.txt\" \"the repair\"\n")
 	b.WriteString(after("$BK/repair.txt"))
 	b.WriteString("  aptq -f install || " + stop("apt could not repair the packages. Do not undo anything: ask for help. "+c.logWords()) + "\n")
-	b.WriteString("  aptq -s dist-upgrade" + opts + " > \"$BK/after-repair.txt\" 2>&1 || { echo \"STOP: apt cannot work out the full upgrade after the repair: see $BK/after-repair.txt. $help\"; exit 1; }\n")
+	b.WriteString("  aptq -s dist-upgrade" + opts + " > \"$BK/after-repair.txt\" 2>&1" + c.hop.simOr("$BK/after-repair.txt") + " || { echo \"STOP: apt cannot work out the full upgrade after the repair: see $BK/after-repair.txt. $help\"; exit 1; }\n")
 	b.WriteString(indentBy(checkSim("$BK/after-repair.txt", "$help"), "  "))
 	b.WriteString("  guard_removals \"$BK/after-repair.txt\" \"the full upgrade after the repair\"\n")
 	b.WriteString(after("$BK/after-repair.txt"))
@@ -1013,8 +1014,8 @@ func verifyGate() string {
 	)
 }
 
-// debianBlocks are the blocks of the hop from Debian 11 to 12: block 0 to 8.
-var debianBlocks = []blockSpec{
+// aptBlocks are the blocks of the hops that apt makes: block 0 to 8. They were written for the hop from Debian 11 to 12.
+var aptBlocks = []blockSpec{
 	{
 		RunbookBlock: RunbookBlock{ID: "verify", Title: "check that this is the machine of the plan, and that it is ready"},
 		prose: []string{
@@ -1152,7 +1153,7 @@ var debianBlocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(c.aptq() + shSim + shNotup + sourcesHash)
+			b.WriteString(c.aptq() + shSim + c.hop.simOK() + shNotup + sourcesHash)
 			b.WriteString("APT_ETC=/etc/apt\n")
 			b.WriteString("undo=\"No package has been installed or removed yet. To put the sources back: sh $BK/restore-sources.sh   (it also lets this block be run again, and this block says when the plan is no longer good).\"\n")
 			b.WriteString("changed=\"The machine is not as it was when the plan was made: once the sources are back, ask for a new plan.\"\n")
@@ -1190,7 +1191,7 @@ var debianBlocks = []blockSpec{
 			b.WriteString("# the sources that the plan generated, each under a new name first, read back and compared with the plan's hash, and put in place when all are right\n")
 			b.WriteString(treeFiles(c))
 			b.WriteString("aptq update --error-on=any || { echo \"STOP: apt-get update does not go through with the new sources: the network, a mirror, or the lock of the lists held by another package manager (apt-get update does not wait for a lock): see what it printed above. $undo\"; exit 1; }\n")
-			b.WriteString("aptq -s dist-upgrade > \"$BK/resim.txt\" 2>&1 || { echo \"STOP: apt cannot work out the upgrade now: see $BK/resim.txt. $undo\"; exit 1; }\n")
+			b.WriteString("aptq -s dist-upgrade > \"$BK/resim.txt\" 2>&1" + c.hop.simOr("$BK/resim.txt") + " || { echo \"STOP: apt cannot work out the upgrade now: see $BK/resim.txt. $undo\"; exit 1; }\n")
 			fmt.Fprintf(&b, "echo \"The plan expected: %d upgraded, %d newly installed, %d to remove and %d not upgraded.\"\n", c.plan.Counts.DistUpgrade.Upgraded, c.plan.Counts.DistUpgrade.New, c.plan.Counts.DistUpgrade.Removed, c.plan.Counts.DistUpgrade.KeptBack)
 			b.WriteString("echo \"apt says now:   $(grep -E '^[0-9]+ upgraded, ' \"$BK/resim.txt\" || echo 'no summary')\"\n")
 			b.WriteString(checkSim("$BK/resim.txt", "$undo"))
@@ -1243,7 +1244,7 @@ var debianBlocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(c.aptq() + shSim + c.guard() + c.help() + shDpkgState)
+			b.WriteString(c.aptq() + shSim + c.hop.simOK() + c.guard() + c.help() + shDpkgState)
 			b.WriteString(c.survive())
 			b.WriteString(c.confirm())
 			b.WriteString("[ \"$CONFIRM\" = I-HAVE-A-SNAPSHOT-OR-A-CONSOLE-AND-GO-ON ] || " + stop("this is the point of no return. Type the words between the quotes of CONFIRM at the top of this block, if you have a snapshot or a console, and want to go on.") + "\n")
@@ -1266,7 +1267,7 @@ var debianBlocks = []blockSpec{
 			b.WriteString("  fi\n")
 			b.WriteString("  echo \"STOP: the minimal upgrade failed, and it has begun: do not restore anything. Run: " + forwardCommands + "   then type the confirmation again and run this block again. " + c.logWords() + "\"; exit 1\n")
 			b.WriteString("fi\n")
-			b.WriteString("aptq -s dist-upgrade > \"$BK/after-minimal.txt\" 2>&1 || { echo \"STOP: apt cannot work out the full upgrade: see $BK/after-minimal.txt. $help\"; exit 1; }\n")
+			b.WriteString("aptq -s dist-upgrade > \"$BK/after-minimal.txt\" 2>&1" + c.hop.simOr("$BK/after-minimal.txt") + " || { echo \"STOP: apt cannot work out the full upgrade: see $BK/after-minimal.txt. $help\"; exit 1; }\n")
 			b.WriteString(checkSim("$BK/after-minimal.txt", "$help"))
 			b.WriteString("guard_removals \"$BK/after-minimal.txt\"\n")
 			b.WriteString(c.done("minimal", 5))
@@ -1288,7 +1289,7 @@ var debianBlocks = []blockSpec{
 		body: func(c *rbCtx, prev string) string {
 			var b strings.Builder
 			b.WriteString(head(c, prev))
-			b.WriteString(c.aptq() + shSim + c.guard() + c.help())
+			b.WriteString(c.aptq() + shSim + c.hop.simOK() + c.guard() + c.help())
 			b.WriteString(c.survive())
 			b.WriteString(shTimers())
 			b.WriteString(busyCheck("The upgrade has begun: do not undo anything."))

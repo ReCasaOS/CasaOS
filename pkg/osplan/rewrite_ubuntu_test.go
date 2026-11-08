@@ -2,17 +2,25 @@ package osplan
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 )
 
-// The two hops of Ubuntu, as the tests read sources for them: neither is in the tables yet.
+// The two hops of Ubuntu, as the tests read sources for them: the one from 24.04 is the table's (TestTheHopFromUbuntu2404IsTheTables), the one from 22.04 is not there yet.
 var (
 	jammyToNoble    = HopSpec{ID: osreadiness.HopUbuntu2204to2404, Distro: "Ubuntu", From: "jammy", To: "noble", FromVersion: "22.04", ToVersion: "24.04", Later: []string{"resolute"}, Deb822: true}
-	nobleToResolute = HopSpec{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04", Deb822: true}
+	nobleToResolute = HopSpec{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04",
+		Later: []string{"stonking", "tenacious"}, Deb822: true, SimBroken: []string{"coreutils-from-uutils"}}
 )
+
+func TestTheHopFromUbuntu2404IsTheTables(t *testing.T) {
+	if hop := withUbuntuTestHop(t); !reflect.DeepEqual(hop, nobleToResolute) {
+		t.Errorf("the table has %+v, the tests %+v", hop, nobleToResolute)
+	}
+}
 
 // realSource is a file of sources as the image has it (testdata/real/ubuntu-*: the files of the images ubuntu:22.04 and ubuntu:24.04, copied as they are).
 func realSource(t *testing.T, name, fixture string) osreadiness.SourceFile {
