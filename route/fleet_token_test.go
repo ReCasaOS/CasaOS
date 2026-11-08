@@ -72,7 +72,7 @@ func TestRelayedBackupActionsWantTheAccessTokenInTheHeader(t *testing.T) {
 			t.Errorf("%s %s with the access token = %d, want 404 (past the token checks)", method, path, code)
 		}
 		// no header: the access token in the query is no use on a POST, and the
-		// group refuses before the route; headerTokenOnly refuses it too
+		// group's JWT check refuses before the route (headerTokenOnly's own message is behind it and is covered by TestHeaderTokenOnly)
 		if code, _ := do(method, path+"?token="+access, ""); code != http.StatusUnauthorized {
 			t.Errorf("%s %s with the token in the query = %d, want 401", method, path, code)
 		}
