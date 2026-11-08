@@ -290,70 +290,97 @@ func unique(list []string) []string {
 // and Suites (and Components, Enabled), whose values may go on to the lines that follow. A stanza
 // that has not the three is not understood; one that is not enabled is read and left out. What it costs
 // is the size of the file: the lines of a field are kept as lines and read once at the end of the stanza,
-// and a file that has more sources than a machine has is not understood.
+// and a file that has more sources than a machine has is not understood. A field that is written twice is
+// the last one, as it always was here.
 func parseDeb822(file, text string) (entries []sourceEntry, ok bool) {
-	var stanza map[string][]string
-	var last string
-	flush := func() bool {
-		if stanza == nil {
-			return true
+	stanzas, ok := ReadDeb822(text)
+	if !ok {
+		return nil, false
+	}
+	for _, st := range stanzas {
+		fields := map[string][]string{}
+		for _, f := range st.Fields {
+			fields[strings.ToLower(f.Key)] = f.Lines
 		}
-		fields := stanza
-		stanza, last = nil, ""
 		if enabled, set := fields["enabled"]; set && aptFalse(strings.Join(enabled, " ")) {
-			return true
+			continue
 		}
 		kinds, uris, suites := unique(fieldWords(fields["types"])), unique(fieldWords(fields["uris"])), unique(fieldWords(fields["suites"]))
 		if len(kinds) == 0 || len(uris) == 0 || len(suites) == 0 {
-			return false
+			return nil, false
 		}
 		if len(entries)+len(kinds)*len(uris) > maxSourceEntries || len(suites) > maxSourceSuites {
-			return false
+			return nil, false
 		}
 		components := unique(fieldWords(fields["components"]))
 		if len(components) > maxSourceComponents {
-			return false
+			return nil, false
 		}
 		for _, kind := range kinds {
 			if kind != "deb" && kind != "deb-src" {
-				return false
+				return nil, false
 			}
 			for _, uri := range uris {
 				entries = append(entries, sourceEntry{File: file, Kind: kind, URI: uri, Suites: suites, Components: components})
 			}
 		}
-		return true
 	}
-	for _, line := range strings.Split(text, "\n") {
+	return entries, true
+}
+
+// A Deb822Field is a field of a stanza of a .sources file: its name as written, its lines (what follows the colon on the
+// first one, then the lines that go on from it, each without the white space around it), and the numbers of its first and
+// last lines in the file (from 1). A comment between its lines is not one of them.
+type Deb822Field struct {
+	Key         string
+	Lines       []string
+	First, Last int
+}
+
+// A Deb822Stanza is a stanza of a .sources file: its fields in the order they are written, and the numbers of its first and
+// last lines that are not comments.
+type Deb822Stanza struct {
+	Fields      []Deb822Field
+	First, Last int
+}
+
+// ReadDeb822 is the one reader of the .sources files, for the report and for the plan: stanzas separated by blank lines, a
+// field per line that has a colon and does not begin with white space, the lines that begin with it going on with the field
+// above, and the lines that begin with # left out wherever they are. ok is false for a line that goes on from nothing and
+// for a line with no colon, or with nothing before it. What a field says is not looked at here.
+func ReadDeb822(text string) (stanzas []Deb822Stanza, ok bool) {
+	open := false
+	for i, line := range strings.Split(text, "\n") {
+		n := i + 1
 		line = strings.TrimRight(line, "\r")
 		switch {
 		case strings.HasPrefix(line, "#"):
 			continue
 		case strings.TrimSpace(line) == "":
-			if !flush() {
-				return nil, false
-			}
+			open = false
 		case line[0] == ' ' || line[0] == '\t':
-			if last == "" {
+			if !open {
 				return nil, false
 			}
-			stanza[last] = append(stanza[last], strings.TrimSpace(line))
+			st := &stanzas[len(stanzas)-1]
+			f := &st.Fields[len(st.Fields)-1]
+			f.Lines = append(f.Lines, strings.TrimSpace(line))
+			f.Last, st.Last = n, n
 		default:
 			key, value, found := strings.Cut(line, ":")
 			if !found || strings.TrimSpace(key) == "" {
 				return nil, false
 			}
-			if stanza == nil {
-				stanza = map[string][]string{}
+			if !open {
+				stanzas = append(stanzas, Deb822Stanza{First: n})
+				open = true
 			}
-			last = strings.ToLower(strings.TrimSpace(key))
-			stanza[last] = []string{strings.TrimSpace(value)}
+			st := &stanzas[len(stanzas)-1]
+			st.Fields = append(st.Fields, Deb822Field{Key: strings.TrimSpace(key), Lines: []string{strings.TrimSpace(value)}, First: n, Last: n})
+			st.Last = n
 		}
 	}
-	if !flush() {
-		return nil, false
-	}
-	return entries, true
+	return stanzas, true
 }
 
 // scheme is the transport of the URI, lower case: "http", "https", "cdrom", "file", "copy", "mirror+http".
@@ -419,6 +446,12 @@ func markDistro(ctx context.Context, p Probe, entries []sourceEntry) ([]sourceEn
 			e.Distro = false
 		case e.official():
 			e.Distro = true
+		case mirrorListURI.MatchString(e.URI):
+			distro, decided, err := mirrorListDistro(ctx, p, e.URI)
+			if err != nil {
+				return nil, err
+			}
+			e.Distro = distro && decided
 		default:
 			var own, rest []string
 			for _, suite := range e.Suites {

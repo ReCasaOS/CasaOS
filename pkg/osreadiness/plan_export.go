@@ -3,6 +3,7 @@ package osreadiness
 import (
 	"context"
 	"errors"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -87,6 +88,52 @@ func AptSourceName(name string) bool { return aptSourceName.MatchString(name) }
 // distribution's, does not.
 var archiveHost = regexp.MustCompile(`^(?:(?:deb|security|archive|httpredir|ftp)\.debian\.org|ftp[0-9]?\.[a-z]{2}\.debian\.org|cdn-[a-z]+\.deb\.debian\.org)$`)
 
+// mirrorListURI is the address of a list of mirrors that Debian's own cloud images write in their debian.sources (Debian 12
+// and 13: mirror+file:///etc/apt/mirrors/debian.list and debian-security.list). apt keeps no Release file under a name that
+// can be derived of it, so the list itself decides.
+var mirrorListURI = regexp.MustCompile(`^mirror\+file:///etc/apt/mirrors/[A-Za-z0-9][A-Za-z0-9._-]*\.list$`)
+
+// IsMirrorList says whether an address is a list of mirrors of the form mirrorListURI.
+func IsMirrorList(uri string) bool { return mirrorListURI.MatchString(uri) }
+
+// mirrorListDistro says whether the list of mirrors at uri names Debian's own archive: decided is true when every address
+// in it is an http or https one on one of archiveHost's hosts (the list is Debian's), or when none is (the list is someone
+// else's). A list that mixes them, has no address, cannot be read or is not of the form is not decided: the plan refuses
+// then, it does not guess. A line of the list is an address and, after white space, what apt reads of the mirror; # begins
+// a comment.
+func mirrorListDistro(ctx context.Context, p Probe, uri string) (distro, decided bool, err error) {
+	if !mirrorListURI.MatchString(uri) {
+		return false, false, nil
+	}
+	data, err := p.ReadFile(ctx, strings.TrimPrefix(uri, "mirror+file://"))
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, false, ctx.Err()
+		}
+		return false, false, nil
+	}
+	own, others := 0, 0
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		u, perr := url.Parse(fields[0])
+		if perr == nil && (u.Scheme == "http" || u.Scheme == "https") && u.User == nil && archiveHost.MatchString(strings.ToLower(u.Hostname())) {
+			own++
+		} else {
+			others++
+		}
+	}
+	switch {
+	case own > 0 && others == 0:
+		return true, true, nil
+	case others > 0 && own == 0:
+		return false, true, nil
+	}
+	return false, false, nil
+}
+
 // DistroDecider says whether a repository is the distribution's own archive, as the report decides it (see markDistro),
 // with the differences that a plan, which rewrites the sources and must not guess, needs: the address decides only for
 // Debian's own archive hosts (archiveHost) and for a disc, and the Release file apt kept of the suite decides for any
@@ -121,6 +168,8 @@ func (d *DistroDecider) Suite(ctx context.Context, uri, suite string) (distro, d
 		return true, true, nil
 	case host == dockerHost, strings.HasSuffix(suite, "/"):
 		return false, true, nil
+	case mirrorListURI.MatchString(uri):
+		return mirrorListDistro(ctx, d.p, uri)
 	}
 	name, ok := releaseListName(uri, suite, d.arch)
 	if !ok {

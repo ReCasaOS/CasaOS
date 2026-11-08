@@ -29,6 +29,8 @@ type HopSpec struct {
 	Later []string
 	// Firmware says that the target has the component non-free-firmware, which is put beside non-free.
 	Firmware bool
+	// Deb822 says that the plan reads the .sources files (deb822) of the box: without it, a box that has one is refused.
+	Deb822 bool
 	// Refresh says that the sources are written for bringing the release that is left up to its last state, and not for the next one: the lines of that release are kept as they are
 	// (its suite, its host, its components, its backports), and what is not Debian's is put aside as it is for a hop. Only ForRefresh sets it.
 	Refresh bool
@@ -45,7 +47,7 @@ func (h HopSpec) ForRefresh() HopSpec {
 func (h HopSpec) FromName() string { return "Debian " + h.FromVersion }
 func (h HopSpec) ToName() string   { return "Debian " + h.ToVersion }
 
-// planHops is the one table of the hops a plan can be made for. Debian 12 to 13 (deb822, non-free-firmware, new clues) and
+// planHops is the one table of the hops a plan can be made for. Debian 12 to 13 (its .sources files are read with Deb822) and
 // Ubuntu are later rungs: every other hop is hop_not_planned.
 var planHops = []HopSpec{
 	{ID: osreadiness.HopDebian11to12, From: "bullseye", To: "bookworm", FromVersion: "11", ToVersion: "12", Later: []string{"trixie", "forky"}, Firmware: true},
@@ -170,6 +172,14 @@ func reasonText(reason string) string {
 		return "the suite is an alias that moves with the archive: name the release"
 	case "target":
 		return "the source is already at the target release or past it (if an earlier try of the upgrade by hand rewrote the sources, the folder of that plan in /var/backups, casaos-os-upgrade-<plan id>, has restore-sources.sh: run it with sh; when that folder has begun-upgrade the upgrade has begun and only goes forward)"
+	case "enabled":
+		return "a stanza that says Enabled is not read by this plan, which writes that field itself: remove the stanza, or the field"
+	case "field":
+		return "a field that apt does not read in a stanza"
+	case "field_twice":
+		return "a field is written twice in one stanza"
+	case "deb822_form":
+		return "a line is not a field of a stanza (a name, a colon, a value), nor goes on from one"
 	case "undecided":
 		return "whether this repository is the distribution's own cannot be known from the files apt keeps of it: run apt-get update first"
 	}
@@ -189,27 +199,8 @@ var (
 // parseSourceFile reads a .list file strictly: every line is blank, a comment, or "deb|deb-src [options] URI SUITE
 // [components...]" (a comment may follow, as apt reads it); anything else is a problem, and the plan never guesses.
 func parseSourceFile(content []byte) (lines []srcLine, bad *lineProblem, badLine int) {
-	if !utf8.Valid(content) {
-		return nil, &lineProblem{CodeSourcesFormat, "encoding"}, 0
-	}
-	for i := 0; i < len(content); i++ {
-		switch b := content[i]; {
-		case b == 0:
-			return nil, &lineProblem{CodeSourcesFormat, "nul"}, lineOf(content, i)
-		case b == '\r':
-			return nil, &lineProblem{CodeSourcesFormat, "crlf"}, lineOf(content, i)
-		case b < 0x20 && b != '\n' && b != '\t', b == 0x7f:
-			return nil, &lineProblem{CodeSourcesFormat, "control"}, lineOf(content, i)
-		}
-	}
-	// the characters that are valid text and are not text: a comment may hold any UTF-8, and one that reorders what is shown
-	// (the bidirectional controls), that a terminal acts on (the C1 controls, U+0080 to U+009F) or that is not seen (the
-	// format characters: zero-width ones, the byte order mark; the line and paragraph separators) is not one that the plan
-	// shows to the owner or writes into the runbook
-	for i, r := range string(content) {
-		if r >= 0x80 && (r <= 0x9f || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)) {
-			return nil, &lineProblem{CodeSourcesFormat, "control"}, lineOf(content, i)
-		}
+	if bad, n := textProblem(content); bad != nil {
+		return nil, bad, n
 	}
 	text := string(content)
 	raw := strings.Split(text, "\n")
@@ -239,6 +230,34 @@ func parseSourceFile(content []byte) (lines []srcLine, bad *lineProblem, badLine
 		lines = append(lines, line)
 	}
 	return lines, nil, 0
+}
+
+// textProblem is why the bytes of a file of sources, .list or .sources, are not text the plan reads, and the line: not UTF-8,
+// a NUL, a carriage return, a control character.
+func textProblem(content []byte) (*lineProblem, int) {
+	if !utf8.Valid(content) {
+		return &lineProblem{CodeSourcesFormat, "encoding"}, 0
+	}
+	for i := 0; i < len(content); i++ {
+		switch b := content[i]; {
+		case b == 0:
+			return &lineProblem{CodeSourcesFormat, "nul"}, lineOf(content, i)
+		case b == '\r':
+			return &lineProblem{CodeSourcesFormat, "crlf"}, lineOf(content, i)
+		case b < 0x20 && b != '\n' && b != '\t', b == 0x7f:
+			return &lineProblem{CodeSourcesFormat, "control"}, lineOf(content, i)
+		}
+	}
+	// the characters that are valid text and are not text: a comment may hold any UTF-8, and one that reorders what is shown
+	// (the bidirectional controls), that a terminal acts on (the C1 controls, U+0080 to U+009F) or that is not seen (the
+	// format characters: zero-width ones, the byte order mark; the line and paragraph separators) is not one that the plan
+	// shows to the owner or writes into the runbook
+	for i, r := range string(content) {
+		if r >= 0x80 && (r <= 0x9f || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)) {
+			return &lineProblem{CodeSourcesFormat, "control"}, lineOf(content, i)
+		}
+	}
+	return nil, 0
 }
 
 func lineOf(content []byte, at int) int {
@@ -514,6 +533,8 @@ type classified struct {
 	file   osreadiness.SourceFile
 	lines  []srcLine
 	distro []bool // per line, for the repo lines
+	// deb822 is the file read as a .sources file, when it is one; lines and distro are empty then
+	deb822 *deb822File
 }
 
 // RewriteSources rewrites the sources of the box to the target release, in memory: the tree the sandbox reads (and the
@@ -526,7 +547,7 @@ func RewriteSources(ctx context.Context, hop HopSpec, files []osreadiness.Source
 		switch {
 		case f.Err != nil:
 			return nil, failf(CodeSourcesFormat, map[string]any{"file": f.Name, "reason": "unreadable"}, "%s cannot be read", f.Name)
-		case strings.HasSuffix(f.Name, ".sources"):
+		case strings.HasSuffix(f.Name, ".sources") && !hop.Deb822:
 			return nil, failf(CodeSourcesFormat, map[string]any{"file": f.Name, "reason": "deb822"}, "%s: %s", f.Name, reasonText("deb822"))
 		}
 	}
@@ -536,6 +557,14 @@ func RewriteSources(ctx context.Context, hop HopSpec, files []osreadiness.Source
 	for _, f := range files {
 		name := f.Name
 		current = append(current, hashed{path: currentPath(f), content: string(f.Content)})
+		if strings.HasSuffix(name, ".sources") {
+			d, err := readDeb822File(ctx, name, f.Content, decider, &totalRepos)
+			if err != nil {
+				return nil, err
+			}
+			cls = append(cls, classified{file: f, deb822: d})
+			continue
+		}
 		lines, bad, badLine := parseSourceFile(f.Content)
 		if bad != nil {
 			return nil, bad.failure(name, badLine)
@@ -566,6 +595,23 @@ func RewriteSources(ctx context.Context, hop HopSpec, files []osreadiness.Source
 	distroKept := 0
 	for _, c := range cls {
 		name := c.file.Name
+		if c.deb822 != nil {
+			content, paused, changes, err := hop.rewriteDeb822(name, c.deb822, out, &distroKept)
+			switch {
+			case err != nil:
+				return nil, err
+			case paused:
+				out.Files = append(out.Files, FileChange{File: name, Action: ActionPaused, Lines: changes})
+				continue
+			}
+			action := ActionUnchanged
+			if len(changes) > 0 {
+				action = ActionRewritten
+			}
+			out.Files = append(out.Files, FileChange{File: name, Action: action, Lines: changes})
+			out.Tree = append(out.Tree, TreeFile{Path: "parts/" + name, Content: content})
+			continue
+		}
 		changes := []LineChange{}
 		repos, distros := 0, 0
 		allDocker := true
@@ -705,6 +751,12 @@ func joinLines(lines []srcLine) string {
 // of the target, is the rewrite's own bug, and nothing is returned. A refresh has no target: its lines are of the release that is left.
 func checkTree(hop HopSpec, tree []TreeFile) error {
 	for _, f := range tree {
+		if strings.HasSuffix(f.Path, ".sources") {
+			if err := checkDeb822Tree(hop, f); err != nil {
+				return err
+			}
+			continue
+		}
 		lines, bad, n := parseSourceFile([]byte(f.Content))
 		if bad != nil {
 			return failf(CodeInternal, nil, "the tree's %s line %d is not read by the strict parser (%s)", f.Path, n, bad.reason)
