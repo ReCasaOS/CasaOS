@@ -14,7 +14,7 @@ for fin in /var/backups/casaos-os-upgrade-*; do
   [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
 done
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 echo "Block R0: can the old release be brought up to date? Nothing is changed but the timers of apt."
 [ "$(id -u)" = 0 ] || { AUTOCLASS=identity; echo "STOP: run this as root."; exit 1; }
 [ "$(hostname)" = 'testbox' ] || { AUTOCLASS=identity; echo "STOP: this machine is called $(hostname), which is not the machine that the refresh was started on: the text of this unit was written for another."; exit 1; }
@@ -95,7 +95,7 @@ grep -q '^VERSION_CODENAME=noble$' /etc/os-release || { AUTOCLASS=identity; echo
 mkdir -p -m 700 "$BK"; chmod 700 "$BK"
 printf '%s\n' 'ubuntu-24.04-26.04' > "$BK/hop"
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 srchash() {
   nl="$(printf '\nx')"; nl="${nl%x}"
   ( cd /etc/apt
@@ -246,7 +246,7 @@ grep -q '^VERSION_CODENAME=noble$' /etc/os-release || { AUTOCLASS=identity; echo
 mkdir -p -m 700 "$BK"; chmod 700 "$BK"
 printf '%s\n' 'ubuntu-24.04-26.04' > "$BK/hop"
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
 removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
 guard_removals() {
@@ -395,7 +395,7 @@ for fin in /var/backups/casaos-os-upgrade-*; do
   [ ! -e "$fin/done-after" ] || { AUTOCLASS=identity; echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
 done
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
 removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
 sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }

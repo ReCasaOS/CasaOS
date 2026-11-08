@@ -199,10 +199,21 @@ const shAptqAuto = "export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTE
 // aptq (H6) defines the function that runs apt.
 func (c *rbCtx) aptq() string {
 	if c.auto == nil {
-		return shAptq
+		return c.hop.phased(shAptq)
 	}
 	c.hook(hookAptq)
-	return shAptqAuto
+	return c.hop.phased(shAptqAuto)
+}
+
+// phased is aptq with the phased updates of Ubuntu included. Ubuntu hands an update out in waves and holds it at 0% when it halts it: apt then defers the package ("The following
+// upgrades have been deferred due to phasing:") and leaves it on the old release (software-properties-common in resolute-updates, 2026-11-08: testdata/real/docker-u24-26-phased-*).
+// The hop takes them all, as do-release-upgrade does (ubuntu-release-upgrader 1:24.04.4, LP: #2045784), the refresh (refreshPhased) and the plan's simulations (sandboxPhased).
+// Debian has no phased updates: its texts are as they were.
+func (h HopSpec) phased(aptq string) string {
+	if h.Distro != "Ubuntu" {
+		return aptq
+	}
+	return strings.Replace(aptq, ` "$@"; }`, refreshPhased+` "$@"; }`, 1)
 }
 
 // prologue (H1) is what an auto block does first: it sets the class that a stop will carry (unknown, until a STOP line says another: the class pass puts

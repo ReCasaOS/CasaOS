@@ -27,9 +27,9 @@ func argv(d string, tail ...string) []string {
 func fourArgvs(d string) map[string][]string {
 	return map[string][]string{
 		"update":       argv(d, "update", "--error-on=any"),
-		"upgrade":      argv(d, "-s", "upgrade"),
-		"dist-upgrade": argv(d, "-s", "dist-upgrade"),
-		"estimate":     argv(d, "-o", "APT::Get::Trivial-Only=true", "dist-upgrade"),
+		"upgrade":      argv(d, "-o", "APT::Get::Always-Include-Phased-Updates=true", "-s", "upgrade"),
+		"dist-upgrade": argv(d, "-o", "APT::Get::Always-Include-Phased-Updates=true", "-s", "dist-upgrade"),
+		"estimate":     argv(d, "-o", "APT::Get::Always-Include-Phased-Updates=true", "-o", "APT::Get::Trivial-Only=true", "dist-upgrade"),
 	}
 }
 

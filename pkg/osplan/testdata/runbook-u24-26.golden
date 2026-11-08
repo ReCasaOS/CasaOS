@@ -84,7 +84,7 @@ for fin in /var/backups/casaos-os-upgrade-*; do
   [ ! -e "$fin/done-after" ] || { echo "STOP: the hop is over for this machine: the plan whose folder is $fin took it to the end (block 8 ended: done-after is there), and there is nothing more to run in this text."; exit 1; }
 done
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 # Type the name of this machine between the quotes, then run the block.
 TYPED_HOSTNAME=""
 echo "Block 0: is this the machine of the plan? Nothing is changed."
@@ -320,7 +320,7 @@ done
 mkdir -p -m 700 "$BK"; chmod 700 "$BK"
 printf '%s\n' 'ubuntu-24.04-26.04' > "$BK/hop"
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
 removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
 sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }
@@ -530,7 +530,7 @@ mkdir -p -m 700 "$BK"; chmod 700 "$BK"
 printf '%s\n' 'ubuntu-24.04-26.04' > "$BK/hop"
 if [ -e "$BK/begun-upgrade" ] || [ -e "$BK/done-minimal" ]; then echo "STOP: the upgrade has begun (block 5 was started): this block only downloads for the minimal upgrade, which is block 5's, and block 5 downloads what it still needs. Do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; exit 1; fi
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 whereto() { if [ -e "$BK/begun-upgrade" ]; then echo "The upgrade has begun (block 5 was started): do not restore anything. Only forward: finish with dpkg --configure -a, then apt-get -f install, then block 6 and the blocks after it (the table at the end of the runbook has the exact commands)."; else echo "No package has been installed or removed yet: run this block again, or put the sources back with sh $BK/restore-sources.sh"; fi; }
 echo "Block 4: downloading."
 aptq --download-only upgrade || { echo "STOP: the download did not go through: the network, or a lock held by another package manager (see what apt printed above). $(whereto)"; exit 1; }
@@ -566,7 +566,7 @@ done
 mkdir -p -m 700 "$BK"; chmod 700 "$BK"
 printf '%s\n' 'ubuntu-24.04-26.04' > "$BK/hop"
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
 removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
 sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }
@@ -663,7 +663,7 @@ done
 mkdir -p -m 700 "$BK"; chmod 700 "$BK"
 printf '%s\n' 'ubuntu-24.04-26.04' > "$BK/hop"
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 removed_of() { awk '/^The following packages will be REMOVED:/ { s = 1; next } /^[^ ]/ { s = 0 } s { for (i = 1; i <= NF; i++) { sub(/\*$/, "", $i); print $i } }' "$1" | sort; }
 removes_of() { awk '/^[0-9]+ upgraded, .* to remove and [0-9]+ not upgraded\.$/ { print $(NF - 6); exit }' "$1"; }
 sim_ok() { [ "$1" = 100 ] && grep -q '^E: ' "$2" && ! grep '^E: ' "$2" | grep -Evq '^E: Conf Broken (coreutils-from-uutils|sudo-common):[a-z0-9]+$'; }
@@ -871,7 +871,7 @@ done
 mkdir -p -m 700 "$BK"; chmod 700 "$BK"
 printf '%s\n' 'ubuntu-24.04-26.04' > "$BK/hop"
 export DEBIAN_FRONTEND=noninteractive APT_LISTCHANGES_FRONTEND=none NEEDRESTART_SUSPEND=1
-aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"; }
+aptq() { apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o APT::Get::Always-Include-Phased-Updates=true "$@"; }
 APT_ETC=/etc/apt
 echo "Block 8: after the restart."
 if [ -s "$BK/boot_id" ]; then
