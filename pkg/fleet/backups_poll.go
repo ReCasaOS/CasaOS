@@ -18,6 +18,7 @@ type boxCaller func(ctx context.Context, boxID, method, path string) (Response, 
 
 const (
 	errUnsupported = "this box does not support backup monitoring yet: update it"
+	errInterrupted = "interrupted"
 	amPath         = "/v2/app_management"
 )
 
@@ -120,6 +121,9 @@ func (f *Fleet) pollBox(ctx context.Context, box Box) BoxBackups {
 // content, only why.
 func failedPoll(box Box, err error) BoxBackups {
 	out := BoxBackups{BoxID: box.ID, Name: box.Name, Online: !errors.Is(err, ErrOffline), State: "unknown", Couples: []Couple{}, Error: err.Error()}
+	if errors.Is(err, context.Canceled) {
+		out.Error = errInterrupted // the caller is shutting down: not a fact about the box
+	}
 	var se statusError
 	if errors.As(err, &se) && (se == http.StatusForbidden || se == http.StatusNotFound) {
 		out.Error = errUnsupported

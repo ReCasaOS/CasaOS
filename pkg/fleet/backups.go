@@ -248,6 +248,9 @@ func verifyOf(in backupInput, c *Couple) CoupleVerify {
 // keeps the old content and only says what went wrong: the box is never green
 // on an answer that is not fresh, and PolledAt still tells how old it is.
 func (f *Fleet) storeBackups(b BoxBackups) {
+	if b.Error == errInterrupted {
+		return // the poll was cut short by shutdown: say nothing new
+	}
 	f.backupMu.Lock()
 	defer f.backupMu.Unlock()
 	if f.backups == nil {

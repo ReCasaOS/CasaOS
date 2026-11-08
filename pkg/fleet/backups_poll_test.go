@@ -258,3 +258,94 @@ func TestPollMakesFewRequests(t *testing.T) {
 		t.Errorf("one restic request per distinct destination: %v", b.calls)
 	}
 }
+
+func TestPollGivesTheWholePassTwentySeconds(t *testing.T) {
+	var deadlines []time.Time
+	f := pollFleet(t, &fakeBox{routes: healthyRoutes()})
+	inner := f.call
+	f.call = func(ctx context.Context, boxID, method, path string) (Response, error) {
+		d, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("no deadline on the request for %s", path)
+		}
+		deadlines = append(deadlines, d)
+		return inner(ctx, boxID, method, path)
+	}
+	start := time.Now()
+	f.pollBox(context.Background(), testBox)
+
+	if len(deadlines) == 0 {
+		t.Fatal("no request made")
+	}
+	for _, d := range deadlines {
+		if left := d.Sub(start); left < 18*time.Second || left > 22*time.Second {
+			t.Errorf("deadline %v away, want about 20s", left)
+		}
+		if !d.Equal(deadlines[0]) {
+			t.Errorf("one context for the whole pass: %v then %v", deadlines[0], d)
+		}
+	}
+}
+
+func TestAMandatoryRouteThatIsMissingMeansUpdateIt(t *testing.T) {
+	for _, route := range []string{"/backup/runs", "/backup/schedules", "/operations"} {
+		for _, status := range []int{403, 404} {
+			r := healthyRoutes()
+			r[am+route] = Response{Status: status, Body: []byte(`{"message":"gone"}`)}
+			got := pollFleet(t, &fakeBox{routes: r}).pollBox(context.Background(), testBox)
+			if got.Error != "this box does not support backup monitoring yet: update it" || !got.Online {
+				t.Errorf("%s %d: %+v", route, status, got)
+			}
+		}
+	}
+}
+
+func TestAServerErrorOnAMandatoryRouteIsNotAnOldBox(t *testing.T) {
+	for _, route := range []string{"/backup/runs", "/backup/schedules", "/operations"} {
+		r := healthyRoutes()
+		r[am+route] = Response{Status: 500, Body: []byte(`{"message":"boom"}`)}
+		got := pollFleet(t, &fakeBox{routes: r}).pollBox(context.Background(), testBox)
+		if strings.Contains(got.Error, "update it") || !strings.Contains(got.Error, "status 500") {
+			t.Errorf("%s: Error = %q", route, got.Error)
+		}
+	}
+}
+
+func TestAFailedPollRefreshesTheName(t *testing.T) {
+	b := &fakeBox{routes: healthyRoutes()}
+	f := pollFleet(t, b)
+	f.storeBackups(f.pollBox(context.Background(), testBox))
+
+	b.err = ErrOffline
+	f.storeBackups(f.pollBox(context.Background(), Box{ID: "box1", Name: "Chalet"}))
+
+	if got := f.backups["box1"]; got.Name != "Chalet" || len(got.Couples) != 2 {
+		t.Errorf("%+v", got)
+	}
+}
+
+func TestAPollInterruptedByShutdownLeavesTheSnapshotAlone(t *testing.T) {
+	b := &fakeBox{routes: healthyRoutes()}
+	f := pollFleet(t, b)
+	f.storeBackups(f.pollBox(context.Background(), testBox))
+	before := f.backups["box1"]
+
+	inner := f.call
+	f.call = func(ctx context.Context, boxID, method, path string) (Response, error) {
+		if err := ctx.Err(); err != nil {
+			return Response{}, err
+		}
+		return inner(ctx, boxID, method, path)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := f.pollBox(ctx, testBox)
+	f.storeBackups(got)
+
+	if got.Error != "interrupted" {
+		t.Errorf("Error = %q", got.Error)
+	}
+	if after := f.backups["box1"]; !after.Online || after.Error != "" || !after.Green || len(after.Couples) != len(before.Couples) {
+		t.Errorf("the snapshot changed: %+v", after)
+	}
+}
