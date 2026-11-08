@@ -174,3 +174,23 @@ func TestBlock8Of24To26FindsResoluteInASourcesFile(t *testing.T) {
 		})
 	}
 }
+
+// Block 5 of the hop to 26.04 runs the whole upgrade, as do-release-upgrade does, and block 4 downloads for it: the minimal one stopped on tcpdump in the QEMU proof (firstStep). The
+// texts of Debian keep their minimal upgrade.
+func TestBlock5Of24To26RunsTheWholeUpgrade(t *testing.T) {
+	text := buildFor(t, u24Plan(t)).Text
+	for _, want := range []string{"if ! aptq dist-upgrade; then\n", "aptq --download-only dist-upgrade || { echo \"STOP: the download did not go through", "THE POINT OF NO RETURN: the whole upgrade in one step"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the runbook does not have %q", want)
+		}
+	}
+	if strings.Contains(text, "aptq upgrade") || strings.Contains(text, "--download-only upgrade") {
+		t.Error("the runbook of 24.04 runs a minimal upgrade")
+	}
+	_, rb11 := realRunbook(t)
+	for _, debian := range []string{rb11.Text, buildFor(t, d12Plan(t)).Text} {
+		if !strings.Contains(debian, "if ! aptq upgrade; then\n") || !strings.Contains(debian, "THE POINT OF NO RETURN: the minimal upgrade") {
+			t.Error("a runbook of Debian lost its minimal upgrade")
+		}
+	}
+}

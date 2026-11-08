@@ -41,6 +41,8 @@ var stopClasses = []stopClass{
 	{"the full upgrade failed again", osrun.ClassAptFailed},
 	{"a catch-up pass failed", osrun.ClassAptFailed},
 	{"apt-get upgrade failed before it changed", osrun.ClassAptFailed},
+	// the same line of a hop that runs the whole upgrade in block 5 (HopSpec.OneStep)
+	{"apt-get dist-upgrade failed before it changed", osrun.ClassAptFailed},
 
 	// dpkg is not in a state that apt can work from
 	{"dpkg is not quiet", osrun.ClassDpkgBroken},
