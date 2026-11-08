@@ -1,6 +1,8 @@
 package fleet
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,6 +61,14 @@ func TestAssessCoupleState(t *testing.T) {
 		}, "late", false},
 		{"slot passed but forced run after it", backupInput{
 			Runs:      []runRow{run(a, d, "", ago(25*time.Hour)), run(a, d, "", ago(90*time.Minute))},
+			Schedules: []scheduleRow{sched(a, d, true, ago(25*time.Hour), ago(2*time.Hour))},
+		}, "ok", false},
+		{"schedule says it ran after the slot but the only run is older", backupInput{
+			Runs:      []runRow{run(a, d, "", ago(25*time.Hour))},
+			Schedules: []scheduleRow{sched(a, d, true, ago(30*time.Minute), ago(2*time.Hour))},
+		}, "ok", false},
+		{"run started exactly at the slot", backupInput{
+			Runs:      []runRow{run(a, d, "", ago(2*time.Hour))},
 			Schedules: []scheduleRow{sched(a, d, true, ago(25*time.Hour), ago(2*time.Hour))},
 		}, "ok", false},
 		{"slot passed and a run in progress", backupInput{
@@ -290,6 +300,9 @@ func TestAssessVerify(t *testing.T) {
 		{"interrupted ignored", []verifyRow{v("passed", 5*time.Hour), v("interrupted", time.Hour)}, known, "passed"},
 		{"only cancelled", []verifyRow{v("cancelled", time.Hour)}, known, "none"},
 		{"running", []verifyRow{v("passed", 5*time.Hour), {App: "a", Destination: "d", Status: "running"}}, known, "running"},
+		{"running listed before a later passed", []verifyRow{{App: "a", Destination: "d", Status: "running"}, v("passed", time.Hour)}, known, "running"},
+		{"status outside the wire values", []verifyRow{v("exploded", time.Hour)}, known, "unknown"},
+		{"unknown status then ignored status", []verifyRow{v("exploded", 5*time.Hour), v("cancelled", time.Hour)}, known, "unknown"},
 		{"other couple ignored", []verifyRow{{App: "x", Destination: "d", Status: "failed", FinishedAt: ago(time.Hour)}}, known, "none"},
 		{"restic unknown, no row", nil, nil, "unknown"},
 		{"restic not known, no row", nil, map[string]resticRow{"d": {}}, "unknown"},
@@ -312,5 +325,75 @@ func TestAssessVerify(t *testing.T) {
 				t.Fatalf("verify %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+func TestAssessProblemsCountACoupleOnce(t *testing.T) {
+	failedVerify := func(app string) verifyRow {
+		return verifyRow{App: app, Destination: "d", Status: "failed", FinishedAt: ago(time.Hour)}
+	}
+	in := backupInput{
+		Runs: []runRow{
+			run("a-failed", "d", "x", ago(time.Hour)),
+			run("b-late", "d", "", ago(25*time.Hour)),
+		},
+		Schedules: []scheduleRow{
+			sched("a-failed", "d", true, ago(time.Hour), ago(time.Hour)),
+			sched("b-late", "d", true, ago(25*time.Hour), ago(3*time.Hour)),
+		},
+		Restic: map[string]resticRow{"d": {Known: true}},
+	}
+	// Two couples in different problem states: 2.
+	if _, _, _, p := assess(in, assessNow); p != 2 {
+		t.Fatalf("problems=%d, want 2", p)
+	}
+	// Failed and failed verification: still one problem for that couple.
+	in.Verifications = []verifyRow{failedVerify("a-failed")}
+	if _, _, _, p := assess(in, assessNow); p != 2 {
+		t.Fatalf("failed + failed verify: problems=%d, want 2", p)
+	}
+	// Late and failed verification: still one for that couple.
+	in.Verifications = []verifyRow{failedVerify("b-late")}
+	if _, _, _, p := assess(in, assessNow); p != 2 {
+		t.Fatalf("late + failed verify: problems=%d, want 2", p)
+	}
+	// One couple alone, failed and failed verification: 1.
+	one := backupInput{
+		Runs:          []runRow{run("a", "d", "x", ago(time.Hour))},
+		Schedules:     []scheduleRow{sched("a", "d", true, ago(time.Hour), ago(time.Hour))},
+		Verifications: []verifyRow{failedVerify("a")},
+		Restic:        map[string]resticRow{"d": {Known: true}},
+	}
+	if _, _, g, p := assess(one, assessNow); p != 1 || g {
+		t.Fatalf("failed + failed verify: problems=%d green=%v, want 1 false", p, g)
+	}
+	// One couple alone, late and failed verification: 1.
+	one.Runs = []runRow{run("a", "d", "", ago(25*time.Hour))}
+	one.Schedules = []scheduleRow{sched("a", "d", true, ago(25*time.Hour), ago(3*time.Hour))}
+	if _, _, _, p := assess(one, assessNow); p != 1 {
+		t.Fatalf("late + failed verify: problems=%d, want 1", p)
+	}
+}
+
+func TestAssessCouplesNeverNil(t *testing.T) {
+	couples, _, _, _ := assess(backupInput{}, assessNow)
+	if couples == nil {
+		t.Fatal("couples is nil, JSON would be null")
+	}
+	b, err := json.Marshal(BoxBackups{Couples: couples})
+	if err != nil || !strings.Contains(string(b), `"couples":[]`) {
+		t.Fatalf("json %s err %v", b, err)
+	}
+}
+
+func TestAssessResticCheckOnlyForKept(t *testing.T) {
+	in := backupInput{
+		Runs:      []runRow{run("a", "d", "", ago(time.Hour))},
+		Schedules: []scheduleRow{sched("a", "d", true, ago(time.Hour), ago(time.Hour))},
+		Restic:    map[string]resticRow{"d": {Known: true, Check: &ResticCheck{OK: true}}},
+	}
+	couples, _, _, _ := assess(in, assessNow)
+	if couples[0].Restic || couples[0].ResticCheck != nil {
+		t.Fatalf("restic fields on a destination that keeps nothing: %+v", couples[0])
 	}
 }

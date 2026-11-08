@@ -108,6 +108,7 @@ var stateRank = map[string]int{"failed": 0, "late": 1, "never": 2, "unknown": 3,
 // assess turns what a box reported into the state of each scheduled couple
 // and of the box. It reads no clock: now is the caller's.
 func assess(in backupInput, now time.Time) (couples []Couple, state string, green bool, problems int) {
+	couples = []Couple{} // JSON [], never null
 	backing := map[string]bool{}
 	for _, o := range in.Operations {
 		if o.Kind == "backup" {
@@ -175,11 +176,10 @@ func assess(in backupInput, now time.Time) (couples []Couple, state string, gree
 
 	state, green = "none", len(couples) > 0
 	for _, c := range couples {
-		if c.State == "failed" || c.State == "late" {
+		if c.State == "failed" || c.State == "late" || c.Verify.State == "failed" {
 			problems++
 		}
 		if c.Verify.State == "failed" {
-			problems++
 			green = false
 		}
 		if c.State != "ok" {
@@ -195,8 +195,8 @@ func assess(in backupInput, now time.Time) (couples []Couple, state string, gree
 // verifyOf fills the restic fields of c and returns its verification state.
 func verifyOf(in backupInput, c *Couple) CoupleVerify {
 	rr, asked := in.Restic[c.Destination]
-	c.Restic, c.ResticCheck = rr.Kept, rr.Check
 	if rr.Kept {
+		c.Restic, c.ResticCheck = true, rr.Check
 		switch {
 		case rr.Check == nil:
 			return CoupleVerify{State: "none"}
@@ -205,6 +205,7 @@ func verifyOf(in backupInput, c *Couple) CoupleVerify {
 		}
 		return CoupleVerify{State: "failed", At: rr.Check.At, Error: rr.Check.Error}
 	}
+	// Ties on StartedAt/FinishedAt: slice order decides (nanosecond stamps do not tie).
 	var last *verifyRow
 	for i := range in.Verifications {
 		v := &in.Verifications[i]
@@ -221,5 +222,9 @@ func verifyOf(in backupInput, c *Couple) CoupleVerify {
 		}
 		return CoupleVerify{State: "none"}
 	}
-	return CoupleVerify{State: last.Status, At: last.FinishedAt, Error: last.Error}
+	switch last.Status {
+	case "running", "passed", "failed", "not_verifiable":
+		return CoupleVerify{State: last.Status, At: last.FinishedAt, Error: last.Error}
+	}
+	return CoupleVerify{State: "unknown", At: last.FinishedAt, Error: last.Error}
 }
