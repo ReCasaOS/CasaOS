@@ -321,7 +321,8 @@ func Assemble(in Inputs) Plan {
 	}
 	for _, name := range sortedKeys(removed) {
 		facts := in.Facts[baseName(name)]
-		r := Removal{Name: name, Version: facts.Version, Essential: facts.Essential || facts.Priority == "required" || warned[name]}
+		required := facts.Priority == "required" && !in.Hop.requiredRenamed(name, in.Dist.New)
+		r := Removal{Name: name, Version: facts.Version, Essential: facts.Essential || required || warned[name]}
 		r.Manual = !in.AutoKnown || !in.AutoInstalled[name]
 		r.Pattern, r.Protected = Protected(name)
 		p.Removals = append(p.Removals, r)

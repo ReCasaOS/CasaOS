@@ -567,6 +567,11 @@ guard_removals() {
     case "$base" in
       docker-ce|docker-ce-cli|containerd.io|docker-*-plugin|docker.io|samba*|cifs-utils|mergerfs|ntfs-3g|udevil|smartmontools|parted|net-tools|wget|curl|unzip|git|openssh-*|sudo|systemd*|dbus|ifupdown|network-manager|netplan.io|dhcpcd|ca-certificates|linux-image*|grub*|shim*|initramfs-tools|apt|dpkg|libc6)
         why="protected" ;;
+      libdb5.3) grep -q '^Inst libdb5.3t64 ' "$1" || dpkg-query -W -f='${Status}\n' libdb5.3t64 2> /dev/null | grep -q ' installed$' || why="required, as dpkg says, and libdb5.3t64 does not take its place" ;;
+      libext2fs2) grep -q '^Inst libext2fs2t64 ' "$1" || dpkg-query -W -f='${Status}\n' libext2fs2t64 2> /dev/null | grep -q ' installed$' || why="required, as dpkg says, and libext2fs2t64 does not take its place" ;;
+      libssl3) grep -q '^Inst libssl3t64 ' "$1" || dpkg-query -W -f='${Status}\n' libssl3t64 2> /dev/null | grep -q ' installed$' || why="required, as dpkg says, and libssl3t64 does not take its place" ;;
+      libtirpc3) grep -q '^Inst libtirpc3t64 ' "$1" || dpkg-query -W -f='${Status}\n' libtirpc3t64 2> /dev/null | grep -q ' installed$' || why="required, as dpkg says, and libtirpc3t64 does not take its place" ;;
+      usrmerge) ;;
       *) case "$(dpkg-query -W -f='${Essential} ${Priority}\n' "$base" 2> /dev/null || true)" in "yes "*|*" required") why="essential or required, as dpkg says" ;; esac ;;
     esac
     [ -z "$why" ] || { echo "STOP: $what would remove $name, which is $why. The upgrade has begun. DO NOT UNDO ANYTHING. Ask for help, with $1. What dpkg and the scripts of the packages printed is in /var/log/apt/term.log; what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each. The lines of apt itself (the ones that start with E:) are on the terminal only: copy what the terminal shows too."; exit 1; }
@@ -663,6 +668,11 @@ guard_removals() {
     case "$base" in
       docker-ce|docker-ce-cli|containerd.io|docker-*-plugin|docker.io|samba*|cifs-utils|mergerfs|ntfs-3g|udevil|smartmontools|parted|net-tools|wget|curl|unzip|git|openssh-*|sudo|systemd*|dbus|ifupdown|network-manager|netplan.io|dhcpcd|ca-certificates|linux-image*|grub*|shim*|initramfs-tools|apt|dpkg|libc6)
         why="protected" ;;
+      libdb5.3) grep -q '^Inst libdb5.3t64 ' "$1" || dpkg-query -W -f='${Status}\n' libdb5.3t64 2> /dev/null | grep -q ' installed$' || why="required, as dpkg says, and libdb5.3t64 does not take its place" ;;
+      libext2fs2) grep -q '^Inst libext2fs2t64 ' "$1" || dpkg-query -W -f='${Status}\n' libext2fs2t64 2> /dev/null | grep -q ' installed$' || why="required, as dpkg says, and libext2fs2t64 does not take its place" ;;
+      libssl3) grep -q '^Inst libssl3t64 ' "$1" || dpkg-query -W -f='${Status}\n' libssl3t64 2> /dev/null | grep -q ' installed$' || why="required, as dpkg says, and libssl3t64 does not take its place" ;;
+      libtirpc3) grep -q '^Inst libtirpc3t64 ' "$1" || dpkg-query -W -f='${Status}\n' libtirpc3t64 2> /dev/null | grep -q ' installed$' || why="required, as dpkg says, and libtirpc3t64 does not take its place" ;;
+      usrmerge) ;;
       *) case "$(dpkg-query -W -f='${Essential} ${Priority}\n' "$base" 2> /dev/null || true)" in "yes "*|*" required") why="essential or required, as dpkg says" ;; esac ;;
     esac
     [ -z "$why" ] || { echo "STOP: $what would remove $name, which is $why. The upgrade has begun. DO NOT UNDO ANYTHING. Ask for help, with $1. What dpkg and the scripts of the packages printed is in /var/log/apt/term.log; what apt did is in /var/log/apt/history.log, and dpkg's own steps are in /var/log/dpkg.log: send the last 100 lines of each. The lines of apt itself (the ones that start with E:) are on the terminal only: copy what the terminal shows too."; exit 1; }

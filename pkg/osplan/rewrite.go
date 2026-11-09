@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
 	"slices"
@@ -39,6 +40,10 @@ type HopSpec struct {
 	// OneStep says that block 5 runs the whole upgrade (dist-upgrade) and not a minimal one first, as do-release-upgrade does: a minimal upgrade leaves the init system of the release
 	// that is left under packages of the next one (firstStep).
 	OneStep bool
+	// RequiredRenames are the packages of priority required that the hop removes, each with the package that takes its place in the same upgrade ("" when none does). The
+	// plan and the guard of the blocks let such a removal through only so: when the one that takes its place is not installed, it stops as the removal of any other
+	// required package does (requiredRenamed, renameCases).
+	RequiredRenames map[string]string
 	// Refresh says that the sources are written for bringing the release that is left up to its last state, and not for the next one: the lines of that release are kept as they are
 	// (its suite, its host, its components, its backports), and what is not the distribution's is put aside as it is for a hop. Only ForRefresh sets it.
 	Refresh bool
@@ -69,8 +74,13 @@ var planHops = []HopSpec{
 		SimBroken: []string{"coreutils-from-uutils", "sudo-common"}, OneStep: true},
 	// the releases after 24.04 are 24.10 oracular, 25.04 plucky, 25.10 questing and 26.04 resolute. apt's simulation of the full upgrade goes through (the image ubuntu:22.04,
 	// apt 2.4.14, 2026-11-08: testdata/real/docker-u22-24-*); the hop runs in one step, as do-release-upgrade does, as the one to 26.04 learnt to.
+	// The cloud image of 22.04 records the priority of the archive for the libraries that noble renames for the 64-bit time_t, and for usrmerge: required, where the image
+	// ubuntu:22.04 says optional (the QEMU proof of the cloud image, 2026-11-09: the plan was blocked on them, and apt's own simulation, on the guest, warns of nothing).
+	// usrmerge has no successor: noble's /usr is merged, which merged_usr checks before any hop.
 	{ID: osreadiness.HopUbuntu2204to2404, Distro: "Ubuntu", From: "jammy", To: "noble", FromVersion: "22.04", ToVersion: "24.04", Later: []string{"oracular", "plucky", "questing", "resolute"},
-		Deb822: true, OneStep: true},
+		Deb822: true, OneStep: true, RequiredRenames: map[string]string{
+			"libdb5.3": "libdb5.3t64", "libext2fs2": "libext2fs2t64", "libssl3": "libssl3t64", "libtirpc3": "libtirpc3t64", "usrmerge": "",
+		}},
 }
 
 // firstStep is the verb of apt that block 5 runs, and block 4 downloads for. Debian's release notes say a minimal upgrade first; Canonical's do-release-upgrade runs the whole one.
@@ -100,6 +110,38 @@ func (h HopSpec) sshdAliases() string {
 		return ""
 	}
 	return " | sed 's/^permitrootlogin without-password$/permitrootlogin prohibit-password/'"
+}
+
+// requiredRenamed says whether the removal of a package of priority required is one of the hop's renames, its successor among the packages that the same upgrade installs.
+func (h HopSpec) requiredRenamed(name string, installed []string) bool {
+	to, ok := h.RequiredRenames[baseName(name)]
+	if !ok {
+		return false
+	}
+	if to == "" {
+		return true
+	}
+	for _, n := range installed {
+		if baseName(n) == to {
+			return true
+		}
+	}
+	return false
+}
+
+// renameCases are the lines of guard_removals' case for the hop's renames: the removal goes through when the simulation installs the successor, or dpkg has it already (a
+// repair after an interruption). Nothing for a hop that has none: the texts of the other hops are as they were.
+func (h HopSpec) renameCases() []string {
+	var lines []string
+	for _, old := range slices.Sorted(maps.Keys(h.RequiredRenames)) {
+		to := h.RequiredRenames[old]
+		if to == "" {
+			lines = append(lines, "      "+old+") ;;")
+			continue
+		}
+		lines = append(lines, fmt.Sprintf(`      %[1]s) grep -q '^Inst %[2]s ' "$1" || dpkg-query -W -f='${Status}\n' %[2]s 2> /dev/null | grep -q ' installed$' || why="required, as dpkg says, and %[2]s does not take its place" ;;`, old, to))
+	}
+	return lines
 }
 
 // PlannedHop is the hop of a box's identity, when a plan can be made for it.
