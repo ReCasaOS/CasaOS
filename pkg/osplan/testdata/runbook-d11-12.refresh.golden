@@ -375,6 +375,17 @@ $2 ~ /\/unattended-upgrade$/ || ($2 ~ /(^|\/)python[0-9.]*$/ && $3 ~ /\/unattend
 ' | tr -cd '\040-\176')"
 [ -z "$busy" ] || { AUTOCLASS=busy; echo "STOP: a package manager is running (the process list says: $busy): wait until it ends (if it is the daily job of apt: systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service), then run this block again. The upgrade has begun: do not undo anything."; exit 1; }
 [ -e "$BK/expected-removed.txt" ] || : > "$BK/expected-removed.txt"
+for half in $(dpkg-query -W -f='${db:Status-Abbrev}|${Package}|${Version}|${Architecture}\n' '*' 2> /dev/null | awk -F'|' 'substr($1, 2, 1) == "H" || substr($1, 3, 1) == "R" { print $2 "|" $3 "|" $4 }'); do
+  name="${half%%|*}"; rest="${half#*|}"; ver="${rest%%|*}"; arch="${rest#*|}"
+  case "$ver" in *:*) ver="${ver%%:*}%3a${ver#*:}" ;; esac
+  deb="/var/cache/apt/archives/${name}_${ver}_${arch}.deb"
+  if [ -f "$deb" ]; then
+    echo "dpkg left $name half unpacked: unpacking it again from $deb."
+    dpkg --force-confdef --force-confold --unpack "$deb" || echo "dpkg could not unpack $name again (what it printed is above): the steps that follow are tried all the same."
+  else
+    echo "dpkg left $name half unpacked, and its archive is not in apt's cache ($deb): the steps that follow are tried all the same."
+  fi
+done
 cfg=0
 dpkg --configure -a --force-confdef --force-confold || cfg=$?
 [ "$cfg" = 0 ] || echo "dpkg could not configure everything that is half done (it ended with $cfg; what it printed is above, in the log of the unit): the repair that follows is what can mend it."
