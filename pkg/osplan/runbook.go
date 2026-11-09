@@ -123,6 +123,7 @@ var runbookHops = map[osreadiness.HopID][]blockSpec{
 	osreadiness.HopDebian11to12:     aptBlocks,
 	osreadiness.HopDebian12to13:     aptBlocks,
 	osreadiness.HopUbuntu2404to2604: aptBlocks,
+	osreadiness.HopUbuntu2204to2404: aptBlocks,
 }
 
 // backupFoldersScopedByHop says whether head() and otherPlans() look only at the backup folders of their own hop. They do: a hop other than the first writes its id in

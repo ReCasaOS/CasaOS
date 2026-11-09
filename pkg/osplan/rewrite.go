@@ -67,6 +67,10 @@ var planHops = []HopSpec{
 	// real upgrade goes through (the image ubuntu:24.04, apt 2.8.3, 2026-11-08: testdata/real/docker-u24-26-*; sudo-common was found by the QEMU proof on the cloud image).
 	{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04", Later: []string{"stonking", "tenacious"}, Deb822: true,
 		SimBroken: []string{"coreutils-from-uutils", "sudo-common"}, OneStep: true},
+	// the releases after 24.04 are 24.10 oracular, 25.04 plucky, 25.10 questing and 26.04 resolute. apt's simulation of the full upgrade goes through (the image ubuntu:22.04,
+	// apt 2.4.14, 2026-11-08: testdata/real/docker-u22-24-*); the hop runs in one step, as do-release-upgrade does, as the one to 26.04 learnt to.
+	{ID: osreadiness.HopUbuntu2204to2404, Distro: "Ubuntu", From: "jammy", To: "noble", FromVersion: "22.04", ToVersion: "24.04", Later: []string{"oracular", "plucky", "questing", "resolute"},
+		Deb822: true, OneStep: true},
 }
 
 // firstStep is the verb of apt that block 5 runs, and block 4 downloads for. Debian's release notes say a minimal upgrade first; Canonical's do-release-upgrade runs the whole one.

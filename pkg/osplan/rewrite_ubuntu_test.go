@@ -9,16 +9,20 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/osreadiness"
 )
 
-// The two hops of Ubuntu, as the tests read sources for them: the one from 24.04 is the table's (TestTheHopFromUbuntu2404IsTheTables), the one from 22.04 is not there yet.
+// The two hops of Ubuntu, as the tests read sources for them: both are the table's (TestTheHopsOfUbuntuAreTheTables).
 var (
-	jammyToNoble    = HopSpec{ID: osreadiness.HopUbuntu2204to2404, Distro: "Ubuntu", From: "jammy", To: "noble", FromVersion: "22.04", ToVersion: "24.04", Later: []string{"resolute"}, Deb822: true}
+	jammyToNoble = HopSpec{ID: osreadiness.HopUbuntu2204to2404, Distro: "Ubuntu", From: "jammy", To: "noble", FromVersion: "22.04", ToVersion: "24.04",
+		Later: []string{"oracular", "plucky", "questing", "resolute"}, Deb822: true, OneStep: true}
 	nobleToResolute = HopSpec{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04",
 		Later: []string{"stonking", "tenacious"}, Deb822: true, SimBroken: []string{"coreutils-from-uutils", "sudo-common"}, OneStep: true}
 )
 
-func TestTheHopFromUbuntu2404IsTheTables(t *testing.T) {
+func TestTheHopsOfUbuntuAreTheTables(t *testing.T) {
 	if hop := withUbuntuTestHop(t); !reflect.DeepEqual(hop, nobleToResolute) {
 		t.Errorf("the table has %+v, the tests %+v", hop, nobleToResolute)
+	}
+	if hop, ok := PlannedHop(osreadiness.HopUbuntu2204to2404); !ok || len(runbookHops[hop.ID]) == 0 || !reflect.DeepEqual(hop, jammyToNoble) {
+		t.Errorf("the table has %+v (%v), the tests %+v", hop, ok, jammyToNoble)
 	}
 }
 
