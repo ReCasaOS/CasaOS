@@ -287,6 +287,18 @@ func InitV1Router() http.Handler {
 			v1FleetGroup.PUT("/member", v1.PutFleetMember, headerTokenOnly)
 			v1FleetGroup.DELETE("/member", v1.DeleteFleetMember, headerTokenOnly)
 		}
+
+		// Public sharing: the box's name at its relay and the apps published under it. Reads take what the group
+		// takes; everything that changes the sharing wants the access token in the header, like the fleet's.
+		v1ShareGroup := v1Group.Group("/share")
+		v1ShareGroup.Use()
+		{
+			v1ShareGroup.GET("", v1.GetShare)
+			v1ShareGroup.PUT("/name", v1.PutShareName, headerTokenOnly)
+			v1ShareGroup.PUT("/apps/:name", v1.PutShareApp, headerTokenOnly)
+			v1ShareGroup.DELETE("/apps/:name", v1.DeleteShareApp, headerTokenOnly)
+			v1ShareGroup.DELETE("/apps", v1.DeleteShareApps, headerTokenOnly)
+		}
 	}
 
 	return e

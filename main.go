@@ -37,6 +37,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/fleet"
 	"github.com/ReCasaOS/CasaOS/pkg/hoststats"
 	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
+	"github.com/ReCasaOS/CasaOS/pkg/share"
 	"github.com/ReCasaOS/CasaOS/pkg/sqlite"
 	"github.com/ReCasaOS/CasaOS/pkg/telemetry"
 	"github.com/ReCasaOS/CasaOS/pkg/trash"
@@ -214,6 +215,8 @@ func main() {
 	if !config.ServerInfo.ImageManaged {
 		alerts.Default.OSSupport = service.MyService.System().GetSystemOS
 	}
+	// Public sharing hears the apps come and go (an uninstalled app is unshared): set before Run, the bus reads it unguarded.
+	alerts.Default.OnAppEvent = share.Default.OnAppEvent
 	go alerts.Default.Run(context.Background())
 	// The fleet: this box can be the master of the owner's other boxes, or a member of one. A member executes what its
 	// master relays through this box's own gateway, with the identity of the box's services; a master raises one alert
@@ -225,7 +228,36 @@ func main() {
 	fleet.Default.BackupProblem = alerts.Default.FleetBackupProblem
 	fleet.Default.Notifies = func() bool { return alerts.Default.Delivers(alerts.Fleet) }
 	fleet.Default.Net = fleet.NewTailscale(nil) // tailscaled stays stopped until the box joins a relay's fleet
+	// Public sharing goes through the relay the fleet knows, signed with the fleet's box key. A box leaving its relay
+	// forgets its sharing first, while it can still sign the call that frees its name. The adapters take no fleet lock
+	// but ShareRelay's own: Reset runs from OnLeavingRelay, with the fleet's relay mutex held.
+	share.Default.RuntimePath = func() string { return config.CommonInfo.RuntimePath }
+	share.Default.RelayURL = fleet.Default.ShareRelay
+	share.Default.BoxKey = fleet.Default.BoxKey
+	share.Default.Relay.Signed = func(ctx context.Context, method, path string, body []byte) (int, []byte, time.Duration, error) {
+		relay, ok := fleet.Default.ShareRelay()
+		if !ok {
+			return 0, nil, 0, share.ErrNoRelay
+		}
+		return fleet.Default.RelayAPI.Signed(ctx, relay, method, path, body)
+	}
+	share.Default.Relay.RegisterSelf = func(ctx context.Context) error {
+		if _, ok := fleet.Default.ShareRelay(); !ok {
+			return share.ErrNoRelay
+		}
+		err := fleet.Default.RegisterOwnBoxKey(ctx)
+		if errors.Is(err, fleet.ErrNotFleetOwner) {
+			return share.ErrWaitMaster
+		}
+		return err
+	}
+	fleet.Default.OnLeavingRelay = func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		share.Default.Reset(ctx)
+	}
 	go fleet.Default.Run(context.Background())
+	go share.Default.Run(context.Background())
 	// Automatic updates start the button's own update, read the button's own
 	// version.json, and settle an update that restarted the core before checking.
 	autoupdate.Default.Releases = service.MyService.Casa()
@@ -309,6 +341,7 @@ func main() {
 		"/v1/other",
 		"/v1/zt",
 		"/v1/fleet",
+		"/v1/share",
 		"/v1/test",
 		route.V2APIPath,
 		route.V2DocPath,
