@@ -162,7 +162,7 @@ func (a *ACME) Obtain(ctx context.Context, host string) (err error) {
 		a.pending = false
 		if err == nil {
 			a.lastErr = ""
-		} else if ctx.Err() == nil { // a shutdown is not a failure of the CA
+		} else if !errors.Is(ctx.Err(), context.Canceled) { // a shutdown is not a failure of the CA; a deadline is
 			a.lastErr = err.Error()
 		}
 		a.mu.Unlock()

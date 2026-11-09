@@ -384,3 +384,18 @@ func TestObtainDoesNotRecordACancellation(t *testing.T) {
 		t.Errorf("status = %+v", st)
 	}
 }
+
+func TestObtainRecordsATimedOutAttempt(t *testing.T) {
+	log := newCallLog()
+	f := newFakeACME(log)
+	f.SetFail("Order", context.DeadlineExceeded)
+	a := newTestACME(t, f, newFakeTXT(log))
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := a.Obtain(ctx, testHost); err == nil {
+		t.Fatal("expected an error")
+	}
+	if st := a.Status(); st.Error == "" || st.Pending {
+		t.Errorf("status = %+v", st)
+	}
+}
