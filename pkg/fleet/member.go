@@ -409,6 +409,7 @@ func (f *Fleet) MemberStatus() (MemberStatus, bool) {
 // a tunnel to the master and serve what it relays; otherwise wait for a code.
 func (f *Fleet) Run(ctx context.Context) {
 	go f.watchOffline(ctx)
+	go f.watchBackups(ctx)
 	wait := firstWait
 	for {
 		f.mu.Lock()

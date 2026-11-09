@@ -18,7 +18,7 @@ func Timeout(slow bool) time.Duration {
 }
 
 // The table of the routes a master may relay to a box, and nothing else. A
-// `{id}` segment matches exactly one non-empty segment; `{action}` one of the
+// `{id}` segment (a verification id, a destination name, ...) matches exactly one non-empty segment; `{action}` one of the
 // four VM actions. Extending the table is one row here and one in its test.
 var allowed = []struct {
 	method, pattern string
@@ -42,6 +42,11 @@ var allowed = []struct {
 	{"GET", "/v2/app_management/logs", false},
 	{"GET", "/v2/app_management/logs/events", false},
 	{"GET", "/v2/app_management/logs/export", true},
+	{"GET", "/v2/app_management/backup/runs", false},
+	{"GET", "/v2/app_management/backup/schedules", false},
+	{"GET", "/v2/app_management/backup/verifications", false},
+	{"GET", "/v2/app_management/backup/verification-schedule", false},
+	{"GET", "/v2/app_management/backup/destinations/{id}/restic", false},
 	{"GET", "/v2/virt_management/vms", false},
 	{"POST", "/v1/sys/update", false},
 	{"POST", "/v1/sys/packages/update", false},
@@ -50,6 +55,11 @@ var allowed = []struct {
 	{"POST", "/v2/app_management/compose/updates", false},
 	{"POST", "/v2/app_management/image-updates", true},
 	{"POST", "/v2/virt_management/vms/{id}/{action}", false},
+	{"POST", "/v2/app_management/backup/schedules/run", false},
+	{"POST", "/v2/app_management/backup/verifications", false},
+	{"POST", "/v2/app_management/backup/verifications/{id}/cancel", false},
+	{"POST", "/v2/app_management/backup/destinations/{id}/restic/check", false},
+	{"PUT", "/v2/app_management/backup/verification-schedule", false},
 }
 
 var vmActions = map[string]bool{"start": true, "shutdown": true, "reboot": true, "force-off": true}

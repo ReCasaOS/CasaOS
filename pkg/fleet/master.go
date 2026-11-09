@@ -226,6 +226,7 @@ func (f *Fleet) attach(t *tunnel, hello frame) bool {
 	if old != nil {
 		old.close()
 	}
+	f.RefreshBackups(t.boxID)
 	return true
 }
 
@@ -564,6 +565,9 @@ func (f *Fleet) DisableMaster() error {
 	for _, t := range tunnels {
 		t.close()
 	}
+	for _, b := range st.Boxes { // master.json is gone: re-enabling starts with new boxes
+		f.forgetBackups(b.ID)
+	}
 	if selfGone {
 		f.pokeMember()
 	}
@@ -687,6 +691,7 @@ func (f *Fleet) RemoveBox(id string) error {
 	if t != nil {
 		t.close()
 	}
+	f.forgetBackups(id)
 	if err == nil {
 		f.removeNode(st, box)
 	}

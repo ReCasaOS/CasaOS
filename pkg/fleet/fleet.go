@@ -5,6 +5,7 @@
 package fleet
 
 import (
+	"context"
 	"crypto/tls"
 	"net/http"
 	"os"
@@ -30,6 +31,11 @@ type Fleet struct {
 	Offline     func(boxID, name string, offline bool) // the alerts hub's hook: a box gone, or back
 	Net         Net                                    // the private network; nil in New: callers go through PrivateNet
 	RelayAPI    *RelayClient                           // the relay's enrolment API; boxkey.json in the state directory
+	call        boxCaller                              // how the backup poller asks a box: Relay, replaced by tests
+
+	// BackupProblem is the alerts hub's hook: a box's backup problem, raised at every pass while it lasts, or resolved.
+	BackupProblem func(key, sentence string, problem bool)
+	Notifies      func() bool // whether the hub would send a Fleet alert anywhere: said by the page, never asked by the poller
 
 	mu      sync.Mutex         // master.json, member.json and tunnels
 	relayMu sync.Mutex         // one master enable, disable, relay change or box enrolment/removal at a time; relay.json and master.json's relay fields written only under it; its network calls run outside mu
@@ -39,11 +45,21 @@ type Fleet struct {
 	offline map[string]bool    // the boxes an offline alert is up for
 	started time.Time          // when the offline watch first ran: its grace period starts here
 	local   *http.Client       // how a member reaches its own gateway
+
+	backupMu sync.Mutex            // the backup snapshots only, never mu
+	backups  map[string]BoxBackups // the last answer of each box, by id; in memory only
+	// backupProblems are the alerts raised since the master started, by key, each with its resolution
+	backupProblems map[string]string
+	backupGone     map[string]bool // the boxes removed: a poll on its way stores and says nothing
+	backupWake     chan string     // a box to poll soon: its tunnel just attached
+	// the master polls its online boxes every backupEvery, the first time backupFirst after it
+	// starts (its tunnels come back meanwhile), and a box backupSettle after its tunnel attached
+	backupEvery, backupFirst, backupSettle time.Duration
 }
 
 // New makes a Fleet rooted at root, with the box's defaults.
 func New(root string) *Fleet {
-	return &Fleet{
+	f := &Fleet{
 		Root:        root,
 		RuntimePath: func() string { return constants.DefaultRuntimePath },
 		Now:         time.Now,
@@ -65,7 +81,18 @@ func New(root string) *Fleet {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 			Transport:     &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}, //nolint:gosec // see above
 		},
+
+		BackupProblem: func(string, string, bool) {},
+		Notifies:      func() bool { return false },
+		backupWake:    make(chan string, 16),
+		backupEvery:   5 * time.Minute,
+		backupFirst:   10 * time.Second,
+		backupSettle:  2 * time.Second,
 	}
+	f.call = func(ctx context.Context, boxID, method, path string) (Response, error) {
+		return f.Relay(ctx, boxID, method, path, "", "", nil)
+	}
+	return f
 }
 
 // Default is this box's fleet, wired by main.

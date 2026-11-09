@@ -221,6 +221,31 @@ func PostFleetBoxCode(ctx echo.Context) error {
 	return ok(ctx, map[string]any{"code": code.String()})
 }
 
+// GetFleetBackups answers the state of every box's backups, from the snapshots
+// the master's poller keeps (it asks no box), with whether a Fleet alert would
+// be sent anywhere and how often the boxes are read.
+//
+// @Summary fleet: the state of the boxes' backups
+// @Produce application/json
+// @Tags fleet
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Failure 409 {object} model.Result "this box is not a master"
+// @Router /fleet/backups [get]
+func GetFleetBackups(ctx echo.Context) error {
+	v, on := fleet.Default.BackupsView()
+	if !on {
+		return boxResult(ctx, fleet.ErrMasterOff)
+	}
+	return ok(ctx, v)
+}
+
+// refreshBackups wakes the backups poller for one box; tests replace it.
+var refreshBackups = func(boxID string) { fleet.Default.RefreshBackups(boxID) }
+
+// backupActions is the prefix of the box's backup routes a relayed action can change.
+const backupActions = "/v2/app_management/backup/"
+
 // FleetRelay forwards a request into a box's tunnel and answers what the box
 // answered, as it is. Only the routes of the table pass; everything else is 403.
 //
@@ -244,6 +269,9 @@ func FleetRelay(ctx echo.Context) error {
 	res, err := fleet.Default.Relay(req.Context(), ctx.Param("id"), req.Method, path, req.URL.RawQuery, req.Header.Get(echo.HeaderContentType), body)
 	if err != nil {
 		return ctx.JSON(relayStatus(err), model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+	}
+	if req.Method != http.MethodGet && res.Status < 300 && strings.HasPrefix(path, backupActions) {
+		refreshBackups(ctx.Param("id")) // the page shows the result soon, not at the next pass
 	}
 	ctx.Response().Header().Set("Cache-Control", "no-store")
 	// the Content-Type is the box's; do not let a browser sniff past it
