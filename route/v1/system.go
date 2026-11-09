@@ -1,20 +1,18 @@
 package v1
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
-	http2 "github.com/ReCasaOS/CasaOS-Common/utils/http"
 	"github.com/ReCasaOS/CasaOS-Common/utils/port"
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
@@ -487,23 +485,30 @@ func GetSystemNetInfo(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: newNet})
 }
 
+// GetSystemProxy answers the dashboard's "add a link" panel: does the address
+// the owner typed answer? It says the status the address answered with and
+// nothing else. It used to relay the whole response, through CasaOS-Common's
+// HTTP helpers, which add the internal secret to a request aimed at loopback: any
+// signed-in account could read a service's private routes as the box itself. The
+// request goes out on a plain client, without the secret, and the body stays here.
 func GetSystemProxy(ctx echo.Context) error {
-	url := ctx.QueryParam("url")
-	resp, err := http2.Get(url, 30*time.Second)
+	target, err := url.Parse(ctx.QueryParam("url"))
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Hostname() == "" {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: common_err.GetMsg(common_err.INVALID_PARAMS)})
+	}
+
+	request, err := http.NewRequestWithContext(ctx.Request().Context(), http.MethodGet, target.String(), nil)
+	if err != nil {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: err.Error()})
+	}
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
 	if err != nil {
 		return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
 	}
 	defer resp.Body.Close()
-	for k, v := range ctx.Request().Header {
-		ctx.Request().Header.Add(k, v[0])
-	}
-	rda, _ := ioutil.ReadAll(resp.Body)
-	//	json.NewEncoder(c.Writer).Encode(json.RawMessage(string(rda)))
-	// 响应状态码
-	ctx.Response().Writer.WriteHeader(resp.StatusCode)
-	// 复制转发的响应Body到响应Body
-	io.Copy(ctx.Response().Writer, ioutil.NopCloser(bytes.NewBuffer(rda)))
-	return nil
+
+	return ctx.NoContent(resp.StatusCode)
 }
 
 func PutSystemState(ctx echo.Context) error {

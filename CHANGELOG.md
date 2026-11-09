@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - check before the operation (path-based), not descriptor-relative operations
   - ported from EdmundFu-233/ReCasaOS `pkg/filesecurity` (Apache-2.0)
 
+### Fixed
+
+- **`GET /v1/sys/proxy` no longer sends the internal secret.** The "add a link" panel asks it whether an address answers. It fetched the address with CasaOS-Common's HTTP helpers, which add the internal secret to any request aimed at loopback, and relayed the whole response: a signed-in account could read a service's private routes as the box itself (`/v1/sys/proxy?url=http://127.0.0.1:<port>/…`).
+  - it now sends a plain request, accepts `http` and `https` addresses only (400 otherwise), and gives back only the status the address answered with, not its body
+
 ## [0.4.54] - 2026-09-15
 
 ### Fixed
