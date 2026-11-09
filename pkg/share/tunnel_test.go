@@ -39,7 +39,7 @@ type fakeTunnelRelay struct {
 	all  []*websocket.Conn
 }
 
-func newFakeRelay(t *testing.T, gate func(w http.ResponseWriter, r *http.Request) bool) *fakeTunnelRelay {
+func newFakeTunnelRelay(t *testing.T, gate func(w http.ResponseWriter, r *http.Request) bool) *fakeTunnelRelay {
 	t.Helper()
 	f := &fakeTunnelRelay{t: t, gate: gate, sessions: make(chan *yamux.Session, 16)}
 	mux := http.NewServeMux()
@@ -221,7 +221,7 @@ func waitCode(t *testing.T, ch <-chan int) int {
 func TestDialSignsTheUpgrade(t *testing.T) {
 	key := testKey(t)
 
-	f := newFakeRelay(t, nil)
+	f := newFakeTunnelRelay(t, nil)
 	s, err := Dial(context.Background(), f.URL+"/", key, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func TestDialSignsTheUpgrade(t *testing.T) {
 	}
 
 	// A relay that rejects the signature answers 401.
-	bad := newFakeRelay(t, func(w http.ResponseWriter, r *http.Request) bool {
+	bad := newFakeTunnelRelay(t, func(w http.ResponseWriter, r *http.Request) bool {
 		if verifyBoxRequest(r, time.Now().Add(time.Hour), http.MethodGet, TunnelPath) != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return true
@@ -246,7 +246,7 @@ func TestDialSignsTheUpgrade(t *testing.T) {
 		t.Fatalf("err = %v, want DialError 401", err)
 	}
 
-	busy := newFakeRelay(t, func(w http.ResponseWriter, r *http.Request) bool {
+	busy := newFakeTunnelRelay(t, func(w http.ResponseWriter, r *http.Request) bool {
 		w.Header().Set("Retry-After", "30")
 		http.Error(w, "slow down", http.StatusTooManyRequests)
 		return true
@@ -257,7 +257,10 @@ func TestDialSignsTheUpgrade(t *testing.T) {
 	}
 
 	// Nobody there: no HTTP answer.
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	addr := l.Addr().String()
 	l.Close()
 	_, err = Dial(context.Background(), "http://"+addr, key, nil)
@@ -272,7 +275,7 @@ func TestDialSignsTheUpgrade(t *testing.T) {
 
 func TestServePipesStreamsToTheGateway(t *testing.T) {
 	gw := newEchoGateway(t)
-	f := newFakeRelay(t, nil)
+	f := newFakeTunnelRelay(t, nil)
 	s, err := Dial(context.Background(), f.URL, testKey(t), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -318,7 +321,7 @@ func TestServePipesStreamsToTheGateway(t *testing.T) {
 
 func TestServeCapsStreams(t *testing.T) {
 	gw := newEchoGateway(t)
-	f := newFakeRelay(t, nil)
+	f := newFakeTunnelRelay(t, nil)
 	s, err := Dial(context.Background(), f.URL, testKey(t), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +363,7 @@ func TestServeCapsStreams(t *testing.T) {
 
 func TestServeStopsWithItsContext(t *testing.T) {
 	gw := newEchoGateway(t)
-	f := newFakeRelay(t, nil)
+	f := newFakeTunnelRelay(t, nil)
 	s, err := Dial(context.Background(), f.URL, testKey(t), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -373,10 +376,13 @@ func TestServeStopsWithItsContext(t *testing.T) {
 }
 
 func TestServeFailedGatewayDialClosesOnlyThatStream(t *testing.T) {
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 	dead := l.Addr().String()
 	l.Close()
-	f := newFakeRelay(t, nil)
+	f := newFakeTunnelRelay(t, nil)
 	s, err := Dial(context.Background(), f.URL, testKey(t), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -411,7 +417,7 @@ func TestCloseCodesAreReported(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gw := newEchoGateway(t)
-			f := newFakeRelay(t, nil)
+			f := newFakeTunnelRelay(t, nil)
 			s, err := Dial(context.Background(), f.URL, testKey(t), nil)
 			if err != nil {
 				t.Fatal(err)
@@ -427,4 +433,52 @@ func TestCloseCodesAreReported(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestServeFreesTheSlotWhenTheGatewayCloses(t *testing.T) {
+	// A gateway that answers one byte, then closes its side.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				b := make([]byte, 1)
+				if _, err := io.ReadFull(c, b); err == nil {
+					c.Write(b)
+				}
+			}()
+		}
+	}()
+	f := newFakeTunnelRelay(t, nil)
+	s, err := Dial(context.Background(), f.URL, testKey(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := serveAsync(context.Background(), s, l.Addr().String())
+	relay := f.Next()
+
+	// The relay keeps every stream open, as a visitor that never closes would make it do.
+	for i := 0; i < maxStreams+1; i++ {
+		st, err := relay.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.SetDeadline(time.Now().Add(10 * time.Second))
+		if _, err := st.Write([]byte{'x'}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(st, make([]byte, 1)); err != nil {
+			t.Fatalf("stream %d was not served: %v", i, err)
+		}
+	}
+	relay.Close()
+	waitCode(t, done)
 }

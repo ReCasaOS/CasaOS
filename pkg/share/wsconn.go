@@ -24,11 +24,13 @@ type wsConn struct {
 	emu sync.Mutex
 	err error // first read error: yamux swallows it, and it carries the peer's close code
 
+	readDone chan struct{} // closed when Read first fails, after the error is recorded
+
 	closeOnce sync.Once
 	closeErr  error
 }
 
-func newWSConn(ws *websocket.Conn) *wsConn { return &wsConn{ws: ws} }
+func newWSConn(ws *websocket.Conn) *wsConn { return &wsConn{ws: ws, readDone: make(chan struct{})} }
 
 func (c *wsConn) Read(p []byte) (int, error) {
 	if len(p) == 0 {
@@ -65,10 +67,14 @@ func (c *wsConn) Read(p []byte) (int, error) {
 
 func (c *wsConn) record(err error) {
 	c.emu.Lock()
-	if c.err == nil {
+	first := c.err == nil
+	if first {
 		c.err = err
 	}
 	c.emu.Unlock()
+	if first {
+		close(c.readDone)
+	}
 }
 
 // CloseCode is the close code the peer sent (4403, 4409, 1001...), 0 when there was none: a network drop,

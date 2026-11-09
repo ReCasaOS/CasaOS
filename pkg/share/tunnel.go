@@ -142,6 +142,11 @@ func Serve(ctx context.Context, s *Session, shareAddr string) int {
 	cancel() // a stream still dialling gives up
 	s.Close()
 	wg.Wait()
+	// The close frame may still be on its way to being recorded: 0 would read as a drop, not a revocation.
+	select {
+	case <-s.c.readDone:
+	case <-time.After(2 * time.Second):
+	}
 	return s.CloseCode()
 }
 
@@ -162,8 +167,9 @@ func pipe(ctx context.Context, st net.Conn, addr string) {
 			tc.CloseWrite()
 		}
 	}()
-	io.Copy(st, g) // gateway to visitor
-	st.Close()     // yamux streams have no half-close
-	g.Close()      // unblocks the other copy
+	io.Copy(st, g)                 // gateway to visitor
+	st.Close()                     // yamux streams have no half-close
+	st.SetReadDeadline(time.Now()) // wakes the visitor-to-gateway copy: the slot must not wait for the visitor
+	g.Close()
 	<-done
 }
