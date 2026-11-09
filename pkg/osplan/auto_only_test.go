@@ -565,6 +565,35 @@ func TestBlockFGoesOnWhenDpkgCannotConfigureAndTheRepairMendsIt(t *testing.T) {
 	}
 }
 
+// A package that a kill left in the middle of its unpack is unpacked again from apt's cache before anything else, and one whose archive is not there is left to the table's
+// steps; a package that dpkg says is fine is not touched.
+func TestBlockFUnpacksAgainWhatAKillLeftHalfUnpacked(t *testing.T) {
+	b, ar := fBox(t)
+	b.write("fake/dpkg-status.txt", "iHR|libssl3t64|3.0.13-0ubuntu3.16|amd64\nii |bash|5.1-2|amd64\niU |openssl|3.0.13-0ubuntu3.16|amd64\nrH |libfoo|1:2.0-1|amd64\n")
+	b.write("archives/libssl3t64_3.0.13-0ubuntu3.16_amd64.deb", "")
+	out, code := runForward(b, ar)
+	if code != 0 || !strings.Contains(out, "Block F done.") {
+		t.Fatalf("exit %d, %q", code, out)
+	}
+	calls := b.read("fake/calls.log")
+	unpack := strings.Index(calls, "dpkg --force-confdef --force-confold --unpack ./archives/libssl3t64_3.0.13-0ubuntu3.16_amd64.deb\n")
+	configure := strings.Index(calls, "dpkg --configure -a")
+	if unpack < 0 || configure < unpack || strings.Count(calls, "--unpack") != 1 {
+		t.Errorf("unpack %d, configure %d:\n%s", unpack, configure, calls)
+	}
+	if !strings.Contains(out, "dpkg left libfoo half unpacked, and its archive is not in apt's cache") || !strings.Contains(out, "libfoo_1%3a2.0-1_amd64.deb") {
+		t.Errorf("the package with no archive is not said: %q", out)
+	}
+	// an unpack that fails is said, and the table's steps go on
+	b2, ar2 := fBox(t)
+	b2.write("fake/dpkg-status.txt", "iHR|libssl3t64|3.0.13-0ubuntu3.16|amd64\n")
+	b2.write("archives/libssl3t64_3.0.13-0ubuntu3.16_amd64.deb", "")
+	b2.write("fake/unpack-fails", "")
+	if out, code := runForward(b2, ar2); code != 0 || !strings.Contains(out, "dpkg could not unpack libssl3t64 again") || !strings.Contains(out, "Block F done.") {
+		t.Errorf("an unpack that fails: exit %d, %q", code, out)
+	}
+}
+
 func TestBlockFStopsWhereTheTableWouldNotGoOn(t *testing.T) {
 	protected := resimOf("fuse", "samba-libs")
 	for _, tc := range []struct {

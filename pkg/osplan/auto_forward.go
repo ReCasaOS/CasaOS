@@ -21,6 +21,23 @@ const forwardTitle = "mend what an interrupted upgrade left half done"
 // locks of apt for minutes. Every attempt that repairs, and the core at every boot while a run is open, stops them again (the table at the end of the runbook says: first, stop them).
 const forwardUnits = "apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service"
 
+// shHalfUnpacked unpacks again what a kill or a power cut left in the middle of its unpack: dpkg marks it half-installed, or to be reinstalled, and neither dpkg --configure -a nor
+// apt's repair mends it ("package is in a very bad inconsistent state; you should reinstall it before attempting configuration": the unit killed while dpkg unpacked libssl3t64,
+// the QEMU proof of the hop to Ubuntu 24.04, 2026-11-09). The archive of that version is in apt's cache, where block 4 downloaded it; a package whose archive is not there is
+// left to the steps that follow, as before.
+const shHalfUnpacked = `for half in $(dpkg-query -W -f='${db:Status-Abbrev}|${Package}|${Version}|${Architecture}\n' '*' 2> /dev/null | awk -F'|' 'substr($1, 2, 1) == "H" || substr($1, 3, 1) == "R" { print $2 "|" $3 "|" $4 }'); do
+  name="${half%%|*}"; rest="${half#*|}"; ver="${rest%%|*}"; arch="${rest#*|}"
+  case "$ver" in *:*) ver="${ver%%:*}%3a${ver#*:}" ;; esac
+  deb="/var/cache/apt/archives/${name}_${ver}_${arch}.deb"
+  if [ -f "$deb" ]; then
+    echo "dpkg left $name half unpacked: unpacking it again from $deb."
+    dpkg --force-confdef --force-confold --unpack "$deb" || echo "dpkg could not unpack $name again (what it printed is above): the steps that follow are tried all the same."
+  else
+    echo "dpkg left $name half unpacked, and its archive is not in apt's cache ($deb): the steps that follow are tried all the same."
+  fi
+done
+`
+
 // autoForward is the code of block F, for the plan of c.
 func autoForward(c *rbCtx) string {
 	var b strings.Builder
@@ -31,6 +48,7 @@ func autoForward(c *rbCtx) string {
 	b.WriteString(busyCheck("The upgrade has begun: do not undo anything."))
 	// a folder that holds no list of the removals that the plan expected (a refresh has none, and writes it empty) has no removal that the repair may make
 	b.WriteString("[ -e \"$BK/expected-removed.txt\" ] || : > \"$BK/expected-removed.txt\"\n")
+	b.WriteString(shHalfUnpacked)
 	// the first step of the table: what it cannot configure is said, and the repair is tried all the same
 	b.WriteString("cfg=0\ndpkg --configure -a --force-confdef --force-confold || cfg=$?\n")
 	b.WriteString("[ \"$cfg\" = 0 ] || echo \"dpkg could not configure everything that is half done (it ended with $cfg; what it printed is above, in the log of the unit): the repair that follows is what can mend it.\"\n")

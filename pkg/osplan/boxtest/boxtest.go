@@ -68,6 +68,7 @@ func Install(t testing.TB, dir string, now int64) {
 esac`)
 	Fake(t, dir, "dpkg-query", `for last; do :; done
 case "$last" in
+  '*') cat "$FAKE/dpkg-status.txt" 2>/dev/null || true ;;
   linux-image-*) grep " linux-image-[0-9]" "$FAKE/kernels.txt" 2>/dev/null || true ;;
   -f*) cat "$FAKE/packages.tsv" 2>/dev/null || true ;;
   *) case "$*" in
@@ -93,6 +94,7 @@ esac`)
 	// sshd -t and sshd -T need /run/sshd, which only a running ssh.service makes: without it -t fails (255) and -T says so and prints nothing
 	Fake(t, dir, "sshd", "echo \"sshd $*\" >> \"$FAKE/calls.log\"\nif [ ! -d ./run-sshd ]; then echo 'Missing privilege separation directory: /run/sshd' >&2; [ \"$1\" = -t ] && exit 255; exit 0; fi\ncase \"$1\" in -t) exit $(cat \"$FAKE/sshd-t.rc\" 2>/dev/null || echo 0);; -T) cat \"$FAKE/sshd-T.txt\" 2>/dev/null || true;; esac")
 	Fake(t, dir, "dpkg", `echo "dpkg $*" >> "$FAKE/calls.log"
+case "$*" in *--unpack*) [ ! -f "$FAKE/unpack-fails" ] || exit 1 ;; esac
 case "$1" in
   --audit) if [ -f "$FAKE/audit-error.txt" ]; then cat "$FAKE/audit-error.txt" >&2; exit 2; fi; cat "$FAKE/audit.txt" 2>/dev/null || true ;;
   --get-selections) ls -ld ./bk | awk '{ print $1 }' > "$FAKE/bkmode"; echo "bash install" ;;
@@ -184,6 +186,7 @@ func Paths(code string, v PathVars) string {
 		"APT_ETC=/etc/apt", "APT_ETC=./etc-apt",
 		"/boot/", "./boot/",
 		"/var/cache/apt/archives/*.deb", "./archives/*.deb",
+		"/var/cache/apt/archives/${", "./archives/${",
 		"find / -xdev", "find . -xdev",
 		"/var/lib/apt/extended_states", "./extended_states",
 		"/run/sshd", "./run-sshd",
