@@ -42,6 +42,8 @@ func (l *callLog) joined() string { return strings.Join(l.all(), " ") }
 type fakeACME struct {
 	log   *callLog
 	Valid time.Duration
+	// AuthzValid makes DNS01 answer as for an authorization that is already valid: no challenge.
+	AuthzValid bool
 
 	mu   sync.Mutex
 	fail map[string]error
@@ -90,7 +92,10 @@ func (f *fakeACME) Order(ctx context.Context, domain string) (string, []string, 
 	return "order-1", []string{"authz-1"}, f.step("Order", ":"+domain)
 }
 func (f *fakeACME) DNS01(ctx context.Context, authzURL string) (string, string, error) {
-	return "chal-1", "txt-value-1", f.step("DNS01", ":"+authzURL)
+	if err := f.step("DNS01", ":"+authzURL); err != nil || f.AuthzValid {
+		return "", "", err
+	}
+	return "chal-1", "txt-value-1", nil
 }
 func (f *fakeACME) Accept(ctx context.Context, challengeURI, authzURL string) error {
 	return f.step("Accept", "")
@@ -117,10 +122,11 @@ func (f *fakeACME) Finalize(ctx context.Context, orderURI string, csr []byte) ([
 	return [][]byte{der}, nil
 }
 
-// fakeTXT is a TXT that records its calls; Err is what SetTXT returns.
+// fakeTXT is a TXT that records its calls; Err and ClearErr are what SetTXT and ClearTXT return.
 type fakeTXT struct {
-	log *callLog
-	Err error
+	log      *callLog
+	Err      error
+	ClearErr error
 }
 
 func newFakeTXT(log *callLog) *fakeTXT { return &fakeTXT{log: log} }
@@ -129,7 +135,7 @@ func (t *fakeTXT) SetTXT(ctx context.Context, value string) error {
 	t.log.add("SetTXT:" + value)
 	return t.Err
 }
-func (t *fakeTXT) ClearTXT(ctx context.Context) error { t.log.add("ClearTXT"); return nil }
+func (t *fakeTXT) ClearTXT(ctx context.Context) error { t.log.add("ClearTXT"); return t.ClearErr }
 
 // newTestACME is an ACME writing in a temp dir, whose client is f.
 func newTestACME(t *testing.T, f *fakeACME, txt TXT) *ACME {
@@ -309,4 +315,72 @@ func mustRead(t *testing.T, p string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestObtainSurvivesAClearTXTFailure(t *testing.T) {
+	log := newCallLog()
+	txt := newFakeTXT(log)
+	txt.ClearErr = errors.New("relay down")
+	a := newTestACME(t, newFakeACME(log), txt)
+	if err := a.Obtain(context.Background(), testHost); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{a.KeyFile, a.CertFile} {
+		if _, err := os.Stat(p); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+func TestObtainKeepsTheMainErrorOverClearTXT(t *testing.T) {
+	log := newCallLog()
+	f := newFakeACME(log)
+	f.SetFail("Accept", errors.New("boom"))
+	txt := newFakeTXT(log)
+	txt.ClearErr = errors.New("relay down")
+	err := newTestACME(t, f, txt).Obtain(context.Background(), testHost)
+	if err == nil || err.Error() != "ACME: boom" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestObtainClearsTheTXTWhenSetTXTFails(t *testing.T) {
+	log := newCallLog()
+	txt := newFakeTXT(log)
+	txt.Err = errors.New("nope")
+	err := newTestACME(t, newFakeACME(log), txt).Obtain(context.Background(), testHost)
+	if err == nil || err.Error() != "ACME: nope" {
+		t.Fatalf("err = %v", err)
+	}
+	if got := log.joined(); strings.Count(got, "ClearTXT") != 1 || !strings.Contains(got, "SetTXT:txt-value-1 ClearTXT") {
+		t.Errorf("calls = %s", got)
+	}
+}
+
+func TestObtainSkipsTheChallengeOfAValidAuthorization(t *testing.T) {
+	log := newCallLog()
+	f := newFakeACME(log)
+	f.AuthzValid = true
+	if err := newTestACME(t, f, newFakeTXT(log)).Obtain(context.Background(), testHost); err != nil {
+		t.Fatal(err)
+	}
+	got := log.joined()
+	if strings.Contains(got, "SetTXT") || strings.Contains(got, "Accept") || strings.Contains(got, "ClearTXT") || !strings.Contains(got, "Finalize") {
+		t.Errorf("calls = %s", got)
+	}
+}
+
+func TestObtainDoesNotRecordACancellation(t *testing.T) {
+	log := newCallLog()
+	f := newFakeACME(log)
+	f.SetFail("Order", context.Canceled)
+	a := newTestACME(t, f, newFakeTXT(log))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.Obtain(ctx, testHost); err == nil {
+		t.Fatal("expected an error")
+	}
+	if st := a.Status(); st.Error != "" || st.Pending {
+		t.Errorf("status = %+v", st)
+	}
 }

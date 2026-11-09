@@ -33,6 +33,8 @@ const (
 
 	retryMin = time.Hour
 	retryMax = 24 * time.Hour
+
+	attemptTimeout = 15 * time.Minute // one Obtain, validation and issuance included
 )
 
 // TXT publishes the DNS-01 record through the relay (a *Relay does).
@@ -129,7 +131,10 @@ func (a *ACME) Loop(ctx context.Context, wildcard func() string, tick time.Durat
 	delay := retryMin
 	for {
 		if w := wildcard(); w != "" && !a.now().Before(next) && a.Needs(w, a.now()) {
-			if err := a.Obtain(ctx, strings.TrimPrefix(w, "*.")); err != nil && ctx.Err() == nil {
+			actx, cancel := context.WithTimeout(ctx, attemptTimeout)
+			err := a.Obtain(actx, strings.TrimPrefix(w, "*."))
+			cancel()
+			if err != nil && ctx.Err() == nil {
 				next = a.now().Add(delay)
 				delay = min(delay*2, retryMax)
 			} else if err == nil {
@@ -155,8 +160,9 @@ func (a *ACME) Obtain(ctx context.Context, host string) (err error) {
 		}
 		a.mu.Lock()
 		a.pending = false
-		a.lastErr = ""
-		if err != nil {
+		if err == nil {
+			a.lastErr = ""
+		} else if ctx.Err() == nil { // a shutdown is not a failure of the CA
 			a.lastErr = err.Error()
 		}
 		a.mu.Unlock()
@@ -217,22 +223,21 @@ func (a *ACME) Obtain(ctx context.Context, host string) (err error) {
 	return file.WriteFileAtomic(a.CertFile, crt)
 }
 
-// solve publishes the TXT of one authorization, waits for the CA to validate it and always clears it.
-func (a *ACME) solve(ctx context.Context, cl acmeAPI, authzURL string) (err error) {
+// solve publishes the TXT of one authorization, waits for the CA to validate it and clears it, whatever happens.
+// An authorization that is already valid has no challenge. Clearing is best effort: it never fails an issuance.
+func (a *ACME) solve(ctx context.Context, cl acmeAPI, authzURL string) error {
 	chal, value, err := cl.DNS01(ctx, authzURL)
-	if err != nil {
-		return err
-	}
-	if err := a.TXT.SetTXT(ctx, value); err != nil {
+	if err != nil || chal == "" {
 		return err
 	}
 	defer func() {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		if cerr := a.TXT.ClearTXT(cctx); cerr != nil && err == nil {
-			err = cerr
-		}
+		_ = a.TXT.ClearTXT(cctx)
 	}()
+	if err := a.TXT.SetTXT(ctx, value); err != nil {
+		return err
+	}
 	return cl.Accept(ctx, chal, authzURL)
 }
 
@@ -334,6 +339,9 @@ func (c *acmeClient) DNS01(ctx context.Context, authzURL string) (string, string
 	az, err := c.c.GetAuthorization(ctx, authzURL)
 	if err != nil {
 		return "", "", err
+	}
+	if az.Status == acme.StatusValid {
+		return "", "", nil
 	}
 	for _, ch := range az.Challenges {
 		if ch.Type == "dns-01" {
