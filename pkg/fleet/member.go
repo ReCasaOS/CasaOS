@@ -131,6 +131,9 @@ func (f *Fleet) Join(code string) error {
 		if haveRelay && remoteAlone(rs, on) {
 			return ErrRemoteOn
 		}
+		if member && old.Relay != "" && !on {
+			f.leavingRelay(old.Relay) // before member.json no longer names the relay
+		}
 		if err := f.enrol(st); err != nil {
 			return err
 		}
@@ -179,6 +182,9 @@ func (f *Fleet) Join(code string) error {
 	sameFleet := member && old.Relay != "" && sameURL(old.Relay, c.Relay) && c.Fleet != "" && old.FleetID == c.Fleet
 	if !sameFleet {
 		if relay, ours := f.ownNet(ns, old, member); ours {
+			if member && old.Relay != "" {
+				f.leavingRelay(old.Relay) // while the box is still in the old fleet
+			}
 			if err := n.Down(ctx, relay); err != nil {
 				return fmt.Errorf("cannot leave the previous private network: %w", err)
 			}

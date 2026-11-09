@@ -270,3 +270,68 @@ func TestLeavingTheRelayCallsTheHookFirst(t *testing.T) {
 		t.Fatalf("ChangeRelay: hook %d times, saw the delete %v, deletes %d", p3.count(), p3.saw(delFleet), r3.deletes)
 	}
 }
+
+func TestDisableRemoteCallsTheLeavingHook(t *testing.T) {
+	f, n, r, _ := relayMaster(t)
+	if err := f.EnableRemote(context.Background(), r.URL); err != nil {
+		t.Fatal(err)
+	}
+	var p hookProbe
+	f.OnLeavingRelay = p.hook(func() []string {
+		s := r.seenCalls()
+		if relay, ok := f.ShareRelay(); ok { // under f.mu this would hang
+			s = append(s, "share "+relay)
+		}
+		if n.called("down") {
+			s = append(s, "down")
+		}
+		return s
+	})
+	if err := f.DisableRemote(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p.count() != 1 || p.saw("DELETE /v1/fleets/fl1") || p.saw("down") || !p.saw("share "+r.URL) {
+		t.Fatalf("hook %d times, saw %v", p.count(), p.seen)
+	}
+	if err := f.DisableRemote(context.Background()); err != nil || p.count() != 1 {
+		t.Fatalf("remote access already off: %v, hook %d times", err, p.count())
+	}
+}
+
+func TestJoinOverAMemberCallsTheLeavingHookFirst(t *testing.T) {
+	f, n, _ := relayMember(t)
+	var p hookProbe
+	f.OnLeavingRelay = p.hook(func() []string {
+		var s []string
+		if relay, ok := f.ShareRelay(); ok {
+			s = append(s, "share "+relay)
+		}
+		if st, _ := f.loadMember(); st.FleetID != "" {
+			s = append(s, "fleet "+st.FleetID)
+		}
+		if n.called("down") {
+			s = append(s, "down")
+		}
+		return s
+	})
+	if err := f.Join(fleetCode("f-aaa").String()); err != nil || p.count() != 0 {
+		t.Fatalf("first join: %v, hook %d times", err, p.count())
+	}
+	if err := f.Join(fleetCode("f-bbb").String()); err != nil {
+		t.Fatal(err)
+	}
+	if p.count() != 1 || p.saw("down") || !p.saw("fleet f-aaa") || !p.saw("share "+testRelay) {
+		t.Fatalf("another fleet: hook %d times, saw %v", p.count(), p.seen)
+	}
+	if err := f.Join(fleetCode("f-bbb").String()); err != nil || p.count() != 1 {
+		t.Fatalf("same fleet again: %v, hook %d times", err, p.count())
+	}
+
+	// a code with no relay: before member.json is replaced
+	if err := f.Join(Code{MasterURL: "https://master.example", BoxID: "b2", Key: "k2"}.String()); err != nil {
+		t.Fatal(err)
+	}
+	if p.count() != 2 || !slices.Contains(p.seen[1], "fleet f-bbb") || !slices.Contains(p.seen[1], "share "+testRelay) {
+		t.Fatalf("no relay: hook %d times, saw %v", p.count(), p.seen)
+	}
+}

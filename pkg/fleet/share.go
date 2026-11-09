@@ -117,3 +117,10 @@ func (f *Fleet) leaving() {
 		f.OnLeavingRelay()
 	}
 }
+
+// leavingRelay calls the hook when relay is the one this box shares through, never under mu.
+func (f *Fleet) leavingRelay(relay string) {
+	if r, ok := f.ShareRelay(); ok && sameURL(r, relay) {
+		f.leaving()
+	}
+}
