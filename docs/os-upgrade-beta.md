@@ -2,7 +2,7 @@
 
 This is the guide for the person who switches the feature on. It says what the feature does, how to run it, what to do when it stops, and, before all that, how much of it has been seen to work.
 
-The feature takes a Debian 11 (bullseye) machine to Debian 12 (bookworm), and a Debian 12 machine to Debian 13 (trixie) (see "The hop from Debian 12 to 13" below), with the procedure that Debian documents, run by a transient systemd unit that the core starts, and shows where it stands. It is **off by default**, and nothing changes on a machine that never switches it on.
+The feature takes a Debian 11 (bullseye) machine to Debian 12 (bookworm), a Debian 12 machine to Debian 13 (trixie) (see "The hop from Debian 12 to 13" below), and an Ubuntu 22.04 or 24.04 machine to the next LTS (see "The hops of Ubuntu" below), with the procedure that Debian documents (Ubuntu's hops run the same apt commands), run by a transient systemd unit that the core starts, and shows where it stands. It is **off by default**, and nothing changes on a machine that never switches it on.
 
 **There is no way back from the point of no return, except a snapshot of the machine or a console to repair it from.** Debian does not document a downgrade. Take the snapshot before you start, and be where you can see the machine's screen or console when it restarts: a machine that does not come back cannot show its own dashboard.
 
@@ -36,7 +36,7 @@ Said here so that nobody is surprised by it:
 - AppManagement's side of the flag (see "What is held" below), which is another repository's release;
 - the refresh of a repository whose release information changed (its Origin, Label or Codename; apt 2.2.4 takes a new Suite or Version without a word): the question and the option exist, and the text of apt for it comes from apt's own strings and one trial in a Debian 11 root with a Release file made for the purpose, never from a real mirror's change;
 - the timers of apt under a real systemd in a refresh (the refresh was run for real in a root that has no systemd: every unit was inactive);
-- Ubuntu; and Debian 12 to 13 beyond what the next section says was run.
+- Debian 12 to 13 and the hops of Ubuntu beyond what the next sections say was run.
 
 ### The hop from Debian 12 to 13
 
@@ -78,6 +78,33 @@ Since core v0.4.98 (installer v0.5.100), a Debian 12 (bookworm) machine has a pl
   Twice the answer to `POST reboot` was lost (HTTP 502, or no answer at all), and the machine restarted all the same. The core asks systemd for the restart as soon as it accepts, and the shutdown can cut the answer. If your call to `reboot` gets no answer, wait for the machine and read the status: do not take the missing answer for a refusal.
 
 The two cases about the security line of Debian 11 at `security.debian.org` are not part of this hop: they are reported not testable, with that reason. Not run on this hop: a machine whose sources are the one-line `sources.list` only, a machine installed with Debian's installer rather than from the cloud image, and everything the list above names.
+
+### The hops of Ubuntu
+
+Since core v0.4.99 (installer v0.5.104), an Ubuntu 24.04 (noble) machine has a plan, a runbook and a run to Ubuntu 26.04 (resolute). Since core v0.4.105 (installer v0.5.112), an Ubuntu 22.04 (jammy) machine has one to Ubuntu 24.04. They use the same blocks, calls and states as the hops of Debian. What differs:
+
+- **the engine is apt, not Canonical's tool.** Canonical's way is `do-release-upgrade`, and these hops do not take it. They run the same apt commands as the Debian hops. The quirks that Canonical's upgrader applies on the way to 26.04 were read one by one, and each is a check of the readiness report, a stop of the plan, or does not apply on amd64. This is why each hop has been through a proof on a guest (below), and why its promotion waits on that proof;
+- **a hop is planned only while Canonical offers it.** The plan reads `https://changelogs.ubuntu.com/meta-release-lts`, the file `do-release-upgrade` reads. A target release that the file does not list as supported is refused with `not_offered` and the date of the reading. A file that does not answer is a refusal of the network class: the plan fails closed. This is how Canonical suspended the hop from 22.04 to 24.04 in September 2024, and the plan follows such a suspension without a change of ours;
+- **the plan refuses Ubuntu Pro** (`ubuntu_pro`, sources at `esm.ubuntu.com`): the `pro` client rewrites those files itself during Canonical's upgrade, which the engine does not do. A line of Debian in the sources of an Ubuntu machine is refused too (`other_distro`);
+- **the sources:** `noble`, `noble-updates` and `noble-security` (or jammy's) move to the target, and backports are turned off. `ubuntu.sources`, the deb822 file of the 24.04 image, is read and rewritten as Debian's `.sources` files are. Docker's source is put aside and back as on Debian, at Docker's address for Ubuntu;
+- **one step**: block 5 runs the whole upgrade (`dist-upgrade`) at once, as `do-release-upgrade` does, and block 6 finds nothing left. A minimal upgrade first left the init system of the old release under packages of the new one. So the network is not needed after the point of no return: everything is downloaded before it;
+- **Ubuntu's phased updates are included** (`APT::Get::Always-Include-Phased-Updates`), in the refresh, the plan and the hop, so that apt does not keep back an update that Ubuntu hands out in waves;
+- **the hop to 26.04:** apt's simulation of the full upgrade ends with `E: Conf Broken` on `coreutils-from-uutils` and `sudo-common` (the move to rust-coreutils and sudo-rs), where the real upgrade goes through. The plan and the blocks accept that error, for these two packages and on this hop only. `ssh_dsa_hostkey` covers this hop: OpenSSH 10 no longer loads DSA host keys;
+- **the hop to 24.04:** noble renames libraries for the 64-bit `time_t` (`libssl3` becomes `libssl3t64`, and so on) and drops `usrmerge`. Ubuntu's cloud image of 22.04 says that five of these are `required` (`libdb5.3`, `libext2fs2`, `libssl3`, `libtirpc3`, `usrmerge`). The plan and the guard of the blocks let their removal through only when the package that takes its place is installed by the same upgrade. Any other required package that would be removed still stops the hop;
+- **the security lines** of 22.04 and 24.04 are still served, so the reading of `security.debian.org` as `archive.debian.org` does not apply.
+
+**[M] measured**, by the workflow `os-upgrade-proof` of CasaOS-Install, on Ubuntu's own cloud images (server cloudimg, amd64) under QEMU with KVM, with Docker 29.9.3 from Docker's repository and a Tailscale source standing for a third party:
+
+- **from 24.04 to 26.04**, on installer v0.5.108 (core v0.4.103). The guest was Ubuntu 24.04.5, with apt 2.8.3 and systemd 255.
+  - **The path of a person** ([run 42557679275](https://github.com/ReCasaOS/CasaOS-Install/actions/runs/42557679275)): 12 of 12 verdicts pass. The refresh upgraded 33 packages and asked for a restart (`reboot_first`), in 49 s. The rehearsal downloaded 592 MiB into apt's cache. The hop took 5 min 17 s from `start` to `awaiting_reboot`, 4 min 51 s of it in block 5. The kernel went from 6.8.0-149 to 7.0.0-43. The guest was away 14 s at the restart, and the run reached `succeeded` 78 s after `reboot`. The judge found only information: a new `udevil.conf.dpkg-dist`, and the third party's source left paused.
+  - **The hop with faults** ([run 42585409170](https://github.com/ReCasaOS/CasaOS-Install/actions/runs/42585409170)): the four verdicts pass. They were: the unit killed before the point of no return; the unit killed after it while dpkg worked, then `resume`; the network cut after it; a power cut while dpkg worked, then the repair. Each of the last three ended on 26.04 and `succeeded`.
+- **from 22.04 to 24.04**, on installer v0.5.117 (core v0.4.108). The guest was Ubuntu 22.04.5, with apt 2.4.15 and systemd 249.
+  - **The path of a person** ([run 42624706117](https://github.com/ReCasaOS/CasaOS-Install/actions/runs/42624706117)): 12 of 12 verdicts pass. The rehearsal downloaded 369 MiB. The hop took 6 min 49 s from `start` to `awaiting_reboot`, 6 min 17 s of it in block 5. The kernel went from 5.15.0-203 to 6.8.0-149, and the run reached `succeeded` 81 s after `reboot`. The judge found only information: new `.ucf-dist` files for `grub`, `smb.conf` and `sshd_config`, and the third party's source left paused.
+  - **The hop with faults**, the same four, in the same run: the four verdicts pass. The kill after the point of no return landed while dpkg unpacked `libssl3t64` and left it half unpacked. Since core v0.4.108, the repair that `resume` runs unpacks such a package again from apt's cache before anything else. Before that version it stopped with `dpkg_broken`, which the proof of v0.5.114 found.
+
+  Once again the answer to `POST reboot` was lost (HTTP 502), and the machine restarted all the same.
+
+Not run on these hops: a machine installed from Canonical's server installer rather than the cloud image, a desktop, a machine with Ubuntu Pro (refused), the hop from 20.04, the releases that are not LTS, and everything the list above names.
 
 ## Switching it on, and off
 
