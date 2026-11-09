@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -92,6 +93,24 @@ type fakeRelay struct {
 	nodes                  []map[string]any
 	devRemoved             []string // the device ids removed
 	codes, listings        int      // device-code requests, fleet-status and device list requests
+	seen                   []string // "METHOD path" of every request, in order
+	boxKeys                []boxKeyPut
+	keyConflict            bool // a box-key PUT answers 409
+}
+
+// boxKeyPut is one PUT .../nodes/{node}/box-key the fake relay received.
+type boxKeyPut struct{ node, key, auth string }
+
+func (r *fakeRelay) seenCalls() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.seen...)
+}
+
+func (r *fakeRelay) puts() []boxKeyPut {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]boxKeyPut(nil), r.boxKeys...)
 }
 
 // set changes the fake's behaviour under its lock.
@@ -114,7 +133,20 @@ func newFakeRelay(t *testing.T) *fakeRelay {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		authed := req.Header.Get("Authorization") == "Bearer "+testSecret
+		r.seen = append(r.seen, req.Method+" "+req.URL.Path)
 		switch {
+		case req.Method == http.MethodPut && strings.HasPrefix(req.URL.Path, "/v1/fleets/fl1/nodes/") && strings.HasSuffix(req.URL.Path, "/box-key") && authed:
+			var body struct {
+				BoxKey string `json:"box_key"`
+			}
+			json.NewDecoder(req.Body).Decode(&body)
+			node := strings.TrimSuffix(strings.TrimPrefix(req.URL.Path, "/v1/fleets/fl1/nodes/"), "/box-key")
+			r.boxKeys = append(r.boxKeys, boxKeyPut{node, body.BoxKey, req.Header.Get("Authorization")})
+			if r.keyConflict {
+				jsonReply(w, http.StatusConflict, map[string]any{"error": "box key already set"})
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case req.Method == http.MethodPost && req.URL.Path == "/v1/fleets":
 			r.creates++
 			login := r.loginServer

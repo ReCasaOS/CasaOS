@@ -276,6 +276,7 @@ func (f *Fleet) ChangeRelay(ctx context.Context, relayURL string) error {
 		drop()
 		return err
 	}
+	f.leaving()
 	if err := n.Down(ctx, old.Relay); err != nil {
 		drop()
 		return fmt.Errorf("cannot leave the current private network: %w", err)
