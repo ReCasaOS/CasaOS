@@ -294,6 +294,33 @@ func TestACMEFailureIsReportedAndRetried(t *testing.T) {
 	<-done
 }
 
+func TestWakeRunsTheCheckNow(t *testing.T) {
+	(&ACME{}).Wake() // a zero value, no Loop: never blocks
+	log := newCallLog()
+	a := newTestACME(t, newFakeACME(log), newFakeTXT(log))
+	a.Wake()
+	a.Wake()
+	var mu sync.Mutex
+	wildcard := ""
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		a.Loop(ctx, func() string { mu.Lock(); defer mu.Unlock(); return wildcard }, time.Hour)
+		close(done)
+	}()
+	defer func() { cancel(); <-done }()
+	time.Sleep(50 * time.Millisecond) // the first check and the pending wake pass with nothing shared
+	mu.Lock()
+	wildcard = "*." + testHost
+	mu.Unlock()
+	a.Wake() // the next tick is an hour away
+	for deadline := time.Now().Add(5 * time.Second); a.Status().NotAfter.IsZero(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("Wake did not run the check")
+		}
+	}
+}
+
 func TestAccountKeyIsReused(t *testing.T) {
 	log := newCallLog()
 	f := newFakeACME(log)

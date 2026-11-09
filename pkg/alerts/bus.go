@@ -58,9 +58,13 @@ var recheckRegistered = time.Minute
 // Docker update stirs up, and so the only ones Hub.Muted silences.
 var containerEvents = []string{"app:container-died", "app:container-unhealthy", "app:container-restarting", "app:container-healthy"}
 
+// appEvents are passed to Hub.OnAppEvent; they raise no alert.
+var appEvents = []string{"app:install-end", "app:uninstall-end", "app:apply-changes-end"}
+
 // busEvents are the events of AppManagement this package subscribes to.
 func busEvents() []string {
 	names := append([]string{"backup:error", "backup:check-error"}, containerEvents...)
+	names = append(names, appEvents...)
 	names = append(names, resourceEvents...)
 	for operation := range operations {
 		names = append(names, "app:"+operation+"-error")
@@ -189,6 +193,9 @@ func registered(ctx context.Context, address, runtimePath string, f feed) ([]str
 // dropped, the Hub's memory of what it sent is not touched, so that no "resolved" follows an
 // alert that was never sent.
 func (h *Hub) onEvent(name string, properties map[string]string) {
+	if h.OnAppEvent != nil && slices.Contains(appEvents, name) {
+		h.OnAppEvent(name, properties)
+	}
 	if (slices.Contains(containerEvents, name) || isMutedResource(name, properties)) && h.Muted() {
 		return
 	}

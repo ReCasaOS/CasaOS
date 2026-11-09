@@ -65,6 +65,24 @@ type ACME struct {
 	mu      sync.Mutex
 	pending bool
 	lastErr string
+	wake    chan struct{} // made on first use by wakeChan, so a struct literal works
+}
+
+// Wake makes Loop run its check now rather than at the next tick. It never blocks.
+func (a *ACME) Wake() {
+	select {
+	case a.wakeChan() <- struct{}{}:
+	default:
+	}
+}
+
+func (a *ACME) wakeChan() chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.wake == nil {
+		a.wake = make(chan struct{}, 1)
+	}
+	return a.wake
 }
 
 // CertStatus is what the certificate on disk and the last attempt say.
@@ -127,6 +145,7 @@ func (a *ACME) Needs(wildcard string, now time.Time) bool {
 func (a *ACME) Loop(ctx context.Context, wildcard func() string, tick time.Duration) {
 	t := time.NewTicker(tick)
 	defer t.Stop()
+	wake := a.wakeChan()
 	var next time.Time
 	delay := retryMin
 	for {
@@ -145,6 +164,7 @@ func (a *ACME) Loop(ctx context.Context, wildcard func() string, tick time.Durat
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-wake:
 		}
 	}
 }

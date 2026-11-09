@@ -119,6 +119,9 @@ type Hub struct {
 	OSSupport func() ossupport.Report
 	// OSUpgradeRetries are the waits before a notice of the upgrade of the operating system that no channel took is sent again; a test shortens them.
 	OSUpgradeRetries []time.Duration
+	// OnAppEvent, when set, hears app:install-end, app:uninstall-end and app:apply-changes-end, muted or
+	// not (the sharing service follows the apps with it). It runs on the bus's goroutine: it returns at once.
+	OnAppEvent func(name string, properties map[string]string)
 
 	modifying   sync.Mutex // serialises Update's read-modify-writes of alerts.json
 	mu          sync.Mutex // guards sent and lastFailure
