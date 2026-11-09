@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,15 +19,15 @@ import (
 
 var testNow = time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 
-// verifyBoxRequest is the relay's rule for POST /v1/fleets, copied from recasaos-relay
+// verifyBoxRequest is the relay's rule for a box-signed request, copied from recasaos-relay
 // internal/auth (VerifyBox) without importing it: strict raw base64url, a 32-byte key and a
-// 64-byte signature, a time within 120 s, and the signature over "POST /v1/fleets\n"+time as sent.
+// 64-byte signature, a time within 120 s, and the signature over "<METHOD> <PATH>\n"+time as sent.
 // Left out: the relay's small-order key check, which needs filippo.io/edwards25519; a key made by
 // ed25519.GenerateKey is never one.
-func verifyBoxRequest(r *http.Request, now time.Time) error {
+func verifyBoxRequest(r *http.Request, now time.Time, method, path string) error {
 	enc := base64.RawURLEncoding.Strict()
-	if r.Method != http.MethodPost || r.URL.Path != "/v1/fleets" {
-		return errors.New("not a create-fleet request")
+	if r.Method != method || r.URL.Path != path {
+		return errors.New("not the signed request expected")
 	}
 	pub, err := enc.DecodeString(r.Header.Get("X-Box-Key"))
 	if err != nil || len(pub) != ed25519.PublicKeySize {
@@ -44,7 +45,7 @@ func verifyBoxRequest(r *http.Request, now time.Time) error {
 	if d := now.Sub(time.Unix(ts, 0)); d > 120*time.Second || d < -120*time.Second {
 		return errors.New("time outside the window")
 	}
-	if !ed25519.Verify(pub, []byte("POST /v1/fleets\n"+tsStr), sig) {
+	if !ed25519.Verify(pub, []byte(method+" "+path+"\n"+tsStr), sig) {
 		return errors.New("bad signature")
 	}
 	return nil
@@ -67,7 +68,7 @@ func relayFor(t *testing.T, h http.HandlerFunc) (*RelayClient, string) {
 func TestCreateFleetSignsTheRequest(t *testing.T) {
 	var pubs []string
 	c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) {
-		if err := verifyBoxRequest(r, testNow); err != nil {
+		if err := verifyBoxRequest(r, testNow, http.MethodPost, "/v1/fleets"); err != nil {
 			t.Errorf("the relay would refuse this request: %v", err)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -554,5 +555,85 @@ func TestCreateFleetRelayFull(t *testing.T) {
 		if !wantFull && !errors.Is(err, ErrRelayBusy) {
 			t.Errorf("%s: err = %v, want ErrRelayBusy", body, err)
 		}
+	}
+}
+
+func TestSetBoxKeyRequest(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/fleets/fl1/nodes/17/box-key" || r.Header.Get("Authorization") != "Bearer s" {
+			t.Errorf("unexpected request %s %s auth %q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		if want := `{"box_key":"` + base64.RawURLEncoding.EncodeToString(pub) + `"}`; strings.TrimSpace(string(b)) != want {
+			t.Errorf("body = %s, want %s", b, want)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := c.SetBoxKey(context.Background(), relay, "fl1", "s", "17", pub); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetBoxKeyErrors(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{"node unknown", 404, `{"error":"node not found"}`, ErrNodeUnknown},
+		{"old relay", 404, "404 page not found", ErrRelayNoShare},
+		{"linked", 409, `{"error":"x"}`, ErrBoxKeyLinked},
+		{"sharing off", 503, `{"error":"sharing not enabled"}`, ErrRelayNoShare},
+		{"auth", 401, `{"error":"unauthorized"}`, ErrRelayAuth},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cl, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(c.status)
+				io.WriteString(w, c.body)
+			})
+			pub, _, _ := ed25519.GenerateKey(nil)
+			if err := cl.SetBoxKey(context.Background(), relay, "fl1", "s", "17", pub); !errors.Is(err, c.want) {
+				t.Fatalf("err = %v, want %v", err, c.want)
+			}
+		})
+	}
+}
+
+func TestSignedCarriesTheBoxSignature(t *testing.T) {
+	c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := verifyBoxRequest(r, testNow, http.MethodPut, "/v1/share/name"); err != nil {
+			t.Errorf("the relay would refuse this request: %v", err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		if r.Header.Get("Content-Type") != "application/json" || string(b) != `{"name":"x"}` {
+			t.Errorf("content type %q, body %q", r.Header.Get("Content-Type"), b)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		io.WriteString(w, "hi")
+	})
+	status, body, ra, err := c.Signed(context.Background(), relay, http.MethodPut, "/v1/share/name", []byte(`{"name":"x"}`))
+	if err != nil || status != http.StatusAccepted || string(body) != "hi" || ra != 0 {
+		t.Fatalf("Signed = %d %q %v %v", status, body, ra, err)
+	}
+	c, relay = relayFor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	status, _, ra, err = c.Signed(context.Background(), relay, http.MethodGet, "/v1/share", nil)
+	if err != nil || status != 429 || ra != 7*time.Second {
+		t.Fatalf("Signed = %d %v %v, want 429 7s nil", status, ra, err)
+	}
+}
+
+func TestSignedUnreachable(t *testing.T) {
+	c, relay := relayFor(t, func(http.ResponseWriter, *http.Request) {})
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close()
+	_ = relay
+	if _, _, _, err := c.Signed(context.Background(), url, http.MethodGet, "/v1/share", nil); !errors.Is(err, ErrRelayUnreachable) {
+		t.Fatalf("err = %v, want ErrRelayUnreachable", err)
 	}
 }

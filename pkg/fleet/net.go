@@ -41,6 +41,9 @@ type NetState struct {
 	// does not answer (tailscale reports this node offline). Links already made
 	// may carry on; nothing new can join.
 	RelayUnreachable bool
+	// NodeID is this node's id at the coordination server (Headscale's numeric id, as a
+	// decimal string); empty when not running.
+	NodeID string
 }
 
 // Net drives the box's private network.
@@ -118,6 +121,7 @@ func (t *tailscale) State(ctx context.Context) (NetState, error) {
 		BackendState string
 		TailscaleIPs []string
 		Self         struct {
+			ID           string
 			TailscaleIPs []string
 			Online       *bool // absent on a client that does not say
 		}
@@ -159,6 +163,7 @@ func (t *tailscale) State(ctx context.Context) (NetState, error) {
 	if st.BackendState == "Running" {
 		ns.Connected, ns.Addr = true, pickAddr(append(st.Self.TailscaleIPs, st.TailscaleIPs...))
 		ns.RelayUnreachable = st.Self.Online != nil && !*st.Self.Online
+		ns.NodeID = st.Self.ID
 	}
 	return ns, nil
 }

@@ -456,3 +456,14 @@ func TestDownFailsWhenTheDaemonCannotBeStarted(t *testing.T) {
 		t.Fatalf("Down passed for a login it could not reach, calls %v", f.calls)
 	}
 }
+
+func TestStateReadsTheNodeID(t *testing.T) {
+	f := &fakeTS{status: `{"BackendState":"Running","Self":{"ID":"17","TailscaleIPs":["100.64.0.7"]}}`, prefs: prefsFor("https://relay.example")}
+	if got, err := f.net().State(context.Background()); err != nil || got.NodeID != "17" {
+		t.Fatalf("NodeID = %q, %v, want 17", got.NodeID, err)
+	}
+	f = &fakeTS{status: runningJSON, prefs: prefsFor("https://relay.example")}
+	if got, _ := f.net().State(context.Background()); got.NodeID != "" {
+		t.Errorf("NodeID = %q, want empty when absent", got.NodeID)
+	}
+}
