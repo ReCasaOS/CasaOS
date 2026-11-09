@@ -707,21 +707,24 @@ func (c *rbCtx) guard() string {
 
 // shGuardSaying is shGuard with the words that a stop ends with, before the words of the logs: the refresh has not begun the upgrade, and puts the machine back.
 func (c *rbCtx) guardSaying(words string) string {
-	return shLines(
+	lines := []string{
 		`guard_removals() {`,
 		`  what="${2:-the full upgrade}"`,
 		`  for name in $(removed_of "$1"); do`,
 		`    base="${name%%:*}"`,
 		`    why=""`,
 		`    case "$base" in`,
-		`      `+ShellCase(),
+		`      ` + ShellCase(),
 		`        why="protected" ;;`,
+	}
+	lines = append(lines, c.hop.renameCases()...)
+	return shLines(append(lines,
 		`      *) case "$(dpkg-query -W -f='${Essential} ${Priority}\n' "$base" 2> /dev/null || true)" in "yes "*|*" required") why="essential or required, as dpkg says" ;; esac ;;`,
 		`    esac`,
 		`    [ -z "$why" ] || { echo "STOP: $what would remove $name, which is $why. `+words+c.logWords()+`"; exit 1; }`,
 		`  done`,
 		`}`,
-	)
+	)...)
 }
 
 // muxAtHand is block 0's check, made before anything is changed: a machine that has no console here and neither tmux nor screen cannot run blocks 5 and 6,

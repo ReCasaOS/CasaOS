@@ -12,7 +12,8 @@ import (
 // The two hops of Ubuntu, as the tests read sources for them: both are the table's (TestTheHopsOfUbuntuAreTheTables).
 var (
 	jammyToNoble = HopSpec{ID: osreadiness.HopUbuntu2204to2404, Distro: "Ubuntu", From: "jammy", To: "noble", FromVersion: "22.04", ToVersion: "24.04",
-		Later: []string{"oracular", "plucky", "questing", "resolute"}, Deb822: true, OneStep: true}
+		Later: []string{"oracular", "plucky", "questing", "resolute"}, Deb822: true, OneStep: true,
+		RequiredRenames: map[string]string{"libdb5.3": "libdb5.3t64", "libext2fs2": "libext2fs2t64", "libssl3": "libssl3t64", "libtirpc3": "libtirpc3t64", "usrmerge": ""}}
 	nobleToResolute = HopSpec{ID: osreadiness.HopUbuntu2404to2604, Distro: "Ubuntu", From: "noble", To: "resolute", FromVersion: "24.04", ToVersion: "26.04",
 		Later: []string{"stonking", "tenacious"}, Deb822: true, SimBroken: []string{"coreutils-from-uutils", "sudo-common"}, OneStep: true}
 )
