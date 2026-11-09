@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 )
@@ -43,8 +45,17 @@ func (a Apps) List(ctx context.Context) ([]Installed, error) {
 		if info.Scheme == "" {
 			info.Scheme = "http"
 		}
+		if !validPort(info.PortMap) || (info.Scheme != "http" && info.Scheme != "https") {
+			info.PortMap = "" // no host is registered with a target the Gateway cannot reach
+		}
 		apps = append(apps, Installed{name, info.Title["en_us"], info.PortMap, info.Scheme})
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].Name < apps[j].Name })
 	return apps, nil
+}
+
+// validPort is digits only, 1 to 65535.
+func validPort(p string) bool {
+	n, err := strconv.Atoi(p)
+	return err == nil && n >= 1 && n <= 65535 && strings.Trim(p, "0123456789") == ""
 }

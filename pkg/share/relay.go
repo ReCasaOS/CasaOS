@@ -115,9 +115,13 @@ func (r *Relay) call(ctx context.Context, method, path string, body []byte) (int
 				if errors.Is(err, ErrWaitMaster) {
 					return 0, nil, ErrWaitMaster
 				}
-				return 0, nil, fmt.Errorf("%w: %v", ErrWaitMaster, err)
+				return 0, nil, err
 			}
 			registered = true
+			// the relay recorded the refused signature: the same request within its second would be a replay
+			if !sleep(ctx, time.Until(time.Now().Truncate(time.Second).Add(time.Second)), nil) {
+				return 0, nil, ctx.Err()
+			}
 			continue
 		case status == http.StatusTooManyRequests:
 			return 0, nil, BusyError{RetryAfter: retry}

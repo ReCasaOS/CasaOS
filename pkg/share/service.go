@@ -245,8 +245,14 @@ func (s *Service) SetName(ctx context.Context, name string, acceptTOS bool) erro
 		return err
 	}
 	defer s.unlock()
-	if s.read().Name != "" {
-		return ErrNameSet
+	if st := s.read(); st.Name != "" {
+		_, err := s.Relay.Status(ctx)
+		s.noteRelay(err)
+		if !errors.Is(err, ErrNoName) {
+			return ErrNameSet
+		}
+		s.deleteHosts(ctx, st) // the relay forgot the name: nothing else would let the owner claim one again
+		s.clear()
 	}
 	info, err := s.Relay.ClaimName(ctx, name)
 	s.noteRelay(err)
@@ -362,23 +368,15 @@ func (s *Service) StopAll(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Reset forgets the sharing of a box leaving its relay: the state is cleared and the tunnel stopped at
-// once, then the name is released and the host routes deleted, best effort. The certificate stays.
-// It runs while the fleet holds its relay lock: it only calls the relay's Signed and the Gateway.
+// Reset forgets the sharing of a box leaving its relay: the host routes are deleted first (local and fast),
+// then the name is released, best effort, then the tunnel stopped and the state cleared. The certificate
+// stays. It runs while the fleet holds its relay lock: it only calls the relay's Signed and the Gateway.
 func (s *Service) Reset(ctx context.Context) {
-	s.mu.Lock()
-	st := s.readLocked()
+	st := s.read()
 	if st.Name == "" {
-		s.mu.Unlock()
 		return
 	}
-	if err := clearState(s.statePath()); err != nil {
-		s.log("share: cannot clear the state", err)
-	}
-	s.revoked, s.tunnelErr = false, ""
-	s.mu.Unlock()
-	s.changed()
-
+	s.deleteHosts(ctx, st)
 	if s.Relay != nil && s.Relay.Signed != nil {
 		err := s.Relay.ReleaseName(ctx)
 		s.noteRelay(err)
@@ -386,6 +384,11 @@ func (s *Service) Reset(ctx context.Context) {
 			s.log("share: the relay did not release the name", err)
 		}
 	}
+	s.clear()
+}
+
+// deleteHosts deletes the host route of every app st shares, best effort.
+func (s *Service) deleteHosts(ctx context.Context, st State) {
 	for name := range st.Apps {
 		if label, err := Label(name); err == nil {
 			if err := s.Gateway.DeleteHost(ctx, label+"."+st.Host); err != nil && !errors.Is(err, ErrGatewayNoShare) {
@@ -393,6 +396,17 @@ func (s *Service) Reset(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// clear forgets the name and the shares, and stops the tunnel.
+func (s *Service) clear() {
+	s.mu.Lock()
+	if err := clearState(s.statePath()); err != nil {
+		s.log("share: cannot clear the state", err)
+	}
+	s.revoked, s.tunnelErr = false, ""
+	s.mu.Unlock()
+	s.changed()
 }
 
 // OnAppEvent follows AppManagement (Hub.OnAppEvent). It returns at once.
@@ -542,11 +556,15 @@ func (s *Service) tunnelLoop(ctx context.Context) {
 			}
 			continue
 		}
-		if !sleep(ctx, time.Second-time.Since(lastDial)) { // a box signature is never reused within a second
+		if !sleep(ctx, time.Second-time.Since(lastDial), nil) { // a box signature is never reused within a second
 			return
 		}
 		lastDial = time.Now()
-		if !sleep(ctx, s.tunnelOnce(ctx, &backoff)) {
+		select { // a kick from before this dial is spent: only a later one ends the backoff
+		case <-s.kick:
+		default:
+		}
+		if !sleep(ctx, s.tunnelOnce(ctx, &backoff), s.kick) { // a Share or SetName dials again at once
 			return
 		}
 	}
@@ -583,8 +601,7 @@ func (s *Service) tunnelOnce(ctx context.Context, backoff *time.Duration) time.D
 	if err != nil {
 		return fail(err, 0)
 	}
-	addr, err := s.Gateway.ShareAddr()
-	if err != nil {
+	if _, err := s.Gateway.ShareAddr(); err != nil {
 		return fail(err, 0)
 	}
 	session, err := Dial(sctx, relayURL, key, s.Dialer)
@@ -603,7 +620,7 @@ func (s *Service) tunnelOnce(ctx context.Context, backoff *time.Duration) time.D
 	s.connected, s.tunnelErr = true, ""
 	s.mu.Unlock()
 	start := time.Now()
-	code := Serve(sctx, session, addr)
+	code := Serve(sctx, session, s.Gateway.ShareAddr)
 	s.mu.Lock()
 	s.connected = false
 	s.mu.Unlock()
@@ -620,7 +637,8 @@ func (s *Service) tunnelOnce(ctx context.Context, backoff *time.Duration) time.D
 		return 0
 	case code == 4409:
 		s.setTunnelErr("another connection of this box replaced the tunnel")
-		return s.replacedWait
+		sleep(ctx, s.replacedWait, nil) // not cut short by a kick: the other connection would be replaced in turn
+		return 0
 	}
 	return fail(fmt.Errorf("closed by the relay (code %d)", code), 0)
 }
@@ -718,7 +736,8 @@ func (s *Service) log(msg string, err error) {
 
 func target(a Installed) string { return a.Scheme + "://127.0.0.1:" + a.Port }
 
-func sleep(ctx context.Context, d time.Duration) bool {
+// sleep waits d, or less when wake (nil: never) receives; false once ctx is done.
+func sleep(ctx context.Context, d time.Duration, wake <-chan struct{}) bool {
 	if d <= 0 {
 		return ctx.Err() == nil
 	}
@@ -728,6 +747,8 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	case <-ctx.Done():
 		return false
 	case <-t.C:
+		return true
+	case <-wake:
 		return true
 	}
 }

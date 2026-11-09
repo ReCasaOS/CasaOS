@@ -97,6 +97,8 @@ func TestPutShareNameMapsErrors(t *testing.T) {
 		{"relay without sharing", true, `{"name":"maison","accept_tos":true}`, relayReply{status: 404, body: `{}`}, 503, "relay", ""},
 		{"remote access off", false, `{"name":"maison","accept_tos":true}`, *claimed, 503, "remote-access", ""},
 		{"relay busy", true, `{"name":"maison","accept_tos":true}`, relayReply{status: 429, retry: 7 * time.Second}, 429, "", "7"},
+		{"relay busy 1.5 s", true, `{"name":"maison","accept_tos":true}`, relayReply{status: 429, retry: 1500 * time.Millisecond}, 429, "", "2"},
+		{"relay busy 0.3 s", true, `{"name":"maison","accept_tos":true}`, relayReply{status: 429, retry: 300 * time.Millisecond}, 429, "", "1"},
 		{"relay failing", true, `{"name":"maison","accept_tos":true}`, relayReply{status: 500, body: `{"error":"secret detail"}`}, 500, "", ""},
 	}
 	for _, c := range cases {

@@ -18,6 +18,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/acme"
 )
 
 // callLog is shared by fakeACME and fakeTXT so a test sees their calls in the order they happened.
@@ -216,6 +218,14 @@ func TestObtainErrorTexts(t *testing.T) {
 		{errors.New("acme: urn:ietf:params:acme:error:rateLimited: too many"), "Let's Encrypt refused: its limit of new certificates is reached, try again in a few days"},
 		{downErr{}, "Let's Encrypt cannot be reached: dial tcp: down"},
 		{errors.New("nope"), "ACME: nope"},
+		// a CA's detail may quote the TXT value: only the problem type and status are kept
+		{&acme.Error{StatusCode: 403, ProblemType: "urn:ietf:params:acme:error:unauthorized", Detail: `Incorrect TXT record "s3cretTXT"`},
+			"ACME: urn:ietf:params:acme:error:unauthorized (status 403)"},
+		{&acme.AuthorizationError{URI: "https://ca/authz/1", Identifier: "mybox.box.example.org", Errors: []error{
+			&acme.Error{StatusCode: 403, ProblemType: "urn:ietf:params:acme:error:unauthorized", Detail: `got "s3cretTXT"`}}},
+			"ACME: urn:ietf:params:acme:error:unauthorized (status 403)"},
+		{&acme.OrderError{OrderURL: "https://ca/order/1", Status: "invalid", Problem: &acme.Error{StatusCode: 400,
+			ProblemType: "urn:ietf:params:acme:error:dns", Detail: "s3cretTXT"}}, "ACME: urn:ietf:params:acme:error:dns (status 400)"},
 	} {
 		log := newCallLog()
 		f := newFakeACME(log)

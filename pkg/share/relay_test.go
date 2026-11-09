@@ -92,21 +92,47 @@ func TestSelfRegistersOnFirstForbidden(t *testing.T) {
 
 	boom := errors.New("boom")
 	for _, c := range []struct {
-		reg      func(context.Context) error
-		wrapped  bool
-		contains string
+		reg  func(context.Context) error
+		want error
 	}{
-		{func(context.Context) error { return boom }, true, "boom"},
-		{func(context.Context) error { return ErrWaitMaster }, false, ErrWaitMaster.Error()},
-		{nil, false, ErrWaitMaster.Error()},
+		{func(context.Context) error { return boom }, boom}, // an unreachable relay is not "waiting for the master"
+		{func(context.Context) error { return ErrWaitMaster }, ErrWaitMaster},
+		{nil, ErrWaitMaster},
 	} {
 		r, calls = fakeRelay(forbidden)
 		r.RegisterSelf = c.reg
 		_, err := r.ClaimName(context.Background(), "mybox")
-		if !errors.Is(err, ErrWaitMaster) || len(*calls) != 1 || !strings.Contains(err.Error(), c.contains) ||
-			(!c.wrapped && err != ErrWaitMaster) {
+		if err != c.want || len(*calls) != 1 {
 			t.Fatalf("%v, calls %d", err, len(*calls))
 		}
+	}
+}
+
+// The relay records every signature it verified, the refused one too: the retry must be signed in another second.
+func TestTheRetryAfterRegisteringIsSignedInTheNextSecond(t *testing.T) {
+	var seen []time.Time
+	r := &Relay{Signed: func(_ context.Context, method, path string, _ []byte) (int, []byte, time.Duration, error) {
+		now := time.Now()
+		for _, at := range seen {
+			if at.Unix() == now.Unix() {
+				return 401, []byte(`{"error":"replayed request"}`), 0, nil
+			}
+		}
+		seen = append(seen, now)
+		if len(seen) == 1 {
+			return 403, []byte(`{"error":"box key not linked"}`), 0, nil
+		}
+		return 201, []byte(infoBody), 0, nil
+	}}
+	r.RegisterSelf = func(context.Context) error { return nil }
+	if info, err := r.ClaimName(context.Background(), "mybox"); err != nil || info.Name != "mybox" {
+		t.Fatalf("%+v, %v", info, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	seen = nil
+	if _, err := r.ClaimName(ctx, "mybox"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled wait: %v", err)
 	}
 }
 

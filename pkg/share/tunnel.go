@@ -111,9 +111,10 @@ func (s *Session) Close() error { return s.y.Close() }
 // 0 otherwise (network drop, local close, normal closure).
 func (s *Session) CloseCode() int { return s.c.CloseCode() }
 
-// Serve copies every accepted stream to a fresh TCP connection to shareAddr, at most maxStreams at a time
-// (the others are closed at once), until the session ends or ctx is done. It returns the close code.
-func Serve(ctx context.Context, s *Session, shareAddr string) int {
+// Serve copies every accepted stream to a fresh TCP connection to the address shareAddr gives at that stream,
+// at most maxStreams at a time (the others are closed at once), until the session ends or ctx is done. It
+// returns the close code.
+func Serve(ctx context.Context, s *Session, shareAddr func() (string, error)) int {
 	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(ctx, func() { s.Close() })
@@ -150,11 +151,15 @@ func Serve(ctx context.Context, s *Session, shareAddr string) int {
 	return s.CloseCode()
 }
 
-// pipe copies st and a fresh connection to addr both ways. A failed dial closes only this stream.
-func pipe(ctx context.Context, st net.Conn, addr string) {
+// pipe copies st and a fresh connection to addr's answer both ways. A failed dial closes only this stream.
+func pipe(ctx context.Context, st net.Conn, addr func() (string, error)) {
 	defer st.Close()
+	a, err := addr() // read per stream: the Gateway changes port at each restart
+	if err != nil {
+		return
+	}
 	d := net.Dialer{Timeout: 10 * time.Second}
-	g, err := d.DialContext(ctx, "tcp", addr)
+	g, err := d.DialContext(ctx, "tcp", a)
 	if err != nil {
 		return
 	}

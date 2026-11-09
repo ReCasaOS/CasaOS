@@ -294,16 +294,38 @@ func (a *ACME) accountKey() (*ecdsa.PrivateKey, error) {
 }
 
 // acmeError words an error for the status; it never carries the TXT value, a key or a CSR (none is put in one).
+// A CA's problem keeps its type and status only: its free-text detail may quote the TXT value.
 func acmeError(err error) error {
 	var ne net.Error
 	var ue *url.Error
+	var pe *acme.Error
+	var ae *acme.AuthorizationError
+	var oe *acme.OrderError
 	switch {
 	case strings.Contains(err.Error(), "rateLimited"):
 		return errors.New("Let's Encrypt refused: its limit of new certificates is reached, try again in a few days")
 	case errors.As(err, &ne) || errors.As(err, &ue):
 		return fmt.Errorf("Let's Encrypt cannot be reached: %w", err)
+	case errors.As(err, &ae):
+		for _, e := range ae.Errors {
+			if errors.As(e, &pe) {
+				return acmeProblem(pe)
+			}
+		}
+		return errors.New("ACME: the authorization failed")
+	case errors.As(err, &oe):
+		if oe.Problem != nil {
+			return acmeProblem(oe.Problem)
+		}
+		return fmt.Errorf("ACME: the order is %s", oe.Status)
+	case errors.As(err, &pe):
+		return acmeProblem(pe)
 	}
 	return fmt.Errorf("ACME: %w", err)
+}
+
+func acmeProblem(e *acme.Error) error {
+	return fmt.Errorf("ACME: %s (status %d)", e.ProblemType, e.StatusCode)
 }
 
 // acmeClient is acmeAPI over the real client. A bad CA file is reported by Register.

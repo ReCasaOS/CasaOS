@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -232,7 +233,7 @@ func TestNeedsRemoteAccess(t *testing.T) {
 
 func TestSetNameClaimsAndSaves(t *testing.T) {
 	ctx := context.Background()
-	f := newFixture(t, claim)
+	f := newFixture(t, claim, reply{status: 200, body: infoBody})
 	if err := f.s.SetName(ctx, "MyBox", true); !errors.Is(err, ErrBadName) {
 		t.Fatalf("capitals: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestSetNameClaimsAndSaves(t *testing.T) {
 	if st.Name != "mybox" || st.Host != "mybox.box.example.org" || st.Domain != "box.example.org" || !st.TOSAcceptedAt.Equal(f.now) {
 		t.Fatalf("state %+v", st)
 	}
-	if err := f.s.SetName(ctx, "other", true); !errors.Is(err, ErrNameSet) || len(*f.relay) != 1 {
+	if err := f.s.SetName(ctx, "other", true); !errors.Is(err, ErrNameSet) || len(*f.relay) != 2 {
 		t.Fatalf("second: %v, %d calls", err, len(*f.relay))
 	}
 }
@@ -505,7 +506,7 @@ func TestTunnelRunsOnlyWhileSharing(t *testing.T) {
 	f.share(t, "jellyfin")
 	f.tunnel.Next()
 	first := time.Now()
-	if d := first.Sub(start); d > time.Second {
+	if d := first.Sub(start); d > 3*time.Second {
 		t.Errorf("dialled after %v", d)
 	}
 	eventually(t, "connected", func() bool { return f.s.Status(ctx).Tunnel.Connected })
@@ -544,4 +545,94 @@ func TestRevokedCloseCodeStopsTheTunnel(t *testing.T) {
 	}
 	f.share(t, "jellyfin") // the owner acts
 	f.tunnel.Next()
+}
+
+func TestSetNameReclaimsWhenTheRelayForgotTheName(t *testing.T) {
+	ctx := context.Background()
+	other := reply{status: 201, body: `{"name":"other","host":"other.box.example.org","domain":"box.example.org"}`}
+	f := newFixture(t, claim, reply{status: 404, body: `{"error":"no name"}`}, other)
+	f.named(t)
+	f.run(t)
+	f.share(t, "jellyfin")
+	y := f.tunnel.Next()
+	if err := f.s.SetName(ctx, "other", true); err != nil {
+		t.Fatal(err)
+	}
+	if len(*f.relay) != 3 || (*f.relay)[1] != (sent{"GET", "/v1/share", ""}) || (*f.relay)[2] != (sent{"PUT", "/v1/share/name", `{"name":"other"}`}) {
+		t.Fatalf("relay calls %+v", *f.relay)
+	}
+	if st := f.saved(t); st.Name != "other" || len(st.Apps) != 0 || f.mgmt.count(dropJelly) != 1 {
+		t.Fatalf("state %+v, gateway %+v", st, f.mgmt.seen())
+	}
+	eventually(t, "the tunnel closed", y.IsClosed)
+
+	// the relay still knows it, or does not answer: the name stays
+	for _, rp := range []reply{{status: 200, body: infoBody}, {err: errors.New("unreachable")}, {status: 502}} {
+		f := newFixture(t, claim, rp)
+		f.named(t)
+		if err := f.s.SetName(ctx, "other", true); !errors.Is(err, ErrNameSet) || len(*f.relay) != 2 || f.saved(t).Name != "mybox" {
+			t.Fatalf("%+v: %v, relay calls %+v", rp, err, *f.relay)
+		}
+	}
+}
+
+func TestResetDeletesTheHostsBeforeTheRelay(t *testing.T) {
+	f := newFixture(t, claim)
+	f.compose.set("nextcloud", "7580", "https")
+	f.named(t)
+	f.share(t, "jellyfin")
+	f.share(t, "nextcloud")
+	f.s.Relay.Signed = func(ctx context.Context, _, _ string, _ []byte) (int, []byte, time.Duration, error) {
+		<-ctx.Done() // a relay that does not answer
+		return 0, nil, 0, ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	f.s.Reset(ctx)
+	if f.mgmt.count(dropJelly) != 1 || f.mgmt.count(sent{"DELETE", "/v1/gateway/hosts/nextcloud.mybox.box.example.org", ""}) != 1 {
+		t.Fatalf("gateway %+v", f.mgmt.seen())
+	}
+	if _, err := os.Stat(f.state); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("share.json: %v", err)
+	}
+}
+
+func TestAShareEndsTheTunnelBackoff(t *testing.T) {
+	f := newFixture(t, claim)
+	var dials atomic.Int32
+	f.tunnel = newFakeTunnelRelay(t, func(w http.ResponseWriter, r *http.Request) bool {
+		if dials.Add(1) == 1 {
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return true
+		}
+		return false
+	})
+	f.s.RelayURL = func() (string, bool) { return f.tunnel.URL, true }
+	f.s.backoffMin = 20 * time.Second
+	f.named(t)
+	f.run(t)
+	f.share(t, "jellyfin")
+	eventually(t, "the first dial refused", func() bool { f.s.mu.Lock(); defer f.s.mu.Unlock(); return f.s.tunnelErr != "" })
+	start := time.Now()
+	f.share(t, "jellyfin") // the owner acts again
+	f.tunnel.Next()
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("dialled after %v", d)
+	}
+}
+
+func TestABadPortOrSchemeIsNotShared(t *testing.T) {
+	f := newFixture(t, claim)
+	f.compose.set("badport", "80a", "http")
+	f.compose.set("bigport", "70000", "http")
+	f.compose.set("badscheme", "8080", "ftp")
+	f.named(t)
+	for _, app := range []string{"badport", "bigport", "badscheme"} {
+		if err := f.s.Share(context.Background(), app); !errors.Is(err, ErrNoPort) {
+			t.Fatalf("%s: %v", app, err)
+		}
+	}
+	if f.mgmt.total() != 0 {
+		t.Fatalf("gateway %+v", f.mgmt.seen())
+	}
 }

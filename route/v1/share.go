@@ -129,7 +129,7 @@ func shareFail(ctx echo.Context, err error) error {
 	case errors.As(err, &busy):
 		status, msg = http.StatusTooManyRequests, busy.Error()
 		if busy.RetryAfter > 0 {
-			ctx.Response().Header().Set("Retry-After", strconv.Itoa(int(busy.RetryAfter/time.Second)))
+			ctx.Response().Header().Set("Retry-After", strconv.Itoa(int(max(1, (busy.RetryAfter+time.Second-1)/time.Second)))) // rounded up
 		}
 	case errors.Is(err, fleet.ErrRelayUnreachable):
 		status, msg = http.StatusBadGateway, err.Error()

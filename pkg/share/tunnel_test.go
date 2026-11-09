@@ -203,7 +203,7 @@ func testKey(t *testing.T) ed25519.PrivateKey {
 // serveAsync runs Serve and delivers its result.
 func serveAsync(ctx context.Context, s *Session, addr string) <-chan int {
 	ch := make(chan int, 1)
-	go func() { ch <- Serve(ctx, s, addr) }()
+	go func() { ch <- Serve(ctx, s, func() (string, error) { return addr, nil }) }()
 	return ch
 }
 
@@ -478,6 +478,56 @@ func TestServeFreesTheSlotWhenTheGatewayCloses(t *testing.T) {
 		if _, err := io.ReadFull(st, make([]byte, 1)); err != nil {
 			t.Fatalf("stream %d was not served: %v", i, err)
 		}
+	}
+	relay.Close()
+	waitCode(t, done)
+}
+
+// The Gateway moves to a new port at each restart: every stream reads the address again.
+func TestServeReadsTheAddressForEachStream(t *testing.T) {
+	gw1, gw2 := newEchoGateway(t), newEchoGateway(t)
+	f := newFakeTunnelRelay(t, nil)
+	s, err := Dial(context.Background(), f.URL, testKey(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	answers := []func() (string, error){
+		func() (string, error) { return gw1.Addr, nil },
+		func() (string, error) { return "", errors.New("no share.addr") },
+		func() (string, error) { return gw2.Addr, nil },
+	}
+	done := make(chan int, 1)
+	go func() {
+		done <- Serve(context.Background(), s, func() (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			a := answers[0]
+			answers = answers[1:]
+			return a()
+		})
+	}()
+	relay := f.Next()
+	for i, echoed := range []bool{true, false, true} {
+		st, err := relay.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.SetDeadline(time.Now().Add(5 * time.Second))
+		st.Write([]byte("x"))
+		_, err = io.ReadFull(st, make([]byte, 1))
+		if echoed != (err == nil) || (!echoed && err != io.EOF) {
+			t.Fatalf("stream %d: %v", i, err)
+		}
+		st.Close()
+	}
+	gw1.mu.Lock()
+	gw2.mu.Lock()
+	n1, n2 := len(gw1.conns), len(gw2.conns)
+	gw2.mu.Unlock()
+	gw1.mu.Unlock()
+	if n1 != 1 || n2 != 1 {
+		t.Fatalf("the first gateway saw %d streams, the second %d", n1, n2)
 	}
 	relay.Close()
 	waitCode(t, done)
