@@ -23,10 +23,17 @@ type fakeManagement struct {
 	mu    sync.Mutex
 	calls []sent
 	fail  int
+	onPut func() // when set, runs at each PUT before it is answered
 }
 
 func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
+	m.mu.Lock()
+	onPut := m.onPut
+	m.mu.Unlock()
+	if onPut != nil && r.Method == http.MethodPut {
+		onPut()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.fail > 0 {
@@ -56,15 +63,26 @@ func (m *fakeManagement) count(c sent) int {
 
 func (m *fakeManagement) total() int { m.mu.Lock(); defer m.mu.Unlock(); return len(m.calls) }
 
+// seen is a copy of the calls, for failure messages.
+func (m *fakeManagement) seen() []sent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]sent(nil), m.calls...)
+}
+
 // fakeCompose is AppManagement's list of installed apps.
 type fakeCompose struct {
-	mu   sync.Mutex
-	apps map[string]Installed
+	mu    sync.Mutex
+	apps  map[string]Installed
+	lists int // how many times it was asked
 }
+
+func (c *fakeCompose) asked() int { c.mu.Lock(); defer c.mu.Unlock(); return c.lists }
 
 func (c *fakeCompose) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.lists++
 	data := map[string]any{}
 	for name, a := range c.apps {
 		data[name] = map[string]any{"store_info": map[string]string{"port_map": a.Port, "scheme": a.Scheme}}
@@ -244,7 +262,7 @@ func TestShareRegistersHostAndSavesState(t *testing.T) {
 	f.named(t)
 	f.share(t, "jellyfin")
 	if f.mgmt.count(putJelly) != 1 {
-		t.Fatalf("gateway saw %+v", f.mgmt.calls)
+		t.Fatalf("gateway saw %+v", f.mgmt.seen())
 	}
 	st := f.s.Status(ctx)
 	a := appOf(st, "jellyfin")
@@ -293,7 +311,7 @@ func TestUnshareRemovesHost(t *testing.T) {
 		}
 	}
 	if f.mgmt.count(dropJelly) != 1 || len(f.saved(t).Apps) != 0 {
-		t.Fatalf("gateway %+v, state %+v", f.mgmt.calls, f.saved(t))
+		t.Fatalf("gateway %+v, state %+v", f.mgmt.seen(), f.saved(t))
 	}
 }
 
@@ -307,6 +325,7 @@ func TestUninstallEventUnshares(t *testing.T) {
 
 func TestResyncDropsAVanishedApp(t *testing.T) {
 	f := newFixture(t, claim)
+	f.compose.set("other", "8080", "http") // the list stays non-empty: an empty one is not an uninstall
 	f.named(t)
 	f.share(t, "jellyfin")
 	f.run(t)
@@ -314,6 +333,52 @@ func TestResyncDropsAVanishedApp(t *testing.T) {
 	f.compose.remove("jellyfin")
 	f.s.OnAppEvent("app:install-end", map[string]string{"app:name": "other"})
 	eventually(t, "unshared", func() bool { return f.mgmt.count(dropJelly) == 1 && len(f.saved(t).Apps) == 0 })
+}
+
+func TestResyncKeepsSharesOnAnEmptyAppList(t *testing.T) {
+	f := newFixture(t)
+	f.compose.remove("jellyfin") // AppManagement still loading: {"data":{}}
+	if err := saveState(f.state, State{Name: "mybox", Host: "mybox.box.example.org", Domain: "box.example.org",
+		Apps: map[string]App{"jellyfin": {Port: "8096", Scheme: "http"}}}); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t)
+	eventually(t, "a retry after the first resync", func() bool { return f.compose.asked() >= 2 })
+	if f.mgmt.count(dropJelly) != 0 || f.saved(t).Apps["jellyfin"] != (App{Port: "8096", Scheme: "http"}) {
+		t.Fatalf("gateway %+v, state %+v", f.mgmt.seen(), f.saved(t))
+	}
+	f.compose.set("jellyfin", "8096", "http")
+	eventually(t, "the host registered", func() bool { return f.mgmt.count(putJelly) == 1 })
+	if f.mgmt.count(dropJelly) != 0 {
+		t.Fatalf("gateway %+v", f.mgmt.seen())
+	}
+}
+
+func TestShareDuringResetReportsNoName(t *testing.T) {
+	f := newFixture(t, claim, reply{status: 204})
+	f.named(t)
+	f.mgmt.mu.Lock()
+	f.mgmt.onPut = func() { f.s.Reset(context.Background()) } // Reset lands while Share waits on the Gateway
+	f.mgmt.mu.Unlock()
+	if err := f.s.Share(context.Background(), "jellyfin"); !errors.Is(err, ErrNoName) {
+		t.Fatalf("got %v", err)
+	}
+	if _, err := os.Stat(f.state); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("share.json: %v", err)
+	}
+}
+
+func TestASecondRunReturnsAtOnce(t *testing.T) {
+	f := newFixture(t)
+	f.run(t)
+	eventually(t, "running", func() bool { f.s.mu.Lock(); defer f.s.mu.Unlock(); return f.s.running })
+	done := make(chan struct{})
+	go func() { f.s.Run(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a second Run did not return")
+	}
 }
 
 func TestPortChangeFollows(t *testing.T) {
@@ -345,7 +410,7 @@ func TestResetReleasesAndClears(t *testing.T) {
 		t.Fatalf("relay calls %+v", *f.relay)
 	}
 	if f.mgmt.count(dropJelly) != 1 || f.mgmt.count(sent{"DELETE", "/v1/gateway/hosts/nextcloud.mybox.box.example.org", ""}) != 1 {
-		t.Fatalf("gateway %+v", f.mgmt.calls)
+		t.Fatalf("gateway %+v", f.mgmt.seen())
 	}
 	if _, err := os.Stat(f.state); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("share.json: %v", err)
@@ -363,14 +428,14 @@ func TestResetReleasesAndClears(t *testing.T) {
 	f.share(t, "jellyfin")
 	f.s.Reset(ctx)
 	if _, err := os.Stat(f.state); !errors.Is(err, os.ErrNotExist) || f.mgmt.count(dropJelly) != 1 {
-		t.Fatalf("share.json: %v, gateway %+v", err, f.mgmt.calls)
+		t.Fatalf("share.json: %v, gateway %+v", err, f.mgmt.seen())
 	}
 
 	// without a name: nothing to do
 	f = newFixture(t)
 	f.s.Reset(ctx)
 	if len(*f.relay) != 0 || f.mgmt.total() != 0 {
-		t.Fatalf("relay %+v, gateway %+v", *f.relay, f.mgmt.calls)
+		t.Fatalf("relay %+v, gateway %+v", *f.relay, f.mgmt.seen())
 	}
 }
 

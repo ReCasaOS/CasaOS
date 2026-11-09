@@ -65,6 +65,7 @@ type Service struct {
 	tunnelErr    string
 	revoked      bool               // a 4403: no dial until a Share
 	cancelTunnel context.CancelFunc // ends the tunnel being dialled or served
+	running      bool               // a Run is under way
 }
 
 // Default is the box's own; main wires its funcs.
@@ -252,10 +253,14 @@ func (s *Service) SetName(ctx context.Context, name string, acceptTOS bool) erro
 	if err != nil {
 		return err
 	}
-	return s.update(func(st *State) bool {
+	err = s.update(func(st *State) bool {
 		st.Name, st.Host, st.Domain, st.TOSAcceptedAt = info.Name, info.Host, info.Domain, s.now()
 		return true
 	})
+	if err != nil {
+		s.log("share: the relay gave the name but it cannot be saved", err)
+	}
+	return err
 }
 
 // Share publishes an installed app at https://<label>.<host>.
@@ -298,13 +303,18 @@ func (s *Service) Share(ctx context.Context, composeName string) error {
 	s.mu.Lock()
 	s.revoked, s.tunnelErr = false, "" // the owner acted: dial again
 	s.mu.Unlock()
+	reset := false
 	err = s.update(func(cur *State) bool {
 		if cur.Name != st.Name { // reset meanwhile
+			reset = true
 			return false
 		}
 		cur.Apps[composeName] = App{Port: app.Port, Scheme: app.Scheme}
 		return true
 	})
+	if reset {
+		return ErrNoName
+	}
 	if s.ACME != nil {
 		s.ACME.Wake()
 	}
@@ -409,8 +419,16 @@ func (s *Service) OnAppEvent(name string, properties map[string]string) {
 }
 
 // Run keeps the host routes, the tunnel and the certificate until ctx is done. Without a name and an app
-// shared, nothing goes out.
+// shared, nothing goes out. A second Run while one is under way returns at once.
 func (s *Service) Run(ctx context.Context) {
+	s.mu.Lock()
+	already := s.running
+	s.running = true
+	s.mu.Unlock()
+	if already {
+		return
+	}
+	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
 	loops := []func(context.Context){s.resyncLoop, s.tunnelLoop}
 	if s.ACME != nil {
 		loops = append(loops, func(ctx context.Context) { s.ACME.Loop(ctx, s.wildcard, time.Hour) })
@@ -470,6 +488,9 @@ func (s *Service) resync(ctx context.Context) error {
 	installed, err := s.Apps.List(ctx)
 	if err != nil {
 		return err
+	}
+	if len(installed) == 0 { // AppManagement answers an empty list while it loads at boot: not an uninstall
+		return errors.New("AppManagement lists no app yet")
 	}
 	for name, was := range st.Apps {
 		i := slices.IndexFunc(installed, func(a Installed) bool { return a.Name == name })

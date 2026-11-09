@@ -295,25 +295,33 @@ func TestACMEFailureIsReportedAndRetried(t *testing.T) {
 }
 
 func TestWakeRunsTheCheckNow(t *testing.T) {
-	(&ACME{}).Wake() // a zero value, no Loop: never blocks
+	z := &ACME{} // a zero value, no Loop: never blocks
+	z.Wake()
+	z.Wake()
 	log := newCallLog()
 	a := newTestACME(t, newFakeACME(log), newFakeTXT(log))
-	a.Wake()
-	a.Wake()
 	var mu sync.Mutex
-	wildcard := ""
+	wildcard, checks := "", 0
+	first := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		a.Loop(ctx, func() string { mu.Lock(); defer mu.Unlock(); return wildcard }, time.Hour)
+		a.Loop(ctx, func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			if checks++; checks == 1 {
+				close(first)
+			}
+			return wildcard
+		}, time.Hour)
 		close(done)
 	}()
 	defer func() { cancel(); <-done }()
-	time.Sleep(50 * time.Millisecond) // the first check and the pending wake pass with nothing shared
+	<-first // the first check found nothing shared; the next tick is an hour away
 	mu.Lock()
 	wildcard = "*." + testHost
 	mu.Unlock()
-	a.Wake() // the next tick is an hour away
+	a.Wake() // only this can run the check now
 	for deadline := time.Now().Add(5 * time.Second); a.Status().NotAfter.IsZero(); time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("Wake did not run the check")
