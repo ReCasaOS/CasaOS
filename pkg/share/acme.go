@@ -358,5 +358,11 @@ func (c *acmeClient) Finalize(ctx context.Context, orderURI string, csr []byte) 
 		return nil, err
 	}
 	chain, _, err := c.c.CreateOrderCert(ctx, o.FinalizeURL, csr, true)
+	if err != nil {
+		// v0.57.0 polls the finalize answer's Location, which Pebble omits: poll the order we know.
+		if o2, werr := c.c.WaitOrder(ctx, orderURI); werr == nil && o2.Status == acme.StatusValid && o2.CertURL != "" {
+			return c.c.FetchCert(ctx, o2.CertURL, true)
+		}
+	}
 	return chain, err
 }
