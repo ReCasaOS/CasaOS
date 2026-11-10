@@ -12,6 +12,8 @@ type frame struct {
 	Version   string            `json:"version,omitempty"`    // hello
 	WebScheme string            `json:"web_scheme,omitempty"` // hello: the dashboard's scheme
 	WebPort   string            `json:"web_port,omitempty"`   // hello: and port
+	BoxKey    string            `json:"box_key,omitempty"`    // hello: the box's public key, base64url raw ed25519; only over a relay
+	NodeID    string            `json:"node_id,omitempty"`    // hello: the box's node id on the relay's private network
 	Method    string            `json:"method,omitempty"`     // req
 	Path      string            `json:"path,omitempty"`       // req
 	Query     string            `json:"query,omitempty"`      // req

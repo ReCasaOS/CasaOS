@@ -440,3 +440,29 @@ func TestLogsLink(t *testing.T) {
 		}
 	}
 }
+
+func TestAppEventsReachTheHook(t *testing.T) {
+	h, o, _ := newHub(t)
+	h.Muted = func() bool { return true }
+	immich := map[string]string{"app:name": "immich"}
+	h.onEvent("app:install-end", immich) // no hook yet: nothing happens
+	var got []string
+	h.OnAppEvent = func(name string, p map[string]string) { got = append(got, name+" "+p["app:name"]) }
+	for _, name := range []string{"app:install-end", "app:uninstall-end", "app:apply-changes-end", "app:install-error", "app:container-died"} {
+		h.onEvent(name, immich)
+	}
+	h.sending.Wait()
+	want := []string{"app:install-end immich", "app:uninstall-end immich", "app:apply-changes-end immich"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("hook heard %q, want %q", got, want)
+	}
+	// the alerts' own handling is unchanged: the install error only (the container event is muted)
+	if texts := o.texts(phone); len(texts) != 1 || !strings.Contains(texts[0], "Installing immich failed") {
+		t.Fatalf("sent %q", texts)
+	}
+	for _, name := range []string{"app:install-end", "app:uninstall-end", "app:apply-changes-end"} {
+		if !slices.Contains(busEvents(), name) {
+			t.Errorf("busEvents() lacks %s", name)
+		}
+	}
+}

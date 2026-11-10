@@ -131,6 +131,9 @@ func (f *Fleet) Join(code string) error {
 		if haveRelay && remoteAlone(rs, on) {
 			return ErrRemoteOn
 		}
+		if member && old.Relay != "" && !on {
+			f.leavingRelay(old.Relay) // before member.json no longer names the relay
+		}
 		if err := f.enrol(st); err != nil {
 			return err
 		}
@@ -179,6 +182,9 @@ func (f *Fleet) Join(code string) error {
 	sameFleet := member && old.Relay != "" && sameURL(old.Relay, c.Relay) && c.Fleet != "" && old.FleetID == c.Fleet
 	if !sameFleet {
 		if relay, ours := f.ownNet(ns, old, member); ours {
+			if member && old.Relay != "" {
+				f.leavingRelay(old.Relay) // while the box is still in the old fleet
+			}
 			if err := n.Down(ctx, relay); err != nil {
 				return fmt.Errorf("cannot leave the previous private network: %w", err)
 			}
@@ -269,6 +275,11 @@ func (f *Fleet) Leave() error {
 	defer f.relayMu.Unlock()
 	f.mu.Lock()
 	st, member := f.loadMember()
+	f.mu.Unlock()
+	if member && st.Relay != "" {
+		f.leaving() // before member.json goes: the hook may ask ShareRelay
+	}
+	f.mu.Lock()
 	err := f.clearMember()
 	f.mu.Unlock()
 	f.m.drop()
@@ -478,13 +489,14 @@ func (f *Fleet) session(ctx context.Context, st MemberState) outcome {
 	}
 	defer conn.Close()
 	hostname, _ := f.Hostname()
+	boxKey, nodeID := f.helloShare(ctx, st)
 	conn.SetReadLimit(maxFrame)
 	conn.SetWriteDeadline(time.Now().Add(writeWait))
 	var scheme, port string
 	if gw, err := f.Gateway(); err == nil {
 		scheme, port = webAddr(gw.Public)
 	}
-	if err := conn.WriteJSON(frame{T: "hello", Hostname: cut(hostname), Version: cut(f.Version()), WebScheme: scheme, WebPort: port}); err != nil {
+	if err := conn.WriteJSON(frame{T: "hello", Hostname: cut(hostname), Version: cut(f.Version()), WebScheme: scheme, WebPort: port, BoxKey: boxKey, NodeID: nodeID}); err != nil {
 		f.m.failed(err.Error())
 		return failed
 	}

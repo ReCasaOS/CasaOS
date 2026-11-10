@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -45,6 +46,12 @@ var (
 	ErrRelayFull = errors.New("the relay is full and takes no new network for now: try again later, or use another relay")
 	// ErrTooManyDeviceCodes: 409 on DeviceCode.
 	ErrTooManyDeviceCodes = errors.New("too many codes not used yet: use one, or wait until they expire (10 minutes)")
+	// ErrRelayNoShare: 404 without the relay's JSON error, or 503 "sharing not enabled".
+	ErrRelayNoShare = errors.New("this relay does not support public sharing")
+	// ErrNodeUnknown: 404 {"error":"node not found"} on SetBoxKey.
+	ErrNodeUnknown = errors.New("the relay does not know this box's node")
+	// ErrBoxKeyLinked: 409 on SetBoxKey.
+	ErrBoxKeyLinked = errors.New("a different key is already linked to this box at the relay")
 )
 
 // RelayBusyError is the ErrRelayBusy a client gets, with how long the relay asked to wait
@@ -104,22 +111,29 @@ type relayReply struct {
 
 // do sends one request. relay must pass ValidMasterURL (https, or http on loopback) before anything
 // leaves. A transport error is returned without its URL, so nothing but the cause is kept.
-func (c *RelayClient) do(ctx context.Context, method, relay, path string, hdr http.Header) (relayReply, error) {
+func (c *RelayClient) do(ctx context.Context, method, relay, path string, hdr http.Header, body []byte) (relayReply, error) {
 	if err := ValidMasterURL(relay); err != nil {
 		return relayReply{}, fmt.Errorf("the relay address is not valid: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(relay, "/")+path, nil)
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(relay, "/")+path, rd)
 	if err != nil {
 		return relayReply{}, errors.New("cannot build the relay request")
 	}
 	req.Header = hdr
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.client().Do(req)
 	if err == nil {
 		defer resp.Body.Close()
 	}
-	var body []byte
+	var out []byte
 	if err == nil {
-		body, err = io.ReadAll(io.LimitReader(resp.Body, relayMaxBody))
+		out, err = io.ReadAll(io.LimitReader(resp.Body, relayMaxBody))
 	}
 	if err != nil {
 		var ue *url.Error
@@ -128,7 +142,7 @@ func (c *RelayClient) do(ctx context.Context, method, relay, path string, hdr ht
 		}
 		return relayReply{}, fmt.Errorf("%w: %w", ErrRelayUnreachable, err)
 	}
-	r := relayReply{status: resp.StatusCode, body: body}
+	r := relayReply{status: resp.StatusCode, body: out}
 	// shortcut: only the delay-seconds form of Retry-After, the one the relay sends; an HTTP date reads as no delay.
 	if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
 		r.retryAfter = time.Duration(secs) * time.Second
@@ -178,6 +192,16 @@ func bearer(secret string) http.Header {
 	return http.Header{"Authorization": {"Bearer " + secret}}
 }
 
+// boxHeaders are the three X-Box-* headers: the box's public key and a signature over "<METHOD> <PATH>\n"+ts.
+func boxHeaders(key ed25519.PrivateKey, method, path, ts string) http.Header {
+	enc := base64.RawURLEncoding
+	return http.Header{
+		"X-Box-Key":       {enc.EncodeToString(key.Public().(ed25519.PublicKey))},
+		"X-Box-Time":      {ts},
+		"X-Box-Signature": {enc.EncodeToString(ed25519.Sign(key, []byte(method+" "+path+"\n"+ts)))},
+	}
+}
+
 func fleetPath(fleetID string) string { return "/v1/fleets/" + url.PathEscape(fleetID) }
 
 var errNoFleet = errors.New("the fleet id and its secret are required")
@@ -195,13 +219,7 @@ func (c *RelayClient) CreateFleet(ctx context.Context, relay string) (FleetCreds
 	if err != nil {
 		return FleetCreds{}, err
 	}
-	ts := strconv.FormatInt(c.now().Unix(), 10)
-	enc := base64.RawURLEncoding
-	r, err := c.do(ctx, http.MethodPost, relay, "/v1/fleets", http.Header{
-		"X-Box-Key":       {enc.EncodeToString(key.Public().(ed25519.PublicKey))},
-		"X-Box-Time":      {ts},
-		"X-Box-Signature": {enc.EncodeToString(ed25519.Sign(key, []byte("POST /v1/fleets\n"+ts)))},
-	})
+	r, err := c.do(ctx, http.MethodPost, relay, "/v1/fleets", boxHeaders(key, http.MethodPost, "/v1/fleets", strconv.FormatInt(c.now().Unix(), 10)), nil)
 	if err != nil {
 		return FleetCreds{}, err
 	}
@@ -232,7 +250,7 @@ func (c *RelayClient) JoinKey(ctx context.Context, relay, fleetID, secret string
 	if fleetID == "" || secret == "" {
 		return "", time.Time{}, errNoFleet
 	}
-	r, err := c.do(ctx, http.MethodPost, relay, fleetPath(fleetID)+"/keys", bearer(secret))
+	r, err := c.do(ctx, http.MethodPost, relay, fleetPath(fleetID)+"/keys", bearer(secret), nil)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -262,7 +280,7 @@ func (c *RelayClient) RemoveNode(ctx context.Context, relay, fleetID, secret, ho
 	if fleetID == "" || secret == "" || hostname == "" {
 		return errNoFleet
 	}
-	r, err := c.do(ctx, http.MethodDelete, relay, fleetPath(fleetID)+"/nodes/"+url.PathEscape(hostname), bearer(secret))
+	r, err := c.do(ctx, http.MethodDelete, relay, fleetPath(fleetID)+"/nodes/"+url.PathEscape(hostname), bearer(secret), nil)
 	switch {
 	case err != nil:
 		return err
@@ -282,7 +300,7 @@ func (c *RelayClient) DeleteFleet(ctx context.Context, relay, fleetID, secret st
 	if fleetID == "" || secret == "" {
 		return errNoFleet
 	}
-	r, err := c.do(ctx, http.MethodDelete, relay, fleetPath(fleetID), bearer(secret))
+	r, err := c.do(ctx, http.MethodDelete, relay, fleetPath(fleetID), bearer(secret), nil)
 	switch {
 	case err != nil:
 		return err
@@ -325,7 +343,7 @@ func (c *RelayClient) DeviceCode(ctx context.Context, relay, fleetID, secret str
 	if fleetID == "" || secret == "" {
 		return DeviceCode{}, errNoFleet
 	}
-	r, err := c.do(ctx, http.MethodPost, relay, fleetPath(fleetID)+"/device-codes", bearer(secret))
+	r, err := c.do(ctx, http.MethodPost, relay, fleetPath(fleetID)+"/device-codes", bearer(secret), nil)
 	if err != nil {
 		return DeviceCode{}, err
 	}
@@ -351,7 +369,7 @@ func (c *RelayClient) Devices(ctx context.Context, relay, fleetID, secret string
 	if fleetID == "" || secret == "" {
 		return nil, errNoFleet
 	}
-	r, err := c.do(ctx, http.MethodGet, relay, fleetPath(fleetID)+"/devices", bearer(secret))
+	r, err := c.do(ctx, http.MethodGet, relay, fleetPath(fleetID)+"/devices", bearer(secret), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -395,7 +413,7 @@ func (c *RelayClient) RemoveDevice(ctx context.Context, relay, fleetID, secret, 
 	if !deviceIDRe.MatchString(id) {
 		return errors.New("the device id is not valid")
 	}
-	r, err := c.do(ctx, http.MethodDelete, relay, fleetPath(fleetID)+"/devices/"+id, bearer(secret))
+	r, err := c.do(ctx, http.MethodDelete, relay, fleetPath(fleetID)+"/devices/"+id, bearer(secret), nil)
 	switch {
 	case err != nil:
 		return err
@@ -413,7 +431,7 @@ func (c *RelayClient) FleetNodes(ctx context.Context, relay, fleetID, secret str
 	if fleetID == "" || secret == "" {
 		return nil, errNoFleet
 	}
-	r, err := c.do(ctx, http.MethodGet, relay, fleetPath(fleetID), bearer(secret))
+	r, err := c.do(ctx, http.MethodGet, relay, fleetPath(fleetID), bearer(secret), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -439,4 +457,49 @@ func (c *RelayClient) FleetNodes(ctx context.Context, relay, fleetID, secret str
 		nodes = append(nodes, FleetNode{n.Hostname, n.IP, n.Online})
 	}
 	return nodes, nil
+}
+
+// SetBoxKey links the box's public key to its node: PUT /v1/fleets/{id}/nodes/{node}/box-key with the
+// fleet secret, answered 204. Errors: ErrNodeUnknown, ErrRelayNoShare, ErrBoxKeyLinked, ErrRelayAuth,
+// ErrRelayBusy, ErrRelayUnreachable.
+func (c *RelayClient) SetBoxKey(ctx context.Context, relay, fleetID, secret, nodeID string, pub ed25519.PublicKey) error {
+	if fleetID == "" || secret == "" || nodeID == "" {
+		return errNoFleet
+	}
+	body, _ := json.Marshal(map[string]string{"box_key": base64.RawURLEncoding.EncodeToString(pub)})
+	r, err := c.do(ctx, http.MethodPut, relay, fleetPath(fleetID)+"/nodes/"+url.PathEscape(nodeID)+"/box-key", bearer(secret), body)
+	switch {
+	case err != nil:
+		return err
+	case r.status == http.StatusNoContent:
+		return nil
+	case r.status == http.StatusNotFound:
+		if r.errorText() == "node not found" {
+			return ErrNodeUnknown
+		}
+		return ErrRelayNoShare
+	case r.status == http.StatusServiceUnavailable && strings.Contains(string(r.body), "sharing not enabled"):
+		return ErrRelayNoShare
+	case r.status == http.StatusConflict:
+		return ErrBoxKeyLinked
+	}
+	return r.statusError()
+}
+
+// Signed calls the relay as this box: the X-Box-* headers over "<METHOD> <PATH>\n"+time, a JSON body
+// when body != nil. It returns the status, the body (capped) and a 429's Retry-After (0 otherwise)
+// whatever the status; only a transport failure is an error (ErrRelayUnreachable).
+func (c *RelayClient) Signed(ctx context.Context, relay, method, path string, body []byte) (status int, reply []byte, retryAfter time.Duration, err error) {
+	key, err := loadBoxKey(c.Dir)
+	if err != nil {
+		return 0, nil, 0, err
+	}
+	r, err := c.do(ctx, method, relay, path, boxHeaders(key, method, path, strconv.FormatInt(c.now().Unix(), 10)), body)
+	if err != nil {
+		return 0, nil, 0, err
+	}
+	if r.status != http.StatusTooManyRequests {
+		r.retryAfter = 0
+	}
+	return r.status, r.body, r.retryAfter, nil
 }

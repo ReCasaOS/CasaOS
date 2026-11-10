@@ -117,6 +117,7 @@ func (f *Fleet) DisableRemote(ctx context.Context) error {
 	if !haveRelay || !rs.Remote { // any remote relay.json goes, an unfinished enable too
 		return nil
 	}
+	f.leavingRelay(rs.Relay) // while the fleet still exists at the relay, to release the name
 	bg := context.WithoutCancel(ctx)
 	if err := f.RelayAPI.DeleteFleet(bg, rs.Relay, rs.FleetID, rs.Secret); err != nil {
 		f.Log("fleet: cannot delete the fleet at the relay; the relay removes it on its own once idle", err)

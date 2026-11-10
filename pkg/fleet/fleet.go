@@ -33,6 +33,9 @@ type Fleet struct {
 	RelayAPI    *RelayClient                           // the relay's enrolment API; boxkey.json in the state directory
 	call        boxCaller                              // how the backup poller asks a box: Relay, replaced by tests
 
+	// OnLeavingRelay is called just before this box leaves its relay, while it can still sign a call to it; nil in New.
+	OnLeavingRelay func()
+
 	// BackupProblem is the alerts hub's hook: a box's backup problem, raised at every pass while it lasts, or resolved.
 	BackupProblem func(key, sentence string, problem bool)
 	Notifies      func() bool // whether the hub would send a Fleet alert anywhere: said by the page, never asked by the poller
@@ -40,6 +43,7 @@ type Fleet struct {
 	mu      sync.Mutex         // master.json, member.json and tunnels
 	relayMu sync.Mutex         // one master enable, disable, relay change or box enrolment/removal at a time; relay.json and master.json's relay fields written only under it; its network calls run outside mu
 	tunnels map[string]*tunnel // the live tunnel of each box, by id
+	linked  map[string]error   // per box id: nil = its key is linked at the relay, else the last SetBoxKey error (under mu)
 	restart chan struct{}      // poked when member.json changes
 	m       memberState        // what the member loop reports
 	offline map[string]bool    // the boxes an offline alert is up for
@@ -73,6 +77,7 @@ func New(root string) *Fleet {
 		RelayAPI: &RelayClient{Dir: filepath.Join(root, StateDir)},
 		offline:  map[string]bool{},
 		tunnels:  map[string]*tunnel{},
+		linked:   map[string]error{},
 		restart:  make(chan struct{}, 1),
 		// The box's own gateway over loopback: its self-signed certificate is not
 		// for 127.0.0.1, and nothing leaves the box. A redirect is not followed:

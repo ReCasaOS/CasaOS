@@ -62,6 +62,8 @@ type BoxStatus struct {
 	Version  string    `json:"version"`
 	// NeedsRecode: the master changed relay; the box needs a new code (RotateCode) to follow it.
 	NeedsRecode bool `json:"needs_recode,omitempty"`
+	// ShareKey: whether the box's key is linked at the relay, "linked" or "error: <message>"; "" with no relay, for this box itself, or before the box said hello.
+	ShareKey string `json:"share_key,omitempty"`
 }
 
 // tunnel is one live connection from a box.
@@ -225,6 +227,9 @@ func (f *Fleet) attach(t *tunnel, hello frame) bool {
 	}
 	if old != nil {
 		old.close()
+	}
+	if st.Relay != "" && !st.Boxes[i].Self && hello.NodeID != "" && hello.BoxKey != "" {
+		go f.linkBoxKey(t.boxID, hello.NodeID, hello.BoxKey)
 	}
 	f.RefreshBackups(t.boxID)
 	return true
@@ -573,6 +578,7 @@ func (f *Fleet) DisableMaster() error {
 	}
 	// a damaged relay.json still leaves a network to go down; remote access of a box alone is not the master's
 	if (haveRelay && !remoteAlone(rs, st.Enabled)) || st.Relay != "" {
+		f.leaving()
 		f.leaveRelay(context.Background(), rs, true)
 	}
 	if errors.Is(err, fs.ErrNotExist) {
@@ -769,7 +775,14 @@ func (f *Fleet) MasterStatus() (MasterStatus, bool) {
 	}
 	out := MasterStatus{Address: st.Address, Boxes: make([]BoxStatus, 0, len(st.Boxes)), Relay: st.Relay, NetAddr: st.NetAddr}
 	for _, b := range st.Boxes {
-		out.Boxes = append(out.Boxes, BoxStatus{ID: b.ID, Name: b.Name, URL: b.URL, Self: b.Self, Online: f.tunnels[b.ID] != nil, LastSeen: b.LastSeen, Hostname: b.Hostname, Version: b.Version, NeedsRecode: b.NeedsRecode})
+		bs := BoxStatus{ID: b.ID, Name: b.Name, URL: b.URL, Self: b.Self, Online: f.tunnels[b.ID] != nil, LastSeen: b.LastSeen, Hostname: b.Hostname, Version: b.Version, NeedsRecode: b.NeedsRecode}
+		if lerr, ok := f.linked[b.ID]; ok && st.Relay != "" && !b.Self {
+			bs.ShareKey = "linked"
+			if lerr != nil {
+				bs.ShareKey = "error: " + lerr.Error()
+			}
+		}
+		out.Boxes = append(out.Boxes, bs)
 	}
 	f.mu.Unlock()
 	if out.Relay != "" {

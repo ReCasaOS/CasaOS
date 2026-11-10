@@ -108,7 +108,7 @@ var (
 // router and says which is not), and the routes of the services that are not the core's own (the users, the storage and the apps).
 var reservedRoutes = []string{
 	"sys", "users", "usb", "disks", "storage", "cloud", "recover", "other", "zt", "samba", "file", "folder", "image", "notify", "gateway", "casaos", "app_management", "message_bus",
-	"local_storage", "port", "driver", "batch", "test", "health", "apps", "container", "fleet",
+	"local_storage", "port", "driver", "batch", "test", "health", "apps", "container", "fleet", "share",
 }
 
 // the bounds of the lists and of the wait
