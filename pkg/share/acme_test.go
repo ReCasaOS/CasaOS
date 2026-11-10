@@ -296,10 +296,8 @@ func TestACMEFailureIsReportedAndRetried(t *testing.T) {
 	mu.Lock()
 	clock = clock.Add(time.Hour + time.Minute)
 	mu.Unlock()
-	st = wait(func(s CertStatus) bool { return !s.NotAfter.IsZero() })
-	if st.Error != "" {
-		t.Errorf("error after success: %q", st.Error)
-	}
+	// Status reads the error, then the file: the certificate can show a moment before the error is cleared
+	wait(func(s CertStatus) bool { return !s.NotAfter.IsZero() && s.Error == "" })
 	cancel()
 	<-done
 }

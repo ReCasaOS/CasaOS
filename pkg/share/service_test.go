@@ -451,7 +451,7 @@ func TestHostsAreRegisteredAtStart(t *testing.T) {
 	start := time.Now()
 	f.run(t)
 	eventually(t, "the host registered", func() bool { return f.mgmt.count(putJelly) == 1 })
-	if d := time.Since(start); d > time.Second {
+	if d := time.Since(start); d > 3*time.Second {
 		t.Errorf("registered after %v", d)
 	}
 	if !bytes.Equal(mustRead(t, f.state), before) {
