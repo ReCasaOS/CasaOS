@@ -40,8 +40,7 @@ func (s *storageStruct) GetStorages() (httper.MountList, error) {
 	return httper.GetMountList()
 }
 func (s *storageStruct) CreateConfig(data map[string]string, name string, t string) error {
-	httper.CreateConfig(data, name, t)
-	return nil
+	return httper.CreateConfig(data, name, t)
 }
 func (s *storageStruct) CheckAndMountByName(name string) error {
 	storages, _ := MyService.Storage().GetStorages()

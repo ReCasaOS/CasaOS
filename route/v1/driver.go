@@ -16,19 +16,19 @@ func ListDriverInfo(ctx echo.Context) error {
 	list = append(list, model.Drive{
 		Name:    "Google Drive",
 		Icon:    google.Icon,
-		AuthUrl: google.AuthUrl,
+		AuthUrl: withRecoverState(google.AuthUrl),
 	})
 	dp := dropbox.GetConfig()
 	list = append(list, model.Drive{
 		Name:    "Dropbox",
 		Icon:    dp.Icon,
-		AuthUrl: dp.AuthUrl,
+		AuthUrl: withRecoverState(dp.AuthUrl),
 	})
 	od := onedrive.GetConfig()
 	list = append(list, model.Drive{
 		Name:    "OneDrive",
 		Icon:    od.Icon,
-		AuthUrl: od.AuthUrl,
+		AuthUrl: withRecoverState(od.AuthUrl),
 	})
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: list})
 }

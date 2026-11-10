@@ -68,6 +68,9 @@ func TestSkipAccessLog(t *testing.T) {
 		{"the internal status post is not logged over IPv6 either", "/v1/notify/system_status", "::1", true},
 		{"the wildcard notify route is not logged either", "/v1/notify/casaos:file:recover", "127.0.0.1", true},
 
+		// The way back of a cloud sign-in carries the state of this box in its path.
+		{"the way back of a cloud sign-in is not logged", "/v1/recover/GoogleDrive/STATE/", "192.168.1.20", true},
+
 		// Everything else stays in the log.
 		{"a remote notify post is logged", "/v1/notify/system_status", "192.168.1.20", false},
 		{"another loopback route is logged", "/v1/sys/hardware", "127.0.0.1", false},
