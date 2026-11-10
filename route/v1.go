@@ -35,10 +35,15 @@ func isLoopback(realIP string) bool {
 	return realIP == "::1" || realIP == "127.0.0.1"
 }
 
+// recoverPrefix is the way back of a cloud sign-in: its path carries the state
+// of this box, which must not reach the journal any more than a token.
+const recoverPrefix = "/v1/recover/"
+
 // skipAccessLog reports whether the Echo access-log line is dropped for a
-// request: only internal notify posts, and only from the host itself.
+// request: internal notify posts from the host itself, and the way back of a
+// cloud sign-in, which the handler logs itself without its state.
 func skipAccessLog(path, realIP string) bool {
-	return strings.HasPrefix(path, internalNotifyPrefix) && isLoopback(realIP)
+	return strings.HasPrefix(path, recoverPrefix) || strings.HasPrefix(path, internalNotifyPrefix) && isLoopback(realIP)
 }
 
 func InitV1Router() http.Handler {

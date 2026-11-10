@@ -2,7 +2,11 @@ package v1
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"html"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +21,14 @@ import (
 )
 
 func GetRecoverStorage(ctx echo.Context) error {
-	t := strings.TrimSuffix(ctx.Param("type"), "/")
+	// the relay sends the browser back to <type>/<state>/?code=...
+	t, state, _ := strings.Cut(strings.Trim(ctx.Param("type"), "/"), "/")
+	// this route is left out of the access log, for the state in its path
+	logger.Info("a cloud sign-in came back", zap.String("driver", t), zap.String("ip", ctx.RealIP()))
+	if subtle.ConstantTimeCompare([]byte(state), []byte(recoverState)) != 1 {
+		logger.Info("it was not started from this dashboard, and is refused", zap.String("ip", ctx.RealIP()))
+		return ctx.HTML(http.StatusForbidden, `<p>This sign-in was not started from this dashboard. Reload the dashboard and connect again.</p>`)
+	}
 	currentTime := time.Now().UTC()
 	currentDate := time.Now().UTC().Format("2006-01-02")
 	notify := make(map[string]interface{})
@@ -88,13 +99,7 @@ func GetRecoverStorage(ctx echo.Context) error {
 		dmap["scope"] = "drive"
 		dmap["mount_point"] = "/mnt/" + username
 		dmap["token"] = `{"access_token":"` + google_drive.AccessToken + `","token_type":"Bearer","refresh_token":"` + google_drive.RefreshToken + `","expiry":"` + currentDate + `T` + currentTime.Add(time.Hour*1).Add(time.Minute*50).Format("15:04:05") + `Z"}`
-		service.MyService.Storage().CreateConfig(dmap, username, "drive")
-		service.MyService.Storage().MountStorage("/mnt/"+username, username+":")
-		notify := make(map[string]interface{})
-		notify["status"] = "success"
-		notify["message"] = "Success"
-		notify["driver"] = "GoogleDrive"
-		service.MyService.Notify().SendNotify(event, notify)
+		return finishRecover(ctx, "GoogleDrive", dmap, username, "drive")
 	} else if t == "Dropbox" {
 		dropbox := dropbox.GetConfig()
 
@@ -161,13 +166,7 @@ func GetRecoverStorage(ctx echo.Context) error {
 		dmap["client_secret"] = dropbox.AppSecret
 		dmap["token"] = `{"access_token":"` + dropbox.AccessToken + `","token_type":"bearer","refresh_token":"` + dropbox.Addition.RefreshToken + `","expiry":"` + currentDate + `T` + currentTime.Add(time.Hour*3).Add(time.Minute*50).Format("15:04:05") + `.780385354Z"}`
 		dmap["mount_point"] = "/mnt/" + username
-		service.MyService.Storage().CreateConfig(dmap, username, "dropbox")
-		service.MyService.Storage().MountStorage("/mnt/"+username, username+":")
-
-		notify["status"] = "success"
-		notify["message"] = "Success"
-		notify["driver"] = "Dropbox"
-		service.MyService.Notify().SendNotify(event, notify)
+		return finishRecover(ctx, "Dropbox", dmap, username, "dropbox")
 	} else if t == "Onedrive" {
 		onedrive := onedrive.GetConfig()
 		onedrive.Code = ctx.QueryParam("code")
@@ -234,14 +233,42 @@ func GetRecoverStorage(ctx echo.Context) error {
 		dmap["mount_point"] = "/mnt/" + username
 		dmap["drive_id"] = driveId
 		dmap["drive_type"] = driveType
-		service.MyService.Storage().CreateConfig(dmap, username, "onedrive")
-		service.MyService.Storage().MountStorage("/mnt/"+username, username+":")
-
-		notify["status"] = "success"
-		notify["message"] = "Success"
-		notify["driver"] = "Onedrive"
-		service.MyService.Notify().SendNotify(event, notify)
+		return finishRecover(ctx, "Onedrive", dmap, username, "onedrive")
 	}
 
 	return ctx.HTML(200, `<p>Just close the page</p><script>window.close()</script>`)
+}
+
+// recoverState is what a cloud sign-in must come back with. The way back needs no
+// token (the browser returns from the provider without one), so the sign-in
+// addresses this box gives a signed-in dashboard carry this value, and a return
+// without it was not started here: it would mount somebody else's account.
+// One value for the life of the process, because a dashboard keeps the addresses
+// it was given and uses them for every account it adds.
+var (
+	recoverState   = rand.Text()
+	recoverWayBack = regexp.MustCompile(`%2Fv1%2Frecover%2F[A-Za-z]+`)
+)
+
+// withRecoverState adds the state to the way back a sign-in address names.
+func withRecoverState(authURL string) string {
+	return recoverWayBack.ReplaceAllString(authURL, "${0}%2F"+recoverState)
+}
+
+// finishRecover saves the remote and mounts it, and says it is added only when it is.
+func finishRecover(ctx echo.Context, driver string, dmap map[string]string, name, kind string) error {
+	const event = "casaos:file:recover"
+
+	err := service.MyService.Storage().CreateConfig(dmap, name, kind)
+	if err == nil {
+		err = service.MyService.Storage().MountStorage("/mnt/"+name, name+":")
+	}
+	if err != nil {
+		logger.Error("the storage of a cloud sign-in was not added", zap.Error(err), zap.String("name", name))
+		service.MyService.Notify().SendNotify(event, map[string]interface{}{"status": "fail", "message": "Failed to add the storage", "driver": driver})
+		return ctx.HTML(http.StatusOK, `<p>Failed to add the storage:`+html.EscapeString(err.Error())+`</p><script>window.close()</script>`)
+	}
+
+	service.MyService.Notify().SendNotify(event, map[string]interface{}{"status": "success", "message": "Success", "driver": driver})
+	return ctx.HTML(http.StatusOK, `<p>Just close the page</p><script>window.close()</script>`)
 }
