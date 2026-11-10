@@ -26,6 +26,10 @@ var ErrInvalidChunk = errors.New("invalid chunk number")
 // maxChunks bounds the chunk table: 16 TiB in the dashboard's 1 MiB chunks.
 const maxChunks = 1 << 24
 
+// uploadKey names an upload in progress. The dashboard's identifier is the file's size and name,
+// so the same file sent to two folders carries it twice: the file it lands in tells them apart.
+type uploadKey struct{ identifier, target string }
+
 type FileUploadService struct {
 	uploadStatus sync.Map
 	lock         sync.RWMutex
@@ -41,9 +45,10 @@ func NewFileUploadService() *FileUploadService {
 func (s *FileUploadService) TestChunk(
 	c echo.Context,
 	identifier string,
+	target string,
 	chunkNumber int64,
 ) error {
-	fileInfoTemp, ok := s.uploadStatus.Load(identifier)
+	fileInfoTemp, ok := s.uploadStatus.Load(uploadKey{identifier, target})
 
 	if !ok {
 		return fmt.Errorf("file not found")
@@ -86,8 +91,9 @@ func (s *FileUploadService) UploadFile(
 	if totalChunks < 1 || totalChunks > maxChunks || chunkNumber < 1 || chunkNumber > totalChunks || chunkSize < 1 || totalSize < 0 || totalChunks > totalSize/chunkSize+1 {
 		return ErrInvalidChunk
 	}
+	key := uploadKey{identifier, path + "/" + relativePath}
 	s.lock.Lock()
-	fileInfoTemp, ok := s.uploadStatus.Load(identifier)
+	fileInfoTemp, ok := s.uploadStatus.Load(key)
 	var fileInfo *FileInfo
 	// a chunk count unlike the first chunk's would index past what is recorded and leave the uploads locked
 	if ok && int64(len(fileInfoTemp.(*FileInfo).uploaded)) != totalChunks {
@@ -127,7 +133,7 @@ func (s *FileUploadService) UploadFile(
 			uploaded:         make([]bool, totalChunks),
 			uploadedChunkNum: 0,
 		}
-		s.uploadStatus.Store(identifier, fileInfo)
+		s.uploadStatus.Store(key, fileInfo)
 	} else {
 		fileInfo = fileInfoTemp.(*FileInfo)
 	}
@@ -153,28 +159,30 @@ func (s *FileUploadService) UploadFile(
 	}
 
 	s.lock.Lock()
+	defer s.lock.Unlock()
 	// handle file after write a chunk
-	// handle single chunk upload twice
-	if !fileInfo.uploaded[chunkNumber-1] {
-		fileInfo.uploadedChunkNum++
-		fileInfo.uploaded[chunkNumber-1] = true
+	// a chunk sent twice counts once, and ends nothing: its first copy did, or will
+	if fileInfo.uploaded[chunkNumber-1] {
+		return nil
 	}
+	fileInfo.uploadedChunkNum++
+	fileInfo.uploaded[chunkNumber-1] = true
 
 	// handle file after write all chunk
 	if fileInfo.uploadedChunkNum == totalChunks {
-		err := file.Close()
-		if err != nil {
-			logger.Error("close file error: ", zap.Error(err))
-		}
+		// the upload is over, done or not: a file that could not take its name is sent again from its first chunk
+		s.uploadStatus.Delete(key)
 
-		err = os.Rename(path+"/"+relativePath+".tmp", path+"/"+relativePath)
-		if err != nil {
-			logger.Error("rename file error: ", zap.Error(err))
+		// the answer to the last chunk is the answer to the upload: it says when the file is not there
+		if err := file.Close(); err != nil {
+			logger.Error("close file error: ", zap.Error(err))
+			return err
 		}
-		// remove upload status info after upload complete
-		s.uploadStatus.Delete(identifier)
+		if err := os.Rename(path+"/"+relativePath+".tmp", path+"/"+relativePath); err != nil {
+			logger.Error("rename file error: ", zap.Error(err))
+			return err
+		}
 	}
-	s.lock.Unlock()
 
 	return nil
 }
