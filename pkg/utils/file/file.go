@@ -553,11 +553,19 @@ func GetFileOrDirSize(path string) (int64, error) {
 // getFileSize get file size by path(B)
 func DirSizeB(path string) (int64, error) {
 	var size int64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+	err := filepath.Walk(path, func(name string, info os.FileInfo, err error) error {
+		if err != nil {
+			// info is nil here. A name that left since its folder was listed (a copy renames
+			// each file into place) weighs nothing; the folder asked for must be there.
+			if name != path && errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
 		if !info.IsDir() {
 			size += info.Size()
 		}
-		return err
+		return nil
 	})
 	return size, err
 }
