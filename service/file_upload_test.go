@@ -92,13 +92,69 @@ func TestAnUploadThatCannotBeRenamedLeavesTheOthersWorking(t *testing.T) {
 	}
 	uploads := NewFileUploadService()
 
-	uploads.UploadFile(nil, dir, 1, 3, 3, 1, 3, "a-3", "a.txt", "a.txt", uploadChunk(t, "abc"))
+	if err := uploads.UploadFile(nil, dir, 1, 3, 3, 1, 3, "a-3", "a.txt", "a.txt", uploadChunk(t, "abc")); err == nil {
+		t.Error("an upload that could not take its name was answered as done")
+	}
 
 	if err := uploads.UploadFile(nil, dir, 1, 3, 3, 1, 3, "b-3", "b.txt", "b.txt", uploadChunk(t, "abc")); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "b.txt")); err != nil || string(got) != "abc" {
 		t.Errorf("b.txt holds %q (%v), want abc", got, err)
+	}
+}
+
+// The dashboard names an upload after the file's size and name: the same file sent to another
+// folder (after an upload that was stopped, or from a second tab) carries the same identifier.
+// The chunks one folder has must not count for the other, or its file takes its name with a hole.
+func TestTheSameFileSentToTwoFoldersIsTwoUploads(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	uploads := NewFileUploadService()
+
+	if err := uploads.UploadFile(nil, first, 1, 3, 3, 2, 6, "a-6", "a.txt", "a.txt", uploadChunk(t, "abc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := uploads.TestChunk(nil, "a-6", second+"/a.txt", 1); err == nil {
+		t.Error("chunk 1 is said to be in the second folder, which has none")
+	}
+	if err := uploads.UploadFile(nil, second, 2, 3, 3, 2, 6, "a-6", "a.txt", "a.txt", uploadChunk(t, "def")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(second, "a.txt")); err == nil {
+		t.Fatalf("the second folder's file took its name with one chunk of two: %q", got)
+	}
+	if err := uploads.UploadFile(nil, second, 1, 3, 3, 2, 6, "a-6", "a.txt", "a.txt", uploadChunk(t, "abc")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(second, "a.txt")); err != nil || string(got) != "abcdef" {
+		t.Errorf("the second folder's a.txt holds %q (%v), want abcdef", got, err)
+	}
+	if err := uploads.TestChunk(nil, "a-6", first+"/a.txt", 1); err != nil {
+		t.Errorf("chunk 1 of the first folder's upload: %v", err)
+	}
+}
+
+// A client that sends a chunk twice (a retry) may have its second copy land while the last chunk
+// ends the upload: the file is in place, so neither answer is an error.
+func TestAChunkSentTwiceAtTheEndOfAnUploadIsNotAnError(t *testing.T) {
+	for round := 0; round < 300; round++ {
+		dir := t.TempDir()
+		uploads := NewFileUploadService()
+		if err := uploads.UploadFile(nil, dir, 1, 3, 3, 2, 6, "a-6", "a.txt", "a.txt", uploadChunk(t, "abc")); err != nil {
+			t.Fatal(err)
+		}
+		last, again := uploadChunk(t, "def"), uploadChunk(t, "abc")
+		answers := make(chan error, 2)
+		go func() { answers <- uploads.UploadFile(nil, dir, 2, 3, 3, 2, 6, "a-6", "a.txt", "a.txt", last) }()
+		go func() { answers <- uploads.UploadFile(nil, dir, 1, 3, 3, 2, 6, "a-6", "a.txt", "a.txt", again) }()
+		for i := 0; i < 2; i++ {
+			if err := <-answers; err != nil {
+				t.Fatalf("round %d: %v", round, err)
+			}
+		}
+		if got, err := os.ReadFile(filepath.Join(dir, "a.txt")); err != nil || string(got) != "abcdef" {
+			t.Fatalf("round %d: a.txt holds %q (%v), want abcdef", round, got, err)
+		}
 	}
 }
 
@@ -125,7 +181,7 @@ func TestAChunkOutsideItsUploadIsRefused(t *testing.T) {
 	if err := uploads.UploadFile(nil, dir, 1, 1<<20, 0, 1, 0, "e-0", "empty.txt", "empty.txt", uploadChunk(t, "")); err != nil {
 		t.Errorf("an empty file, as the dashboard sends it: %v", err)
 	}
-	if err := uploads.TestChunk(nil, "a-6", 5); !errors.Is(err, ErrInvalidChunk) {
+	if err := uploads.TestChunk(nil, "a-6", dir+"/a.txt", 5); !errors.Is(err, ErrInvalidChunk) {
 		t.Errorf("testing chunk 5 of 2: %v, want ErrInvalidChunk", err)
 	}
 

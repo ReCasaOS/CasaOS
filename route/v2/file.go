@@ -28,7 +28,12 @@ func (c *CasaOS) CheckUploadChunk(ctx echo.Context, params codegen.CheckUploadCh
 		return ctx.NoContent(http.StatusBadRequest)
 	}
 
-	err = c.fileUploadService.TestChunk(ctx, identifier, chunkNumber)
+	// the folder as PostUploadFile reads it: an upload is the identifier and the file it lands in
+	path := ctx.QueryParam("path")
+	if fileroots.Default.CheckEach(&path) != nil {
+		return ctx.NoContent(http.StatusNoContent)
+	}
+	err = c.fileUploadService.TestChunk(ctx, identifier, path+"/"+ctx.QueryParam("relativePath"), chunkNumber)
 	if err != nil {
 		return ctx.NoContent(http.StatusNoContent)
 	}
