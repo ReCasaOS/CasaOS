@@ -2,8 +2,10 @@ package share
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -33,5 +35,29 @@ func TestAppsList(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("%d: got %+v want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// An app the store calls https but that serves plain HTTP (Vaultwarden) is reached over http; one that
+// really serves TLS keeps https.
+func TestAppsListProbesHTTPS(t *testing.T) {
+	ok := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	plain := httptest.NewServer(ok)
+	defer plain.Close()
+	secure := httptest.NewTLSServer(ok)
+	defer secure.Close()
+	port := func(s *httptest.Server) string { return s.URL[strings.LastIndex(s.URL, ":")+1:] }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"data":{
+			"vaultwarden":{"store_info":{"port_map":%q,"scheme":"https"}},
+			"portainer":{"store_info":{"port_map":%q,"scheme":"https"}}}}`, port(plain), port(secure))
+	}))
+	defer server.Close()
+	got, err := Apps{RuntimePath: fakeRuntime(t, "app-management.url", server)}.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name != "portainer" || got[0].Scheme != "https" || got[1].Scheme != "http" {
+		t.Fatalf("%+v", got)
 	}
 }
