@@ -10,8 +10,6 @@
  */
 package model
 
-import "time"
-
 // 系统配置
 type SysInfoModel struct {
 	Name string // 系统名称
@@ -60,14 +58,6 @@ type Result struct {
 	Data    interface{} `json:"data" example:"返回结果"`
 }
 
-// redis配置文件
-type RedisModel struct {
-	Host        string
-	Password    string
-	MaxIdle     int
-	MaxActive   int
-	IdleTimeout time.Duration
-}
 
 type FileSetting struct {
 	ShareDir    []string `json:"share_dir" delim:"|"`

@@ -115,7 +115,6 @@ func init() {
 	}
 
 	sqliteDB = sqlite.GetDb(*dbFlag)
-	// gredis.GetRedisConn(config.RedisInfo),
 
 	service.MyService = service.NewService(sqliteDB, config.CommonInfo.RuntimePath)
 

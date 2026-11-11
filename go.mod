@@ -15,14 +15,12 @@ require (
 	github.com/go-ini/ini v1.67.0
 	github.com/go-resty/resty/v2 v2.7.0
 	github.com/golang/mock v1.6.0
-	github.com/gomodule/redigo v1.8.9
 	github.com/google/uuid v1.5.0
 	github.com/googollee/go-socket.io v1.7.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/h2non/filetype v1.1.3
 	github.com/hashicorp/yamux v0.1.2
 	github.com/hirochachacha/go-smb2 v1.1.0
-	github.com/json-iterator/go v1.1.12
 	github.com/labstack/echo-jwt/v4 v4.4.0
 	github.com/labstack/echo/v4 v4.16.1
 	github.com/maruel/natural v1.1.0
@@ -31,7 +29,6 @@ require (
 	github.com/moby/sys/mountinfo v0.6.2
 	github.com/nicholas-fedor/shoutrrr v0.18.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/pkg/errors v0.9.1
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.38.1
 	github.com/shirou/gopsutil/v3 v3.23.2
@@ -44,6 +41,11 @@ require (
 	golang.org/x/sys v0.48.0
 	gorm.io/gorm v1.25.0
 	gotest.tools v2.2.0+incompatible
+)
+
+require (
+	github.com/gomodule/redigo v1.8.9 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 )
 
 require (
@@ -87,8 +89,6 @@ require (
 	github.com/mholt/archives v0.1.5 // indirect
 	github.com/mikelolasagasti/xz v1.0.1 // indirect
 	github.com/minio/minlz v1.0.1 // indirect
-	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
-	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/nwaples/rardecode/v2 v2.2.0 // indirect
 	github.com/oasdiff/yaml v0.1.1 // indirect
 	github.com/oasdiff/yaml3 v0.0.14 // indirect
