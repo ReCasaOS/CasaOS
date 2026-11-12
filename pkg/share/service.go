@@ -44,6 +44,7 @@ type Service struct {
 	Gateway     Gateway
 	Apps        Apps
 	ACME        *ACME
+	Geo         *GeoFetcher
 	BoxKey      func() (ed25519.PrivateKey, error)
 	RelayURL    func() (string, bool)
 	Dialer      *websocket.Dialer // nil → Dial's default
@@ -86,6 +87,7 @@ func New(root string) *Service {
 		KeyFile:     filepath.Join(root, "var/lib/casaos/tls/share.key"),
 		CertFile:    filepath.Join(root, "var/lib/casaos/tls/share.crt"),
 		AccountFile: filepath.Join(root, "var/lib/casaos/fleet/acme-account.json")}
+	s.Geo = &GeoFetcher{Dir: filepath.Join(root, "var/lib/casaos/geo"), BaseURL: geoBaseURL, Now: s.now}
 	runtimePath := func() string {
 		if s.RuntimePath == nil {
 			return ""
@@ -490,7 +492,7 @@ func (s *Service) Run(ctx context.Context) {
 		return
 	}
 	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
-	loops := []func(context.Context){s.resyncLoop, s.tunnelLoop}
+	loops := []func(context.Context){s.resyncLoop, s.tunnelLoop, s.geoLoop}
 	if s.ACME != nil {
 		loops = append(loops, func(ctx context.Context) { s.ACME.Loop(ctx, s.wildcard, time.Hour) })
 	}

@@ -90,7 +90,12 @@ func (s *Service) GuardView(ctx context.Context) (GuardView, error) {
 	for _, p := range people {
 		v.People = append(v.People, personView(p, st, gw.PeopleLastUsed))
 	}
-	v.Geo = GuardGeo{Country: gw.Geo.Country, ASN: gw.Geo.ASN}
+	v.Geo = GuardGeo{Country: gw.Geo.Country, ASN: gw.Geo.ASN} // what the Gateway loaded
+	gs := s.Geo.Status()
+	v.Geo.Error = gs.Error
+	if !gs.UpdatedAt.IsZero() {
+		v.Geo.UpdatedAt = &gs.UpdatedAt
+	}
 	if gw.Waves != nil {
 		v.Waves = gw.Waves
 	}
