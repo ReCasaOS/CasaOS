@@ -21,12 +21,14 @@ import (
 )
 
 // fakeManagement is the Gateway's management API: it records the calls it answers with a success, and
-// answers the next fail calls 502. guard, when set, is the answer to every /v1/gateway/guard call.
+// answers the next fail calls 502. guard, when set, is the answer to every /v1/gateway/guard call. It keeps the
+// hosts it serves, and answers GET /v1/gateway/hosts with them without recording that call.
 type fakeManagement struct {
 	mu    sync.Mutex
 	calls []sent
 	fail  int
 	guard int
+	hosts map[string]string
 	onPut func() // when set, runs at each PUT before it is answered
 }
 
@@ -50,7 +52,26 @@ func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(m.guard)
 		return
 	}
+	if m.hosts == nil {
+		m.hosts = map[string]string{}
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/gateway/hosts" {
+		routes := []map[string]string{}
+		for h, target := range m.hosts {
+			routes = append(routes, map[string]string{"host": h, "target": target})
+		}
+		json.NewEncoder(w).Encode(routes)
+		return
+	}
 	m.calls = append(m.calls, sent{r.Method, r.URL.Path, strings.TrimSpace(string(b))})
+	if r.Method == http.MethodPut && r.URL.Path == "/v1/gateway/hosts" {
+		var route struct{ Host, Target string }
+		json.Unmarshal(b, &route)
+		m.hosts[route.Host] = route.Target
+	}
+	if h, ok := strings.CutPrefix(r.URL.Path, "/v1/gateway/hosts/"); ok && r.Method == http.MethodDelete {
+		delete(m.hosts, h)
+	}
 	if r.Method == http.MethodPut && !isGuard {
 		w.WriteHeader(http.StatusCreated)
 	} else {
@@ -59,6 +80,16 @@ func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *fakeManagement) setGuard(status int) { m.mu.Lock(); m.guard = status; m.mu.Unlock() }
+
+func (m *fakeManagement) registered() map[string]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]string{}
+	for h, t := range m.hosts {
+		out[h] = t
+	}
+	return out
+}
 
 func (m *fakeManagement) forget() { m.mu.Lock(); m.calls = nil; m.mu.Unlock() }
 
@@ -401,6 +432,9 @@ func TestShareDuringResetReportsNoName(t *testing.T) {
 	if err := f.s.Share(context.Background(), "jellyfin"); !errors.Is(err, ErrNoName) {
 		t.Fatalf("got %v", err)
 	}
+	if f.mgmt.count(dropJelly) != 1 || len(f.mgmt.registered()) != 0 { // the host does not outlive the share
+		t.Fatalf("gateway %+v", f.mgmt.seen())
+	}
 	if _, err := os.Stat(f.state); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("share.json: %v", err)
 	}
@@ -739,7 +773,7 @@ func TestUnshareDropsAppFromPeople(t *testing.T) {
 	f.share(t, "jellyfin")
 	f.share(t, "nextcloud")
 	f.s.mu.Lock()
-	g := f.s.guardLocked()
+	g, _ := f.s.guardLocked()
 	g.Apps["jellyfin"] = GuardApp{Access: "code"}
 	g.People = []Person{{ID: "p_1", Name: "Maman", Gen: 1, CodeHash: strings.Repeat("a", 64), Apps: []string{"jellyfin", "nextcloud"}}}
 	f.s.mu.Unlock()
@@ -826,7 +860,8 @@ func TestOldGatewayStillServesHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 	f3.s.mu.Lock()
-	f3.s.guardLocked().Apps["jellyfin"] = GuardApp{Access: "code"} // a code app shared again
+	g, _ := f3.s.guardLocked()
+	g.Apps["jellyfin"] = GuardApp{Access: "code"} // a code app shared again
 	f3.s.mu.Unlock()
 	if err := f3.s.Share(context.Background(), "jellyfin"); !errors.Is(err, ErrGatewayNoGuard) || f3.mgmt.count(putJelly) != 0 {
 		t.Fatalf("share: %v, gateway %+v", err, f3.mgmt.seen())
@@ -931,5 +966,77 @@ func TestCorruptGuardClosesSharedApps(t *testing.T) {
 	saved, corrupt := loadGuard(f.s.guardPath())
 	if corrupt || saved.Apps["jellyfin"].Access != "code" || saved.Apps["nextcloud"].Access != "code" {
 		t.Fatalf("saved %+v", saved)
+	}
+}
+
+func TestUnsavedGuardResetHoldsEveryHost(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, jellyCode())
+	if err := f.s.resync(ctx); err != nil { // both served: nextcloud open, jellyfin with its code
+		t.Fatal(err)
+	}
+	f.s.guard = nil // the core restarts and finds the file unusable
+	path := f.s.guardPath()
+	if err := os.WriteFile(path, []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saveGuardFile = func(string, GuardState) error { return errors.New("disk full") }
+	t.Cleanup(func() { saveGuardFile = saveGuard })
+	f.mgmt.forget()
+	if err := f.s.resync(ctx); err == nil {
+		t.Fatal("no error")
+	}
+	if len(f.mgmt.pushes(t)) != 0 || len(f.mgmt.registered()) != 0 || f.mgmt.count(putJelly)+f.mgmt.count(putNext) != 0 {
+		t.Fatalf("gateway %+v, serving %v", f.mgmt.seen(), f.mgmt.registered())
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != "{nope" {
+		t.Fatalf("file %q", raw)
+	}
+	if aside, _ := filepath.Glob(path + ".corrupt-*"); len(aside) != 0 {
+		t.Fatalf("aside %v", aside)
+	}
+
+	// the next start can write: the same reset, saved, and the bytes kept aside
+	saveGuardFile = saveGuard
+	s2 := New(f.s.Root)
+	s2.RuntimePath = f.s.RuntimePath
+	if err := s2.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pushed := f.mgmt.pushes(t)
+	if len(pushed) != 1 || pushed[0].Apps[jellyHost].Access != "code" || pushed[0].Apps[nextHost].Access != "code" || !s2.GuardReset() {
+		t.Fatalf("pushed %+v", pushed)
+	}
+	if saved, corrupt := loadGuard(path); corrupt || saved.Apps["nextcloud"].Access != "code" {
+		t.Fatalf("saved %+v", saved)
+	}
+	aside, _ := filepath.Glob(path + ".corrupt-*")
+	if len(aside) != 1 {
+		t.Fatalf("aside %v", aside)
+	}
+	if raw, _ := os.ReadFile(aside[0]); string(raw) != "{nope" {
+		t.Fatalf("aside %q", raw)
+	}
+}
+
+func TestResyncDropsStrayHosts(t *testing.T) {
+	f := twoShared(t, nil)
+	f.mgmt.mu.Lock()
+	f.mgmt.hosts = map[string]string{
+		"old.mybox.box.example.org":   "http://127.0.0.1:1",  // left by a best-effort delete
+		"app.oldname.box.example.org": "http://127.0.0.1:2",  // left under a former name
+		"casaos.local":                "http://127.0.0.1:80", // not the share's
+	}
+	f.mgmt.mu.Unlock()
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := f.mgmt.registered()
+	if len(got) != 3 || got["casaos.local"] == "" || got[jellyHost] == "" || got[nextHost] == "" {
+		t.Fatalf("serving %v", got)
+	}
+	// deleted before the push: never served while missing from the config
+	if order := f.mgmt.order(); len(order) != 5 || order[2] != "PUT /v1/gateway/guard" {
+		t.Fatalf("gateway %v", order)
 	}
 }

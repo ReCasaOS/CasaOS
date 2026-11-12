@@ -143,15 +143,8 @@ func TestLoadGuardCorrupt(t *testing.T) {
 		if !corrupt || g.Protection || len(g.Secret) != 32 || !reflect.DeepEqual(g.Box, DefaultPolicy()) {
 			t.Fatalf("%s: got %+v corrupt=%v", name, g, corrupt)
 		}
-		if _, err := os.Stat(path); err == nil {
-			t.Fatalf("%s: original left in place", name)
-		}
-		aside, _ := filepath.Glob(path + ".corrupt-*")
-		if len(aside) != 1 {
-			t.Fatalf("%s: aside %v", name, aside)
-		}
-		if raw, _ := os.ReadFile(aside[0]); string(raw) != content {
-			t.Fatalf("%s: content changed", name)
+		if raw, _ := os.ReadFile(path); string(raw) != content { // the Service replaces it, then keeps a copy aside
+			t.Fatalf("%s: file changed", name)
 		}
 	}
 }

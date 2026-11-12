@@ -44,9 +44,33 @@ func (g Gateway) DeleteHost(ctx context.Context, host string) error {
 	return g.call(ctx, http.MethodDelete, "/v1/gateway/hosts/"+url.PathEscape(host), nil, http.StatusNoContent)
 }
 
+// Hosts is every host the gateway serves.
+func (g Gateway) Hosts(ctx context.Context) ([]string, error) {
+	status, answer, err := internalCall(ctx, g.RuntimePath(), external.ManagementURLFilename, http.MethodGet, "/v1/gateway/hosts", nil, callTimeout)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("gateway: %w", err)
+	case status == http.StatusNotFound || status == http.StatusMethodNotAllowed:
+		return nil, ErrGatewayNoShare
+	case status != http.StatusOK:
+		return nil, fmt.Errorf("gateway answered %d: %s", status, answer)
+	}
+	var routes []struct {
+		Host string `json:"host"`
+	}
+	if err := json.Unmarshal([]byte(answer), &routes); err != nil {
+		return nil, fmt.Errorf("gateway: the hosts: %w", err)
+	}
+	hosts := make([]string, 0, len(routes))
+	for _, r := range routes {
+		hosts = append(hosts, r.Host)
+	}
+	return hosts, nil
+}
+
 func (g Gateway) call(ctx context.Context, method, path string, body []byte, ok int) error {
 	runtimePath := g.RuntimePath()
-	status, message, err := internalCall(ctx, runtimePath, external.ManagementURLFilename, method, path, body)
+	status, message, err := internalCall(ctx, runtimePath, external.ManagementURLFilename, method, path, body, callTimeout)
 	if err != nil {
 		return fmt.Errorf("gateway: %w", err)
 	}
@@ -59,14 +83,19 @@ func (g Gateway) call(ctx context.Context, method, path string, body []byte, ok 
 	return fmt.Errorf("gateway answered %d: %s", status, message)
 }
 
-// internalCall asks the service whose address is in urlFile of the runtime directory, as the core.
+const (
+	callTimeout     = 10 * time.Second
+	setGuardTimeout = time.Minute // the Gateway compiles the WAF rules on a change: slow on a small ARM box
+)
+
+// internalCall asks the service whose address is in urlFile of the runtime directory, as the core, within timeout.
 // It returns the status and, for anything but a success, the message of the JSON answer.
-func internalCall(ctx context.Context, runtimePath, urlFile, method, path string, body []byte) (int, string, error) {
+func internalCall(ctx context.Context, runtimePath, urlFile, method, path string, body []byte, timeout time.Duration) (int, string, error) {
 	address, err := os.ReadFile(filepath.Join(runtimePath, urlFile))
 	if err != nil {
 		return 0, "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(strings.TrimSpace(string(address)), "/")+path, bytes.NewReader(body))
 	if err != nil {
@@ -139,7 +168,7 @@ type GuardWave struct {
 // GuardStatus is the Gateway's view of the protection; supported is false only when it has no guard route.
 func (g Gateway) GuardStatus(ctx context.Context) (GuardGatewayStatus, bool, error) {
 	var st GuardGatewayStatus
-	body, err := g.guardCall(ctx, http.MethodGet, "/v1/gateway/guard", nil, http.StatusOK)
+	body, err := g.guardCall(ctx, http.MethodGet, "/v1/gateway/guard", nil, http.StatusOK, callTimeout)
 	if errors.Is(err, ErrGatewayNoGuard) {
 		return st, false, nil
 	}
@@ -155,7 +184,7 @@ func (g Gateway) SetGuard(ctx context.Context, cfg GatewayGuardConfig) error {
 	if err != nil {
 		return err
 	}
-	_, err = g.guardCall(ctx, http.MethodPut, "/v1/gateway/guard", body, http.StatusNoContent)
+	_, err = g.guardCall(ctx, http.MethodPut, "/v1/gateway/guard", body, http.StatusNoContent, setGuardTimeout)
 	return err
 }
 
@@ -175,23 +204,23 @@ func (g Gateway) GuardEvents(ctx context.Context, app, reason string, limit int)
 	if len(q) > 0 {
 		path += "?" + q.Encode()
 	}
-	return g.guardCall(ctx, http.MethodGet, path, nil, http.StatusOK)
+	return g.guardCall(ctx, http.MethodGet, path, nil, http.StatusOK, callTimeout)
 }
 
 // GuardBans is the Gateway's active bans.
 func (g Gateway) GuardBans(ctx context.Context) (json.RawMessage, error) {
-	return g.guardCall(ctx, http.MethodGet, "/v1/gateway/guard/bans", nil, http.StatusOK)
+	return g.guardCall(ctx, http.MethodGet, "/v1/gateway/guard/bans", nil, http.StatusOK, callTimeout)
 }
 
 // Unban lifts the ban on key now.
 func (g Gateway) Unban(ctx context.Context, key string) error {
-	_, err := g.guardCall(ctx, http.MethodDelete, "/v1/gateway/guard/bans/"+url.PathEscape(key), nil, http.StatusNoContent)
+	_, err := g.guardCall(ctx, http.MethodDelete, "/v1/gateway/guard/bans/"+url.PathEscape(key), nil, http.StatusNoContent, callTimeout)
 	return err
 }
 
 // guardCall is call for the guard routes: only a 404 means the Gateway has none, and the answer's body comes back.
-func (g Gateway) guardCall(ctx context.Context, method, path string, body []byte, ok int) (json.RawMessage, error) {
-	status, answer, err := internalCall(ctx, g.RuntimePath(), external.ManagementURLFilename, method, path, body)
+func (g Gateway) guardCall(ctx context.Context, method, path string, body []byte, ok int, timeout time.Duration) (json.RawMessage, error) {
+	status, answer, err := internalCall(ctx, g.RuntimePath(), external.ManagementURLFilename, method, path, body, timeout)
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("gateway: %w", err)

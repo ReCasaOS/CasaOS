@@ -245,18 +245,19 @@ func NewCode() string {
 // newPersonID is p_ and 8 lowercase hex, inside the Gateway's ^[A-Za-z0-9_-]{1,64}$.
 func newPersonID() string { return "p_" + hex.EncodeToString(randBytes(4)) }
 
-// loadGuard reads the file. Missing: defaults and a fresh secret (a first start). Present but unusable: the file is
-// renamed aside to <path>.corrupt-<unix seconds> for the owner, defaults come back and corrupt is true, so the caller can fail closed.
+// loadGuard reads the file. Missing: defaults and a fresh secret (a first start). Present but unusable: defaults come
+// back and corrupt is true, so the caller can fail closed; the file is left in place for the caller to replace.
 // A fresh secret reaches the disk with the first saveGuard.
 func loadGuard(path string) (g GuardState, corrupt bool) {
-	fresh := func() GuardState { return GuardState{Box: DefaultPolicy(), Apps: map[string]GuardApp{}, Secret: randBytes(32)} }
+	fresh := func() GuardState {
+		return GuardState{Box: DefaultPolicy(), Apps: map[string]GuardApp{}, Secret: randBytes(32)}
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fresh(), false
 	}
 	g = GuardState{Box: DefaultPolicy()}
 	if err != nil || json.Unmarshal(data, &g) != nil || len(g.Secret) != 32 || !g.valid() {
-		os.Rename(path, fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())) // best effort
 		return fresh(), true
 	}
 	if g.Apps == nil {
