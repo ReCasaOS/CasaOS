@@ -848,11 +848,11 @@ func (s *Service) guardLocked() (*GuardState, error) {
 	}
 	if corrupt {
 		closeAll(&g)
-		g.ResetAt = s.now().UTC()
 		aside := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
-		if err := copyGuardFile(aside, data, 0o600); err != nil { // never overwrite what could not be kept
+		if err := copyGuardFile(aside, data, 0o600); err != nil { // never overwrite what could not be kept: as a read error
 			return &g, fmt.Errorf("the protection settings are unusable and cannot be set aside: %w", err)
 		}
+		g.ResetAt = s.now().UTC()
 		if err := saveGuardFile(path, g); err != nil {
 			os.Remove(aside) // the next call sets the file aside again
 			return &g, fmt.Errorf("the protection settings were reset but cannot be saved: %w", err)

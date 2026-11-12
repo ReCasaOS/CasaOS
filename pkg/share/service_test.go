@@ -1419,7 +1419,7 @@ func TestCorruptGuardNotOverwrittenWithoutItsCopy(t *testing.T) {
 	if raw, _ := os.ReadFile(path); string(raw) != "{nope" {
 		t.Fatalf("file %q", raw)
 	}
-	if len(f.mgmt.pushes(t)) != 0 || len(f.mgmt.registered()) != 0 {
+	if len(f.mgmt.pushes(t)) != 0 || len(f.mgmt.registered()) != 0 || f.s.GuardReset() {
 		t.Fatalf("gateway %+v, serving %v", f.mgmt.seen(), f.mgmt.registered())
 	}
 	copyGuardFile = os.WriteFile
