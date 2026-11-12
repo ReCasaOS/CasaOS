@@ -30,6 +30,7 @@ type fakeManagement struct {
 	fail   int
 	guard  int
 	status string // when set, the body of GET /v1/gateway/guard
+	putGuard int // when set, the answer to PUT /v1/gateway/guard
 	hosts  map[string]string
 	onPut  func() // when set, runs at each PUT before it is answered
 }
@@ -52,6 +53,10 @@ func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isGuard := strings.HasPrefix(r.URL.Path, "/v1/gateway/guard")
 	if isGuard && m.guard != 0 {
 		w.WriteHeader(m.guard)
+		return
+	}
+	if r.Method == http.MethodPut && r.URL.Path == "/v1/gateway/guard" && m.putGuard != 0 {
+		w.WriteHeader(m.putGuard)
 		return
 	}
 	if m.hosts == nil {

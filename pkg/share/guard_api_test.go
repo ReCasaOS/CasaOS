@@ -190,3 +190,105 @@ func TestGuardViewUnreadableFile(t *testing.T) {
 		t.Fatal("a view of the placeholder")
 	}
 }
+
+func TestPushRejectedWith404RollsBack(t *testing.T) {
+	f := twoShared(t, jellyCode())
+	f.mgmt.mu.Lock()
+	f.mgmt.putGuard = 404 // the status check passes, the push says the Gateway has no guard
+	f.mgmt.mu.Unlock()
+	_, err := f.s.SetProtection(context.Background(), true)
+	wantGuardErr(t, err, "gateway_unsupported")
+	if saved, _ := loadGuard(f.s.guardPath()); saved.Protection || accessOf(saved.Apps["jellyfin"]) != "code" {
+		t.Fatalf("saved %+v", saved)
+	}
+	f.s.mu.Lock()
+	on := f.s.guard.Protection
+	f.s.mu.Unlock()
+	if on {
+		t.Fatal("memory kept the change")
+	}
+}
+
+func TestPushFailureWakesResyncAndKeepsCode(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, jellyCode())
+	f.mgmt.mu.Lock()
+	f.mgmt.putGuard = 500
+	f.mgmt.mu.Unlock()
+	_, err := f.s.SetProtection(ctx, true)
+	if !errors.Is(err, ErrGuardPush) || len(f.s.resyncCh) != 1 {
+		t.Fatalf("%v, woken %d", err, len(f.s.resyncCh))
+	}
+	<-f.s.resyncCh
+	p, code, err := f.s.AddPerson(ctx, "Maman", []string{"jellyfin"})
+	if err != nil || !codeShape.MatchString(code) || len(f.s.resyncCh) != 1 {
+		t.Fatalf("%v %q woken %d", err, code, len(f.s.resyncCh))
+	}
+	code2, err := f.s.NewPersonCode(ctx, p.ID)
+	if err != nil || !codeShape.MatchString(code2) {
+		t.Fatalf("%q %v", code2, err)
+	}
+	saved, _ := loadGuard(f.s.guardPath())
+	if len(saved.People) != 1 || saved.People[0].Gen != 2 || saved.People[0].CodeHash != CodeHash(saved.Secret, code2) {
+		t.Fatalf("saved %+v", saved.People)
+	}
+}
+
+func TestUpdateDeletePersonAndBoxPolicy(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, jellyCode())
+	p, _, err := f.s.AddPerson(ctx, "Maman", []string{"jellyfin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := f.s.UpdatePerson(ctx, p.ID, "Papa", []string{"nextcloud", "nextcloud"})
+	if err != nil || u.Name != "Papa" || len(u.Apps) != 1 || u.Apps[0] != "nextcloud" {
+		t.Fatalf("%+v %v", u, err)
+	}
+	_, err = f.s.UpdatePerson(ctx, "p_nope", "X", nil)
+	wantGuardErr(t, err, "not_found")
+	_, err = f.s.UpdatePerson(ctx, p.ID, "", nil)
+	wantGuardErr(t, err, "bad_name")
+	_, err = f.s.UpdatePerson(ctx, p.ID, "X", []string{"ghost"})
+	wantGuardErr(t, err, "unknown_app:ghost")
+	if saved, _ := loadGuard(f.s.guardPath()); saved.People[0].Name != "Papa" {
+		t.Fatalf("saved %+v", saved.People)
+	}
+
+	bad := DefaultPolicy()
+	bad.WAF = "nope"
+	_, err = f.s.SetBoxPolicy(ctx, bad)
+	wantGuardErr(t, err, "bad_policy:waf")
+	good := DefaultPolicy()
+	good.WAF = "block"
+	good.Allow = nil
+	if _, err := f.s.SetBoxPolicy(ctx, good); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := loadGuard(f.s.guardPath())
+	if saved.Box.WAF != "block" || saved.Box.Allow == nil {
+		t.Fatalf("saved %+v", saved.Box)
+	}
+
+	if err := f.s.DeletePerson(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if saved, _ := loadGuard(f.s.guardPath()); len(saved.People) != 0 {
+		t.Fatalf("saved %+v", saved.People)
+	}
+	if pushed := f.mgmt.pushes(t); len(pushed[len(pushed)-1].People) != 0 {
+		t.Fatalf("pushed %+v", pushed[len(pushed)-1])
+	}
+}
+
+func TestSetAppGuardNormalisesOverride(t *testing.T) {
+	f := twoShared(t, nil)
+	waf := "observe"
+	if _, err := f.s.SetAppGuard(context.Background(), "jellyfin", "open", &PolicyOverride{WAF: &waf, Countries: &Countries{Mode: "block"}}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(f.s.guardPath())
+	if strings.Contains(string(raw), `"rules_off":null`) || strings.Contains(string(raw), `"allow":null`) || strings.Contains(string(raw), `"list":null`) {
+		t.Fatalf("nil lists saved: %s", raw)
+	}
+}

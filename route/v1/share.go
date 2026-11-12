@@ -3,6 +3,7 @@ package v1
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -363,7 +364,7 @@ func GetShareGuardBans(ctx echo.Context) error {
 	return ok(ctx, out)
 }
 
-// DeleteShareGuardBan lifts a ban now. The key (an address or a range) arrives unescaped once from the router.
+// DeleteShareGuardBan lifts a ban now. The key (an address or a range) arrives escaped from the router: it is unescaped once here.
 //
 // @Summary share: lift a ban
 // @Tags share
@@ -371,9 +372,13 @@ func GetShareGuardBans(ctx echo.Context) error {
 // @Success 204
 // @Router /share/guard/bans/{key} [delete]
 func DeleteShareGuardBan(ctx echo.Context) error {
+	key, err := url.PathUnescape(ctx.Param("key")) // Echo routes on the raw path and leaves the parameter escaped
+	if err != nil {
+		return badBody(ctx)
+	}
 	c, cancel := detached(ctx)
 	defer cancel()
-	if err := Share.Unban(c, ctx.Param("key")); err != nil {
+	if err := Share.Unban(c, key); err != nil {
 		return shareFail(ctx, err)
 	}
 	return ctx.NoContent(http.StatusNoContent)

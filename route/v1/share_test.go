@@ -14,6 +14,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS/pkg/share"
+	"github.com/labstack/echo/v4"
 )
 
 // relayReply is what the fake relay answers to the signed call that claims a name.
@@ -27,6 +28,7 @@ type relayReply struct {
 var guardSeen struct {
 	sync.Mutex
 	calls []string
+	put   int // when set, the answer to every guard write
 }
 
 func guardCalls() []string {
@@ -41,7 +43,7 @@ func useShare(t *testing.T, claim *relayReply, remote bool) *share.Service {
 	t.Helper()
 	runtimePath := t.TempDir()
 	guardSeen.Lock()
-	guardSeen.calls = nil
+	guardSeen.calls, guardSeen.put = nil, 0
 	guardSeen.Unlock()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -51,7 +53,13 @@ func useShare(t *testing.T, claim *relayReply, remote bool) *share.Service {
 			guardSeen.Unlock()
 			switch {
 			case r.Method != http.MethodGet:
-				w.WriteHeader(http.StatusNoContent)
+				guardSeen.Lock()
+				status := guardSeen.put
+				guardSeen.Unlock()
+				if status == 0 {
+					status = http.StatusNoContent
+				}
+				w.WriteHeader(status)
 			case r.URL.Path == "/v1/gateway/guard":
 				_, _ = w.Write([]byte(`{"version":1,"configured":true,"geo":{},"people_last_used":{},"waves":[]}`))
 			default:
@@ -253,11 +261,31 @@ func TestShareGuardPeopleAnswers(t *testing.T) {
 	}
 }
 
-func TestShareGuardUnbanKeyIsEscapedAgain(t *testing.T) {
+// Through a real Echo router: it routes on the raw path and hands the parameter escaped, so the handler unescapes it
+// once and the Gateway sees it escaped once.
+func TestShareGuardUnbanKeyReachesGatewayEscapedOnce(t *testing.T) {
 	useShare(t, claimed, true)
-	// the router hands the handler the key unescaped once; the Gateway must see it escaped once
-	code := callFleetRec(t, DeleteShareGuardBan, http.MethodDelete, "/v1/share/guard/bans/2001:db8::%2F64", "", map[string]string{"key": "2001:db8::/64"}).Code
-	if got := guardCalls(); code != http.StatusNoContent || len(got) != 1 || got[0] != "DELETE /v1/gateway/guard/bans/2001:db8::%2F64" {
-		t.Fatalf("status %d, gateway %v", code, got)
+	e := echo.New()
+	e.DELETE("/v1/share/guard/bans/:key", DeleteShareGuardBan)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/share/guard/bans/2001:db8::%2F64", nil))
+	if got := guardCalls(); rec.Code != http.StatusNoContent || len(got) != 1 || got[0] != "DELETE /v1/gateway/guard/bans/2001:db8::%2F64" {
+		t.Fatalf("status %d, gateway %v", rec.Code, got)
+	}
+}
+
+func TestShareGuardPushFailureAnswers(t *testing.T) {
+	sharedJelly(t)
+	guardSeen.Lock()
+	guardSeen.put = http.StatusInternalServerError
+	guardSeen.Unlock()
+	code, result := callFleet(t, PutShareGuardProtection, http.MethodPut, "/v1/share/guard/protection", `{"on":true}`, nil)
+	if code != http.StatusInternalServerError || !strings.Contains(result.Message, "saved") {
+		t.Fatalf("protection = %d %q", code, result.Message)
+	}
+	// a code is never lost: the change is saved, the resync sends it
+	code, result = callFleet(t, PostShareGuardPerson, http.MethodPost, "/v1/share/guard/people", `{"name":"Maman","apps":["jellyfin"]}`, nil)
+	if data, _ := result.Data.(map[string]any); code != http.StatusOK || data["code"] == nil {
+		t.Fatalf("add = %d %#v", code, result)
 	}
 }

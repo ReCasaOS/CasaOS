@@ -75,6 +75,9 @@ func (s *Service) GuardView(ctx context.Context) (GuardView, error) {
 		v.Apps[name] = GuardAppView{Access: accessOf(a), Override: a.Override, Effective: Effective(g.Box, a.Override)}
 	}
 	people := slices.Clone(g.People)
+	for i := range people {
+		people[i].Apps = slices.Clone(people[i].Apps) // unshareLocked edits the saved ones in place
+	}
 	s.mu.Unlock()
 	gw, supported, gerr := s.Gateway.GuardStatus(ctx)
 	v.Supported = supported
@@ -192,6 +195,15 @@ func (s *Service) SetAppGuard(ctx context.Context, name, access string, o *Polic
 		if err := Effective(g.Box, o).Validate(); err != nil {
 			return ErrGuard{err.Error()}
 		}
+		if o != nil {
+			c := *o
+			c.RulesOff, c.Allow, c.Block = union(c.RulesOff, nil), union(c.Allow, nil), union(c.Block, nil)
+			if c.Countries != nil {
+				cc := Countries{Mode: c.Countries.Mode, List: union(c.Countries.List, nil)}
+				c.Countries = &cc
+			}
+			o = &c
+		}
 		g.Apps[name] = GuardApp{Access: access, Override: o}
 		return nil
 	}); err != nil {
@@ -231,7 +243,7 @@ func (s *Service) AddPerson(ctx context.Context, name string, apps []string) (Pe
 		g.People = append(g.People, p)
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrGuardPush) { // saved all the same: the resync sends it, and the code must not be lost
 		return PersonView{}, "", err
 	}
 	return personView(p, s.read(), nil), code, nil
@@ -275,7 +287,7 @@ func (s *Service) NewPersonCode(ctx context.Context, id string) (string, error) 
 		p.CodeHash, p.Gen = CodeHash(g.Secret, code), p.Gen+1
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrGuardPush) { // as AddPerson: the saved code is shown
 		return "", err
 	}
 	return code, nil
