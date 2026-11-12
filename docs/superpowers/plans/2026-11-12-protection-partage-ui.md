@@ -22,6 +22,7 @@ pnpm vitest run src/components/PublicShare src/service src/components/dashboard
 - A code is shown **only** in the answer of `POST /v1/share/guard/people` and `POST /v1/share/guard/people/:id/code`: kept in component state until the dialog closes, never in the store, never in `localStorage`.
 - Switching an app to "Protected by code" first shows, and requires confirming: "Mobile and sync apps (Jellyfin, Nextcloud, Home Assistant…) will no longer connect: only a web browser gets in." / « Les applications mobiles et de synchronisation (Jellyfin, Nextcloud, Home Assistant…) ne pourront plus se connecter : seul un navigateur passe. »
 - Turning protection on shows once: "A ban on the box comes after the relay and your Internet connection: it does not stop a flood (DDoS)." / « Un ban sur la box arrive après le relais et votre connexion : il n'arrête pas une inondation (DDoS). »
+- Turning the OWASP rules on (box or app, from `off` to `observe` or `block`) says once: "The OWASP rules use about 50 MB of memory on the box." / « Les règles OWASP occupent environ 50 Mo de mémoire sur la box. » (measured on the Gateway branch; update the figure if the Gateway PR states another).
 - Every view that shows a country or a network carries the link `<a href="https://db-ip.com">IP Geolocation by DB-IP</a>` (licence requirement).
 - Every string in both `en_US.json` and `fr_FR.json`.
 

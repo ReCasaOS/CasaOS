@@ -47,7 +47,7 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "D:/clients/casaos/_work/casaos-guard:/src
   - `type PolicyOverride struct { WAF *string; RulesOff []int; Allow, Block []string; Countries *Countries; RatePerMin *int; Ban *BanRules }`.
   - `type GuardApp struct { Access string; Override *PolicyOverride }`, `type Person struct { ID, Name string; Apps []string; CodeHash string; Gen int; CreatedAt time.Time }`, `type GuardState struct { Secret []byte; Protection bool; Box Policy; Apps map[string]GuardApp; People []Person }`.
   - `func DefaultPolicy() Policy` (contract values), `func Effective(box Policy, o *PolicyOverride) Policy` (lists add, deduplicated; others replace), `func (p Policy) Validate() error` (error text `bad_policy:<field>`).
-  - `func NormalizeCode(s string) string`, `func CodeHash(secret []byte, code string) string`, `func NewCode() string` (contract alphabet, `crypto/rand`, formatted `XXXX-XXXX-XXXX`), `func newPersonID() string` (`p_` + 8 hex).
+  - `func NormalizeCode(s string) string` (ASCII uppercase only, like the Gateway), `func CodeHash(secret []byte, code string) string`, `func NewCode() string` (contract alphabet, `crypto/rand`, formatted `XXXX-XXXX-XXXX`), `func newPersonID() string` (`p_` + 8 hex).
   - `func loadGuard(path string) GuardState` (missing or unreadable → defaults with a fresh secret, saved on first write), `func saveGuard(path string, g GuardState) error`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -85,12 +85,14 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "D:/clients/casaos/_work/casaos-guard:/src
   - `TestShareAppPushesGuardFirst`: `Share(ctx,"jellyfin")` → `PUT /v1/gateway/guard` (with the new host in `apps`) before `PUT /v1/gateway/hosts`.
   - `TestUnshareDropsAppFromPeople`: a person with `["jellyfin","nextcloud"]`, unshare `jellyfin` → saved person has `["nextcloud"]`, guard `Apps` has no `jellyfin`, and the guard push comes before `DELETE /v1/gateway/hosts/...`.
   - `TestUpgradedBoxKeepsAppsOpen`: share state with apps and no guard file → pushed config has `protection: false` and every app `access: "open"`.
-  - `TestOldGatewayStillServesHosts`: the fake Gateway answers 404 on `/v1/gateway/guard` → hosts are still registered (no guard push error stops the resync), and `GuardStatus` reports unsupported.
+  - `TestOldGatewayStillServesHosts`: the fake Gateway answers 404 on `/v1/gateway/guard` → hosts are still registered, and `GuardStatus` reports unsupported.
+  - `TestFailedGuardPushHoldsCodeHosts`: the fake Gateway answers 400 or 500 on `PUT /v1/gateway/guard` → hosts of apps whose access is `open` are registered, hosts of apps whose access is `code` are NOT (and a code host already registered is deleted); the next successful push registers them.
+  - `TestEveryHostInGuardApps`: every shared app's host is a key of the pushed `apps`, open ones included (an absent host would keep the access cookie unstripped).
   - `TestBuildGatewayGuardHosts`: host key equals the host used by `SetHost` for the same app.
 
 - [ ] **Step 2: Run them and see them fail.**
 
-- [ ] **Step 3: Implement.** A Gateway 404 on the guard route is "unsupported": skip the push, go on with the hosts (an old Gateway has no protected app, since the API refused them).
+- [ ] **Step 3: Implement.** Only a Gateway 404 on the guard route means "unsupported": skip the push, go on with the hosts (an old Gateway has no protected app, since the API refused them). Any other failure of `PUT /v1/gateway/guard` must not leave a code app reachable: register only `open` hosts and delete `code` hosts until a push succeeds. Serialise pushes (one at a time, in order) — the Gateway also serialises `SetConfig`, but two pushes racing from the core could land in reverse order.
 
 - [ ] **Step 4: Run the tests and see them pass**, plus the whole `./pkg/share/`.
 
@@ -136,6 +138,8 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "D:/clients/casaos/_work/casaos-guard:/src
 **Interfaces:**
 - Consumes: Tasks 1, 3.
 - Produces: `type GeoFetcher struct { Dir string; BaseURL string; Client *http.Client; Now func() time.Time }` (defaults `<Root>/var/lib/casaos/geo`, `https://download.db-ip.com/free`), `func (f *GeoFetcher) Update(ctx) error` (both files), `func (f *GeoFetcher) Status() GeoStatus{Country, ASN bool; UpdatedAt time.Time; Error string}`, and a loop in `Run`: when `protection` is true, update if a file is missing or older than 32 days, check every 6 hours, retry after 1 hour on failure.
+
+The Gateway memory-maps these files: replace them only by rename of a completed file, never by writing in place (an in-place write crashes the Gateway).
 
 Download URL: `<BaseURL>/dbip-<country|asn>-lite-YYYY-MM.mmdb.gz` for the current UTC month; on 404 try the previous month. Write to `<name>.tmp`, gunzip, check the MMDB metadata marker (`\xab\xcd\xefMaxMind.com` present in the last 128 KiB), rename to the contract's file names, mode 0644.
 
