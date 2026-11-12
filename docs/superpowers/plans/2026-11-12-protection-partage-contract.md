@@ -14,7 +14,7 @@ Spec: `docs/superpowers/specs/2026-11-12-protection-partage-design.md`. This fil
 | Code normalisation | uppercase, drop every character outside the alphabet |
 | Ban key | IPv4 address, or the IPv6 `/64` written `<prefix>::/64`; IPv4-mapped IPv6 is IPv4 |
 | Ban durations (strike 1, 2, ≥3) | 1 h, 24 h, 7 days; strikes forgotten 30 days after the last ban ends |
-| Journal | 7 days, at most 10 000 lines; a line repeating the previous line of the same key, app, reason and rule within 60 s increments its `count` |
+| Journal | 7 days, at most 10 000 lines; a line repeating the previous line of the same key, app, reason, rule and action within 60 s increments its `count` |
 | WAF request body inspected | first 1 MiB (`SecRequestBodyLimit 1048576`, `SecRequestBodyLimitAction ProcessPartial`); `SecResponseBodyAccess Off` |
 | WAF extra allowed methods | `PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT` |
 | Geo files | `/var/lib/casaos/geo/dbip-country-lite.mmdb`, `/var/lib/casaos/geo/dbip-asn-lite.mmdb` |
