@@ -114,9 +114,9 @@ Lifts the ban now (idempotent). `{key}` is path-escaped (`2001:db8::/64` → `20
 ## Order of filters on a shared host (Gateway)
 
 As in the spec, for every request on the share listener whose host is in the host table:
-1. banned key → 403, event `banned`/`blocked` (one per key per minute at most, grouping applies);
-2. `block` match → 403, `blocklist`;
-3. `allow` match → skip 4–6;
+1. `allow` match → skip 2–6 and the scan count (an allowed address is never refused, counted or banned, even with an older ban on its key);
+2. banned key → 403, event `banned`/`blocked` (grouping applies);
+3. `block` match → 403, `blocklist`;
 4. country filter → 403, `country` (no country database: pass);
 5. rate limit → 429, `rate`, counts a rate strike;
 6. WAF (`observe`: event `observed`, request passes; `block`: 403, `waf`, counts a WAF hit);
