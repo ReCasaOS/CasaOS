@@ -99,15 +99,15 @@ func TestPolicyValidate(t *testing.T) {
 }
 
 func TestLoadGuardMissing(t *testing.T) {
-	g := loadGuard(filepath.Join(t.TempDir(), "none.json"))
-	if g.Protection || len(g.Secret) != 32 || !reflect.DeepEqual(g.Box, DefaultPolicy()) || g.Apps == nil {
+	g, corrupt := loadGuard(filepath.Join(t.TempDir(), "none.json"))
+	if corrupt || g.Protection || len(g.Secret) != 32 || !reflect.DeepEqual(g.Box, DefaultPolicy()) || g.Apps == nil {
 		t.Fatalf("got %+v", g)
 	}
 }
 
 func TestSaveGuardNoCode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fleet", GuardFile)
-	g := loadGuard(path)
+	g, _ := loadGuard(path)
 	g.People = []Person{{ID: newPersonID(), Name: "Maman", CodeHash: CodeHash(g.Secret, NewCode())}}
 	if err := saveGuard(path, g); err != nil {
 		t.Fatal(err)
@@ -121,8 +121,30 @@ func TestSaveGuardNoCode(t *testing.T) {
 			t.Fatalf("mode %v, err %v", info.Mode(), err)
 		}
 	}
-	back := loadGuard(path)
+	back, _ := loadGuard(path)
 	if !slices.Equal(back.Secret, g.Secret) || len(back.People) != 1 {
 		t.Fatalf("round trip: %+v", back)
+	}
+}
+
+func TestLoadGuardCorrupt(t *testing.T) {
+	for name, content := range map[string]string{"garbage": "{nope", "short secret": `{"secret":"AAECAwQFBgcICQoLDA0ODw==","protection":true}`} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, GuardFile)
+		os.WriteFile(path, []byte(content), 0o600)
+		g, corrupt := loadGuard(path)
+		if !corrupt || g.Protection || len(g.Secret) != 32 || !reflect.DeepEqual(g.Box, DefaultPolicy()) {
+			t.Fatalf("%s: got %+v corrupt=%v", name, g, corrupt)
+		}
+		if _, err := os.Stat(path); err == nil {
+			t.Fatalf("%s: original left in place", name)
+		}
+		aside, _ := filepath.Glob(path + ".corrupt-*")
+		if len(aside) != 1 {
+			t.Fatalf("%s: aside %v", name, aside)
+		}
+		if raw, _ := os.ReadFile(aside[0]); string(raw) != content {
+			t.Fatalf("%s: content changed", name)
+		}
 	}
 }

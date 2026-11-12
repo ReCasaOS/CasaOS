@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -239,17 +241,24 @@ func NewCode() string {
 // newPersonID is p_ and 8 lowercase hex, inside the Gateway's ^[A-Za-z0-9_-]{1,64}$.
 func newPersonID() string { return "p_" + hex.EncodeToString(randBytes(4)) }
 
-// loadGuard reads the file; when it is missing or unreadable the defaults come back with a fresh secret,
-// which reaches the disk with the first saveGuard.
-func loadGuard(path string) GuardState {
-	g := GuardState{Box: DefaultPolicy()}
-	if data, err := os.ReadFile(path); err != nil || json.Unmarshal(data, &g) != nil || len(g.Secret) != 32 {
-		g = GuardState{Box: DefaultPolicy(), Secret: randBytes(32)}
+// loadGuard reads the file. Missing: defaults and a fresh secret (a first start). Present but unusable: the file is
+// renamed aside to <path>.corrupt-<unix seconds> for the owner, defaults come back and corrupt is true, so the caller can fail closed.
+// A fresh secret reaches the disk with the first saveGuard.
+func loadGuard(path string) (g GuardState, corrupt bool) {
+	fresh := func() GuardState { return GuardState{Box: DefaultPolicy(), Apps: map[string]GuardApp{}, Secret: randBytes(32)} }
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fresh(), false
+	}
+	g = GuardState{Box: DefaultPolicy()}
+	if err != nil || json.Unmarshal(data, &g) != nil || len(g.Secret) != 32 {
+		os.Rename(path, fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())) // best effort
+		return fresh(), true
 	}
 	if g.Apps == nil {
 		g.Apps = map[string]GuardApp{}
 	}
-	return g
+	return g, false
 }
 
 func saveGuard(path string, g GuardState) error {
