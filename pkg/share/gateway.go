@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,4 +92,113 @@ func internalCall(ctx context.Context, runtimePath, urlFile, method, path string
 		failure.Message = ""
 	}
 	return response.StatusCode, failure.Message, nil
+}
+
+// ErrGatewayNoGuard is what a Gateway without the protection of shared apps gives: a 404 on /v1/gateway/guard.
+var ErrGatewayNoGuard = errors.New("the gateway on this box cannot protect shared apps")
+
+// GatewayGuardConfig is the body of PUT /v1/gateway/guard; apps are keyed by the host registered for them.
+type GatewayGuardConfig struct {
+	Secret     []byte                     `json:"secret"` // base64 std in JSON
+	Protection bool                       `json:"protection"`
+	Apps       map[string]GatewayGuardApp `json:"apps"`
+	People     []GatewayPerson            `json:"people"`
+}
+
+type GatewayGuardApp struct {
+	App    string `json:"app"`
+	Access string `json:"access"`
+	Policy Policy `json:"policy"` // the effective one: the Gateway never merges
+}
+
+// GatewayPerson is what the Gateway needs of a person: no name, no dates.
+type GatewayPerson struct {
+	ID       string   `json:"id"`
+	Gen      int      `json:"gen"`
+	CodeHash string   `json:"code_hash"`
+	Apps     []string `json:"apps"`
+}
+
+// GuardGatewayStatus is the body of GET /v1/gateway/guard.
+type GuardGatewayStatus struct {
+	Version    int  `json:"version"`
+	Configured bool `json:"configured"`
+	Geo        struct {
+		Country bool `json:"country"`
+		ASN     bool `json:"asn"`
+	} `json:"geo"`
+	PeopleLastUsed map[string]time.Time `json:"people_last_used"`
+	Waves          []GuardWave          `json:"waves"`
+}
+
+type GuardWave struct {
+	App  string `json:"app"`
+	Bans int    `json:"bans"`
+}
+
+// GuardStatus is the Gateway's view of the protection; supported is false only when it has no guard route.
+func (g Gateway) GuardStatus(ctx context.Context) (GuardGatewayStatus, bool, error) {
+	var st GuardGatewayStatus
+	body, err := g.guardCall(ctx, http.MethodGet, "/v1/gateway/guard", nil, http.StatusOK)
+	if errors.Is(err, ErrGatewayNoGuard) {
+		return st, false, nil
+	}
+	if err == nil {
+		err = json.Unmarshal(body, &st)
+	}
+	return st, true, err
+}
+
+// SetGuard replaces the Gateway's whole protection config.
+func (g Gateway) SetGuard(ctx context.Context, cfg GatewayGuardConfig) error {
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	_, err = g.guardCall(ctx, http.MethodPut, "/v1/gateway/guard", body, http.StatusNoContent)
+	return err
+}
+
+// GuardEvents is the Gateway's journal, newest first; empty filters and limit 0 are left out.
+func (g Gateway) GuardEvents(ctx context.Context, app, reason string, limit int) (json.RawMessage, error) {
+	q := url.Values{}
+	if app != "" {
+		q.Set("app", app)
+	}
+	if reason != "" {
+		q.Set("reason", reason)
+	}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	path := "/v1/gateway/guard/events"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	return g.guardCall(ctx, http.MethodGet, path, nil, http.StatusOK)
+}
+
+// GuardBans is the Gateway's active bans.
+func (g Gateway) GuardBans(ctx context.Context) (json.RawMessage, error) {
+	return g.guardCall(ctx, http.MethodGet, "/v1/gateway/guard/bans", nil, http.StatusOK)
+}
+
+// Unban lifts the ban on key now.
+func (g Gateway) Unban(ctx context.Context, key string) error {
+	_, err := g.guardCall(ctx, http.MethodDelete, "/v1/gateway/guard/bans/"+url.PathEscape(key), nil, http.StatusNoContent)
+	return err
+}
+
+// guardCall is call for the guard routes: only a 404 means the Gateway has none, and the answer's body comes back.
+func (g Gateway) guardCall(ctx context.Context, method, path string, body []byte, ok int) (json.RawMessage, error) {
+	status, answer, err := internalCall(ctx, g.RuntimePath(), external.ManagementURLFilename, method, path, body)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("gateway: %w", err)
+	case status == ok:
+		return json.RawMessage(answer), nil
+	case status == http.StatusNotFound:
+		return nil, ErrGatewayNoGuard
+	}
+	return nil, fmt.Errorf("gateway answered %d: %s", status, answer)
 }

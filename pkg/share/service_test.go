@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,11 +21,12 @@ import (
 )
 
 // fakeManagement is the Gateway's management API: it records the calls it answers with a success, and
-// answers the next fail calls 502.
+// answers the next fail calls 502. guard, when set, is the answer to every /v1/gateway/guard call.
 type fakeManagement struct {
 	mu    sync.Mutex
 	calls []sent
 	fail  int
+	guard int
 	onPut func() // when set, runs at each PUT before it is answered
 }
 
@@ -42,12 +45,46 @@ func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
+	isGuard := strings.HasPrefix(r.URL.Path, "/v1/gateway/guard")
+	if isGuard && m.guard != 0 {
+		w.WriteHeader(m.guard)
+		return
+	}
 	m.calls = append(m.calls, sent{r.Method, r.URL.Path, strings.TrimSpace(string(b))})
-	if r.Method == http.MethodPut {
+	if r.Method == http.MethodPut && !isGuard {
 		w.WriteHeader(http.StatusCreated)
 	} else {
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func (m *fakeManagement) setGuard(status int) { m.mu.Lock(); m.guard = status; m.mu.Unlock() }
+
+func (m *fakeManagement) forget() { m.mu.Lock(); m.calls = nil; m.mu.Unlock() }
+
+// pushes are the guard configs received, in order.
+func (m *fakeManagement) pushes(t *testing.T) []GatewayGuardConfig {
+	t.Helper()
+	var out []GatewayGuardConfig
+	for _, c := range m.seen() {
+		if c.method == "PUT" && c.path == "/v1/gateway/guard" {
+			var cfg GatewayGuardConfig
+			if err := json.Unmarshal([]byte(c.body), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, cfg)
+		}
+	}
+	return out
+}
+
+// order is the calls as "METHOD path".
+func (m *fakeManagement) order() []string {
+	var out []string
+	for _, c := range m.seen() {
+		out = append(out, c.method+" "+c.path)
+	}
+	return out
 }
 
 func (m *fakeManagement) count(c sent) int {
@@ -634,5 +671,241 @@ func TestABadPortOrSchemeIsNotShared(t *testing.T) {
 	}
 	if f.mgmt.total() != 0 {
 		t.Fatalf("gateway %+v", f.mgmt.seen())
+	}
+}
+
+const (
+	jellyHost = "jellyfin.mybox.box.example.org"
+	nextHost  = "nextcloud.mybox.box.example.org"
+)
+
+var (
+	putNext  = sent{"PUT", "/v1/gateway/hosts", `{"host":"nextcloud.mybox.box.example.org","target":"https://127.0.0.1:7580"}`}
+	dropNext = sent{"DELETE", "/v1/gateway/hosts/nextcloud.mybox.box.example.org", ""}
+)
+
+// twoShared is a fixture whose share.json holds jellyfin and nextcloud, both installed, with guard as share-guard.json (nil: none).
+func twoShared(t *testing.T, guard *GuardState) *fixture {
+	t.Helper()
+	f := newFixture(t)
+	f.compose.set("nextcloud", "7580", "https")
+	if err := saveState(f.state, State{Name: "mybox", Host: "mybox.box.example.org", Domain: "box.example.org",
+		Apps: map[string]App{"jellyfin": {Port: "8096", Scheme: "http"}, "nextcloud": {Port: "7580", Scheme: "https"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if guard != nil {
+		if err := saveGuard(f.s.guardPath(), *guard); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
+}
+
+// jellyCode is a guard state where jellyfin asks for a code and nextcloud is open.
+func jellyCode() *GuardState {
+	return &GuardState{Secret: make([]byte, 32), Box: DefaultPolicy(), Apps: map[string]GuardApp{"jellyfin": {Access: "code"}}}
+}
+
+func TestResyncPushesGuardBeforeHosts(t *testing.T) {
+	f := twoShared(t, nil)
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := f.mgmt.order()
+	if len(got) != 3 || got[0] != "PUT /v1/gateway/guard" || got[1] != "PUT /v1/gateway/hosts" || got[2] != "PUT /v1/gateway/hosts" ||
+		f.mgmt.count(putJelly) != 1 || f.mgmt.count(putNext) != 1 {
+		t.Fatalf("gateway %v", got)
+	}
+}
+
+func TestShareAppPushesGuardFirst(t *testing.T) {
+	f := newFixture(t, claim)
+	f.named(t)
+	f.share(t, "jellyfin")
+	got := f.mgmt.seen()
+	if len(got) != 2 || got[0].method != "PUT" || got[0].path != "/v1/gateway/guard" || got[1] != putJelly {
+		t.Fatalf("gateway %+v", got)
+	}
+	if a, ok := f.mgmt.pushes(t)[0].Apps[jellyHost]; !ok || a.App != "jellyfin" || a.Access != "open" {
+		t.Fatalf("pushed %+v", f.mgmt.pushes(t))
+	}
+}
+
+func TestUnshareDropsAppFromPeople(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, claim)
+	f.compose.set("nextcloud", "7580", "https")
+	f.named(t)
+	f.share(t, "jellyfin")
+	f.share(t, "nextcloud")
+	f.s.mu.Lock()
+	g := f.s.guardLocked()
+	g.Apps["jellyfin"] = GuardApp{Access: "code"}
+	g.People = []Person{{ID: "p_1", Name: "Maman", Gen: 1, CodeHash: strings.Repeat("a", 64), Apps: []string{"jellyfin", "nextcloud"}}}
+	f.s.mu.Unlock()
+	f.mgmt.forget()
+	if err := f.s.Unshare(ctx, "jellyfin"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.mgmt.order(); len(got) != 2 || got[0] != "PUT /v1/gateway/guard" || f.mgmt.count(dropJelly) != 1 {
+		t.Fatalf("gateway %v", got)
+	}
+	// pushed before the delete: nobody may enter jellyfin any more, and its host is still held by its code
+	pushed := f.mgmt.pushes(t)[0]
+	if !slices.Equal(pushed.People[0].Apps, []string{"nextcloud"}) || pushed.Apps[jellyHost].Access != "code" {
+		t.Fatalf("pushed %+v", pushed)
+	}
+	saved, corrupt := loadGuard(f.s.guardPath())
+	if _, ok := saved.Apps["jellyfin"]; corrupt || ok || len(saved.People) != 1 || !slices.Equal(saved.People[0].Apps, []string{"nextcloud"}) {
+		t.Fatalf("saved %+v", saved)
+	}
+	if _, ok := f.saved(t).Apps["jellyfin"]; ok {
+		t.Fatal("still shared")
+	}
+}
+
+func TestUpgradedBoxKeepsAppsOpen(t *testing.T) {
+	f := twoShared(t, nil)
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pushed := f.mgmt.pushes(t)
+	if len(pushed) != 1 || pushed[0].Protection || len(pushed[0].Apps) != 2 || len(pushed[0].Secret) != 32 {
+		t.Fatalf("pushed %+v", pushed)
+	}
+	for host, a := range pushed[0].Apps {
+		if a.Access != "open" || a.Policy.WAF != "off" {
+			t.Fatalf("%s: %+v", host, a)
+		}
+	}
+	if f.s.GuardReset() {
+		t.Fatal("no guard file is not a reset")
+	}
+	// the secret is kept from the first start on
+	if saved, corrupt := loadGuard(f.s.guardPath()); corrupt || !bytes.Equal(saved.Secret, pushed[0].Secret) {
+		t.Fatalf("saved %+v", saved)
+	}
+}
+
+func TestOldGatewayStillServesHosts(t *testing.T) {
+	f := twoShared(t, nil)
+	f.mgmt.setGuard(http.StatusNotFound)
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.mgmt.count(putJelly) != 1 || f.mgmt.count(putNext) != 1 {
+		t.Fatalf("gateway %+v", f.mgmt.seen())
+	}
+	if _, ok, err := f.s.Gateway.GuardStatus(context.Background()); ok || err != nil {
+		t.Fatalf("supported %v, %v", ok, err)
+	}
+	// a share goes through too
+	f2 := newFixture(t, claim)
+	f2.mgmt.setGuard(http.StatusNotFound)
+	f2.named(t)
+	f2.share(t, "jellyfin")
+	if f2.mgmt.count(putJelly) != 1 {
+		t.Fatalf("gateway %+v", f2.mgmt.seen())
+	}
+}
+
+func TestFailedGuardPushHoldsCodeHosts(t *testing.T) {
+	ctx := context.Background()
+	for _, status := range []int{http.StatusBadRequest, http.StatusInternalServerError} {
+		f := twoShared(t, jellyCode())
+		f.mgmt.setGuard(status)
+		if err := f.s.resync(ctx); err == nil {
+			t.Fatalf("%d: no error", status)
+		}
+		if f.mgmt.count(putJelly) != 0 || f.mgmt.count(dropJelly) != 1 || f.mgmt.count(putNext) != 1 || f.mgmt.count(dropNext) != 0 {
+			t.Fatalf("%d: gateway %+v", status, f.mgmt.seen())
+		}
+
+		f.mgmt.setGuard(0)
+		f.mgmt.forget()
+		if err := f.s.resync(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.mgmt.order(); len(got) != 3 || got[0] != "PUT /v1/gateway/guard" || f.mgmt.count(putJelly) != 1 {
+			t.Fatalf("%d: gateway %v", status, got)
+		}
+
+		// a code host already registered is taken off again
+		f.mgmt.setGuard(status)
+		f.mgmt.forget()
+		if err := f.s.resync(ctx); err == nil || f.mgmt.count(dropJelly) != 1 || f.mgmt.count(putJelly) != 0 || f.mgmt.count(putNext) != 1 {
+			t.Fatalf("%d: %v, gateway %+v", status, err, f.mgmt.seen())
+		}
+		// a share is refused, rather than registered without its config
+		f.compose.set("other", "8080", "http")
+		f.mgmt.forget()
+		if err := f.s.Share(ctx, "other"); err == nil || f.mgmt.count(sent{"PUT", "/v1/gateway/hosts", `{"host":"other.mybox.box.example.org","target":"http://127.0.0.1:8080"}`}) != 0 {
+			t.Fatalf("%d: %v, gateway %+v", status, err, f.mgmt.seen())
+		}
+	}
+}
+
+func TestEveryHostInGuardApps(t *testing.T) {
+	f := twoShared(t, jellyCode())
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	apps := f.mgmt.pushes(t)[0].Apps
+	if len(apps) != 2 || apps[jellyHost].Access != "code" || apps[nextHost].Access != "open" || apps[nextHost].App != "nextcloud" {
+		t.Fatalf("apps %+v", apps)
+	}
+}
+
+func TestBuildGatewayGuardHosts(t *testing.T) {
+	f := newFixture(t, claim)
+	f.compose.set("My App", "8080", "http")
+	f.named(t)
+	f.share(t, "My App")
+	var registered struct{ Host string }
+	for _, c := range f.mgmt.seen() {
+		if c.path == "/v1/gateway/hosts" {
+			json.Unmarshal([]byte(c.body), &registered)
+		}
+	}
+	if _, ok := f.mgmt.pushes(t)[0].Apps[registered.Host]; !ok || registered.Host != "my-app.mybox.box.example.org" {
+		t.Fatalf("registered %q, pushed %+v", registered.Host, f.mgmt.pushes(t))
+	}
+
+	// the policy is the effective one; a person keeps only the apps that are shared
+	waf := "block"
+	g := GuardState{Secret: make([]byte, 32), Protection: true, Box: DefaultPolicy(),
+		Apps:   map[string]GuardApp{"My App": {Access: "code", Override: &PolicyOverride{WAF: &waf, Allow: []string{"192.0.2.0/24"}}}, "gone": {Access: "code"}},
+		People: []Person{{ID: "p_1", Name: "Maman", Gen: 2, CodeHash: strings.Repeat("b", 64), Apps: []string{"gone", "My App"}}}}
+	cfg := buildGatewayGuard(State{Host: "MyBox.box.example.org.", Apps: map[string]App{"My App": {}}}, g)
+	a, ok := cfg.Apps["my-app.mybox.box.example.org"]
+	if !ok || len(cfg.Apps) != 1 || a.Access != "code" || a.App != "My App" || a.Policy.WAF != "block" ||
+		!slices.Equal(a.Policy.Allow, []string{"192.0.2.0/24"}) || !cfg.Protection ||
+		!reflect.DeepEqual(cfg.People, []GatewayPerson{{ID: "p_1", Gen: 2, CodeHash: strings.Repeat("b", 64), Apps: []string{"My App"}}}) {
+		t.Fatalf("cfg %+v", cfg)
+	}
+}
+
+func TestCorruptGuardClosesSharedApps(t *testing.T) {
+	f := twoShared(t, nil)
+	if err := os.MkdirAll(filepath.Dir(f.s.guardPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.s.guardPath(), []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for host, a := range f.mgmt.pushes(t)[0].Apps {
+		if a.Access != "code" {
+			t.Fatalf("%s: %+v", host, a)
+		}
+	}
+	if !f.s.GuardReset() {
+		t.Fatal("not reported")
+	}
+	saved, corrupt := loadGuard(f.s.guardPath())
+	if corrupt || saved.Apps["jellyfin"].Access != "code" || saved.Apps["nextcloud"].Access != "code" {
+		t.Fatalf("saved %+v", saved)
 	}
 }

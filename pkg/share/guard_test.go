@@ -1,6 +1,7 @@
 package share
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -128,7 +129,10 @@ func TestSaveGuardNoCode(t *testing.T) {
 }
 
 func TestLoadGuardCorrupt(t *testing.T) {
-	for name, content := range map[string]string{"garbage": "{nope", "short secret": `{"secret":"AAECAwQFBgcICQoLDA0ODw==","protection":true}`} {
+	secret := `"secret":"` + base64.StdEncoding.EncodeToString(make([]byte, 32)) + `"`
+	for name, content := range map[string]string{"garbage": "{nope", "short secret": `{"secret":"AAECAwQFBgcICQoLDA0ODw==","protection":true}`,
+		"bad box":      `{` + secret + `,"box":{"waf":"nope"}}`,
+		"bad override": `{` + secret + `,"apps":{"jellyfin":{"access":"code","override":{"allow":["nope"]}}}}`} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, GuardFile)
 		os.WriteFile(path, []byte(content), 0o600)

@@ -251,7 +251,7 @@ func loadGuard(path string) (g GuardState, corrupt bool) {
 		return fresh(), false
 	}
 	g = GuardState{Box: DefaultPolicy()}
-	if err != nil || json.Unmarshal(data, &g) != nil || len(g.Secret) != 32 {
+	if err != nil || json.Unmarshal(data, &g) != nil || len(g.Secret) != 32 || !g.valid() {
 		os.Rename(path, fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())) // best effort
 		return fresh(), true
 	}
@@ -259,6 +259,19 @@ func loadGuard(path string) (g GuardState, corrupt bool) {
 		g.Apps = map[string]GuardApp{}
 	}
 	return g, false
+}
+
+// valid is whether the Gateway would take the box's policy and every app's: one it refuses would fail every push.
+func (g GuardState) valid() bool {
+	if g.Box.Validate() != nil {
+		return false
+	}
+	for _, a := range g.Apps {
+		if Effective(g.Box, a.Override).Validate() != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func saveGuard(path string, g GuardState) error {
