@@ -15,8 +15,9 @@ Spec: `docs/superpowers/specs/2026-11-12-protection-partage-design.md`. This fil
 | Ban key | IPv4 address, or the IPv6 `/64` written `<prefix>::/64`; IPv4-mapped IPv6 is IPv4 |
 | Ban durations (strike 1, 2, ≥3) | 1 h, 24 h, 7 days; strikes forgotten 30 days after the last ban ends |
 | Journal | 7 days, at most 10 000 lines; a line repeating the previous line of the same key, app, reason, rule and action within 60 s increments its `count` |
-| WAF request body inspected | first 1 MiB (`SecRequestBodyLimit 1048576`, `SecRequestBodyLimitAction ProcessPartial`); `SecResponseBodyAccess Off` |
-| WAF extra allowed methods | `PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT` |
+| WAF request body inspected | first 64 KiB (`SecRequestBodyLimit 65536`, `SecRequestBodyLimitAction ProcessPartial`); `SecResponseBodyAccess Off` (1 MiB measured at ~5 s of CPU per form body: too costly) |
+| WAF extra allowed methods | `PUT DELETE PATCH PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT` |
+| CRS rules off for every app | 920420 (content-type allow list), 901340 (binary bodies parsed as forms); 200002 replaced by a rule that refuses only malformed bodies, not cut ones |
 | Geo files | `/var/lib/casaos/geo/dbip-country-lite.mmdb`, `/var/lib/casaos/geo/dbip-asn-lite.mmdb` |
 | Gateway persistent state | `<DataPath>/guard-state.json`, `DataPath` default `/var/lib/casaos/gateway`, mode 0600 |
 | Gateway pushed config | `<RuntimePath>/guard.json` (tmpfs, next to `hosts.json`), mode 0600 |
