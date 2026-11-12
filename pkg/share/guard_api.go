@@ -28,6 +28,7 @@ var errUnsupported = ErrGuard{"gateway_unsupported"}
 type GuardView struct {
 	Supported  bool                    `json:"supported"`
 	Reason     string                  `json:"reason"`
+	Reset      bool                    `json:"reset"`
 	Protection bool                    `json:"protection"`
 	Box        Policy                  `json:"box"`
 	Apps       map[string]GuardAppView `json:"apps"` // the shared apps only
@@ -68,7 +69,7 @@ func (s *Service) GuardView(ctx context.Context) (GuardView, error) {
 		s.mu.Unlock()
 		return GuardView{}, err
 	}
-	v := GuardView{Reason: "", Protection: g.Protection, Box: g.Box, Apps: map[string]GuardAppView{},
+	v := GuardView{Reason: "", Reset: !g.ResetAt.IsZero(), Protection: g.Protection, Box: g.Box, Apps: map[string]GuardAppView{},
 		People: make([]PersonView, 0, len(g.People)), Waves: []GuardWave{}}
 	for name := range st.Apps {
 		a := g.Apps[name]
@@ -118,8 +119,9 @@ func personView(p Person, st State, lastUsed map[string]time.Time) PersonView {
 
 // guardWrite runs a change of the guard state under the ops lock: change edits a copy, which is saved and then
 // kept, so memory never runs ahead of the disk (change replaces nested slices, never edits them). The push follows.
-// A Gateway without the guard refuses the whole write, before the save; one that fails the push leaves the change
-// saved and asks the resync to send it again.
+// A Gateway without the guard refuses the whole write, before the save; one that refuses the config (404 or 400)
+// undoes it; one that fails the push leaves the change saved and asks the resync to send it again. A write the
+// Gateway takes ends a reset of the guard file.
 func (s *Service) guardWrite(ctx context.Context, change func(g *GuardState, st State) error) error {
 	if err := s.lock(ctx); err != nil {
 		return err
@@ -142,37 +144,57 @@ func (s *Service) guardWrite(ctx context.Context, change func(g *GuardState, st 
 		s.mu.Unlock()
 		return err
 	}
-	if err := saveGuardFile(s.guardPath(), next); err != nil {
+	if err := s.storeGuardLocked(next); err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("the protection settings cannot be saved: %w", err)
 	}
-	*g = next
-	wasReset := s.guardReset
-	s.guardReset = false
 	s.mu.Unlock()
-	if wasReset && s.Alert != nil {
-		s.Alert("share:guard-reset", "Resolved: the protection settings of shared apps were saved again.", false)
-	}
 	select { // protection or a countries mode may have just come on: fetch the files now
 	case s.geoCh <- struct{}{}:
 	default:
 	}
 	err = s.pushGuardFor(ctx, st)
+	var refused ErrGuard
 	switch {
 	case err == nil:
+		s.endReset()
 		return nil
-	case errors.Is(err, ErrGatewayNoGuard): // the Gateway changed under us: the change does not stay
+	case errors.Is(err, ErrGatewayNoGuard), errors.As(err, &refused): // the Gateway changed under us, or refused: the change does not stay
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if serr := saveGuardFile(s.guardPath(), prev); serr != nil {
+		if serr := s.storeGuardLocked(prev); serr != nil {
 			return fmt.Errorf("the protection settings cannot be saved: %w", serr) // the disk keeps the change: so does memory
 		}
-		*g = prev
+		if refused.Code != "" {
+			s.wakeResync() // the Gateway kept the previous config: the resync brings back the code hosts the push took off
+			return refused
+		}
 		return errUnsupported
 	}
 	s.log("share: cannot push the protection config", err)
 	s.wakeResync()
 	return ErrGuardPush
+}
+
+// endReset clears a saved reset of the guard file, and resolves its alert.
+func (s *Service) endReset() {
+	s.mu.Lock()
+	g, err := s.guardLocked()
+	if err != nil || g.ResetAt.IsZero() {
+		s.mu.Unlock()
+		return
+	}
+	next := *g
+	next.ResetAt = time.Time{}
+	err = s.storeGuardLocked(next)
+	s.mu.Unlock()
+	if err != nil {
+		s.log("share: cannot save the protection settings", err) // the reset stays: the next write tries again
+		return
+	}
+	if s.Alert != nil {
+		s.Alert("share:guard-reset", "Resolved: the protection settings of shared apps were saved again.", false)
+	}
 }
 
 func (s *Service) SetProtection(ctx context.Context, on bool) (GuardView, error) {

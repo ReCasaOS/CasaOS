@@ -185,6 +185,12 @@ func (g Gateway) SetGuard(ctx context.Context, cfg GatewayGuardConfig) error {
 		return err
 	}
 	_, err = g.guardCall(ctx, http.MethodPut, "/v1/gateway/guard", body, http.StatusNoContent, setGuardTimeout)
+	var refused errGatewayAnswer
+	if errors.As(err, &refused) && refused.status == http.StatusBadRequest {
+		// "invalid guard config: <field>: <why>": the field only, as the core's own refusals
+		field, _, _ := strings.Cut(strings.TrimPrefix(refused.message, "invalid guard config: "), ": ")
+		return ErrGuard{"bad_policy:" + field}
+	}
 	return err
 }
 
@@ -229,5 +235,15 @@ func (g Gateway) guardCall(ctx context.Context, method, path string, body []byte
 	case status == http.StatusNotFound:
 		return nil, ErrGatewayNoGuard
 	}
-	return nil, fmt.Errorf("gateway answered %d: %s", status, answer)
+	return nil, errGatewayAnswer{status, answer}
+}
+
+// errGatewayAnswer is a guard route's answer other than its success and a 404.
+type errGatewayAnswer struct {
+	status  int
+	message string
+}
+
+func (e errGatewayAnswer) Error() string {
+	return fmt.Sprintf("gateway answered %d: %s", e.status, e.message)
 }

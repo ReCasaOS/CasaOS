@@ -87,6 +87,7 @@ type GuardState struct {
 	Box        Policy              `json:"box"`
 	Apps       map[string]GuardApp `json:"apps"`
 	People     []Person            `json:"people"`
+	ResetAt    time.Time           `json:"reset_at,omitzero"` // the file was found unusable and reset; cleared by the owner's next write the Gateway takes
 }
 
 func DefaultPolicy() Policy {

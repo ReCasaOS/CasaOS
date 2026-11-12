@@ -26,14 +26,15 @@ import (
 // answers the next fail calls 502. guard, when set, is the answer to every /v1/gateway/guard call. It keeps the
 // hosts it serves, and answers GET /v1/gateway/hosts with them without recording that call.
 type fakeManagement struct {
-	mu     sync.Mutex
-	calls  []sent
-	fail   int
-	guard  int
-	status string // when set, the body of GET /v1/gateway/guard
-	putGuard int // when set, the answer to PUT /v1/gateway/guard
-	hosts  map[string]string
-	onPut  func() // when set, runs at each PUT before it is answered
+	mu       sync.Mutex
+	calls    []sent
+	fail     int
+	guard    int
+	status   string // when set, the body of GET /v1/gateway/guard
+	putGuard int    // when set, the answer to PUT /v1/gateway/guard
+	putMsg   string // when set, the message of that answer
+	hosts    map[string]string
+	onPut    func() // when set, runs at each PUT before it is answered
 }
 
 func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +59,9 @@ func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPut && r.URL.Path == "/v1/gateway/guard" && m.putGuard != 0 {
 		w.WriteHeader(m.putGuard)
+		if m.putMsg != "" {
+			json.NewEncoder(w).Encode(map[string]string{"message": m.putMsg})
+		}
 		return
 	}
 	if m.hosts == nil {
@@ -868,14 +872,19 @@ func TestOldGatewayStillServesHosts(t *testing.T) {
 		t.Fatalf("gateway %+v", f3.mgmt.seen())
 	}
 	f3.mgmt.forget()
+	// sharing the code app again is refused: the old Gateway cannot ask for its code
+	if err := f3.s.Share(context.Background(), "jellyfin"); !errors.Is(err, ErrGatewayNoGuard) || f3.mgmt.count(putJelly) != 0 {
+		t.Fatalf("share: %v, gateway %+v", err, f3.mgmt.seen())
+	}
 	if err := f3.s.Unshare(context.Background(), "jellyfin"); err != nil {
 		t.Fatal(err)
 	}
 	f3.s.mu.Lock()
 	g, _ := f3.s.guardLocked()
-	g.Apps["jellyfin"] = GuardApp{Access: "code"} // a code app shared again
+	g.Apps["jellyfin"] = GuardApp{Access: "code"} // a stale entry of the app, no longer shared
 	f3.s.mu.Unlock()
-	if err := f3.s.Share(context.Background(), "jellyfin"); !errors.Is(err, ErrGatewayNoGuard) || f3.mgmt.count(putJelly) != 0 {
+	// shared anew, the app starts open: the old Gateway serves it
+	if err := f3.s.Share(context.Background(), "jellyfin"); err != nil || f3.mgmt.count(putJelly) != 1 {
 		t.Fatalf("share: %v, gateway %+v", err, f3.mgmt.seen())
 	}
 }
@@ -1153,6 +1162,17 @@ func TestGeoAlertOnlyWhenNeeded(t *testing.T) {
 		t.Fatal("raised with countries none")
 	}
 	g.Box.Countries = Countries{Mode: "block", List: []string{"RU"}}
+	g.Protection = false
+	f1 := twoShared(t, g)
+	f1.s.Alert = log.hook
+	f1.setStatus(noCountry)
+	if err := f1.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if raised(log) {
+		t.Fatal("raised with protection off")
+	}
+	g.Protection = true
 	f2 := twoShared(t, g)
 	f2.s.Alert = log.hook
 	f2.setStatus(noCountry)
@@ -1194,5 +1214,245 @@ func TestGuardResetAlertRaisedThenResolvedByTheNextWrite(t *testing.T) {
 	}
 	if got := log.take(); !slices.Contains(got, "share:guard-reset|false|Resolved: the protection settings of shared apps were saved again.") || f.s.GuardReset() {
 		t.Fatalf("%q", got)
+	}
+	if saved, _ := loadGuard(f.s.guardPath()); !saved.ResetAt.IsZero() {
+		t.Fatalf("saved %+v", saved)
+	}
+}
+
+const guardResetRaised = "share:guard-reset|true|" + guardResetSentence
+
+// corruptGuard puts an unusable share-guard.json under root.
+func corruptGuard(t *testing.T, s *Service) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(s.guardPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.guardPath(), []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGuardResetSurvivesARestart(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, nil)
+	corruptGuard(t, f.s)
+	if err := f.s.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s2 := New(f.s.Root) // the core restarts: the file now reads fine
+	s2.RuntimePath = f.s.RuntimePath
+	log := &alertLog{}
+	s2.Alert = log.hook
+	if v, err := s2.GuardView(ctx); err != nil || !v.Reset {
+		t.Fatalf("%+v %v", v, err)
+	}
+	if err := s2.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := log.take(); !slices.Contains(got, guardResetRaised) {
+		t.Fatalf("%q", got)
+	}
+
+	// with no app shared: raised at the reset, and again after a restart
+	s3 := New(t.TempDir())
+	corruptGuard(t, s3)
+	s3.Alert = log.hook
+	if !s3.GuardReset() {
+		t.Fatal("not reset")
+	}
+	if got := log.take(); !slices.Contains(got, guardResetRaised) {
+		t.Fatalf("at the reset: %q", got)
+	}
+	s4 := New(s3.Root)
+	s4.Alert = log.hook
+	if err := s4.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := log.take(); !slices.Contains(got, guardResetRaised) {
+		t.Fatalf("after a restart: %q", got)
+	}
+}
+
+func TestGuardResetKeptUntilAPushIsTaken(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, nil)
+	corruptGuard(t, f.s)
+	if err := f.s.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	log := &alertLog{}
+	f.s.Alert = log.hook
+	f.mgmt.mu.Lock()
+	f.mgmt.putGuard = http.StatusInternalServerError
+	f.mgmt.mu.Unlock()
+	if _, err := f.s.SetProtection(ctx, true); !errors.Is(err, ErrGuardPush) {
+		t.Fatal(err)
+	}
+	if saved, _ := loadGuard(f.s.guardPath()); saved.ResetAt.IsZero() || !saved.Protection || !f.s.GuardReset() {
+		t.Fatalf("saved %+v", saved)
+	}
+	if got := log.take(); slices.ContainsFunc(got, func(a string) bool { return strings.HasPrefix(a, "share:guard-reset|false|") }) {
+		t.Fatalf("resolved: %q", got)
+	}
+	f.mgmt.mu.Lock()
+	f.mgmt.putGuard = 0
+	f.mgmt.mu.Unlock()
+	v, err := f.s.SetProtection(ctx, true)
+	if err != nil || v.Reset {
+		t.Fatalf("%+v %v", v, err)
+	}
+	if saved, _ := loadGuard(f.s.guardPath()); !saved.ResetAt.IsZero() {
+		t.Fatalf("saved %+v", saved)
+	}
+	if got := log.take(); !slices.Contains(got, "share:guard-reset|false|Resolved: the protection settings of shared apps were saved again.") {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestResyncHoldsCodeHostsBeforeTheAppList(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, jellyCode())
+	if err := f.s.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// downgraded to an old Gateway while AppManagement still loads
+	f.mgmt.setGuard(http.StatusNotFound)
+	f.compose.remove("jellyfin")
+	f.compose.remove("nextcloud")
+	f.mgmt.forget()
+	if err := f.s.resync(ctx); err == nil {
+		t.Fatal("no error")
+	}
+	if f.mgmt.count(dropJelly) != 1 || f.mgmt.count(dropNext) != 0 {
+		t.Fatalf("gateway %+v", f.mgmt.seen())
+	}
+}
+
+func TestReshareStartsOpenWithNobody(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, nil)
+	f.s.mu.Lock()
+	g, _ := f.s.guardLocked()
+	// stale entries: the app is not shared, but its settings and a person's right to it survived
+	g.Apps["other"] = GuardApp{Access: "code"}
+	g.People = []Person{{ID: "p_1", Name: "Maman", Gen: 1, CodeHash: strings.Repeat("a", 64), Apps: []string{"other", "jellyfin"}}}
+	f.s.mu.Unlock()
+	f.compose.set("other", "8080", "http")
+	if err := f.s.Share(ctx, "other"); err != nil {
+		t.Fatal(err)
+	}
+	pushed := f.mgmt.pushes(t)
+	if a := pushed[0].Apps["other.mybox.box.example.org"]; a.Access != "open" || !slices.Equal(pushed[0].People[0].Apps, []string{"jellyfin"}) {
+		t.Fatalf("pushed %+v", pushed[0])
+	}
+	saved, _ := loadGuard(f.s.guardPath())
+	if _, ok := saved.Apps["other"]; ok || !slices.Equal(saved.People[0].Apps, []string{"jellyfin"}) {
+		t.Fatalf("saved %+v", saved)
+	}
+}
+
+func TestReshareRefusedWhenTheGuardCannotBeSaved(t *testing.T) {
+	f := twoShared(t, nil)
+	f.s.mu.Lock()
+	g, _ := f.s.guardLocked()
+	g.Apps["other"] = GuardApp{Access: "code"}
+	f.s.mu.Unlock()
+	f.compose.set("other", "8080", "http")
+	saveGuardFile = func(string, GuardState) error { return errors.New("disk full") }
+	t.Cleanup(func() { saveGuardFile = saveGuard })
+	if err := f.s.Share(context.Background(), "other"); err == nil || len(f.mgmt.pushes(t)) != 0 {
+		t.Fatalf("%v, gateway %+v", err, f.mgmt.seen())
+	}
+}
+
+func TestPushRejectedWith400RollsBack(t *testing.T) {
+	f := twoShared(t, jellyCode())
+	f.mgmt.mu.Lock()
+	f.mgmt.putGuard = http.StatusBadRequest
+	f.mgmt.putMsg = `invalid guard config: apps["jellyfin.mybox.box.example.org"].policy.waf: "nope", want "off", "observe" or "block"`
+	f.mgmt.mu.Unlock()
+	_, err := f.s.SetProtection(context.Background(), true)
+	wantGuardErr(t, err, `bad_policy:apps["jellyfin.mybox.box.example.org"].policy.waf`)
+	if saved, _ := loadGuard(f.s.guardPath()); saved.Protection {
+		t.Fatalf("saved %+v", saved)
+	}
+	f.s.mu.Lock()
+	on := f.s.guard.Protection
+	f.s.mu.Unlock()
+	if on || len(f.s.resyncCh) != 1 { // the resync brings back the code host the failed push took off
+		t.Fatalf("memory %v, woken %d", on, len(f.s.resyncCh))
+	}
+}
+
+func TestGuardWriteDropsStrayHosts(t *testing.T) {
+	f := twoShared(t, nil)
+	f.mgmt.mu.Lock()
+	f.mgmt.hosts = map[string]string{"old.mybox.box.example.org": "http://127.0.0.1:1"}
+	f.mgmt.mu.Unlock()
+	if _, err := f.s.SetProtection(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	// after the status check, the stray goes before the push
+	if order := f.mgmt.order(); len(order) < 3 || order[1] != "DELETE /v1/gateway/hosts/old.mybox.box.example.org" || order[2] != "PUT /v1/gateway/guard" {
+		t.Fatalf("gateway %v", order)
+	}
+}
+
+func TestCorruptGuardNotOverwrittenWithoutItsCopy(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, jellyCode())
+	if err := f.s.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.s.guard = nil // the core restarts and finds the file unusable
+	path := f.s.guardPath()
+	if err := os.WriteFile(path, []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	copyGuardFile = func(string, []byte, os.FileMode) error { return errors.New("disk full") }
+	t.Cleanup(func() { copyGuardFile = os.WriteFile })
+	f.mgmt.forget()
+	if err := f.s.resync(ctx); err == nil {
+		t.Fatal("no error")
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != "{nope" {
+		t.Fatalf("file %q", raw)
+	}
+	if len(f.mgmt.pushes(t)) != 0 || len(f.mgmt.registered()) != 0 {
+		t.Fatalf("gateway %+v, serving %v", f.mgmt.seen(), f.mgmt.registered())
+	}
+	copyGuardFile = os.WriteFile
+	if err := f.s.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if aside, _ := filepath.Glob(path + ".corrupt-*"); len(aside) != 1 || !f.s.GuardReset() {
+		t.Fatalf("aside %v", aside)
+	}
+}
+
+func TestNeverSharedBoxWritesNoGuardFile(t *testing.T) {
+	ctx := context.Background()
+	s := New(t.TempDir())
+	s.Geo.BaseURL = "http://127.0.0.1:1"
+	s.geoStep(ctx)
+	s.GuardView(ctx)
+	s.resync(ctx)
+	if s.GuardReset() {
+		t.Fatal("reset")
+	}
+	if _, err := os.Stat(s.guardPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("share-guard.json: %v", err)
+	}
+	// the box gets a name: the secret held so far is the one saved
+	s.mu.Lock()
+	secret := slices.Clone(s.guard.Secret)
+	s.mu.Unlock()
+	if err := saveState(s.statePath(), State{Name: "mybox", Host: "mybox.box.example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	s.GuardReset()
+	if saved, corrupt := loadGuard(s.guardPath()); corrupt || !bytes.Equal(saved.Secret, secret) {
+		t.Fatalf("saved %+v", saved)
 	}
 }

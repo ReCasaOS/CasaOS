@@ -120,6 +120,8 @@ func shareFail(ctx echo.Context, err error) error {
 		status, msg = http.StatusConflict, err.Error()
 	case errors.As(err, &guard):
 		status, msg = http.StatusBadRequest, guard.Code
+	case errors.Is(err, share.ErrGatewayNoGuard): // a code app shared again on a Gateway that cannot ask for its code
+		status, msg = http.StatusBadRequest, "gateway_unsupported"
 	case errors.Is(err, share.ErrGuardPush):
 		msg = err.Error() // a 500, with its plain message
 	case errors.Is(err, share.ErrUnknownApp):

@@ -163,7 +163,8 @@ func TestGatewayGuardCalls(t *testing.T) {
 		}
 	}
 	status = http.StatusBadRequest
-	if err := g.SetGuard(ctx, cfg); !strings.Contains(err.Error(), "access: bad") || strings.Contains(err.Error(), "s3cret") {
+	// a refused config names the field only
+	if err := g.SetGuard(ctx, cfg); err == nil || err.Error() != `bad_policy:apps["x"].access` {
 		t.Fatalf("400: %v", err)
 	}
 }

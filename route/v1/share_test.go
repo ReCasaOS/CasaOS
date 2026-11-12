@@ -60,6 +60,9 @@ func useShare(t *testing.T, claim *relayReply, remote bool) *share.Service {
 					status = http.StatusNoContent
 				}
 				w.WriteHeader(status)
+				if status == http.StatusBadRequest { // the Gateway's refusal of a config
+					_, _ = w.Write([]byte(`{"success":400,"message":"invalid guard config: apps[\"jellyfin.maison.example\"].policy.rate_per_min: must be positive"}`))
+				}
 			case r.URL.Path == "/v1/gateway/guard":
 				_, _ = w.Write([]byte(`{"version":1,"configured":true,"geo":{},"people_last_used":{},"waves":[]}`))
 			default:
@@ -287,5 +290,34 @@ func TestShareGuardPushFailureAnswers(t *testing.T) {
 	code, result = callFleet(t, PostShareGuardPerson, http.MethodPost, "/v1/share/guard/people", `{"name":"Maman","apps":["jellyfin"]}`, nil)
 	if data, _ := result.Data.(map[string]any); code != http.StatusOK || data["code"] == nil {
 		t.Fatalf("add = %d %#v", code, result)
+	}
+}
+
+func TestShareGuardGatewayRefusalAnswers(t *testing.T) {
+	sharedJelly(t)
+	guardSeen.Lock()
+	guardSeen.put = http.StatusBadRequest
+	guardSeen.Unlock()
+	code, result := callFleet(t, PutShareGuardProtection, http.MethodPut, "/v1/share/guard/protection", `{"on":true}`, nil)
+	if code != http.StatusBadRequest || result.Message != `bad_policy:apps["jellyfin.maison.example"].policy.rate_per_min` {
+		t.Fatalf("protection = %d %q", code, result.Message)
+	}
+	rec := callFleetRec(t, GetShareGuard, http.MethodGet, "/v1/share/guard", "", nil)
+	if !strings.Contains(rec.Body.String(), `"protection":false`) || !strings.Contains(rec.Body.String(), `"reset":false`) {
+		t.Fatalf("view %s", rec.Body)
+	}
+}
+
+func TestReshareOnAnOldGatewayAnswersUnsupported(t *testing.T) {
+	sharedJelly(t)
+	if code, _ := callFleet(t, PutShareGuardApp, http.MethodPut, "/v1/share/guard/apps/jellyfin", `{"access":"code","override":null}`, map[string]string{"name": "jellyfin"}); code != http.StatusOK {
+		t.Fatalf("code app = %d", code)
+	}
+	guardSeen.Lock()
+	guardSeen.put = http.StatusNotFound // the Gateway was downgraded
+	guardSeen.Unlock()
+	code, result := callFleet(t, PutShareApp, http.MethodPut, "/v1/share/apps/jellyfin", "", map[string]string{"name": "jellyfin"})
+	if code != http.StatusBadRequest || result.Message != "gateway_unsupported" {
+		t.Fatalf("share = %d %q", code, result.Message)
 	}
 }
