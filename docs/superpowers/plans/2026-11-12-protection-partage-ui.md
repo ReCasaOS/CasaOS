@@ -154,7 +154,7 @@ pnpm vitest run src/components/PublicShare src/service src/components/dashboard
 
 **Interfaces:**
 - Consumes: Task 1.
-- Produces: attention items `share-wave-<app>` (level `danger`: "{app}: {n} addresses banned in 10 minutes" / « {app} : {n} adresses bannies en 10 minutes ») and `share-geo` (level `warning`, only when `protection` is on, some app's `effective.countries.mode` is not `none` and `geo.country` is false: "Country filtering of shared apps is not working" / « Le filtrage par pays des apps partagées ne fonctionne pas »). Clicking either opens the Remote access window.
+- Produces: attention item `share-reset` (level `danger`, when `view.reset` is true: "Protection settings of shared apps were reset: every shared app asks for a code, people must be added again" / « Les réglages de protection des apps partagées ont été réinitialisés : chaque app partagée demande un code, il faut rajouter les personnes »), attention items `share-wave-<app>` (level `danger`: "{app}: {n} addresses banned in 10 minutes" / « {app} : {n} adresses bannies en 10 minutes ») and `share-geo` (level `warning`, only when `protection` is on, some app's `effective.countries.mode` is not `none` and `geo.country` is false: "Country filtering of shared apps is not working" / « Le filtrage par pays des apps partagées ne fonctionne pas »). Clicking either opens the Remote access window.
 
 - [ ] **Step 1: Write the failing tests**
   - `attentionItems({ guard: { waves:[{app:'jellyfin',bans:23}] } })` contains the wave item; no `guard` → no item (older core).

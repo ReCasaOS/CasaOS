@@ -146,6 +146,7 @@ Under the existing `/v1/share` group; reads take what the group takes, every wri
 {
   "supported": true,
   "reason": "",
+  "reset": false,
   "protection": false,
   "box": { "...": "Policy, as in the Gateway config" },
   "apps": {
@@ -161,6 +162,7 @@ Under the existing `/v1/share` group; reads take what the group takes, every wri
 - `supported` false with `reason: "gateway_unsupported"` when the Gateway has no `/v1/gateway/guard`; every write then answers 400 `gateway_unsupported`.
 - `apps` lists the **shared** apps only, by compose name.
 - `last_used_at` absent when never used.
+- `reset` true after the guard file was found unusable and reset (every app set to code, people lost); it stays true until the owner's next write that reaches the Gateway.
 
 ### Writes
 
