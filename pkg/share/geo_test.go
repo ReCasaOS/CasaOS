@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,6 +70,56 @@ func TestPreviousMonthFallback(t *testing.T) {
 	}
 	if st := f.Status(); !st.Country || !st.ASN {
 		t.Fatalf("%+v %v", st, urls)
+	}
+	if !slices.Contains(urls, "/dbip-country-lite-2026-02.mmdb.gz") || !slices.Contains(urls, "/dbip-asn-lite-2026-02.mmdb.gz") {
+		t.Fatalf("previous month not fetched: %v", urls)
+	}
+}
+
+func TestPreviousMonthInJanuary(t *testing.T) {
+	var urls []string
+	f, _ := newFetcher(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		urls = append(urls, r.URL.Path)
+		if strings.Contains(r.URL.Path, "-2027-01") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(gz(t, mmdb))
+	}))
+	f.Now = func() time.Time { return time.Date(2027, 1, 15, 0, 0, 0, 0, time.UTC) }
+	if err := f.Update(context.Background()); err != nil || !slices.Contains(urls, "/dbip-asn-lite-2026-12.mmdb.gz") {
+		t.Fatal(err, urls)
+	}
+}
+
+func TestFreshEditionIsSkipped(t *testing.T) {
+	f, n := newFetcher(t, serve(t, gz(t, mmdb)))
+	f.Now = time.Now
+	os.MkdirAll(f.Dir, 0o755)
+	os.WriteFile(filepath.Join(f.Dir, "dbip-country-lite.mmdb"), []byte("fresh"), 0o644)
+	if err := f.Update(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.Dir, "dbip-country-lite.mmdb")); string(b) != "fresh" || n.Load() != 1 {
+		t.Fatalf("country %q, %d requests", b, n.Load())
+	}
+}
+
+func TestProtectionOnWakesTheLoop(t *testing.T) {
+	s := New(t.TempDir())
+	f, _ := newFetcher(t, serve(t, gz(t, mmdb)))
+	f.Now = time.Now
+	s.Geo = f
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.geoLoop(ctx)
+	time.Sleep(100 * time.Millisecond) // the first look, protection off
+	s.SetProtection(ctx, true)         // the push to a missing Gateway may fail; the wake comes first
+	for i := 0; i < 100 && !f.Status().ASN; i++ {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if st := f.Status(); !st.Country || !st.ASN {
+		t.Fatalf("%+v", st)
 	}
 }
 

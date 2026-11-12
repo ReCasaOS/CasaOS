@@ -68,7 +68,7 @@ func (f *GeoFetcher) Status() GeoStatus {
 		}
 		*ok[i] = true
 		if t := fi.ModTime(); st.UpdatedAt.IsZero() || t.Before(st.UpdatedAt) {
-			st.UpdatedAt = t
+			st.UpdatedAt = t.UTC()
 		}
 	}
 	f.mu.Lock()
@@ -77,24 +77,31 @@ func (f *GeoFetcher) Status() GeoStatus {
 	return st
 }
 
+func (f *GeoFetcher) stale(name string) bool {
+	fi, err := os.Stat(filepath.Join(f.Dir, name))
+	return err != nil || f.now().Sub(fi.ModTime()) > geoMaxAge
+}
+
 // Stale is whether a file is missing or older than 32 days.
 func (f *GeoFetcher) Stale() bool {
 	for _, g := range geoFiles {
-		fi, err := os.Stat(filepath.Join(f.Dir, g.name))
-		if err != nil || f.now().Sub(fi.ModTime()) > geoMaxAge {
+		if f.stale(g.name) {
 			return true
 		}
 	}
 	return false
 }
 
-// Update downloads both files. A file that fails keeps its old version; the first error is returned and kept.
+// Update downloads the files that are missing or stale. A file that fails keeps its old version; the first error is returned and kept.
 func (f *GeoFetcher) Update(ctx context.Context) error {
 	var first error
 	if err := os.MkdirAll(f.Dir, 0o755); err != nil {
 		first = err
 	} else {
 		for _, g := range geoFiles {
+			if !f.stale(g.name) {
+				continue
+			}
 			if err := f.fetch(ctx, g.edition, g.name); err != nil && first == nil {
 				first = fmt.Errorf("%s: %w", g.name, err)
 			}
@@ -176,6 +183,9 @@ func (f *GeoFetcher) download(ctx context.Context, edition, name string, month t
 	if err = mmdbCheck(out, n); err != nil {
 		return err
 	}
+	if err = out.Chmod(0o644); err != nil { // whatever the umask, the Gateway must read it
+		return err
+	}
 	if err = out.Sync(); err != nil {
 		return err
 	}
@@ -224,6 +234,8 @@ func (s *Service) geoLoop(ctx context.Context) {
 			t.Stop()
 			return
 		case <-t.C:
+		case <-s.geoCh:
+			t.Stop()
 		}
 	}
 }

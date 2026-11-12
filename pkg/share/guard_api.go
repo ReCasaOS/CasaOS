@@ -148,6 +148,10 @@ func (s *Service) guardWrite(ctx context.Context, change func(g *GuardState, st 
 	}
 	*g = next
 	s.mu.Unlock()
+	select { // protection or a countries mode may have just come on: fetch the files now
+	case s.geoCh <- struct{}{}:
+	default:
+	}
 	err = s.pushGuardFor(ctx, st)
 	switch {
 	case err == nil:

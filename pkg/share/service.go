@@ -61,6 +61,7 @@ type Service struct {
 	ops      chan struct{} // held by the operations that change the shares, across their HTTP calls
 	kick     chan struct{} // wakes the tunnel loop
 	resyncCh chan struct{} // wakes the resync loop
+	geoCh    chan struct{} // wakes the DB-IP loop: a protection setting changed
 
 	mu           sync.Mutex // guards share.json and what follows, never held across a network call
 	relayReason  string     // "", "relay" or "master": the last answer of the relay
@@ -82,7 +83,7 @@ func New(root string) *Service {
 	s := &Service{Root: root, Relay: &Relay{},
 		backoffMin: time.Second, backoffMax: 5 * time.Minute, replacedWait: 30 * time.Second, longSession: time.Minute,
 		retryMin: 10 * time.Second, tick: 10 * time.Minute, probeEvery: time.Minute,
-		ops: make(chan struct{}, 1), kick: make(chan struct{}, 1), resyncCh: make(chan struct{}, 1)}
+		ops: make(chan struct{}, 1), kick: make(chan struct{}, 1), resyncCh: make(chan struct{}, 1), geoCh: make(chan struct{}, 1)}
 	s.ACME = &ACME{TXT: s.Relay,
 		KeyFile:     filepath.Join(root, "var/lib/casaos/tls/share.key"),
 		CertFile:    filepath.Join(root, "var/lib/casaos/tls/share.crt"),
