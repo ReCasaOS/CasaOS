@@ -147,7 +147,12 @@ func (s *Service) guardWrite(ctx context.Context, change func(g *GuardState, st 
 		return fmt.Errorf("the protection settings cannot be saved: %w", err)
 	}
 	*g = next
+	wasReset := s.guardReset
+	s.guardReset = false
 	s.mu.Unlock()
+	if wasReset && s.Alert != nil {
+		s.Alert("share:guard-reset", "Resolved: the protection settings of shared apps were saved again.", false)
+	}
 	select { // protection or a countries mode may have just come on: fetch the files now
 	case s.geoCh <- struct{}{}:
 	default:

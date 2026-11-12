@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1083,5 +1084,115 @@ func TestUnreadableGuardHoldsEveryHostAndKeepsTheFile(t *testing.T) {
 	}
 	if saved, corrupt := loadGuard(path); corrupt || len(saved.People) != 1 {
 		t.Fatalf("saved %+v", saved)
+	}
+}
+
+type alertLog struct {
+	mu  sync.Mutex
+	got []string
+}
+
+func (a *alertLog) hook(key, sentence string, problem bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.got = append(a.got, fmt.Sprintf("%s|%v|%s", key, problem, sentence))
+}
+
+func (a *alertLog) take() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := a.got
+	a.got = nil
+	return out
+}
+
+func (f *fixture) setStatus(body string) { f.mgmt.mu.Lock(); f.mgmt.status = body; f.mgmt.mu.Unlock() }
+
+func TestResyncRaisesWave(t *testing.T) {
+	f := twoShared(t, jellyCode())
+	log := &alertLog{}
+	f.s.Alert = log.hook
+	f.setStatus(`{"version":1,"configured":true,"geo":{"country":true,"asn":true},"waves":[{"app":"jellyfin","bans":23}]}`)
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "share:wave:jellyfin|true|The shared app jellyfin is under attack: 23 addresses were banned in 10 minutes."
+	if got := log.take(); !slices.Contains(got, want) {
+		t.Fatalf("%q", got)
+	}
+	f.setStatus(`{"version":1,"configured":true,"geo":{"country":true,"asn":true},"waves":[]}`)
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want = "share:wave:jellyfin|false|Resolved: the attack on the shared app jellyfin has calmed down."
+	if got := log.take(); !slices.Contains(got, want) {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestGeoAlertOnlyWhenNeeded(t *testing.T) {
+	const noCountry = `{"version":1,"configured":true,"geo":{"country":false,"asn":false},"waves":[]}`
+	raised := func(log *alertLog) bool {
+		for _, a := range log.take() {
+			if strings.HasPrefix(a, "share:geo|true|Country filtering of shared apps is not working: the country database could not be downloaded.") {
+				return true
+			}
+		}
+		return false
+	}
+	g := jellyCode()
+	g.Protection = true
+	f := twoShared(t, g)
+	log := &alertLog{}
+	f.s.Alert = log.hook
+	f.setStatus(noCountry)
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if raised(log) {
+		t.Fatal("raised with countries none")
+	}
+	g.Box.Countries = Countries{Mode: "block", List: []string{"RU"}}
+	f2 := twoShared(t, g)
+	f2.s.Alert = log.hook
+	f2.setStatus(noCountry)
+	if err := f2.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !raised(log) {
+		t.Fatal("not raised")
+	}
+	f2.setStatus(`{"version":1,"configured":true,"geo":{"country":true,"asn":false},"waves":[]}`)
+	if err := f2.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := log.take(); !slices.Contains(got, "share:geo|false|Resolved: country filtering of shared apps works again.") {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestGuardResetAlertRaisedThenResolvedByTheNextWrite(t *testing.T) {
+	f := twoShared(t, nil)
+	if err := os.MkdirAll(filepath.Dir(f.s.guardPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.s.guardPath(), []byte("{nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log := &alertLog{}
+	f.s.Alert = log.hook
+	f.setStatus(`{"version":1,"configured":true,"geo":{"country":true,"asn":true},"waves":[]}`)
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	raise := "share:guard-reset|true|The protection settings of shared apps could not be read: every shared app now asks for an access code. Check the people and the apps in Remote access."
+	if got := log.take(); !slices.Contains(got, raise) {
+		t.Fatalf("%q", got)
+	}
+	if _, err := f.s.SetProtection(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := log.take(); !slices.Contains(got, "share:guard-reset|false|Resolved: the protection settings of shared apps were saved again.") || f.s.GuardReset() {
+		t.Fatalf("%q", got)
 	}
 }

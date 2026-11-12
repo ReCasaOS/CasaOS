@@ -50,6 +50,7 @@ type Service struct {
 	Dialer      *websocket.Dialer // nil → Dial's default
 	Log         func(msg string, err error)
 	Now         func() time.Time
+	Alert       func(key, sentence string, problem bool) // nil: no alerts; pkg/alerts' ShareGuardProblem
 
 	// The waits, set by New; tests shorten them.
 	backoffMin, backoffMax time.Duration // tunnel redial backoff
@@ -73,6 +74,7 @@ type Service struct {
 	running      bool               // a Run is under way
 	guard        *GuardState        // the one copy of share-guard.json, loaded at first use
 	guardReset   bool               // share-guard.json was unusable at load: every shared app was closed
+	waveApps     map[string]bool    // the apps a wave alert was raised for at the last resync
 }
 
 // Default is the box's own; main wires its funcs.
@@ -569,6 +571,7 @@ func (s *Service) resync(ctx context.Context) error {
 		return err
 	}
 	pushErr := s.pushGuardFor(ctx, st)
+	s.guardAlerts(ctx, st)
 	for name, was := range st.Apps {
 		i := slices.IndexFunc(installed, func(a Installed) bool { return a.Name == name })
 		if i < 0 || installed[i].Port == "" {
@@ -601,6 +604,56 @@ func (s *Service) resync(ctx context.Context) error {
 		return nil // an older Gateway: its open hosts as before, nothing to retry
 	}
 	return pushErr
+}
+
+const guardResetSentence = "The protection settings of shared apps could not be read: every shared app now asks for an access code. Check the people and the apps in Remote access."
+
+// guardAlerts says what the Gateway reports of the protection: ban waves, a missing country file, and a guard file
+// that was reset. It runs after each push; a Gateway that cannot be asked says nothing.
+func (s *Service) guardAlerts(ctx context.Context, st State) {
+	if s.Alert == nil {
+		return
+	}
+	if s.GuardReset() {
+		s.Alert("share:guard-reset", guardResetSentence, true)
+	}
+	gw, supported, err := s.Gateway.GuardStatus(ctx)
+	if err != nil || !supported {
+		return
+	}
+	s.mu.Lock()
+	g, gerr := s.guardLocked()
+	needGeo := false
+	if gerr == nil && g.Protection {
+		for name := range st.Apps {
+			needGeo = needGeo || Effective(g.Box, g.Apps[name].Override).Countries.Mode != "none"
+		}
+	}
+	was := s.waveApps
+	s.waveApps = map[string]bool{}
+	for _, w := range gw.Waves {
+		s.waveApps[w.App] = true
+	}
+	s.mu.Unlock()
+	for _, w := range gw.Waves {
+		s.Alert("share:wave:"+w.App, fmt.Sprintf("The shared app %s is under attack: %d addresses were banned in 10 minutes.", w.App, w.Bans), true)
+	}
+	for app := range was {
+		if !s.waveNow(app) {
+			s.Alert("share:wave:"+app, "Resolved: the attack on the shared app "+app+" has calmed down.", false)
+		}
+	}
+	if needGeo && !gw.Geo.Country {
+		s.Alert("share:geo", "Country filtering of shared apps is not working: the country database could not be downloaded.", true)
+	} else {
+		s.Alert("share:geo", "Resolved: country filtering of shared apps works again.", false)
+	}
+}
+
+func (s *Service) waveNow(app string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.waveApps[app]
 }
 
 // tunnelLoop keeps the tunnel up while a name and an app are shared.
