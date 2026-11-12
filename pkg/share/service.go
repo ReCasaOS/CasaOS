@@ -307,7 +307,7 @@ func (s *Service) Share(ctx context.Context, composeName string) error {
 		}
 	}
 	st.Apps[composeName] = App{Port: app.Port, Scheme: app.Scheme} // st is this call's copy: the config lists the new host
-	if err := s.pushGuardFor(ctx, st); err != nil && !errors.Is(err, ErrGatewayNoGuard) {
+	if err := s.pushGuardFor(ctx, st); err != nil && (!errors.Is(err, ErrGatewayNoGuard) || s.isCode(composeName)) {
 		s.wakeResync() // brings back the code hosts the failed push took off
 		return err
 	}
@@ -548,9 +548,6 @@ func (s *Service) resync(ctx context.Context) error {
 	}
 	st = s.read()
 	pushErr := s.pushGuardFor(ctx, st)
-	if errors.Is(pushErr, ErrGatewayNoGuard) {
-		pushErr = nil // an older Gateway: the hosts as before
-	}
 	for name, was := range st.Apps {
 		i := slices.IndexFunc(installed, func(a Installed) bool { return a.Name == name })
 		if i < 0 || installed[i].Port == "" {
@@ -578,6 +575,9 @@ func (s *Service) resync(ctx context.Context) error {
 				return err
 			}
 		}
+	}
+	if errors.Is(pushErr, ErrGatewayNoGuard) {
+		return nil // an older Gateway: its open hosts as before, nothing to retry
 	}
 	return pushErr
 }
@@ -755,14 +755,14 @@ func (s *Service) isCode(app string) bool {
 func (s *Service) pushGuard(ctx context.Context) error { return s.pushGuardFor(ctx, s.read()) }
 
 // pushGuardFor sends the config for the apps st shares. A Gateway without the guard gives ErrGatewayNoGuard. Any
-// other failure takes the hosts of st's code apps off the Gateway, which may not know they want a code.
+// failure, that one too, takes the hosts of st's code apps off the Gateway, which cannot ask for their code.
 func (s *Service) pushGuardFor(ctx context.Context, st State) error {
 	s.mu.Lock()
 	cfg := buildGatewayGuard(st, *s.guardLocked())
 	s.mu.Unlock()
 	err := s.Gateway.SetGuard(ctx, cfg)
-	if err == nil || errors.Is(err, ErrGatewayNoGuard) {
-		return err
+	if err == nil {
+		return nil
 	}
 	for host, a := range cfg.Apps {
 		if a.Access == "code" {

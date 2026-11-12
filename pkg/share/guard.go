@@ -134,7 +134,11 @@ func Effective(box Policy, o *PolicyOverride) Policy {
 	return p
 }
 
-var countryRule = regexp.MustCompile(`^[A-Z]{2}$`)
+var (
+	countryRule  = regexp.MustCompile(`^[A-Z]{2}$`)
+	personIDRule = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`) // the Gateway's, as are the two others
+	codeHashRule = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
 
 func validIPOrCIDR(s string) bool {
 	if p, err := netip.ParsePrefix(s); err == nil {
@@ -268,6 +272,11 @@ func (g GuardState) valid() bool {
 	}
 	for _, a := range g.Apps {
 		if Effective(g.Box, a.Override).Validate() != nil {
+			return false
+		}
+	}
+	for _, p := range g.People {
+		if !personIDRule.MatchString(p.ID) || !codeHashRule.MatchString(p.CodeHash) || p.Gen < 0 {
 			return false
 		}
 	}

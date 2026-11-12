@@ -131,8 +131,11 @@ func TestSaveGuardNoCode(t *testing.T) {
 func TestLoadGuardCorrupt(t *testing.T) {
 	secret := `"secret":"` + base64.StdEncoding.EncodeToString(make([]byte, 32)) + `"`
 	for name, content := range map[string]string{"garbage": "{nope", "short secret": `{"secret":"AAECAwQFBgcICQoLDA0ODw==","protection":true}`,
-		"bad box":      `{` + secret + `,"box":{"waf":"nope"}}`,
-		"bad override": `{` + secret + `,"apps":{"jellyfin":{"access":"code","override":{"allow":["nope"]}}}}`} {
+		"bad box":       `{` + secret + `,"box":{"waf":"nope"}}`,
+		"bad override":  `{` + secret + `,"apps":{"jellyfin":{"access":"code","override":{"allow":["nope"]}}}}`,
+		"bad person id": `{` + secret + `,"people":[{"id":"p 1","gen":1,"code_hash":"` + strings.Repeat("a", 64) + `"}]}`,
+		"bad code hash": `{` + secret + `,"people":[{"id":"p_1","gen":1,"code_hash":"` + strings.Repeat("A", 64) + `"}]}`,
+		"negative gen":  `{` + secret + `,"people":[{"id":"p_1","gen":-1,"code_hash":"` + strings.Repeat("a", 64) + `"}]}`} {
 		dir := t.TempDir()
 		path := filepath.Join(dir, GuardFile)
 		os.WriteFile(path, []byte(content), 0o600)

@@ -807,6 +807,30 @@ func TestOldGatewayStillServesHosts(t *testing.T) {
 	if f2.mgmt.count(putJelly) != 1 {
 		t.Fatalf("gateway %+v", f2.mgmt.seen())
 	}
+
+	// back on an old Gateway with a code app (a downgrade): its host stays off, the open one is served
+	f3 := twoShared(t, jellyCode())
+	if err := f3.s.resync(context.Background()); err != nil { // the code host registered under a guard
+		t.Fatal(err)
+	}
+	f3.mgmt.setGuard(http.StatusNotFound)
+	f3.mgmt.forget()
+	if err := f3.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f3.mgmt.count(putJelly) != 0 || f3.mgmt.count(dropJelly) != 1 || f3.mgmt.count(putNext) != 1 {
+		t.Fatalf("gateway %+v", f3.mgmt.seen())
+	}
+	f3.mgmt.forget()
+	if err := f3.s.Unshare(context.Background(), "jellyfin"); err != nil {
+		t.Fatal(err)
+	}
+	f3.s.mu.Lock()
+	f3.s.guardLocked().Apps["jellyfin"] = GuardApp{Access: "code"} // a code app shared again
+	f3.s.mu.Unlock()
+	if err := f3.s.Share(context.Background(), "jellyfin"); !errors.Is(err, ErrGatewayNoGuard) || f3.mgmt.count(putJelly) != 0 {
+		t.Fatalf("share: %v, gateway %+v", err, f3.mgmt.seen())
+	}
 }
 
 func TestFailedGuardPushHoldsCodeHosts(t *testing.T) {
