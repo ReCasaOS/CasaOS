@@ -25,12 +25,13 @@ import (
 // answers the next fail calls 502. guard, when set, is the answer to every /v1/gateway/guard call. It keeps the
 // hosts it serves, and answers GET /v1/gateway/hosts with them without recording that call.
 type fakeManagement struct {
-	mu    sync.Mutex
-	calls []sent
-	fail  int
-	guard int
-	hosts map[string]string
-	onPut func() // when set, runs at each PUT before it is answered
+	mu     sync.Mutex
+	calls  []sent
+	fail   int
+	guard  int
+	status string // when set, the body of GET /v1/gateway/guard
+	hosts  map[string]string
+	onPut  func() // when set, runs at each PUT before it is answered
 }
 
 func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +56,10 @@ func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if m.hosts == nil {
 		m.hosts = map[string]string{}
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/gateway/guard" && m.status != "" {
+		io.WriteString(w, m.status)
+		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/gateway/hosts" {
 		routes := []map[string]string{}

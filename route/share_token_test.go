@@ -60,6 +60,14 @@ func TestShareWritesNeedTheHeaderToken(t *testing.T) {
 		{http.MethodPut, "/v1/share/apps/jellyfin"},
 		{http.MethodDelete, "/v1/share/apps/jellyfin"},
 		{http.MethodDelete, "/v1/share/apps"},
+		{http.MethodPut, "/v1/share/guard/protection"},
+		{http.MethodPut, "/v1/share/guard/box"},
+		{http.MethodPut, "/v1/share/guard/apps/jellyfin"},
+		{http.MethodPost, "/v1/share/guard/people"},
+		{http.MethodPut, "/v1/share/guard/people/p_1"},
+		{http.MethodPost, "/v1/share/guard/people/p_1/code"},
+		{http.MethodDelete, "/v1/share/guard/people/p_1"},
+		{http.MethodDelete, "/v1/share/guard/bans/1.2.3.4"},
 	} {
 		method, path := write[0], write[1]
 		if code := do(method, path+"?token="+access, ""); code != http.StatusUnauthorized {

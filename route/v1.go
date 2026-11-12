@@ -303,6 +303,17 @@ func InitV1Router() http.Handler {
 			v1ShareGroup.PUT("/apps/:name", v1.PutShareApp, headerTokenOnly)
 			v1ShareGroup.DELETE("/apps/:name", v1.DeleteShareApp, headerTokenOnly)
 			v1ShareGroup.DELETE("/apps", v1.DeleteShareApps, headerTokenOnly)
+			v1ShareGroup.GET("/guard", v1.GetShareGuard)
+			v1ShareGroup.PUT("/guard/protection", v1.PutShareGuardProtection, headerTokenOnly)
+			v1ShareGroup.PUT("/guard/box", v1.PutShareGuardBox, headerTokenOnly)
+			v1ShareGroup.PUT("/guard/apps/:name", v1.PutShareGuardApp, headerTokenOnly)
+			v1ShareGroup.POST("/guard/people", v1.PostShareGuardPerson, headerTokenOnly)
+			v1ShareGroup.PUT("/guard/people/:id", v1.PutShareGuardPerson, headerTokenOnly)
+			v1ShareGroup.POST("/guard/people/:id/code", v1.PostShareGuardPersonCode, headerTokenOnly)
+			v1ShareGroup.DELETE("/guard/people/:id", v1.DeleteShareGuardPerson, headerTokenOnly)
+			v1ShareGroup.GET("/guard/events", v1.GetShareGuardEvents)
+			v1ShareGroup.GET("/guard/bans", v1.GetShareGuardBans)
+			v1ShareGroup.DELETE("/guard/bans/:key", v1.DeleteShareGuardBan, headerTokenOnly)
 		}
 	}
 

@@ -2,11 +2,13 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,13 +23,40 @@ type relayReply struct {
 	retry  time.Duration
 }
 
+// guardSeen is the guard calls the fake Gateway of useShare received, as "METHOD escaped-path".
+var guardSeen struct {
+	sync.Mutex
+	calls []string
+}
+
+func guardCalls() []string {
+	guardSeen.Lock()
+	defer guardSeen.Unlock()
+	return append([]string(nil), guardSeen.calls...)
+}
+
 // useShare swaps Share for a service of its own: the relay is a function, AppManagement and the Gateway are one local
 // server that knows the app "jellyfin" (port 8096).
 func useShare(t *testing.T, claim *relayReply, remote bool) *share.Service {
 	t.Helper()
 	runtimePath := t.TempDir()
+	guardSeen.Lock()
+	guardSeen.calls = nil
+	guardSeen.Unlock()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/gateway/guard"):
+			guardSeen.Lock()
+			guardSeen.calls = append(guardSeen.calls, r.Method+" "+r.URL.EscapedPath())
+			guardSeen.Unlock()
+			switch {
+			case r.Method != http.MethodGet:
+				w.WriteHeader(http.StatusNoContent)
+			case r.URL.Path == "/v1/gateway/guard":
+				_, _ = w.Write([]byte(`{"version":1,"configured":true,"geo":{},"people_last_used":{},"waves":[]}`))
+			default:
+				_, _ = w.Write([]byte(`[]`))
+			}
 		case r.Method == http.MethodGet && r.URL.Path == "/v2/app_management/compose":
 			_, _ = w.Write([]byte(`{"data":{"jellyfin":{"store_info":{"port_map":"8096","title":{"en_us":"Jellyfin"}}},"nothing":{"store_info":{}}}}`))
 		case r.Method == http.MethodPut && r.URL.Path == "/v1/gateway/hosts":
@@ -166,5 +195,69 @@ func TestShareAndUnshareApp(t *testing.T) {
 	callFleet(t, PutShareApp, http.MethodPut, "/v1/share/apps/jellyfin", "", app)
 	if code, _ := callFleet(t, DeleteShareApps, http.MethodDelete, "/v1/share/apps", "", nil); code != http.StatusOK {
 		t.Errorf("stop all = %d", code)
+	}
+}
+
+// sharedJelly is a box named and sharing jellyfin, for the guard routes.
+func sharedJelly(t *testing.T) {
+	t.Helper()
+	useShare(t, claimed, true)
+	callFleet(t, PutShareName, http.MethodPut, "/v1/share/name", `{"name":"maison","accept_tos":true}`, nil)
+	if code, _ := callFleet(t, PutShareApp, http.MethodPut, "/v1/share/apps/jellyfin", "", map[string]string{"name": "jellyfin"}); code != http.StatusOK {
+		t.Fatalf("share = %d", code)
+	}
+}
+
+func TestShareGuardPeopleAnswers(t *testing.T) {
+	sharedJelly(t)
+	code, result := callFleet(t, PostShareGuardPerson, http.MethodPost, "/v1/share/guard/people", `{"name":"Maman","apps":["jellyfin"]}`, nil)
+	data, _ := result.Data.(map[string]any)
+	if code != http.StatusOK || data["code"] == "" || data["code"] == nil {
+		t.Fatalf("add = %d %#v", code, result)
+	}
+	if code, result := callFleet(t, PostShareGuardPerson, http.MethodPost, "/v1/share/guard/people", `{"name":"","apps":[]}`, nil); code != http.StatusBadRequest || result.Message != "bad_name" {
+		t.Fatalf("bad name = %d %q", code, result.Message)
+	}
+
+	rec := callFleetRec(t, GetShareGuard, http.MethodGet, "/v1/share/guard", "", nil)
+	var view struct {
+		Data struct {
+			Supported bool                      `json:"supported"`
+			People    []map[string]any          `json:"people"`
+			Apps      map[string]map[string]any `json:"apps"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil || rec.Code != http.StatusOK || !view.Data.Supported || len(view.Data.People) != 1 {
+		t.Fatalf("view = %d %s", rec.Code, rec.Body)
+	}
+	if _, has := view.Data.Apps["jellyfin"]; !has {
+		t.Errorf("no jellyfin in %s", rec.Body)
+	}
+	for _, leak := range []string{"code", "code_hash", "secret"} {
+		if _, has := view.Data.People[0][leak]; has || strings.Contains(rec.Body.String(), `"`+leak+`"`) {
+			t.Errorf("%q in the view: %s", leak, rec.Body)
+		}
+	}
+	if strings.Contains(rec.Body.String(), data["code"].(string)) {
+		t.Error("the code is in the view")
+	}
+	if code, _ := callFleet(t, PutShareGuardProtection, http.MethodPut, "/v1/share/guard/protection", `{}`, nil); code != http.StatusBadRequest {
+		t.Errorf("protection without on = %d, want 400", code)
+	}
+	if code, _ := callFleet(t, PutShareGuardProtection, http.MethodPut, "/v1/share/guard/protection", `{"on":true}`, nil); code != http.StatusOK {
+		t.Errorf("protection = %d", code)
+	}
+	id := view.Data.People[0]["id"].(string)
+	if code, _ := callFleet(t, DeleteShareGuardPerson, http.MethodDelete, "/v1/share/guard/people/"+id, "", map[string]string{"id": id}); code != http.StatusNoContent {
+		t.Errorf("delete = %d", code)
+	}
+}
+
+func TestShareGuardUnbanKeyIsEscapedAgain(t *testing.T) {
+	useShare(t, claimed, true)
+	// the router hands the handler the key unescaped once; the Gateway must see it escaped once
+	code := callFleetRec(t, DeleteShareGuardBan, http.MethodDelete, "/v1/share/guard/bans/2001:db8::%2F64", "", map[string]string{"key": "2001:db8::/64"}).Code
+	if got := guardCalls(); code != http.StatusNoContent || len(got) != 1 || got[0] != "DELETE /v1/gateway/guard/bans/2001:db8::%2F64" {
+		t.Fatalf("status %d, gateway %v", code, got)
 	}
 }
