@@ -179,6 +179,6 @@ Under the existing `/v1/share` group; reads take what the group takes, every wri
 | `GET /v1/share/guard/bans` | — | the Gateway's list | `gateway_unsupported` |
 | `DELETE /v1/share/guard/bans/:key` | — | — (204) | `gateway_unsupported` |
 
-A write whose push to the Gateway fails (other than 404) keeps the saved change, wakes the resync and answers 500 — except `POST …/people` and `POST …/people/:id/code`, which answer 200 with the code (shown only once; the resync pushes it). A bad body answers 400 `bad_request`.
+A write the Gateway refuses with 400 is rolled back and answers 400 `bad_policy:<field>`, where `<field>` is the Gateway's own path (e.g. `apps["<host>"].policy.waf`): it means the two sides disagree, the dashboard shows its generic sentence. `PUT /v1/share/apps/:name` (sharing an app) can answer 400 `gateway_unsupported` too. A write whose push to the Gateway fails otherwise (not 404, not 400) keeps the saved change, wakes the resync and answers 500 — except `POST …/people` and `POST …/people/:id/code`, which answer 200 with the code (shown only once; the resync pushes it). A bad body answers 400 `bad_request`.
 
 `bad_name`: empty, over 40 characters, or a control character. A person's `apps` may name only shared apps; unsharing an app removes it from every person and from `apps`.
