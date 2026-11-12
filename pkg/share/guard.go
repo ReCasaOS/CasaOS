@@ -245,20 +245,29 @@ func NewCode() string {
 // newPersonID is p_ and 8 lowercase hex, inside the Gateway's ^[A-Za-z0-9_-]{1,64}$.
 func newPersonID() string { return "p_" + hex.EncodeToString(randBytes(4)) }
 
-// loadGuard reads the file. Missing: defaults and a fresh secret (a first start). Present but unusable: defaults come
-// back and corrupt is true, so the caller can fail closed; the file is left in place for the caller to replace.
-// A fresh secret reaches the disk with the first saveGuard.
+// newGuard is a first start's state: defaults and a fresh secret, which reaches the disk with the first saveGuard.
+func newGuard() GuardState {
+	return GuardState{Box: DefaultPolicy(), Apps: map[string]GuardApp{}, Secret: randBytes(32)}
+}
+
+// loadGuard reads the file. Missing: newGuard. Unreadable or unusable: newGuard and corrupt is true, so the caller can
+// fail closed; the file is left in place.
 func loadGuard(path string) (g GuardState, corrupt bool) {
-	fresh := func() GuardState {
-		return GuardState{Box: DefaultPolicy(), Apps: map[string]GuardApp{}, Secret: randBytes(32)}
-	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return fresh(), false
+		return newGuard(), false
 	}
+	if err != nil {
+		return newGuard(), true
+	}
+	return parseGuard(data)
+}
+
+// parseGuard is the state saved in data; corrupt is true, with newGuard, when the Gateway could not take it.
+func parseGuard(data []byte) (g GuardState, corrupt bool) {
 	g = GuardState{Box: DefaultPolicy()}
-	if err != nil || json.Unmarshal(data, &g) != nil || len(g.Secret) != 32 || !g.valid() {
-		return fresh(), true
+	if json.Unmarshal(data, &g) != nil || len(g.Secret) != 32 || !g.valid() {
+		return newGuard(), true
 	}
 	if g.Apps == nil {
 		g.Apps = map[string]GuardApp{}

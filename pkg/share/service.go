@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -730,29 +731,40 @@ func (s *Service) statePath() string { return filepath.Join(s.Root, "var/lib/cas
 
 func (s *Service) guardPath() string { return filepath.Join(s.Root, "var/lib/casaos/fleet", GuardFile) }
 
-// guardLocked is the protection state, loaded at first use and kept; s.mu is held. An unusable file closes every
-// shared app (access "code"): defaults would open the protected ones. That reset is written over the file before
-// anything else, and its bytes are kept aside only then. When it cannot be written, the reset state comes back with
-// an error and is not kept: the file stays as it was, so the next start resets again rather than finding no file.
+// guardLocked is the protection state, loaded at first use and kept; s.mu is held. A file that cannot be read gives
+// every shared app access "code" and an error, writes nothing and keeps nothing: the next call reads again. A file
+// read but unusable closes every shared app the same way (defaults would open the protected ones), and that reset is
+// written over the file before anything else; its bytes are kept aside only then. When it cannot be written, the
+// reset comes back with an error and is not kept: the file stays, so the next start resets again rather than finding
+// no file.
 func (s *Service) guardLocked() (*GuardState, error) {
 	if s.guard != nil {
 		return s.guard, nil
 	}
-	path := s.guardPath()
-	g, corrupt := loadGuard(path)
-	if corrupt {
-		s.guardReset = true
+	closeAll := func(g *GuardState) {
 		for name := range s.readLocked().Apps {
 			g.Apps[name] = GuardApp{Access: "code"}
 		}
-		raw, readErr := os.ReadFile(path)
+	}
+	path := s.guardPath()
+	data, err := readGuardFile(path)
+	g, corrupt := newGuard(), false
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil: // perhaps passing: never lose the owner's settings over it
+		closeAll(&g)
+		return &g, fmt.Errorf("the protection settings cannot be read: %w", err)
+	default:
+		g, corrupt = parseGuard(data)
+	}
+	if corrupt {
+		s.guardReset = true
+		closeAll(&g)
 		if err := saveGuardFile(path, g); err != nil {
 			return &g, fmt.Errorf("the protection settings were reset but cannot be saved: %w", err)
 		}
-		if readErr == nil {
-			if err := os.WriteFile(fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix()), raw, 0o600); err != nil {
-				s.log("share: cannot keep a copy of the unusable protection settings", err)
-			}
+		if err := os.WriteFile(fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix()), data, 0o600); err != nil {
+			s.log("share: cannot keep a copy of the unusable protection settings", err)
 		}
 		s.guard = &g
 		return s.guard, nil
@@ -761,6 +773,9 @@ func (s *Service) guardLocked() (*GuardState, error) {
 	s.saveGuardLocked() // a first start's secret is kept from now on
 	return s.guard, nil
 }
+
+// readGuardFile is os.ReadFile; tests make it fail.
+var readGuardFile = os.ReadFile
 
 // saveGuardFile is saveGuard; tests make it fail.
 var saveGuardFile = saveGuard

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1038,5 +1039,39 @@ func TestResyncDropsStrayHosts(t *testing.T) {
 	// deleted before the push: never served while missing from the config
 	if order := f.mgmt.order(); len(order) != 5 || order[2] != "PUT /v1/gateway/guard" {
 		t.Fatalf("gateway %v", order)
+	}
+}
+
+func TestUnreadableGuardHoldsEveryHostAndKeepsTheFile(t *testing.T) {
+	ctx := context.Background()
+	g := jellyCode()
+	g.People = []Person{{ID: "p_1", Name: "Maman", Gen: 1, CodeHash: strings.Repeat("a", 64), Apps: []string{"jellyfin"}}}
+	f := twoShared(t, g)
+	path := f.s.guardPath()
+	before := mustRead(t, path)
+	readGuardFile = func(string) ([]byte, error) { return nil, syscall.EIO }
+	t.Cleanup(func() { readGuardFile = os.ReadFile })
+	if err := f.s.resync(ctx); err == nil {
+		t.Fatal("no error")
+	}
+	if len(f.mgmt.pushes(t)) != 0 || len(f.mgmt.registered()) != 0 || f.s.GuardReset() {
+		t.Fatalf("gateway %+v, serving %v", f.mgmt.seen(), f.mgmt.registered())
+	}
+	if aside, _ := filepath.Glob(path + ".corrupt-*"); len(aside) != 0 || !bytes.Equal(mustRead(t, path), before) {
+		t.Fatalf("file changed, aside %v", aside)
+	}
+
+	// the read works again: the owner's settings, people included
+	readGuardFile = os.ReadFile
+	if err := f.s.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pushed := f.mgmt.pushes(t)
+	if len(pushed) != 1 || pushed[0].Apps[jellyHost].Access != "code" || pushed[0].Apps[nextHost].Access != "open" ||
+		len(pushed[0].People) != 1 || !slices.Equal(pushed[0].People[0].Apps, []string{"jellyfin"}) || len(f.mgmt.registered()) != 2 {
+		t.Fatalf("pushed %+v, serving %v", pushed, f.mgmt.registered())
+	}
+	if saved, corrupt := loadGuard(path); corrupt || len(saved.People) != 1 {
+		t.Fatalf("saved %+v", saved)
 	}
 }
