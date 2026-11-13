@@ -79,7 +79,8 @@ type Service struct {
 	relayInfo    RelayProtection    // the relay's last answer to the protection push
 	relayOK      *bool              // whether the relay has the protection routes: nil until it was asked
 
-	reported map[string]time.Time // bans already sent (key|since) and when; memory only, a restart may resend a day
+	reported    map[string]time.Time // bans already sent (key|since) and when; memory only, a restart may resend a day
+	reportAfter time.Time            // a busy relay asked to wait until then; reportLoop's, as reported
 	reportCh chan struct{}       // wakes reportLoop
 
 	wakeReports func() // set by the ban reporter: a ban sharing change should be looked at now; nil without one

@@ -14,6 +14,9 @@ const (
 	reportChunk = 200 // the relay takes at most 200 bans a post
 	reportAge   = 24 * time.Hour
 	reportSkew  = 2 * time.Minute
+	// reportKeep is the oldest ban sent: the relay refuses a batch with one older than its clock less reportAge, and
+	// the two clocks may differ by reportSkew
+	reportKeep = reportAge - 10*time.Minute
 )
 
 // gatewayBan is the part of the Gateway's ban the relay needs.
@@ -40,7 +43,7 @@ func addressKey(key string) (netip.Prefix, bool) {
 		a = p.Addr()
 	}
 	a = a.Unmap().WithZone("")
-	if a.IsPrivate() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsUnspecified() || a.IsMulticast() || cgnat.Contains(a) {
+	if !a.IsGlobalUnicast() || a.IsPrivate() || cgnat.Contains(a) { // the relay's own rule
 		return netip.Prefix{}, false
 	}
 	if a.Is4() {
@@ -63,7 +66,7 @@ func pickReports(bans []gatewayBan, allow func(app, key string) bool, sent map[s
 		default:
 			continue
 		}
-		if !ok || !reportApp.MatchString(b.App) || now.Sub(b.Since) > reportAge || b.Since.Sub(now) > reportSkew || allow(b.App, p.String()) {
+		if !ok || !reportApp.MatchString(b.App) || now.Sub(b.Since) > reportKeep || b.Since.Sub(now) > reportSkew || allow(b.App, p.String()) {
 			continue
 		}
 		r := BanReport{Key: p.String(), Reason: b.Reason, App: b.App, Since: b.Since.UTC().Truncate(time.Second)}
@@ -77,12 +80,16 @@ func pickReports(bans []gatewayBan, allow func(app, key string) bool, sent map[s
 	return out
 }
 
-// reportOnce sends the new bans of the Gateway to the relay, when the owner agreed and the relay can take them.
-// A batch the relay refuses is not sent again; any other failure leaves it for the next call.
+// reportOnce sends the new bans of the Gateway to the relay, when the owner agreed, the relay holds that consent and
+// it is not busy. A batch the relay refuses is not sent again; any other failure leaves it for the next call, or for
+// the end of a busy relay's Retry-After.
 func (s *Service) reportOnce(ctx context.Context) error {
+	if s.now().Before(s.reportAfter) {
+		return nil
+	}
 	s.mu.Lock()
 	g, err := s.guardLocked()
-	if err != nil || !g.ShareBans || s.relayOK == nil || !*s.relayOK {
+	if err != nil || !g.ShareBans || s.relayOK == nil || !*s.relayOK || !s.relayInfo.ShareBans { // without it the relay drops them
 		s.mu.Unlock()
 		return nil
 	}
@@ -143,7 +150,11 @@ func (s *Service) reportOnce(ctx context.Context) error {
 		batch := todo[:n]
 		todo = todo[n:]
 		err := s.Relay.ReportBans(ctx, batch)
+		var busy BusyError
 		switch {
+		case errors.As(err, &busy):
+			s.reportAfter = now.Add(busy.RetryAfter)
+			return err
 		case errors.Is(err, ErrRelayNoShare):
 			return nil
 		case errors.Is(err, ErrRelayRejected):
