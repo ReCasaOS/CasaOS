@@ -180,3 +180,59 @@ func TestReleaseName(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestSetProtectionParses(t *testing.T) {
+	r, calls := fakeRelay(reply{status: 200, body: `{"relay_filter":true,"share_bans":true,"share_bans_at":"2026-11-13T10:00:00Z","community_size":1234,"contributed_month":5}`})
+	p, err := r.SetProtection(context.Background(), true, true)
+	if err != nil || !p.Filter || !p.ShareBans || p.CommunitySize != 1234 || p.ContributedMonth != 5 || p.ShareBansAt == nil || !p.ShareBansAt.Equal(time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)) {
+		t.Fatalf("%+v, %v", p, err)
+	}
+	if c := (*calls)[0]; c != (sent{"PUT", "/v1/share/protection", `{"relay_filter":true,"share_bans":true}`}) {
+		t.Fatalf("sent %+v", c)
+	}
+}
+
+func TestSetProtection404IsUnsupported(t *testing.T) {
+	for _, body := range []string{`404 page not found`, `{"error":"no name"}`} {
+		r, _ := fakeRelay(reply{status: 404, body: body})
+		if _, err := r.SetProtection(context.Background(), true, false); !errors.Is(err, ErrRelayNoShare) {
+			t.Fatalf("%q: %v", body, err)
+		}
+	}
+}
+
+func TestReportBansSendsJSON(t *testing.T) {
+	r, calls := fakeRelay(reply{status: 204})
+	since := time.Date(2026, 11, 13, 12, 20, 0, 0, time.FixedZone("x", 7200))
+	if err := r.ReportBans(context.Background(), []BanReport{{Key: "203.0.113.7/32", Reason: "scan", App: "jellyfin", Since: since}}); err != nil {
+		t.Fatal(err)
+	}
+	want := sent{"POST", "/v1/share/bans", `{"bans":[{"key":"203.0.113.7/32","reason":"scan","app":"jellyfin","since":"2026-11-13T10:20:00Z"}]}`}
+	if c := (*calls)[0]; c != want {
+		t.Fatalf("sent %+v", c)
+	}
+	r, _ = fakeRelay(reply{status: 400, body: `{"error":"bad request"}`})
+	if err := r.ReportBans(context.Background(), nil); !errors.Is(err, ErrRelayRejected) {
+		t.Fatalf("400: %v", err)
+	}
+	r, _ = fakeRelay(reply{status: 404, body: `{"error":"no name"}`})
+	if err := r.ReportBans(context.Background(), nil); !errors.Is(err, ErrRelayNoShare) {
+		t.Fatalf("404: %v", err)
+	}
+}
+
+func TestRefusalsPassThrough(t *testing.T) {
+	const body = `[{"hour":"2026-11-13T10:00:00Z","key":"203.0.113.7/32","reason":"external","source":"FireHOL level 1","count":12}]`
+	r, calls := fakeRelay(reply{status: 200, body: body})
+	raw, err := r.Refusals(context.Background())
+	if err != nil || string(raw) != body {
+		t.Fatalf("%s, %v", raw, err)
+	}
+	if c := (*calls)[0]; c != (sent{"GET", "/v1/share/refusals", ""}) {
+		t.Fatalf("sent %+v", c)
+	}
+	r, _ = fakeRelay(reply{status: 404, body: `404 page not found`})
+	if _, err := r.Refusals(context.Background()); !errors.Is(err, ErrRelayNoShare) {
+		t.Fatalf("404: %v", err)
+	}
+}

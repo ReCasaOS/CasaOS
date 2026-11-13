@@ -17,6 +17,8 @@ var (
 	ErrNameReserved   = errors.New("this name is reserved")
 	ErrNameRevoked    = errors.New("this name was revoked and cannot be used")
 	ErrNameQuarantine = errors.New("this name was released recently and is not available yet")
+	// ErrRelayRejected is a 400: the relay will never accept this request as sent.
+	ErrRelayRejected = errors.New("the relay refused")
 )
 
 // BusyError is the relay asking to come back later.
@@ -68,6 +70,64 @@ func (r *Relay) SetTXT(ctx context.Context, value string) error {
 func (r *Relay) ClearTXT(ctx context.Context) error {
 	_, _, err := r.call(ctx, http.MethodDelete, "/v1/share/acme", nil)
 	return err
+}
+
+// RelayProtection is what the relay holds of this box's protection settings.
+type RelayProtection struct {
+	Filter           bool       `json:"relay_filter"`
+	ShareBans        bool       `json:"share_bans"`
+	ShareBansAt      *time.Time `json:"share_bans_at"`
+	CommunitySize    int        `json:"community_size"`
+	ContributedMonth int        `json:"contributed_month"`
+}
+
+// BanReport is one ban of this box's Gateway, as sent to the relay.
+type BanReport struct {
+	Key    string    `json:"key"`
+	Reason string    `json:"reason"`
+	App    string    `json:"app"`
+	Since  time.Time `json:"since"`
+}
+
+// boxCall is call for the protection routes: any 404 there means the relay is too old.
+func (r *Relay) boxCall(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+	_, reply, err := r.call(ctx, method, path, body)
+	if errors.Is(err, ErrNoName) {
+		err = ErrRelayNoShare
+	}
+	return reply, err
+}
+
+// SetProtection pushes the two protection settings to the relay.
+func (r *Relay) SetProtection(ctx context.Context, filter, shareBans bool) (RelayProtection, error) {
+	body, _ := json.Marshal(map[string]bool{"relay_filter": filter, "share_bans": shareBans})
+	reply, err := r.boxCall(ctx, http.MethodPut, "/v1/share/protection", body)
+	if err != nil {
+		return RelayProtection{}, err
+	}
+	var p RelayProtection
+	if err := json.Unmarshal(reply, &p); err != nil {
+		return RelayProtection{}, fmt.Errorf("the relay answered something unreadable: %w", err)
+	}
+	return p, nil
+}
+
+// ReportBans sends the bans this box's Gateway started; ErrRelayRejected means drop the batch.
+func (r *Relay) ReportBans(ctx context.Context, bans []BanReport) error {
+	out := make([]BanReport, len(bans))
+	for i, b := range bans {
+		b.Since = b.Since.UTC().Truncate(time.Second)
+		out[i] = b
+	}
+	body, _ := json.Marshal(map[string]any{"bans": out})
+	_, err := r.boxCall(ctx, http.MethodPost, "/v1/share/bans", body)
+	return err
+}
+
+// Refusals returns the relay's refusals of this box's name over the last 7 days, as the relay wrote them.
+func (r *Relay) Refusals(ctx context.Context) (json.RawMessage, error) {
+	reply, err := r.boxCall(ctx, http.MethodGet, "/v1/share/refusals", nil)
+	return json.RawMessage(reply), err
 }
 
 func (r *Relay) info(ctx context.Context, method, path string, body []byte) (Info, error) {
@@ -144,7 +204,13 @@ func (r *Relay) call(ctx context.Context, method, path string, body []byte) (int
 				}
 			}
 		}
+		if status == http.StatusBadRequest && text == "" {
+			return 0, nil, fmt.Errorf("%w (status 400)", ErrRelayRejected)
+		}
 		if text != "" {
+			if status == http.StatusBadRequest {
+				return 0, nil, fmt.Errorf("%w: %s", ErrRelayRejected, truncate(text, 200))
+			}
 			return 0, nil, fmt.Errorf("the relay refused: %s", truncate(text, 200))
 		}
 		return 0, nil, fmt.Errorf("the relay answered status %d", status)
