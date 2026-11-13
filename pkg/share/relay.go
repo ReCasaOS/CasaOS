@@ -28,8 +28,9 @@ func (e BusyError) Error() string { return "the relay is busy, try again later" 
 
 // Relay talks to the relay as this box.
 type Relay struct {
-	// Signed sends a request signed with this box's key (wired by main to the fleet's relay client).
-	Signed func(ctx context.Context, method, path string, body []byte) (status int, reply []byte, retryAfter time.Duration, err error)
+	// Signed sends a request signed with this box's key (wired by main to the fleet's relay client), keeping at most
+	// maxReply bytes of the answer (0: the client's 64 KiB).
+	Signed func(ctx context.Context, method, path string, body []byte, maxReply int) (status int, reply []byte, retryAfter time.Duration, err error)
 	// RegisterSelf links this box's key at the relay (wired to the fleet).
 	RegisterSelf func(ctx context.Context) error
 }
@@ -50,7 +51,7 @@ func (r *Relay) ClaimName(ctx context.Context, name string) (Info, error) {
 
 // ReleaseName gives the public name back (also fine when there was none).
 func (r *Relay) ReleaseName(ctx context.Context) error {
-	_, _, err := r.call(ctx, http.MethodDelete, "/v1/share/name", nil)
+	_, _, err := r.call(ctx, http.MethodDelete, "/v1/share/name", nil, 0)
 	return err
 }
 
@@ -62,13 +63,13 @@ func (r *Relay) Status(ctx context.Context) (Info, error) {
 // SetTXT publishes value as the ACME challenge record of this box's name.
 func (r *Relay) SetTXT(ctx context.Context, value string) error {
 	body, _ := json.Marshal(map[string]string{"value": value})
-	_, _, err := r.call(ctx, http.MethodPut, "/v1/share/acme", body)
+	_, _, err := r.call(ctx, http.MethodPut, "/v1/share/acme", body, 0)
 	return err
 }
 
 // ClearTXT removes the ACME challenge record.
 func (r *Relay) ClearTXT(ctx context.Context) error {
-	_, _, err := r.call(ctx, http.MethodDelete, "/v1/share/acme", nil)
+	_, _, err := r.call(ctx, http.MethodDelete, "/v1/share/acme", nil, 0)
 	return err
 }
 
@@ -90,8 +91,8 @@ type BanReport struct {
 }
 
 // boxCall is call for the protection routes: any 404 there means the relay is too old.
-func (r *Relay) boxCall(ctx context.Context, method, path string, body []byte) ([]byte, error) {
-	_, reply, err := r.call(ctx, method, path, body)
+func (r *Relay) boxCall(ctx context.Context, method, path string, body []byte, maxReply int) ([]byte, error) {
+	_, reply, err := r.call(ctx, method, path, body, maxReply)
 	if errors.Is(err, ErrNoName) {
 		err = ErrRelayNoShare
 	}
@@ -101,7 +102,7 @@ func (r *Relay) boxCall(ctx context.Context, method, path string, body []byte) (
 // SetProtection pushes the two protection settings to the relay.
 func (r *Relay) SetProtection(ctx context.Context, filter, shareBans bool) (RelayProtection, error) {
 	body, _ := json.Marshal(map[string]bool{"relay_filter": filter, "share_bans": shareBans})
-	reply, err := r.boxCall(ctx, http.MethodPut, "/v1/share/protection", body)
+	reply, err := r.boxCall(ctx, http.MethodPut, "/v1/share/protection", body, 0)
 	if err != nil {
 		return RelayProtection{}, err
 	}
@@ -120,18 +121,27 @@ func (r *Relay) ReportBans(ctx context.Context, bans []BanReport) error {
 		out[i] = b
 	}
 	body, _ := json.Marshal(map[string]any{"bans": out})
-	_, err := r.boxCall(ctx, http.MethodPost, "/v1/share/bans", body)
+	_, err := r.boxCall(ctx, http.MethodPost, "/v1/share/bans", body, 0)
 	return err
 }
 
+// refusalsMax holds the relay's longest answer: 2 000 rows of about 110 bytes.
+const refusalsMax = 512 << 10
+
 // Refusals returns the relay's refusals of this box's name over the last 7 days, as the relay wrote them.
 func (r *Relay) Refusals(ctx context.Context) (json.RawMessage, error) {
-	reply, err := r.boxCall(ctx, http.MethodGet, "/v1/share/refusals", nil)
-	return json.RawMessage(reply), err
+	reply, err := r.boxCall(ctx, http.MethodGet, "/v1/share/refusals", nil, refusalsMax)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(reply) { // also an answer cut at refusalsMax
+		return nil, errors.New("the relay answered something unreadable")
+	}
+	return json.RawMessage(reply), nil
 }
 
 func (r *Relay) info(ctx context.Context, method, path string, body []byte) (Info, error) {
-	_, reply, err := r.call(ctx, method, path, body)
+	_, reply, err := r.call(ctx, method, path, body, 0)
 	if err != nil {
 		return Info{}, err
 	}
@@ -153,10 +163,10 @@ func errText(body []byte) string {
 
 // call sends the request, linking this box's key at the relay once if the relay does not know it yet.
 // It returns the status and body of a 2xx; every other answer is an error.
-func (r *Relay) call(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
+func (r *Relay) call(ctx context.Context, method, path string, body []byte, maxReply int) (int, []byte, error) {
 	registered := false
 	for {
-		status, reply, retry, err := r.Signed(ctx, method, path, body)
+		status, reply, retry, err := r.Signed(ctx, method, path, body, maxReply)
 		if err != nil {
 			return 0, nil, err
 		}

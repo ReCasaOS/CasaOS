@@ -20,7 +20,7 @@ type sent struct{ method, path, body string }
 // fakeRelay answers the scripted replies in order and records what was sent.
 func fakeRelay(replies ...reply) (*Relay, *[]sent) {
 	var calls []sent
-	r := &Relay{Signed: func(_ context.Context, method, path string, body []byte) (int, []byte, time.Duration, error) {
+	r := &Relay{Signed: func(_ context.Context, method, path string, body []byte, _ int) (int, []byte, time.Duration, error) {
 		calls = append(calls, sent{method, path, string(body)})
 		if len(calls) > len(replies) { // not scripted: a relay that does not know the route
 			return 404, []byte("404 page not found\n"), 0, nil
@@ -114,7 +114,7 @@ func TestSelfRegistersOnFirstForbidden(t *testing.T) {
 // The relay records every signature it verified, the refused one too: the retry must be signed in another second.
 func TestTheRetryAfterRegisteringIsSignedInTheNextSecond(t *testing.T) {
 	var seen []time.Time
-	r := &Relay{Signed: func(_ context.Context, method, path string, _ []byte) (int, []byte, time.Duration, error) {
+	r := &Relay{Signed: func(_ context.Context, method, path string, _ []byte, _ int) (int, []byte, time.Duration, error) {
 		now := time.Now()
 		for _, at := range seen {
 			if at.Unix() == now.Unix() {
@@ -237,5 +237,22 @@ func TestRefusalsPassThrough(t *testing.T) {
 	r, _ = fakeRelay(reply{status: 404, body: `404 page not found`})
 	if _, err := r.Refusals(context.Background()); !errors.Is(err, ErrRelayNoShare) {
 		t.Fatalf("404: %v", err)
+	}
+}
+
+// The refusals can run past the 64 KiB of the other calls: they ask for more, and a cut answer is an error, not passed on.
+func TestRefusalsAskForALongAnswerAndCheckIt(t *testing.T) {
+	var asked int
+	answer := `[{"key":"203.0.113.1/32"}]`
+	r := &Relay{Signed: func(_ context.Context, _, _ string, _ []byte, maxReply int) (int, []byte, time.Duration, error) {
+		asked = maxReply
+		return 200, []byte(answer), 0, nil
+	}}
+	if out, err := r.Refusals(context.Background()); err != nil || string(out) != answer || asked != 512<<10 {
+		t.Fatalf("%s %v, asked %d", out, err, asked)
+	}
+	answer = `[{"key":"203.0.1`
+	if _, err := r.Refusals(context.Background()); err == nil {
+		t.Fatal("a cut answer was passed on")
 	}
 }

@@ -89,7 +89,7 @@ func useShare(t *testing.T, claim *relayReply, remote bool) *share.Service {
 	if remote {
 		s.RelayURL = func() (string, bool) { return "https://relay.example", true }
 	}
-	s.Relay.Signed = func(ctx context.Context, method, path string, body []byte) (int, []byte, time.Duration, error) {
+	s.Relay.Signed = func(ctx context.Context, method, path string, body []byte, _ int) (int, []byte, time.Duration, error) {
 		if method == http.MethodPut && path == "/v1/share/name" {
 			return claim.status, []byte(claim.body), claim.retry, nil
 		}
@@ -325,7 +325,7 @@ func TestReshareOnAnOldGatewayAnswersUnsupported(t *testing.T) {
 func TestShareGuardRelayRoutes(t *testing.T) {
 	s := useShare(t, claimed, true)
 	answer := func(status int, body string) {
-		s.Relay.Signed = func(_ context.Context, method, path string, _ []byte) (int, []byte, time.Duration, error) {
+		s.Relay.Signed = func(_ context.Context, method, path string, _ []byte, _ int) (int, []byte, time.Duration, error) {
 			if path == "/v1/share/protection" {
 				return http.StatusOK, []byte(`{"relay_filter":true,"share_bans":true,"share_bans_at":null,"community_size":5,"contributed_month":0}`), 0, nil
 			}
@@ -348,7 +348,7 @@ func TestShareGuardRelayRoutes(t *testing.T) {
 		t.Errorf("put = %d %s", rec.Code, rec.Body)
 	}
 	// a relay without the route: [] for the refusals, relay_unsupported for a change
-	s.Relay.Signed = func(context.Context, string, string, []byte) (int, []byte, time.Duration, error) {
+	s.Relay.Signed = func(context.Context, string, string, []byte, int) (int, []byte, time.Duration, error) {
 		return http.StatusNotFound, []byte("404 page not found\n"), 0, nil
 	}
 	rec = callFleetRec(t, GetShareGuardRelayRefusals, http.MethodGet, "/v1/share/guard/relay-refusals", "", nil)

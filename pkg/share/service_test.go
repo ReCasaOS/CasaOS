@@ -674,7 +674,7 @@ func TestResetDeletesTheHostsBeforeTheRelay(t *testing.T) {
 	f.named(t)
 	f.share(t, "jellyfin")
 	f.share(t, "nextcloud")
-	f.s.Relay.Signed = func(ctx context.Context, _, _ string, _ []byte) (int, []byte, time.Duration, error) {
+	f.s.Relay.Signed = func(ctx context.Context, _, _ string, _ []byte, _ int) (int, []byte, time.Duration, error) {
 		<-ctx.Done() // a relay that does not answer
 		return 0, nil, 0, ctx.Err()
 	}
