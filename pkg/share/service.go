@@ -462,8 +462,19 @@ func (s *Service) StopAll(ctx context.Context) error {
 
 // Reset forgets the sharing of a box leaving its relay: the host routes are deleted first (local and fast),
 // then the name is released, best effort, then the tunnel stopped and the state cleared. The certificate
-// stays. It runs while the fleet holds its relay lock: it only calls the relay's Signed and the Gateway.
+// stays. Ban sharing ends with the relay it was agreed for. It runs while the fleet holds its relay lock: it only calls
+// the relay's Signed and the Gateway.
 func (s *Service) Reset(ctx context.Context) {
+	s.mu.Lock()
+	if g, err := s.guardLocked(); err == nil && (g.ShareBans || !g.ShareBansAt.IsZero()) {
+		next := *g
+		next.ShareBans, next.ShareBansAt = false, time.Time{}
+		if err := s.storeGuardLocked(next); err != nil {
+			s.log("share: cannot save the protection settings", err)
+		}
+	}
+	s.relayOK, s.relayInfo = nil, RelayProtection{}
+	s.mu.Unlock()
 	st := s.read()
 	if st.Name == "" {
 		return

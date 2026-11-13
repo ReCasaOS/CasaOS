@@ -242,3 +242,28 @@ func TestReportsSkipTheAppsAllowList(t *testing.T) {
 		t.Fatalf("sent %v", keys)
 	}
 }
+
+// Leaving the relay ends the ban sharing it was agreed for, with or without a name: another relay must be agreed to again.
+func TestResetEndsBanSharing(t *testing.T) {
+	for _, named := range []bool{true, false} {
+		f := sharing(t, 2, noContent)
+		if !named {
+			if err := saveState(f.state, State{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f.s.Reset(context.Background())
+		if saved, _ := loadGuard(f.s.guardPath()); saved.ShareBans || !saved.ShareBansAt.IsZero() {
+			t.Fatalf("named %v: saved %+v", named, saved)
+		}
+		view, err := f.s.GuardView(context.Background())
+		if r := view.Relay; err != nil || r.Supported || r.ShareBans || r.CommunitySize != 0 {
+			t.Fatalf("named %v: %+v %v", named, r, err)
+		}
+		before := len(*f.relay)
+		f.tickReports(t)
+		if len(*f.relay) != before {
+			t.Fatalf("named %v: the relay was called", named)
+		}
+	}
+}
