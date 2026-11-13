@@ -24,7 +24,7 @@ type Installed struct{ Name, Title, Port, Scheme string }
 
 // List returns the installed apps, sorted by name.
 func (a Apps) List(ctx context.Context) ([]Installed, error) {
-	status, data, err := internalCall(ctx, a.RuntimePath(), external.AppManageURLFilename, http.MethodGet, "/v2/app_management/compose", nil)
+	status, data, err := internalCall(ctx, a.RuntimePath(), external.AppManageURLFilename, http.MethodGet, "/v2/app_management/compose", nil, callTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("AppManagement: %w", err)
 	}

@@ -5,10 +5,14 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"math/rand/v2"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,11 +45,13 @@ type Service struct {
 	Gateway     Gateway
 	Apps        Apps
 	ACME        *ACME
+	Geo         *GeoFetcher
 	BoxKey      func() (ed25519.PrivateKey, error)
 	RelayURL    func() (string, bool)
 	Dialer      *websocket.Dialer // nil → Dial's default
 	Log         func(msg string, err error)
 	Now         func() time.Time
+	Alert       func(key, sentence string, problem bool) // nil: no alerts; pkg/alerts' ShareGuardProblem
 
 	// The waits, set by New; tests shorten them.
 	backoffMin, backoffMax time.Duration // tunnel redial backoff
@@ -57,6 +63,7 @@ type Service struct {
 	ops      chan struct{} // held by the operations that change the shares, across their HTTP calls
 	kick     chan struct{} // wakes the tunnel loop
 	resyncCh chan struct{} // wakes the resync loop
+	geoCh    chan struct{} // wakes the DB-IP loop: a protection setting changed
 
 	mu           sync.Mutex // guards share.json and what follows, never held across a network call
 	relayReason  string     // "", "relay" or "master": the last answer of the relay
@@ -66,6 +73,9 @@ type Service struct {
 	revoked      bool               // a 4403: no dial until a Share
 	cancelTunnel context.CancelFunc // ends the tunnel being dialled or served
 	running      bool               // a Run is under way
+	guard        *GuardState        // the one copy of share-guard.json, loaded at first use
+	guardUnsaved bool               // guard is a first start's, not on disk yet: a box that never shared keeps no file
+	waveApps     map[string]bool    // the apps a wave alert was raised for at the last resync
 }
 
 // Default is the box's own; main wires its funcs.
@@ -76,11 +86,12 @@ func New(root string) *Service {
 	s := &Service{Root: root, Relay: &Relay{},
 		backoffMin: time.Second, backoffMax: 5 * time.Minute, replacedWait: 30 * time.Second, longSession: time.Minute,
 		retryMin: 10 * time.Second, tick: 10 * time.Minute, probeEvery: time.Minute,
-		ops: make(chan struct{}, 1), kick: make(chan struct{}, 1), resyncCh: make(chan struct{}, 1)}
+		ops: make(chan struct{}, 1), kick: make(chan struct{}, 1), resyncCh: make(chan struct{}, 1), geoCh: make(chan struct{}, 1)}
 	s.ACME = &ACME{TXT: s.Relay,
 		KeyFile:     filepath.Join(root, "var/lib/casaos/tls/share.key"),
 		CertFile:    filepath.Join(root, "var/lib/casaos/tls/share.crt"),
 		AccountFile: filepath.Join(root, "var/lib/casaos/fleet/acme-account.json")}
+	s.Geo = &GeoFetcher{Dir: filepath.Join(root, "var/lib/casaos/geo"), BaseURL: geoBaseURL, Now: s.now}
 	runtimePath := func() string {
 		if s.RuntimePath == nil {
 			return ""
@@ -303,7 +314,19 @@ func (s *Service) Share(ctx context.Context, composeName string) error {
 			return ErrLabelTaken{Other: other}
 		}
 	}
-	if err := s.Gateway.SetHost(ctx, label+"."+st.Host, target(app)); err != nil {
+	_, wasShared := st.Apps[composeName]
+	if !wasShared {
+		if err := s.forgetApp(composeName); err != nil {
+			return err
+		}
+	}
+	st.Apps[composeName] = App{Port: app.Port, Scheme: app.Scheme} // st is this call's copy: the config lists the new host
+	if err := s.pushGuardFor(ctx, st); err != nil && (!errors.Is(err, ErrGatewayNoGuard) || s.isCode(composeName)) {
+		s.wakeResync() // brings back the code hosts the failed push took off
+		return err
+	}
+	host := appHost(label, st.Host)
+	if err := s.Gateway.SetHost(ctx, host, target(app)); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -318,6 +341,11 @@ func (s *Service) Share(ctx context.Context, composeName string) error {
 		cur.Apps[composeName] = App{Port: app.Port, Scheme: app.Scheme}
 		return true
 	})
+	if reset || (err != nil && !wasShared) { // the host must not outlive a share that did not happen
+		if derr := s.Gateway.DeleteHost(ctx, host); derr != nil && !errors.Is(derr, ErrGatewayNoShare) {
+			s.log("share: cannot delete a host route", derr)
+		}
+	}
 	if reset {
 		return ErrNoName
 	}
@@ -325,6 +353,33 @@ func (s *Service) Share(ctx context.Context, composeName string) error {
 		s.ACME.Wake()
 	}
 	return err
+}
+
+// forgetApp drops what the guard file still holds of an app that is not shared (left by a Reset, a name claimed
+// again or an unreadable file), saved before the push: an app shared anew starts open, with nobody.
+func (s *Service) forgetApp(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, err := s.guardLocked()
+	if err != nil {
+		return err
+	}
+	next := *g
+	next.Apps, next.People = maps.Clone(g.Apps), slices.Clone(g.People)
+	_, stale := next.Apps[name]
+	delete(next.Apps, name)
+	for i, p := range next.People {
+		if slices.Contains(p.Apps, name) {
+			next.People[i].Apps, stale = slices.DeleteFunc(slices.Clone(p.Apps), func(a string) bool { return a == name }), true
+		}
+	}
+	if !stale {
+		return nil
+	}
+	if err := s.storeGuardLocked(next); err != nil {
+		return fmt.Errorf("the protection settings cannot be saved: %w", err)
+	}
+	return nil
 }
 
 // Unshare stops publishing an app; an app that is not shared is fine.
@@ -336,23 +391,46 @@ func (s *Service) Unshare(ctx context.Context, composeName string) error {
 	return s.unshareLocked(ctx, composeName)
 }
 
+// unshareLocked takes the app from every person and pushes that before the host goes. The app's own settings go
+// last: until the host is gone and share.json says so, a code app must stay a code app.
 func (s *Service) unshareLocked(ctx context.Context, composeName string) error {
 	st := s.read()
 	if _, ok := st.Apps[composeName]; !ok {
 		return nil
 	}
+	s.mu.Lock()
+	if g, err := s.guardLocked(); err == nil { // else an unsaved reset: no people left
+		for i := range g.People {
+			g.People[i].Apps = slices.DeleteFunc(g.People[i].Apps, func(a string) bool { return a == composeName })
+		}
+		s.saveGuardLocked()
+	}
+	s.mu.Unlock()
+	if err := s.pushGuardFor(ctx, st); err != nil && !errors.Is(err, ErrGatewayNoGuard) {
+		s.log("share: cannot push the protection config", err) // the host goes all the same
+		s.wakeResync()
+	}
 	if label, err := Label(composeName); err == nil {
-		if err := s.Gateway.DeleteHost(ctx, label+"."+st.Host); err != nil && !errors.Is(err, ErrGatewayNoShare) {
+		if err := s.Gateway.DeleteHost(ctx, appHost(label, st.Host)); err != nil && !errors.Is(err, ErrGatewayNoShare) {
 			return err
 		}
 	}
-	return s.update(func(cur *State) bool {
+	if err := s.update(func(cur *State) bool {
 		if _, ok := cur.Apps[composeName]; !ok {
 			return false
 		}
 		delete(cur.Apps, composeName)
 		return true
-	})
+	}); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if g, err := s.guardLocked(); err == nil {
+		delete(g.Apps, composeName)
+		s.saveGuardLocked()
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // StopAll unshares every app; the name stays.
@@ -391,7 +469,7 @@ func (s *Service) Reset(ctx context.Context) {
 func (s *Service) deleteHosts(ctx context.Context, st State) {
 	for name := range st.Apps {
 		if label, err := Label(name); err == nil {
-			if err := s.Gateway.DeleteHost(ctx, label+"."+st.Host); err != nil && !errors.Is(err, ErrGatewayNoShare) {
+			if err := s.Gateway.DeleteHost(ctx, appHost(label, st.Host)); err != nil && !errors.Is(err, ErrGatewayNoShare) {
 				s.log("share: cannot delete a host route", err)
 			}
 		}
@@ -425,10 +503,14 @@ func (s *Service) OnAppEvent(name string, properties map[string]string) {
 			}
 		}()
 	case "app:install-end", "app:apply-changes-end":
-		select {
-		case s.resyncCh <- struct{}{}:
-		default:
-		}
+		s.wakeResync()
+	}
+}
+
+func (s *Service) wakeResync() {
+	select {
+	case s.resyncCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -443,7 +525,7 @@ func (s *Service) Run(ctx context.Context) {
 		return
 	}
 	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
-	loops := []func(context.Context){s.resyncLoop, s.tunnelLoop}
+	loops := []func(context.Context){s.resyncLoop, s.tunnelLoop, s.geoLoop}
 	if s.ACME != nil {
 		loops = append(loops, func(ctx context.Context) { s.ACME.Loop(ctx, s.wildcard, time.Hour) })
 	}
@@ -485,9 +567,14 @@ func (s *Service) resyncLoop(ctx context.Context) {
 	}
 }
 
-// resync registers every shared app's host again with its current target (the Gateway forgets its hosts at
-// each restart) and unshares the apps that are gone. An error leaves the state as it is.
+// resync pushes the protection config, unshares the apps that are gone (pushing again then), then registers every
+// shared app's host again with its current target (the Gateway forgets its hosts at each restart). When the push
+// fails, the hosts of code apps stay off the Gateway and the error is returned, to retry sooner. An error leaves the
+// state as it is. A reset of the guard file is said first, shared apps or not.
 func (s *Service) resync(ctx context.Context) error {
+	if s.Alert != nil && s.GuardReset() {
+		s.Alert("share:guard-reset", guardResetSentence, true)
+	}
 	if len(s.read().Apps) == 0 {
 		return nil
 	}
@@ -499,6 +586,9 @@ func (s *Service) resync(ctx context.Context) error {
 	if st.Name == "" {
 		return nil
 	}
+	// before anything that can return early: a Gateway downgraded meanwhile serves the code hosts open, and the
+	// failed push takes them off
+	pushErr := s.pushGuardFor(ctx, st)
 	installed, err := s.Apps.List(ctx)
 	if err != nil {
 		return err
@@ -506,12 +596,23 @@ func (s *Service) resync(ctx context.Context) error {
 	if len(installed) == 0 { // AppManagement answers an empty list while it loads at boot: not an uninstall
 		return errors.New("AppManagement lists no app yet")
 	}
-	for name, was := range st.Apps {
-		i := slices.IndexFunc(installed, func(a Installed) bool { return a.Name == name })
-		if i < 0 || installed[i].Port == "" {
+	unshared := false
+	for name := range st.Apps {
+		if i := slices.IndexFunc(installed, func(a Installed) bool { return a.Name == name }); i < 0 || installed[i].Port == "" {
 			if err := s.unshareLocked(ctx, name); err != nil {
 				return err
 			}
+			unshared = true
+		}
+	}
+	if unshared {
+		st = s.read()
+		pushErr = s.pushGuardFor(ctx, st)
+	}
+	s.guardAlerts(ctx, st)
+	for name, was := range st.Apps {
+		i := slices.IndexFunc(installed, func(a Installed) bool { return a.Name == name })
+		if i < 0 || installed[i].Port == "" {
 			continue
 		}
 		in := installed[i]
@@ -519,7 +620,10 @@ func (s *Service) resync(ctx context.Context) error {
 		if err != nil {
 			continue // never shared under a bad label
 		}
-		if err := s.Gateway.SetHost(ctx, label+"."+st.Host, target(in)); err != nil {
+		if pushErr != nil && s.isCode(name) {
+			continue // the failed push took its host off
+		}
+		if err := s.Gateway.SetHost(ctx, appHost(label, st.Host), target(in)); err != nil {
 			return err
 		}
 		if now := (App{Port: in.Port, Scheme: in.Scheme}); now != was {
@@ -534,7 +638,51 @@ func (s *Service) resync(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	if errors.Is(pushErr, ErrGatewayNoGuard) {
+		return nil // an older Gateway: its open hosts as before, nothing to retry
+	}
+	return pushErr
+}
+
+const guardResetSentence = "The protection settings of shared apps could not be read: every shared app now asks for an access code. Check the people and the apps in Remote access."
+
+// guardAlerts says what the Gateway reports of the protection: ban waves and a missing country file. It runs after
+// each push; a Gateway that cannot be asked says nothing.
+func (s *Service) guardAlerts(ctx context.Context, st State) {
+	if s.Alert == nil {
+		return
+	}
+	gw, supported, err := s.Gateway.GuardStatus(ctx)
+	if err != nil || !supported {
+		return
+	}
+	s.mu.Lock()
+	g, gerr := s.guardLocked()
+	needGeo := false
+	if gerr == nil && g.Protection {
+		for name := range st.Apps {
+			needGeo = needGeo || Effective(g.Box, g.Apps[name].Override).Countries.Mode != "none"
+		}
+	}
+	was, now := s.waveApps, map[string]bool{}
+	for _, w := range gw.Waves {
+		now[w.App] = true
+	}
+	s.waveApps = now
+	s.mu.Unlock()
+	for _, w := range gw.Waves {
+		s.Alert("share:wave:"+w.App, fmt.Sprintf("The shared app %s is under attack: %d addresses were banned in 10 minutes.", w.App, w.Bans), true)
+	}
+	for app := range was {
+		if !now[app] {
+			s.Alert("share:wave:"+app, "Resolved: the attack on the shared app "+app+" has calmed down.", false)
+		}
+	}
+	if needGeo && !gw.Geo.Country {
+		s.Alert("share:geo", "Country filtering of shared apps is not working: the country database could not be downloaded.", true)
+	} else {
+		s.Alert("share:geo", "Resolved: country filtering of shared apps works again.", false)
+	}
 }
 
 // tunnelLoop keeps the tunnel up while a name and an app are shared.
@@ -665,6 +813,207 @@ func (s *Service) changed() {
 }
 
 func (s *Service) statePath() string { return filepath.Join(s.Root, "var/lib/casaos/fleet", StateFile) }
+
+func (s *Service) guardPath() string { return filepath.Join(s.Root, "var/lib/casaos/fleet", GuardFile) }
+
+// guardLocked is the protection state, loaded at first use and kept; s.mu is held. A file that cannot be read gives
+// every shared app access "code" and an error, writes nothing and keeps nothing: the next call reads again. A file
+// read but unusable closes every shared app the same way (defaults would open the protected ones): its bytes are set
+// aside, then the reset, marked with ResetAt, is written over it and its alert raised. When either write fails, the
+// reset comes back with an error and is not kept: the file stays, so the next call resets again rather than finding
+// no file. No file gives a first start's state, saved once share.json has a name or an app.
+func (s *Service) guardLocked() (*GuardState, error) {
+	if s.guard != nil {
+		if s.guardUnsaved {
+			s.saveFreshLocked()
+		}
+		return s.guard, nil
+	}
+	closeAll := func(g *GuardState) {
+		for name := range s.readLocked().Apps {
+			g.Apps[name] = GuardApp{Access: "code"}
+		}
+	}
+	path := s.guardPath()
+	data, err := readGuardFile(path)
+	g, corrupt, missing := newGuard(), false, false
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		missing = true
+	case err != nil: // perhaps passing: never lose the owner's settings over it
+		closeAll(&g)
+		return &g, fmt.Errorf("the protection settings cannot be read: %w", err)
+	default:
+		g, corrupt = parseGuard(data)
+	}
+	if corrupt {
+		closeAll(&g)
+		aside := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
+		if err := copyGuardFile(aside, data, 0o600); err != nil { // never overwrite what could not be kept: as a read error
+			return &g, fmt.Errorf("the protection settings are unusable and cannot be set aside: %w", err)
+		}
+		g.ResetAt = s.now().UTC()
+		if err := saveGuardFile(path, g); err != nil {
+			os.Remove(aside) // the next call sets the file aside again
+			return &g, fmt.Errorf("the protection settings were reset but cannot be saved: %w", err)
+		}
+		s.guard = &g
+		if s.Alert != nil { // the hook only queues the message: safe under s.mu
+			s.Alert("share:guard-reset", guardResetSentence, true)
+		}
+		return s.guard, nil
+	}
+	s.guard, s.guardUnsaved = &g, missing
+	if missing {
+		s.saveFreshLocked()
+	}
+	return s.guard, nil
+}
+
+// readGuardFile is os.ReadFile; tests make it fail.
+var readGuardFile = os.ReadFile
+
+// copyGuardFile is os.WriteFile; tests make it fail.
+var copyGuardFile = os.WriteFile
+
+// saveGuardFile is saveGuard; tests make it fail.
+var saveGuardFile = saveGuard
+
+// storeGuardLocked saves next, then keeps it: memory never runs ahead of the disk. s.guard is loaded.
+func (s *Service) storeGuardLocked(next GuardState) error {
+	if err := saveGuardFile(s.guardPath(), next); err != nil {
+		return err
+	}
+	*s.guard, s.guardUnsaved = next, false
+	return nil
+}
+
+func (s *Service) saveGuardLocked() {
+	if err := s.storeGuardLocked(*s.guard); err != nil {
+		s.log("share: cannot save the protection settings", err)
+	}
+}
+
+// saveFreshLocked keeps a first start's state, its secret above all, once share.json has a name or an app.
+func (s *Service) saveFreshLocked() {
+	if st := s.readLocked(); st.Name != "" || len(st.Apps) > 0 {
+		s.saveGuardLocked()
+	}
+}
+
+// GuardReset is whether share-guard.json was found unusable and reset, until the owner's next write the Gateway takes.
+func (s *Service) GuardReset() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, _ := s.guardLocked() // a reset that could not be saved counts too
+	return !g.ResetAt.IsZero()
+}
+
+// isCode is whether app asks for a code; with an unsaved reset, every shared app does.
+func (s *Service) isCode(app string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, _ := s.guardLocked()
+	return accessOf(g.Apps[app]) == "code"
+}
+
+// pushGuardFor drops the stray hosts, then sends the config for the apps st shares. A Gateway without the guard gives
+// ErrGatewayNoGuard, one that refuses the config an ErrGuard bad_policy. Any failure, those and an unsaved reset or a
+// failed drop too (nothing is pushed then), takes the hosts of st's code apps off the Gateway, which cannot ask for
+// their code.
+func (s *Service) pushGuardFor(ctx context.Context, st State) error {
+	s.mu.Lock()
+	g, err := s.guardLocked()
+	cfg := buildGatewayGuard(st, *g)
+	s.mu.Unlock()
+	if err == nil {
+		if err = s.dropStrays(ctx, st); err == nil {
+			if err = s.Gateway.SetGuard(ctx, cfg); err == nil {
+				return nil
+			}
+		}
+	}
+	for host, a := range cfg.Apps {
+		if a.Access == "code" {
+			if err := s.Gateway.DeleteHost(ctx, host); err != nil && !errors.Is(err, ErrGatewayNoShare) {
+				s.log("share: cannot take a protected app off the Gateway", err)
+			}
+		}
+	}
+	return err
+}
+
+// dropStrays deletes the Gateway's hosts under the box's share domain that st does not share. A Reset or a new
+// name deletes hosts best effort, and a host left behind would drop out of the pushed config, so be served open.
+// It runs before the push, so such a host is never served while missing from it.
+func (s *Service) dropStrays(ctx context.Context, st State) error {
+	domain := st.Domain
+	if domain == "" {
+		domain = st.Host
+	}
+	suffix := "." + strings.TrimSuffix(strings.ToLower(domain), ".")
+	if suffix == "." {
+		return nil
+	}
+	hosts, err := s.Gateway.Hosts(ctx)
+	if errors.Is(err, ErrGatewayNoShare) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	shared := map[string]bool{}
+	for name := range st.Apps {
+		if label, err := Label(name); err == nil {
+			shared[appHost(label, st.Host)] = true
+		}
+	}
+	for _, h := range hosts {
+		if strings.HasSuffix(strings.ToLower(h), suffix) && !shared[strings.ToLower(h)] {
+			if err := s.Gateway.DeleteHost(ctx, h); err != nil && !errors.Is(err, ErrGatewayNoShare) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// buildGatewayGuard is the Gateway's config for the apps st shares, open ones too (an absent host would keep the
+// access cookie unstripped), each under its effective policy; people keep only the shared apps.
+func buildGatewayGuard(st State, g GuardState) GatewayGuardConfig {
+	cfg := GatewayGuardConfig{Secret: g.Secret, Protection: g.Protection, Apps: map[string]GatewayGuardApp{}, People: []GatewayPerson{}}
+	for name := range st.Apps {
+		label, err := Label(name)
+		if err != nil {
+			continue // never shared under a bad label
+		}
+		a := g.Apps[name]
+		cfg.Apps[appHost(label, st.Host)] = GatewayGuardApp{App: name, Access: accessOf(a), Policy: Effective(g.Box, a.Override)}
+	}
+	for _, p := range g.People {
+		apps := []string{}
+		for _, name := range p.Apps {
+			if _, ok := st.Apps[name]; ok {
+				apps = append(apps, name)
+			}
+		}
+		cfg.People = append(cfg.People, GatewayPerson{ID: p.ID, Gen: p.Gen, CodeHash: p.CodeHash, Apps: apps})
+	}
+	return cfg
+}
+
+// accessOf is "open" when unset, and "code" for anything but "open".
+func accessOf(a GuardApp) string {
+	if a.Access == "" || a.Access == "open" {
+		return "open"
+	}
+	return "code"
+}
+
+// appHost is the host the Gateway serves an app on, normalised as the Gateway keys it.
+func appHost(label, host string) string {
+	return strings.TrimSuffix(strings.ToLower(label+"."+host), ".")
+}
 
 func (s *Service) read() State {
 	s.mu.Lock()

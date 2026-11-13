@@ -232,6 +232,7 @@ func main() {
 	// but ShareRelay's own: Reset runs from OnLeavingRelay, with the fleet's relay mutex held.
 	share.Default.RuntimePath = func() string { return config.CommonInfo.RuntimePath }
 	share.Default.RelayURL = fleet.Default.ShareRelay
+	share.Default.Alert = alerts.Default.ShareGuardProblem
 	share.Default.BoxKey = fleet.Default.BoxKey
 	share.Default.Relay.Signed = func(ctx context.Context, method, path string, body []byte) (int, []byte, time.Duration, error) {
 		relay, ok := fleet.Default.ShareRelay()
