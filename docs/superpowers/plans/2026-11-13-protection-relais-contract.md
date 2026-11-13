@@ -117,7 +117,7 @@ Body (≤ 1 MiB):
   "refusals": [ { "hour": "2026-11-13T10:00:00Z", "name": "mybox", "key": "…", "reason": "external", "source": "FireHOL level 1", "count": 3 } ] }
 ```
 
-Refusal counts add up on (hour, name, key, reason, source).
+Refusal counts add up on (hour, name, key, reason, source). Past 1 000 distinct keys for one name in one hour, `share` folds further refusals into a row with `"key": ""` (every other address); enrolment keeps it, `/admin` shows "other addresses", `GET /v1/share/refusals` returns it and the dashboard shows "Other addresses".
 
 ## Core ↔ dashboard
 
