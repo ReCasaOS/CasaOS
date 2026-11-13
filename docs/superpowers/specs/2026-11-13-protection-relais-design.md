@@ -57,13 +57,15 @@ Ce document est le « projet 2 » annoncé dans la spec côté box. Il touche le
 
 Pour les bans par pays et pour repérer les ASN, `enrolment` télécharge lui aussi **DB-IP Lite** (pays et ASN, MMDB, CC BY 4.0, une fois par mois, remplacement par renommage), comme le cœur de la box (mon choix : même source, même licence). Le lien « IP Geolocation by DB-IP » figure sur les pages de `/admin` qui affichent un pays ou un réseau.
 
+`share` n'a pas DB-IP : `enrolment` traduit les bans de pays et d'ASN en plages dans l'instantané et les retraduit à chaque mise à jour de DB-IP (mon choix).
+
 ### À qui s'applique quoi
 
 | Source | S'applique à |
 |---|---|
 | Liste blanche du relais | tout le monde (jamais coupé) |
 | Plafonds de connexions (existant) | tout le monde |
-| Bans manuels de l'exploitant (adresse, plage, ASN, pays) | **tous les noms partagés**, y compris les box pas à jour (mon choix : c'est une décision de l'exploitant du relais, comme l'interdiction d'un nom) |
+| Bans manuels de l'exploitant (adresse, plage, ASN, pays) | **tous les noms partagés**, y compris les box pas à jour (mon choix : c'est une décision de l'exploitant du relais, comme l'interdiction d'un nom), **quel que soit l'interrupteur de filtrage** de la box |
 | Listes externes | les box dont le **filtrage par le relais** est activé |
 | Liste communautaire | les box dont le filtrage est activé **et** qui **partagent leurs bans** |
 
@@ -102,7 +104,20 @@ Ordre (mon choix) :
 - **ASN, proposé seulement** (propriétaire « si besoin », règle de mon choix) : quand au moins 10 plages d'un même ASN sont bannies en même temps, `/admin` le signale avec un bouton « Bannir ce réseau » ; jamais automatiquement.
 - **Pays : manuel uniquement**, dans `/admin`.
 - **Garde-fous** : la liste blanche du relais l'emporte toujours (ni l'adresse ni sa plage) ; une adresse privée ou réservée n'est jamais retenue ; les signalements d'une flotte ne comptent qu'une fois par adresse et par 24 h.
-- **Données personnelles** : signalements bruts gardés **30 jours** puis supprimés ; bans communautaires supprimés à leur fin ; bans définitifs gardés jusqu'à leur levée, avec date et raisons, visibles dans une liste à part dans `/admin` (adresses de particuliers qui changent de main : à revoir).
+- **Contre l'abus** (propriétaire, 2026-11-13 : n'importe qui peut créer une flotte sur le relais, une seule personne avec deux flottes pourrait donc faire bannir n'importe qui) — un signalement ne compte que si **les deux** conditions sont vraies :
+  1. l'adresse a réellement contacté **cette box par le relais** dans les 24 h avant le début du ban : `share` note chaque connexion acceptée (clé d'adresse, box) et `enrolment` la garde **24 h**, puis la supprime ;
+  2. la flotte de la box a **au moins 7 jours** et **au moins un nom partagé**.
+  Un signalement qui ne remplit pas ces conditions est ignoré sans erreur (la box n'a pas à le savoir).
+- **Données personnelles** : connexions acceptées (adresse, box) gardées **24 h** ; signalements bruts gardés **30 jours** puis supprimés ; bans communautaires supprimés à leur fin ; bans définitifs gardés jusqu'à leur levée, avec date et raisons, visibles dans une liste à part dans `/admin` (adresses de particuliers qui changent de main : à revoir).
+
+#### Règles précises (mon choix, après relecture)
+
+- **Clé** : l'adresse IPv4 exacte ; en IPv6, le /64, partout dans la liste communautaire (signalement, comptage, filtrage). Plage automatique : 5 clés distinctes dans un même /24 (IPv4) ou /48 (IPv6).
+- **Une « fois »** = un nouveau ban communautaire, ouvert quand le seuil (2 flottes sur 24 h glissantes) est atteint alors qu'aucun ban n'est en cours pour cette clé. Un signalement pendant un ban en cours ne le prolonge ni ne l'aggrave. **Récidive** : le nouveau ban commence moins de 30 jours après la **fin** du précédent ; sinon on repart à 24 h.
+- **Plages** : un ban de plage a son propre compteur de récidive et les mêmes paliers (3ᵉ fois définitif) ; il dure tout son palier même si les adresses qui l'ont déclenché expirent ; les bans de ces adresses continuent leur propre vie.
+- **Retrait de l'accord** : la box cesse d'envoyer ; le relais supprime ses signalements (ils ne comptent plus pour de nouveaux bans) ; les bans communautaires déjà ouverts vont à leur terme. Les signalements sont donc rangés par box.
+- **Doublons** : le cœur retient ce qu'il a déjà envoyé (clé, raison, début du ban) ; le relais ignore un signalement identique de la même box.
+- **Contribution** d'une flotte : les bans communautaires ouverts ce mois-ci dont un des signalements déclencheurs vient d'elle.
 
 ### Incitation à partager (propriétaire : « incitatif »)
 
@@ -128,9 +143,9 @@ Dans le style des pages actuelles du relais :
 - **Cœur** : les deux réglages dans l'état de protection (`share-guard.json`) avec la date de l'accord ; poussés au relais ; envoi des bans démarrés ; lecture au relais, pour le dashboard, du nombre d'adresses de la liste communautaire, de la contribution de la flotte et des refus du relais pour ce nom (7 jours).
 - **Dashboard** :
   - dans la section Protection, l'interrupteur « Filtrage par le relais » (activé) et la carte « Rejoindre la protection communautaire » ou, une fois accepté, l'interrupteur « Partager mes bans » et la ligne de contribution ;
-  - le journal montre aussi les **refus du relais** pour cette box (raison « Coupé au relais » et la source) ;
+  - le journal montre aussi les **refus du relais** pour les noms de cette box, quelle que soit la source, y compris ban manuel et nom suspendu (raison « Coupé au relais » et la source) ; une box ne voit jamais les refus d'un autre nom (mon choix : le propriétaire doit pouvoir voir ce que l'exploitant coupe chez lui) ;
   - le rappel après une vague de bans.
-- Une box dont le **relais est trop ancien** (routes absentes) : le dashboard cache ces réglages, comme pour un cœur trop ancien.
+- Une box dont le **relais est trop ancien** (404 sur les nouvelles routes) : le dashboard cache ces réglages, comme pour un cœur trop ancien. Une erreur réseau ou un 5xx n'est pas un relais trop ancien : le cœur réessaie à la resync suivante et garde le dernier état connu ; tant qu'il n'a rien poussé, le relais applique l'absence de réglage (filtrage non, partage non) (mon choix).
 
 ## Hors de ce document
 
@@ -152,7 +167,7 @@ Dans le style des pages actuelles du relais :
 
 - **Faux positifs des listes externes** (IP d'opérateurs mobiles partagées) : seuils prudents, listes coupables une à une, liste blanche, journal des refus visible par la box.
 - **Bans définitifs d'adresses dynamiques** : liste à part dans `/admin`, avec date et raisons.
-- **Mémoire de `share`** : plusieurs listes de centaines de milliers d'entrées ; le constructeur mesure la mémoire avec 500 000 entrées et fixe un plafond total.
+- **Mémoire de `share`** : plusieurs listes de centaines de milliers d'entrées ; le constructeur mesure la mémoire avec 500 000 entrées et fixe un plafond total. Une liste externe qui le ferait dépasser est refusée entière, comme pour son propre maximum, et `/admin` le dit ; la liste communautaire et les bans manuels ne sont jamais écartés pour ce plafond (mon choix).
 - **Charge d'`enrolment`** : téléchargements et calcul de l'instantané hors des requêtes.
 
 ## Tests et preuve
