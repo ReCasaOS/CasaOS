@@ -267,3 +267,23 @@ func TestResetEndsBanSharing(t *testing.T) {
 		}
 	}
 }
+
+// A relay joined after leaving another gets the box's current bans at once: what the old one took or asked to wait for
+// does not carry over.
+func TestResetStartsReportsAfresh(t *testing.T) {
+	f := sharing(t, 2, noContent, protectionSharing, noContent)
+	f.tickReports(t)
+	f.s.reportAfter = f.now.Add(time.Hour) // the old relay was busy
+	if err := saveState(f.state, State{}); err != nil {
+		t.Fatal(err)
+	}
+	f.s.Reset(context.Background())
+	on := true
+	if _, err := f.s.SetRelay(context.Background(), nil, &on, true); err != nil {
+		t.Fatal(err)
+	}
+	f.tickReports(t)
+	if p := f.posts(); len(p) != 2 || p[0].body != p[1].body {
+		t.Fatalf("posts %+v", p)
+	}
+}

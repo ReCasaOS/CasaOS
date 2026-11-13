@@ -61,7 +61,8 @@ func (r *Relay) signed(ctx context.Context, method, path string, body []byte, ma
 	r.mu.Unlock()
 	g.Lock()
 	defer g.Unlock()
-	if time.Now().Unix() <= g.done.Unix() && !sleep(ctx, time.Until(g.done.Truncate(time.Second).Add(time.Second)), nil) {
+	// at most a second: a clock set back leaves done ahead of now
+	if time.Now().Unix() <= g.done.Unix() && !sleep(ctx, min(time.Until(g.done.Truncate(time.Second).Add(time.Second)), time.Second), nil) {
 		return 0, nil, 0, ctx.Err()
 	}
 	status, reply, retry, err := r.Signed(ctx, method, path, body, maxReply)

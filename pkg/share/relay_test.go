@@ -290,3 +290,17 @@ func TestNoTwoRequestsSignedInTheSameSecond(t *testing.T) {
 		}
 	}
 }
+
+// A clock set back leaves the last request's second ahead of now: the wait stays within one second.
+func TestClockSetBackWaitsAtMostASecond(t *testing.T) {
+	r := &Relay{Signed: func(context.Context, string, string, []byte, int) (int, []byte, time.Duration, error) {
+		return 200, []byte("[]"), 0, nil
+	}}
+	r.gates = map[string]*pathGate{"GET /v1/share/refusals": {done: time.Now().Add(30 * time.Second)}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err := r.Refusals(ctx); err != nil || time.Since(start) > 1500*time.Millisecond {
+		t.Fatalf("%v after %s", err, time.Since(start))
+	}
+}

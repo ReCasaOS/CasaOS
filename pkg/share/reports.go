@@ -84,10 +84,14 @@ func pickReports(bans []gatewayBan, allow func(app, key string) bool, sent map[s
 // it is not busy. A batch the relay refuses is not sent again; any other failure leaves it for the next call, or for
 // the end of a busy relay's Retry-After.
 func (s *Service) reportOnce(ctx context.Context) error {
+	s.mu.Lock()
+	if s.reportFresh { // the box left its relay: a new one gets the current bans at once
+		s.reported, s.reportAfter, s.reportFresh = nil, time.Time{}, false
+	}
 	if s.now().Before(s.reportAfter) {
+		s.mu.Unlock()
 		return nil
 	}
-	s.mu.Lock()
 	g, err := s.guardLocked()
 	if err != nil || !g.ShareBans || s.relayOK == nil || !*s.relayOK || !s.relayInfo.ShareBans { // without it the relay drops them
 		s.mu.Unlock()

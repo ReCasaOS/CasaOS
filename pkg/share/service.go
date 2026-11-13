@@ -81,6 +81,7 @@ type Service struct {
 
 	reported    map[string]time.Time // bans already sent (key|since) and when; memory only, a restart may resend a day
 	reportAfter time.Time            // a busy relay asked to wait until then; reportLoop's, as reported
+	reportFresh bool                 // set by Reset under mu: reportOnce forgets reported and reportAfter
 	reportCh    chan struct{}        // wakes reportLoop
 
 	wakeReports func() // set by the ban reporter: a ban sharing change should be looked at now; nil without one
@@ -473,7 +474,7 @@ func (s *Service) Reset(ctx context.Context) {
 			s.log("share: cannot save the protection settings", err)
 		}
 	}
-	s.relayOK, s.relayInfo = nil, RelayProtection{}
+	s.relayOK, s.relayInfo, s.reportFresh = nil, RelayProtection{}, true
 	s.mu.Unlock()
 	st := s.read()
 	if st.Name == "" {
