@@ -79,6 +79,9 @@ type Service struct {
 	relayInfo    RelayProtection    // the relay's last answer to the protection push
 	relayOK      *bool              // whether the relay has the protection routes: nil until it was asked
 
+	reported map[string]time.Time // bans already sent (key|since) and when; memory only, a restart may resend a day
+	reportCh chan struct{}       // wakes reportLoop
+
 	wakeReports func() // set by the ban reporter: a ban sharing change should be looked at now; nil without one
 }
 
@@ -90,7 +93,13 @@ func New(root string) *Service {
 	s := &Service{Root: root, Relay: &Relay{},
 		backoffMin: time.Second, backoffMax: 5 * time.Minute, replacedWait: 30 * time.Second, longSession: time.Minute,
 		retryMin: 10 * time.Second, tick: 10 * time.Minute, probeEvery: time.Minute,
-		ops: make(chan struct{}, 1), kick: make(chan struct{}, 1), resyncCh: make(chan struct{}, 1), geoCh: make(chan struct{}, 1)}
+		ops: make(chan struct{}, 1), kick: make(chan struct{}, 1), resyncCh: make(chan struct{}, 1), geoCh: make(chan struct{}, 1), reportCh: make(chan struct{}, 1)}
+	s.wakeReports = func() {
+		select {
+		case s.reportCh <- struct{}{}:
+		default:
+		}
+	}
 	s.ACME = &ACME{TXT: s.Relay,
 		KeyFile:     filepath.Join(root, "var/lib/casaos/tls/share.key"),
 		CertFile:    filepath.Join(root, "var/lib/casaos/tls/share.crt"),
@@ -529,7 +538,7 @@ func (s *Service) Run(ctx context.Context) {
 		return
 	}
 	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
-	loops := []func(context.Context){s.resyncLoop, s.tunnelLoop, s.geoLoop}
+	loops := []func(context.Context){s.resyncLoop, s.tunnelLoop, s.geoLoop, s.reportLoop}
 	if s.ACME != nil {
 		loops = append(loops, func(ctx context.Context) { s.ACME.Loop(ctx, s.wildcard, time.Hour) })
 	}

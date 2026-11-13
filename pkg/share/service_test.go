@@ -31,6 +31,7 @@ type fakeManagement struct {
 	fail     int
 	guard    int
 	status   string // when set, the body of GET /v1/gateway/guard
+	bans     string // when set, the body of GET /v1/gateway/guard/bans
 	putGuard int    // when set, the answer to PUT /v1/gateway/guard
 	putMsg   string // when set, the message of that answer
 	hosts    map[string]string
@@ -69,6 +70,10 @@ func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/gateway/guard" && m.status != "" {
 		io.WriteString(w, m.status)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/gateway/guard/bans" && m.bans != "" {
+		io.WriteString(w, m.bans)
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/gateway/hosts" {
