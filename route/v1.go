@@ -311,6 +311,8 @@ func InitV1Router() http.Handler {
 			v1ShareGroup.PUT("/guard/people/:id", v1.PutShareGuardPerson, headerTokenOnly)
 			v1ShareGroup.POST("/guard/people/:id/code", v1.PostShareGuardPersonCode, headerTokenOnly)
 			v1ShareGroup.DELETE("/guard/people/:id", v1.DeleteShareGuardPerson, headerTokenOnly)
+			v1ShareGroup.PUT("/guard/relay", v1.PutShareGuardRelay, headerTokenOnly)
+			v1ShareGroup.GET("/guard/relay-refusals", v1.GetShareGuardRelayRefusals)
 			v1ShareGroup.GET("/guard/events", v1.GetShareGuardEvents)
 			v1ShareGroup.GET("/guard/bans", v1.GetShareGuardBans)
 			v1ShareGroup.DELETE("/guard/bans/:key", v1.DeleteShareGuardBan, headerTokenOnly)

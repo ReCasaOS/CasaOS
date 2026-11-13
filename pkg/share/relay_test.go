@@ -22,6 +22,9 @@ func fakeRelay(replies ...reply) (*Relay, *[]sent) {
 	var calls []sent
 	r := &Relay{Signed: func(_ context.Context, method, path string, body []byte) (int, []byte, time.Duration, error) {
 		calls = append(calls, sent{method, path, string(body)})
+		if len(calls) > len(replies) { // not scripted: a relay that does not know the route
+			return 404, []byte("404 page not found\n"), 0, nil
+		}
 		rp := replies[len(calls)-1]
 		return rp.status, []byte(rp.body), rp.retry, rp.err
 	}}

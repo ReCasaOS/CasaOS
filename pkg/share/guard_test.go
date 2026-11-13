@@ -148,3 +148,15 @@ func TestLoadGuardCorrupt(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayFilterDefaultsOn(t *testing.T) {
+	off := false
+	for _, c := range []struct {
+		g    GuardState
+		want bool
+	}{{GuardState{}, true}, {GuardState{RelayFilter: &off}, false}} {
+		if got := c.g.relayFilter(); got != c.want {
+			t.Errorf("%+v: %v", c.g, got)
+		}
+	}
+}

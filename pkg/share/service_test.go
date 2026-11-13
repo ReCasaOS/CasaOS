@@ -735,9 +735,9 @@ var (
 )
 
 // twoShared is a fixture whose share.json holds jellyfin and nextcloud, both installed, with guard as share-guard.json (nil: none).
-func twoShared(t *testing.T, guard *GuardState) *fixture {
+func twoShared(t *testing.T, guard *GuardState, replies ...reply) *fixture {
 	t.Helper()
-	f := newFixture(t)
+	f := newFixture(t, replies...)
 	f.compose.set("nextcloud", "7580", "https")
 	if err := saveState(f.state, State{Name: "mybox", Host: "mybox.box.example.org", Domain: "box.example.org",
 		Apps: map[string]App{"jellyfin": {Port: "8096", Scheme: "http"}, "nextcloud": {Port: "7580", Scheme: "https"}}}); err != nil {

@@ -76,6 +76,10 @@ type Service struct {
 	guard        *GuardState        // the one copy of share-guard.json, loaded at first use
 	guardUnsaved bool               // guard is a first start's, not on disk yet: a box that never shared keeps no file
 	waveApps     map[string]bool    // the apps a wave alert was raised for at the last resync
+	relayInfo    RelayProtection    // the relay's last answer to the protection push
+	relayOK      *bool              // whether the relay has the protection routes: nil until it was asked
+
+	wakeReports func() // set by the ban reporter: a ban sharing change should be looked at now; nil without one
 }
 
 // Default is the box's own; main wires its funcs.
@@ -589,6 +593,9 @@ func (s *Service) resync(ctx context.Context) error {
 	// before anything that can return early: a Gateway downgraded meanwhile serves the code hosts open, and the
 	// failed push takes them off
 	pushErr := s.pushGuardFor(ctx, st)
+	if err := s.pushRelay(ctx); err != nil && !errors.Is(err, ErrWaitMaster) && !errors.Is(err, ErrRelayNoShare) {
+		s.log("share: cannot send the relay protection settings", err) // the next resync tries again
+	}
 	installed, err := s.Apps.List(ctx)
 	if err != nil {
 		return err
@@ -642,6 +649,34 @@ func (s *Service) resync(ctx context.Context) error {
 		return nil // an older Gateway: its open hosts as before, nothing to retry
 	}
 	return pushErr
+}
+
+// pushRelay sends the two relay settings and keeps the relay's answer. The caller holds the ops lock. A box with no relay
+// configured sends nothing; a relay without the routes is remembered as such.
+func (s *Service) pushRelay(ctx context.Context) error {
+	if _, ok := s.relayURL(); !ok || s.Relay.Signed == nil {
+		return nil
+	}
+	s.mu.Lock()
+	g, err := s.guardLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	filter, bans := g.relayFilter(), g.ShareBans
+	s.mu.Unlock()
+	p, err := s.Relay.SetProtection(ctx, filter, bans)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case err == nil:
+		ok := true
+		s.relayInfo, s.relayOK = p, &ok
+	case errors.Is(err, ErrRelayNoShare):
+		ok := false
+		s.relayInfo, s.relayOK = RelayProtection{}, &ok
+	} // any other failure keeps the last numbers
+	return err
 }
 
 const guardResetSentence = "The protection settings of shared apps could not be read: every shared app now asks for an access code. Check the people and the apps in Remote access."

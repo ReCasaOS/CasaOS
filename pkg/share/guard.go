@@ -88,7 +88,14 @@ type GuardState struct {
 	Apps       map[string]GuardApp `json:"apps"`
 	People     []Person            `json:"people"`
 	ResetAt    time.Time           `json:"reset_at,omitzero"` // the file was found unusable and reset; cleared by the owner's next write the Gateway takes
+
+	RelayFilter *bool     `json:"relay_filter,omitempty"` // the relay refuses known-bad addresses at the door; nil (an old file) is on
+	ShareBans   bool      `json:"share_bans"`             // this box's bans go to the other boxes, and theirs come back; the owner's consent
+	ShareBansAt time.Time `json:"share_bans_at,omitzero"` // when ShareBans went on
 }
+
+// relayFilter is whether the relay filters for this box: on unless the owner turned it off.
+func (g GuardState) relayFilter() bool { return g.RelayFilter == nil || *g.RelayFilter }
 
 func DefaultPolicy() Policy {
 	return Policy{

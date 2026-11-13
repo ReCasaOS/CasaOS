@@ -321,3 +321,41 @@ func TestReshareOnAnOldGatewayAnswersUnsupported(t *testing.T) {
 		t.Fatalf("share = %d %q", code, result.Message)
 	}
 }
+
+func TestShareGuardRelayRoutes(t *testing.T) {
+	s := useShare(t, claimed, true)
+	answer := func(status int, body string) {
+		s.Relay.Signed = func(_ context.Context, method, path string, _ []byte) (int, []byte, time.Duration, error) {
+			if path == "/v1/share/protection" {
+				return http.StatusOK, []byte(`{"relay_filter":true,"share_bans":true,"share_bans_at":null,"community_size":5,"contributed_month":0}`), 0, nil
+			}
+			return status, []byte(body), 0, nil
+		}
+	}
+	answer(http.StatusOK, `[{"hour":"2026-11-13T10:00:00Z","key":"203.0.113.7/32","reason":"external","source":"FireHOL level 1","count":12}]`)
+	rec := callFleetRec(t, GetShareGuardRelayRefusals, http.MethodGet, "/v1/share/guard/relay-refusals", "", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"count":12`) {
+		t.Fatalf("refusals = %d %s", rec.Code, rec.Body)
+	}
+	if code, result := callFleet(t, PutShareGuardRelay, http.MethodPut, "/v1/share/guard/relay", `{"share_bans":true}`, nil); code != http.StatusBadRequest || result.Message != "consent_required" {
+		t.Errorf("no consent = %d %q", code, result.Message)
+	}
+	if code, result := callFleet(t, PutShareGuardRelay, http.MethodPut, "/v1/share/guard/relay", `{}`, nil); code != http.StatusBadRequest || result.Message != "bad_request" {
+		t.Errorf("empty = %d %q", code, result.Message)
+	}
+	rec = callFleetRec(t, PutShareGuardRelay, http.MethodPut, "/v1/share/guard/relay", `{"share_bans":true,"consent":true}`, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"community_size":5`) || !strings.Contains(rec.Body.String(), `"share_bans":true`) {
+		t.Errorf("put = %d %s", rec.Code, rec.Body)
+	}
+	// a relay without the route: [] for the refusals, relay_unsupported for a change
+	s.Relay.Signed = func(context.Context, string, string, []byte) (int, []byte, time.Duration, error) {
+		return http.StatusNotFound, []byte("404 page not found\n"), 0, nil
+	}
+	rec = callFleetRec(t, GetShareGuardRelayRefusals, http.MethodGet, "/v1/share/guard/relay-refusals", "", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"data":[]`) {
+		t.Errorf("old relay refusals = %d %s", rec.Code, rec.Body)
+	}
+	if code, result := callFleet(t, PutShareGuardRelay, http.MethodPut, "/v1/share/guard/relay", `{"filter":false}`, nil); code != http.StatusBadRequest || result.Message != "relay_unsupported" {
+		t.Errorf("old relay put = %d %q", code, result.Message)
+	}
+}
