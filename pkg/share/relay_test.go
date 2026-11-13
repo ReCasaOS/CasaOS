@@ -3,7 +3,9 @@ package share
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -254,5 +256,37 @@ func TestRefusalsAskForALongAnswerAndCheckIt(t *testing.T) {
 	answer = `[{"key":"203.0.1`
 	if _, err := r.Refusals(context.Background()); err == nil {
 		t.Fatal("a cut answer was passed on")
+	}
+}
+
+// A signature covers the method, the path and the second only, and the relay refuses one it has already seen: two
+// requests to the same path, back to back or at once, must be signed in different seconds.
+func TestNoTwoRequestsSignedInTheSameSecond(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	r := &Relay{Signed: func(_ context.Context, method, path string, _ []byte, _ int) (int, []byte, time.Duration, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		k := fmt.Sprint(method, path, time.Now().Unix())
+		if seen[k] {
+			return 401, []byte(`{"error":"replayed request"}`), 0, nil
+		}
+		seen[k] = true
+		return 200, []byte("[]"), 0, nil
+	}}
+	ctx := context.Background()
+	for range 2 {
+		if _, err := r.Refusals(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { _, err := r.Refusals(ctx); errs <- err }()
+	}
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
 	}
 }

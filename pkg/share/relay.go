@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -33,6 +34,39 @@ type Relay struct {
 	Signed func(ctx context.Context, method, path string, body []byte, maxReply int) (status int, reply []byte, retryAfter time.Duration, err error)
 	// RegisterSelf links this box's key at the relay (wired to the fleet).
 	RegisterSelf func(ctx context.Context) error
+
+	mu    sync.Mutex
+	gates map[string]*pathGate // per "METHOD path"
+}
+
+// pathGate keeps one method and path to one signed request a second: the signature covers the method, the path and the
+// second only, and the relay refuses one it has already seen.
+type pathGate struct {
+	sync.Mutex
+	done time.Time // when the last request returned: its signature's second is at most this one
+}
+
+// signed is Signed through the gate of method and path, waiting for the next second when needed. It uses the wall
+// clock, as the signer does.
+func (r *Relay) signed(ctx context.Context, method, path string, body []byte, maxReply int) (int, []byte, time.Duration, error) {
+	r.mu.Lock()
+	if r.gates == nil {
+		r.gates = map[string]*pathGate{}
+	}
+	g := r.gates[method+" "+path]
+	if g == nil {
+		g = &pathGate{}
+		r.gates[method+" "+path] = g
+	}
+	r.mu.Unlock()
+	g.Lock()
+	defer g.Unlock()
+	if time.Now().Unix() <= g.done.Unix() && !sleep(ctx, time.Until(g.done.Truncate(time.Second).Add(time.Second)), nil) {
+		return 0, nil, 0, ctx.Err()
+	}
+	status, reply, retry, err := r.Signed(ctx, method, path, body, maxReply)
+	g.done = time.Now()
+	return status, reply, retry, err
 }
 
 // Info is a box's public name at the relay.
@@ -166,7 +200,7 @@ func errText(body []byte) string {
 func (r *Relay) call(ctx context.Context, method, path string, body []byte, maxReply int) (int, []byte, error) {
 	registered := false
 	for {
-		status, reply, retry, err := r.Signed(ctx, method, path, body, maxReply)
+		status, reply, retry, err := r.signed(ctx, method, path, body, maxReply)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -187,11 +221,7 @@ func (r *Relay) call(ctx context.Context, method, path string, body []byte, maxR
 				}
 				return 0, nil, err
 			}
-			registered = true
-			// the relay recorded the refused signature: the same request within its second would be a replay
-			if !sleep(ctx, time.Until(time.Now().Truncate(time.Second).Add(time.Second)), nil) {
-				return 0, nil, ctx.Err()
-			}
+			registered = true // the retry waits for the next second: the relay recorded the refused signature
 			continue
 		case status == http.StatusTooManyRequests:
 			return 0, nil, BusyError{RetryAfter: retry}
