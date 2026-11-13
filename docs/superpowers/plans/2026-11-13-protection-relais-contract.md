@@ -128,7 +128,7 @@ Refusal counts add up on (hour, name, key, reason, source).
            "community_size": 1234, "contributed_month": 0 }
 ```
 
-`supported` false (relay 404 or sharing off): the other fields keep their zero values and the dashboard hides the relay block. The numbers are the last answer of `PUT /v1/share/protection` (pushed at start, at every resync and on every change).
+`supported` false (relay 404 or sharing off): the numbers are zero, `filter`/`share_bans`/`share_bans_at` keep the owner's saved choice, and the dashboard hides the relay block. Leaving remote access turns `share_bans` off (consent is given to one relay). The numbers are the last answer of `PUT /v1/share/protection` (pushed at start, at every resync and on every change).
 
 ### `PUT /v1/share/guard/relay` → 200 (header token)
 
