@@ -46,27 +46,30 @@ Exemple de ce qu'on voit :
 
 ### Fichiers
 
-- Un volume `relay-logs` monté en écriture dans `share`, `front` et `enrolment` (à `/logs`), en lecture seule ailleurs s'il le faut.
-- Un fichier par service et par jour UTC : `share-2026-11-13.jsonl`, `front-2026-11-13.jsonl`, `enrolment-2026-11-13.jsonl` (mon choix des noms ; Caddy peut imposer son propre nommage de rotation : le constructeur l'adapte et le lecteur suit).
-- **Rotation** : un nouveau fichier chaque jour ; les fichiers de plus de **7 jours** sont supprimés par le service qui les écrit (pour Caddy, sa propre rotation, `roll_keep_for 168h` ou équivalent).
+- **Un volume par écrivain** (mon choix, après relecture : les trois conteneurs ne tournent pas sous le même utilisateur, Caddy en root, `share` et `enrolment` en non-root) : `share` écrit dans `share-logs`, `front` dans `front-logs`, `enrolment` dans un dossier `logs/` de son volume `enrolment-data`. `enrolment` monte les deux autres pour les lire. Les images de `share` et d'`enrolment` créent leur dossier `/logs` avec le bon propriétaire, pour qu'un relais existant mis à jour n'ait aucune étape à la main.
+- Un fichier par service et par jour UTC (`share-2026-11-13.jsonl`, `enrolment-2026-11-13.jsonl`) ; Caddy garde son propre nommage de rotation et le lecteur le suit.
+- **Rotation et rétention par écrivain** (mon choix : chacun ne supprime que ses fichiers) : `share` et `enrolment` changent de fichier chaque jour et suppriment ceux de plus de `LOG_KEEP` (durée, défaut `168h` = 7 jours, ne peut pas dépasser 7 jours) ; Caddy fait la même chose par sa propre rotation (`roll_keep_for {$LOG_KEEP}` ou équivalent).
+- **Plafond de taille par écrivain** (mon choix) : `share` 1 Go, `front` 512 Mo, `enrolment` 256 Mo par défaut (`LOG_MAX_SIZE_SHARE`, etc., ou une seule valeur répartie : au constructeur) ; au-delà, les fichiers les plus anciens de cet écrivain partent avant 7 jours et le fil le dit. Pour Caddy, le plafond passe par sa taille de fichier et son nombre de fichiers gardés : approché, pas exact.
+- **Adresse écrite** : toujours la vraie adresse du visiteur ou du client (mon choix) — pour `share`, l'adresse TCP du visiteur, celle que la protection filtre déjà ; pour `front`, l'adresse que Caddy reçoit de `share` par l'en-tête PROXY (`{client_ip}`), comme le reste du Caddyfile.
+- **Connexions longues** (tunnel des box, DERP) : `share` écrit lui-même l'ouverture et la fermeture d'un tunnel de box ; le DERP n'apparaît qu'à sa fermeture, dans les lignes de `front` (mon choix : accepté, Caddy n'écrit une requête qu'à sa fin).
 - Une ligne = un objet JSON avec au moins `time` (RFC 3339 avec millisecondes, UTC), `src` (`share`, `front`, `relay`, `error`) et les champs de son type (le constructeur fixe la liste exacte dans le plan ; `/admin` et un `jq` sur le serveur s'en servent).
 - **Ne jamais écrire** : la clé d'une liste externe, le jeton `ADMIN_TOKEN`, l'en-tête `Authorization`, les cookies, les en-têtes signés des box (`X-Box-Signature`). Caddy masque déjà `Authorization` et `Cookie` dans ses journaux par défaut : le constructeur le vérifie et le garde.
 - **Écriture qui ne bloque jamais le trafic** : `share` écrit à travers un tampon ; si le disque ne suit pas (attaque), il **jette des lignes plutôt que de ralentir les connexions**, et écrit une ligne « N lignes non écrites » dès qu'il peut (mon choix : le trafic passe avant le journal).
-- **Disque** : en plus des 7 jours, un plafond de taille total (`LOG_MAX_SIZE`, par défaut 2 Go, mon choix) : au-delà, les fichiers les plus anciens sont supprimés avant 7 jours, et le fil le dit. Sans plafond, une journée d'attaque remplirait le disque.
+- Sans `share` (profil non activé), le fil montre seulement les lignes de `front` et du relais.
 
 ### `/admin/journal`
 
 - Une nouvelle page, liée depuis l'en-tête de `/admin` et de `/admin/protection`, sous la même protection (jeton, Basic, CSRF pour d'éventuelles actions).
 - **En haut**, des filtres : source (visiteurs des apps / requêtes au relais / événements / erreurs), recherche libre (adresse, nom d'hôte, chemin, raison), « erreurs et coupures seulement » ; une plage de temps (dernière heure par défaut, jusqu'à 7 jours).
 - **Le fil** : les lignes les plus récentes en haut, mises en forme comme l'exemple, une couleur par type (passée, coupée, erreur) ; cliquer une adresse filtre sur elle, cliquer un nom d'hôte filtre sur lui.
-- **En direct** : tant que la page est ouverte et sur « maintenant », les nouvelles lignes arrivent toutes seules (flux poussé par le serveur, pas de rechargement de page) ; un bouton « Pause » fige le fil pour lire.
-- **Remonter** : en changeant la plage, la page lit les fichiers du passé, par pages de quelques centaines de lignes (« Plus ancien »).
+- **En direct** : tant que la page est ouverte et sur « maintenant », les nouvelles lignes arrivent toutes seules (flux poussé par le serveur, pas de rechargement de page ; `front` ne met pas ce flux en tampon) ; un bouton « Pause » fige le fil pour lire. La fusion en direct est au mieux : une ligne de fermeture ou de rattrapage arrive à son heure de lecture, pas forcément à sa place (mon choix).
+- **Remonter** : en changeant la plage, la page lit les fichiers du passé, par pages de quelques centaines de lignes (« Plus ancien »). **Budget par recherche** (mon choix) : une seule lecture du passé à la fois, au plus 64 Mo lus ou 5 secondes par page ; au-delà la page montre ce qu'elle a trouvé et propose de continuer. `enrolment` doit rester disponible pendant une attaque.
 - **Limites** : un débit maximal de lignes poussées au navigateur (ex. 200 par seconde, mon choix) ; au-delà, la page affiche « N lignes non montrées, mettez en pause ou filtrez ».
 - Pas de téléchargement en masse dans cette version (le serveur a les fichiers).
 
 ### Données personnelles
 
-Ce journal garde l'adresse IP de chaque visiteur des apps partagées et de chaque client du relais **7 jours**. C'est plus long que les 24 h promises jusqu'ici pour les connexions acceptées de la protection. La section « Protection of shared apps » et une nouvelle section « Logs » de `docs/self-hosting.md` le disent clairement : ce qui est écrit, combien de temps, où, comment réduire la durée (`LOG_KEEP_DAYS`, 1 à 7, défaut 7 — mon choix d'en faire un réglage) ou couper le journal (`LOG_DIR` vide). Le texte public ne détaille aucune faiblesse.
+Ce journal garde l'adresse IP de chaque visiteur des apps partagées et de chaque client du relais **7 jours**. C'est plus long que les 24 h promises jusqu'ici pour les connexions acceptées de la protection. La section « Protection of shared apps » et une nouvelle section « Logs » de `docs/self-hosting.md` le disent clairement : ce qui est écrit, combien de temps, où, comment réduire la durée (`LOG_KEEP`, au plus 7 jours, défaut 7 jours — mon choix d'en faire un réglage). Le texte public ne détaille aucune faiblesse.
 
 ## Hors de ce document
 
@@ -86,7 +89,7 @@ Ce journal garde l'adresse IP de chaque visiteur des apps partagées et de chaqu
 ## Tests et preuve
 
 - `share` : une ligne par connexion passée, coupée (chaque raison), fermée (durée, octets) ; aucune ligne pour le nom du relais ; tampon plein → lignes jetées et ligne de comptage, connexions non ralenties (test de charge court).
-- Rotation et rétention : changement de jour (horloge simulée), suppression après 7 jours et au plafond de taille, `LOG_KEEP_DAYS`.
+- Rotation et rétention : changement de jour (horloge simulée), suppression après `LOG_KEEP` et au plafond de taille de chaque écrivain ; un relais existant mis à jour écrit sans étape à la main (volumes neufs, bons propriétaires).
 - `front` : la configuration Caddy écrit du JSON dans `/logs` avec rotation ; `Authorization` et `Cookie` absents des lignes.
 - `enrolment` : chaque événement listé produit sa ligne ; aucune clé de liste dans les lignes.
 - `/admin/journal` : fusion de trois fichiers par heure, filtres, pagination vers le passé, flux en direct, limite de débit.
