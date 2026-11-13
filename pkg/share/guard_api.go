@@ -382,8 +382,8 @@ func asGuardErr(err error) error {
 }
 
 // SetRelay changes the relay's two settings: filtering, and sharing this box's bans (which needs the owner's consent).
-// A nil one is left as it is. The change is saved, then sent to the relay at once; one the relay cannot take yet
-// (too old) stays saved, and the resync sends it when the relay is upgraded.
+// A nil one is left as it is. The change is saved, then sent to the relay at once; a relay without the routes (too old)
+// undoes it, and one that cannot take it yet (failing, or waiting for the master) leaves it for the resync to send.
 func (s *Service) SetRelay(ctx context.Context, filter, shareBans *bool, consent bool) (GuardView, error) {
 	if filter == nil && shareBans == nil {
 		return GuardView{}, ErrGuard{"bad_request"}
@@ -418,7 +418,8 @@ func (s *Service) setRelayLocked(ctx context.Context, filter, shareBans *bool) e
 		s.mu.Unlock()
 		return err
 	}
-	next := *g
+	prev := *g
+	next := prev
 	if filter != nil {
 		next.RelayFilter = filter
 	}
@@ -439,8 +440,15 @@ func (s *Service) setRelayLocked(ctx context.Context, filter, shareBans *bool) e
 	switch err := s.pushRelay(ctx); {
 	case err == nil:
 		return nil
-	case errors.Is(err, ErrRelayNoShare):
+	case errors.Is(err, ErrRelayNoShare): // as on a relay known old: the change does not stay
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if serr := s.storeGuardLocked(prev); serr != nil {
+			return fmt.Errorf("the protection settings cannot be saved: %w", serr)
+		}
 		return ErrGuard{"relay_unsupported"}
+	case errors.Is(err, ErrWaitMaster):
+		return ErrWaitMaster
 	default:
 		s.log("share: cannot send the relay protection settings", err)
 		s.wakeResync()

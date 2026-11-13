@@ -341,6 +341,9 @@ func TestSetRelayConsentStamps(t *testing.T) {
 	if saved, _ = loadGuard(f.s.guardPath()); saved.ShareBans || !saved.ShareBansAt.IsZero() {
 		t.Fatalf("saved %+v", saved)
 	}
+	if got := (*f.relay)[1]; got != (sent{"PUT", "/v1/share/protection", `{"relay_filter":true,"share_bans":false}`}) {
+		t.Fatalf("relay %+v", got)
+	}
 }
 
 func TestSetRelayOnOldRelay(t *testing.T) {
@@ -349,7 +352,7 @@ func TestSetRelayOnOldRelay(t *testing.T) {
 	off := false
 	_, err := f.s.SetRelay(ctx, &off, nil, false)
 	wantGuardErr(t, err, "relay_unsupported")
-	if saved, _ := loadGuard(f.s.guardPath()); saved.RelayFilter == nil || *saved.RelayFilter { // the change stays
+	if saved, _ := loadGuard(f.s.guardPath()); saved.RelayFilter != nil { // the change is undone, as on a relay known old
 		t.Fatalf("saved %+v", saved)
 	}
 	view, err := f.s.GuardView(ctx)
@@ -368,6 +371,20 @@ func TestSetRelayPushFailureKeepsTheChange(t *testing.T) {
 	off := false
 	_, err := f.s.SetRelay(context.Background(), &off, nil, false)
 	if !errors.Is(err, ErrRelayPush) {
+		t.Fatalf("error %v", err)
+	}
+	if saved, _ := loadGuard(f.s.guardPath()); saved.RelayFilter == nil || *saved.RelayFilter {
+		t.Fatalf("saved %+v", saved)
+	}
+}
+
+// A relay that does not know this box's key yet, with no master to link it: the change stays for the resync, and the
+// owner reads that the master must register the box.
+func TestSetRelayWaitsForTheMaster(t *testing.T) {
+	f := twoShared(t, jellyCode(), reply{status: 403, body: `{"error":"box key not linked"}`})
+	off := false
+	_, err := f.s.SetRelay(context.Background(), &off, nil, false)
+	if !errors.Is(err, ErrWaitMaster) {
 		t.Fatalf("error %v", err)
 	}
 	if saved, _ := loadGuard(f.s.guardPath()); saved.RelayFilter == nil || *saved.RelayFilter {
