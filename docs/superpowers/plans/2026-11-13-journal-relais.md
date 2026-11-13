@@ -22,7 +22,7 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "D:/clients/casaos/_work/relay-journal:/sr
 - Size cap per writer: `share` 1 GiB, `enrolment` 256 MiB (`LOG_MAX_SIZE`, bytes, one value per service, defaults as given); `front` ≈ 512 MiB through Caddy's `roll_size` × `roll_keep`.
 - Never written: feed keys, `ADMIN_TOKEN`, `Authorization`, cookies, `X-Box-Signature` (and `X-Box-Key`).
 - The address written is the real client: share's TCP peer; Caddy's `{client_ip}` (PROXY header from `share`).
-- Writing never blocks traffic: a full buffer drops lines and later writes one line `{"src":"log","msg":"N lines not written"}`.
+- Writing never blocks traffic: a full buffer drops lines and later writes one line `{"src":"log","count":N,"msg":"lines not written"}`.
 - Live stream to the browser at most 200 lines/s; one history scan at a time, at most 64 MiB read or 5 s per page.
 - Share-app lines carry the host (SNI), never a path (no decryption).
 - Public docs never describe an unfixed weakness; commits without AI trailer.
