@@ -15,17 +15,18 @@ The spec says operator bans cut a connection "dès l'acceptation". The relay hos
 | Community entry | 2 distinct fleets reporting the same key within a rolling 24 h |
 | Community tiers | strike 1: 24 h; 2: 7 days; 3 and more: permanent (until lifted in `/admin`) |
 | Strike window | a new ban is a repeat when it starts less than 30 days after the end of the previous ban of the same key; otherwise strikes start again at 1 |
-| Range ban | 5 distinct keys with an active ban inside one `/24` (IPv4) or `/48` (IPv6) → the range is banned, own strikes, same tiers |
+| Range ban | 5 distinct keys with an active ban inside one `/24` (IPv4) or `/48` (IPv6) → the range is banned, own strikes, same tiers. Only member bans opened after the range's previous ban ended count, and a key's reports count only if their `since` is after that key's previous ban ended (so a lifted or expired ban never reopens on old evidence) |
 | ASN flag | 10 or more active range bans whose first address maps to the same ASN → flagged in `/admin`, never banned automatically |
-| Report acceptance | (1) a connection from that key to that box (`node_id`) was accepted by `share` between `since − 24 h` and `since + 5 min`; (2) the box's fleet `created_at` is at least 7 days old and the fleet holds at least one row in `share_names`; (3) the box's `share_bans` is on. Otherwise the report is dropped silently |
+| Report acceptance | (1) a connection from that key to that box (`node_id`) was accepted by `share` at or after `since − 24 h` (the relay keeps the newest time per pair); (2) the box's fleet `created_at` is at least 7 days old (`COMMUNITY_MIN_FLEET_AGE`, tests only) and the fleet holds at least one row in `share_names`; (3) the box's `share_bans` is on. Otherwise the report is dropped silently |
 | Report fields | `key`, `reason` ∈ `waf scan rate code`, `app` (`^[a-z0-9][a-z0-9._-]{0,63}$`), `since` (not older than 24 h, not more than 2 min in the future) |
-| Retention | accepted connections 24 h; reports 30 days (purged at once for a box that turns sharing off); refusal counters 7 days; strikes 30 days after the end of the last non-permanent ban; ended bans deleted |
+| Retention | accepted connections 24 h; reports 30 days (purged at once for a box that turns sharing off); refusal counters 7 days; strikes 30 days after the end of the last non-permanent ban; ended bans deleted; expired operator bans deleted; fleets that opened a ban kept 32 days (for `contributed_month`). Applied every minute even when sharing is off |
 | Feed refresh | at most once an hour (`every_s` ≥ 3600); AbuseIPDB free preset 21 600 s (4 a day) |
 | Feed download | 60 s timeout, body read up to 64 MiB, `User-Agent: recasaos-relay` |
 | Feed caps | per feed `max_entries` (default 100 000); total of enabled feeds `FILTER_MAX_ENTRIES` (default 1 000 000). A feed over either cap is refused whole; the last good copy stays |
-| Snapshot poll (`share`) | every 30 s with `If-None-Match`; first start with none: let everything through and log once `share: no filter yet, letting connections through` |
+| Snapshot poll (`share`) | every 30 s with `If-None-Match`; first start with none: let everything through and log once `share: no filter yet, letting connections through`. Enrolment rebuilds the snapshot when something changed (and at the earliest ban end), at most 5 minutes apart otherwise |
 | Events post (`share`) | every 15 s with the usage tick; an accepted (key, node) pair is sent at most once per 10 minutes |
 | DB-IP on the relay | `<data>/geo/dbip-country-lite.mmdb`, `<data>/geo/dbip-asn-lite.mmdb`; from `https://download.db-ip.com/free/dbip-{country,asn}-lite-YYYY-MM.mmdb.gz`; checked daily, replaced when the month changes, written by rename; `<data>` = directory of `STORE_PATH` |
+| Enrolment env | `FILTER_MAX_ENTRIES`, `PROTECT_RATE_PER_HOUR` (signed protection routes, per IP, default 600), `CONNS_PER_IP` / `CONNS_PER_IP_PER_BOX` (display only, same defaults as `share`), `COMMUNITY_MIN_FLEET_AGE` (tests only) |
 | Feed copies | `<data>/feeds/<id>.txt`, one canonical prefix per line, written by rename |
 
 ## Feed presets
