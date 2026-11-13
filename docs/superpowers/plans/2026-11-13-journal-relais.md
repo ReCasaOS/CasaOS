@@ -43,7 +43,7 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "D:/clients/casaos/_work/relay-journal:/sr
 | `ms` | int | duration (close, front) |
 | `in`, `out` | int | bytes from / to the client |
 | `method`, `path`, `status` | string, string, int | front only |
-| `event` | string | relay events: `ban_open`, `ban_lift`, `feed_ok`, `feed_fail`, `geo_ok`, `reports`, `protection`, `suspend`, `resume`, `manual_add`, `manual_del`, `allow_add`, `allow_del` |
+| `event` | string | relay events: `ban_open`, `ban_lift`, `feed_ok`, `feed_fail`, `geo_ok`, `reports`, `protection`, `suspend`, `resume`, `manual_add`, `manual_del`, `allow_add`, `allow_del`, `feed_admin` |
 | `msg` | string | human text for `log` and events |
 | `count` | int | `reports` count, dropped lines |
 
