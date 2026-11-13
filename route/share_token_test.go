@@ -62,6 +62,7 @@ func TestShareWritesNeedTheHeaderToken(t *testing.T) {
 		{http.MethodDelete, "/v1/share/apps"},
 		{http.MethodPut, "/v1/share/guard/protection"},
 		{http.MethodPut, "/v1/share/guard/box"},
+		{http.MethodPut, "/v1/share/guard/relay"},
 		{http.MethodPut, "/v1/share/guard/apps/jellyfin"},
 		{http.MethodPost, "/v1/share/guard/people"},
 		{http.MethodPut, "/v1/share/guard/people/p_1"},

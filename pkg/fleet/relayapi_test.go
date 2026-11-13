@@ -613,7 +613,7 @@ func TestSignedCarriesTheBoxSignature(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 		io.WriteString(w, "hi")
 	})
-	status, body, ra, err := c.Signed(context.Background(), relay, http.MethodPut, "/v1/share/name", []byte(`{"name":"x"}`))
+	status, body, ra, err := c.Signed(context.Background(), relay, http.MethodPut, "/v1/share/name", []byte(`{"name":"x"}`), 0)
 	if err != nil || status != http.StatusAccepted || string(body) != "hi" || ra != 0 {
 		t.Fatalf("Signed = %d %q %v %v", status, body, ra, err)
 	}
@@ -621,7 +621,7 @@ func TestSignedCarriesTheBoxSignature(t *testing.T) {
 		w.Header().Set("Retry-After", "7")
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
-	status, _, ra, err = c.Signed(context.Background(), relay, http.MethodGet, "/v1/share", nil)
+	status, _, ra, err = c.Signed(context.Background(), relay, http.MethodGet, "/v1/share", nil, 0)
 	if err != nil || status != 429 || ra != 7*time.Second {
 		t.Fatalf("Signed = %d %v %v, want 429 7s nil", status, ra, err)
 	}
@@ -633,7 +633,20 @@ func TestSignedUnreachable(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 	_ = relay
-	if _, _, _, err := c.Signed(context.Background(), url, http.MethodGet, "/v1/share", nil); !errors.Is(err, ErrRelayUnreachable) {
+	if _, _, _, err := c.Signed(context.Background(), url, http.MethodGet, "/v1/share", nil, 0); !errors.Is(err, ErrRelayUnreachable) {
 		t.Fatalf("err = %v, want ErrRelayUnreachable", err)
+	}
+}
+
+// A long answer (the relay's refusals: up to 2 000 rows) arrives whole when the call asks for it; the default stays 64 KiB.
+func TestSignedReplyLimit(t *testing.T) {
+	big := `[` + strings.Repeat(`{"key":"203.0.113.1/32","at":"2026-11-13T12:00:00Z","reason":"feed"},`, 3000) + `{}]`
+	c, relay := relayFor(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, big) })
+	_, body, _, err := c.Signed(context.Background(), relay, http.MethodGet, "/v1/share/refusals", nil, 512<<10)
+	if err != nil || string(body) != big {
+		t.Fatalf("got %d of %d bytes, %v", len(body), len(big), err)
+	}
+	if _, body, _, err = c.Signed(context.Background(), relay, http.MethodGet, "/v1/share/refusals", nil, 0); err != nil || len(body) != 64<<10 {
+		t.Fatalf("default: %d bytes, %v", len(body), err)
 	}
 }

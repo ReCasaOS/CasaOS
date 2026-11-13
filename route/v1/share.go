@@ -122,7 +122,7 @@ func shareFail(ctx echo.Context, err error) error {
 		status, msg = http.StatusBadRequest, guard.Code
 	case errors.Is(err, share.ErrGatewayNoGuard): // a code app shared again on a Gateway that cannot ask for its code
 		status, msg = http.StatusBadRequest, "gateway_unsupported"
-	case errors.Is(err, share.ErrGuardPush):
+	case errors.Is(err, share.ErrGuardPush), errors.Is(err, share.ErrRelayPush):
 		msg = err.Error() // a 500, with its plain message
 	case errors.Is(err, share.ErrUnknownApp):
 		status, msg = http.StatusNotFound, err.Error()
@@ -327,6 +327,48 @@ func DeleteShareGuardPerson(ctx echo.Context) error {
 		return shareFail(ctx, err)
 	}
 	return ctx.NoContent(http.StatusNoContent)
+}
+
+// PutShareGuardRelay changes what the relay does for this box: filtering, and sharing the box's bans.
+//
+// @Summary share: the relay's protection settings
+// @Accept application/json
+// @Produce application/json
+// @Tags share
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /share/guard/relay [put]
+func PutShareGuardRelay(ctx echo.Context) error {
+	var body struct {
+		Filter    *bool `json:"filter"`
+		ShareBans *bool `json:"share_bans"`
+		Consent   bool  `json:"consent"`
+	}
+	if err := ctx.Bind(&body); err != nil {
+		return badBody(ctx)
+	}
+	c, cancel := detached(ctx)
+	defer cancel()
+	v, err := Share.SetRelay(c, body.Filter, body.ShareBans, body.Consent)
+	return guardAnswer(ctx, v, err)
+}
+
+// GetShareGuardRelayRefusals passes on the relay's refusals of this box's name.
+//
+// @Summary share: what the relay refused
+// @Produce application/json
+// @Tags share
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /share/guard/relay-refusals [get]
+func GetShareGuardRelayRefusals(ctx echo.Context) error {
+	c, cancel := detached(ctx)
+	defer cancel()
+	out, err := Share.RelayRefusals(c)
+	if err != nil {
+		return shareFail(ctx, err)
+	}
+	return ok(ctx, out)
 }
 
 // GetShareGuardEvents relays the Gateway's journal of refused requests, filtered by app (compose name) and reason.

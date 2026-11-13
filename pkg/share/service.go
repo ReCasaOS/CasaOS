@@ -76,6 +76,15 @@ type Service struct {
 	guard        *GuardState        // the one copy of share-guard.json, loaded at first use
 	guardUnsaved bool               // guard is a first start's, not on disk yet: a box that never shared keeps no file
 	waveApps     map[string]bool    // the apps a wave alert was raised for at the last resync
+	relayInfo    RelayProtection    // the relay's last answer to the protection push
+	relayOK      *bool              // whether the relay has the protection routes: nil until it was asked
+
+	reported    map[string]time.Time // bans already sent (key|since) and when; memory only, a restart may resend a day
+	reportAfter time.Time            // a busy relay asked to wait until then; reportLoop's, as reported
+	reportFresh bool                 // set by Reset under mu: reportOnce forgets reported and reportAfter
+	reportCh    chan struct{}        // wakes reportLoop
+
+	wakeReports func() // set by the ban reporter: a ban sharing change should be looked at now; nil without one
 }
 
 // Default is the box's own; main wires its funcs.
@@ -86,7 +95,13 @@ func New(root string) *Service {
 	s := &Service{Root: root, Relay: &Relay{},
 		backoffMin: time.Second, backoffMax: 5 * time.Minute, replacedWait: 30 * time.Second, longSession: time.Minute,
 		retryMin: 10 * time.Second, tick: 10 * time.Minute, probeEvery: time.Minute,
-		ops: make(chan struct{}, 1), kick: make(chan struct{}, 1), resyncCh: make(chan struct{}, 1), geoCh: make(chan struct{}, 1)}
+		ops: make(chan struct{}, 1), kick: make(chan struct{}, 1), resyncCh: make(chan struct{}, 1), geoCh: make(chan struct{}, 1), reportCh: make(chan struct{}, 1)}
+	s.wakeReports = func() {
+		select {
+		case s.reportCh <- struct{}{}:
+		default:
+		}
+	}
 	s.ACME = &ACME{TXT: s.Relay,
 		KeyFile:     filepath.Join(root, "var/lib/casaos/tls/share.key"),
 		CertFile:    filepath.Join(root, "var/lib/casaos/tls/share.crt"),
@@ -448,8 +463,19 @@ func (s *Service) StopAll(ctx context.Context) error {
 
 // Reset forgets the sharing of a box leaving its relay: the host routes are deleted first (local and fast),
 // then the name is released, best effort, then the tunnel stopped and the state cleared. The certificate
-// stays. It runs while the fleet holds its relay lock: it only calls the relay's Signed and the Gateway.
+// stays. Ban sharing ends with the relay it was agreed for. It runs while the fleet holds its relay lock: it only calls
+// the relay's Signed and the Gateway.
 func (s *Service) Reset(ctx context.Context) {
+	s.mu.Lock()
+	if g, err := s.guardLocked(); err == nil && (g.ShareBans || !g.ShareBansAt.IsZero()) {
+		next := *g
+		next.ShareBans, next.ShareBansAt = false, time.Time{}
+		if err := s.storeGuardLocked(next); err != nil {
+			s.log("share: cannot save the protection settings", err)
+		}
+	}
+	s.relayOK, s.relayInfo, s.reportFresh = nil, RelayProtection{}, true
+	s.mu.Unlock()
 	st := s.read()
 	if st.Name == "" {
 		return
@@ -525,7 +551,7 @@ func (s *Service) Run(ctx context.Context) {
 		return
 	}
 	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
-	loops := []func(context.Context){s.resyncLoop, s.tunnelLoop, s.geoLoop}
+	loops := []func(context.Context){s.resyncLoop, s.tunnelLoop, s.geoLoop, s.reportLoop}
 	if s.ACME != nil {
 		loops = append(loops, func(ctx context.Context) { s.ACME.Loop(ctx, s.wildcard, time.Hour) })
 	}
@@ -589,6 +615,9 @@ func (s *Service) resync(ctx context.Context) error {
 	// before anything that can return early: a Gateway downgraded meanwhile serves the code hosts open, and the
 	// failed push takes them off
 	pushErr := s.pushGuardFor(ctx, st)
+	if err := s.pushRelay(ctx); err != nil && !errors.Is(err, ErrWaitMaster) && !errors.Is(err, ErrRelayNoShare) {
+		s.log("share: cannot send the relay protection settings", err) // the next resync tries again
+	}
 	installed, err := s.Apps.List(ctx)
 	if err != nil {
 		return err
@@ -642,6 +671,34 @@ func (s *Service) resync(ctx context.Context) error {
 		return nil // an older Gateway: its open hosts as before, nothing to retry
 	}
 	return pushErr
+}
+
+// pushRelay sends the two relay settings and keeps the relay's answer. The caller holds the ops lock. A box with no relay
+// configured sends nothing; a relay without the routes is remembered as such.
+func (s *Service) pushRelay(ctx context.Context) error {
+	if _, ok := s.relayURL(); !ok || s.Relay.Signed == nil {
+		return nil
+	}
+	s.mu.Lock()
+	g, err := s.guardLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	filter, bans := g.relayFilter(), g.ShareBans
+	s.mu.Unlock()
+	p, err := s.Relay.SetProtection(ctx, filter, bans)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case err == nil:
+		ok := true
+		s.relayInfo, s.relayOK = p, &ok
+	case errors.Is(err, ErrRelayNoShare):
+		ok := false
+		s.relayInfo, s.relayOK = RelayProtection{}, &ok
+	} // any other failure keeps the last numbers
+	return err
 }
 
 const guardResetSentence = "The protection settings of shared apps could not be read: every shared app now asks for an access code. Check the people and the apps in Remote access."

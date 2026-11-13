@@ -234,12 +234,12 @@ func main() {
 	share.Default.RelayURL = fleet.Default.ShareRelay
 	share.Default.Alert = alerts.Default.ShareGuardProblem
 	share.Default.BoxKey = fleet.Default.BoxKey
-	share.Default.Relay.Signed = func(ctx context.Context, method, path string, body []byte) (int, []byte, time.Duration, error) {
+	share.Default.Relay.Signed = func(ctx context.Context, method, path string, body []byte, maxReply int) (int, []byte, time.Duration, error) {
 		relay, ok := fleet.Default.ShareRelay()
 		if !ok {
 			return 0, nil, 0, share.ErrNoRelay
 		}
-		return fleet.Default.RelayAPI.Signed(ctx, relay, method, path, body)
+		return fleet.Default.RelayAPI.Signed(ctx, relay, method, path, body, maxReply)
 	}
 	share.Default.Relay.RegisterSelf = func(ctx context.Context) error {
 		if _, ok := fleet.Default.ShareRelay(); !ok {

@@ -22,6 +22,9 @@ func (e ErrGuard) Error() string { return e.Code }
 // ErrGuardPush is a change that is saved but that the Gateway has not taken: the resync pushes it again.
 var ErrGuardPush = errors.New("the change is saved, but the Gateway has not taken it yet: it will be sent again")
 
+// ErrRelayPush is a relay setting that is saved but that the relay has not taken: the resync sends it again.
+var ErrRelayPush = errors.New("the change is saved, but the relay has not taken it yet: it will be sent again")
+
 var errUnsupported = ErrGuard{"gateway_unsupported"}
 
 // GuardView is the body of GET /v1/share/guard.
@@ -35,6 +38,18 @@ type GuardView struct {
 	People     []PersonView            `json:"people"`
 	Geo        GuardGeo                `json:"geo"`
 	Waves      []GuardWave             `json:"waves"`
+	Relay      GuardRelay              `json:"relay"`
+}
+
+// GuardRelay is the relay's part of the protection: the settings are the owner's (the file), the numbers the relay's
+// last answer, zero while it has none or has no such routes.
+type GuardRelay struct {
+	Supported        bool       `json:"supported"`
+	Filter           bool       `json:"filter"`
+	ShareBans        bool       `json:"share_bans"`
+	ShareBansAt      *time.Time `json:"share_bans_at"`
+	CommunitySize    int        `json:"community_size"`
+	ContributedMonth int        `json:"contributed_month"`
 }
 
 type GuardAppView struct {
@@ -74,6 +89,12 @@ func (s *Service) GuardView(ctx context.Context) (GuardView, error) {
 	for name := range st.Apps {
 		a := g.Apps[name]
 		v.Apps[name] = GuardAppView{Access: accessOf(a), Override: a.Override, Effective: Effective(g.Box, a.Override)}
+	}
+	v.Relay = GuardRelay{Supported: s.relayOK != nil && *s.relayOK, Filter: g.relayFilter(), ShareBans: g.ShareBans,
+		CommunitySize: s.relayInfo.CommunitySize, ContributedMonth: s.relayInfo.ContributedMonth}
+	if !g.ShareBansAt.IsZero() {
+		at := g.ShareBansAt
+		v.Relay.ShareBansAt = &at
 	}
 	people := slices.Clone(g.People)
 	for i := range people {
@@ -358,4 +379,91 @@ func asGuardErr(err error) error {
 		return errUnsupported
 	}
 	return err
+}
+
+// SetRelay changes the relay's two settings: filtering, and sharing this box's bans (which needs the owner's consent).
+// A nil one is left as it is. The change is saved, then sent to the relay at once; a relay without the routes (too old)
+// undoes it, and one that cannot take it yet (failing, or waiting for the master) leaves it for the resync to send.
+func (s *Service) SetRelay(ctx context.Context, filter, shareBans *bool, consent bool) (GuardView, error) {
+	if filter == nil && shareBans == nil {
+		return GuardView{}, ErrGuard{"bad_request"}
+	}
+	if shareBans != nil && *shareBans && !consent {
+		return GuardView{}, ErrGuard{"consent_required"}
+	}
+	if _, ok := s.relayURL(); !ok {
+		return GuardView{}, ErrNoRelay
+	}
+	if err := s.setRelayLocked(ctx, filter, shareBans); err != nil {
+		return GuardView{}, err
+	}
+	if s.wakeReports != nil {
+		s.wakeReports()
+	}
+	return s.GuardView(ctx)
+}
+
+func (s *Service) setRelayLocked(ctx context.Context, filter, shareBans *bool) error {
+	if err := s.lock(ctx); err != nil {
+		return err
+	}
+	defer s.unlock()
+	s.mu.Lock()
+	if s.relayOK != nil && !*s.relayOK {
+		s.mu.Unlock()
+		return ErrGuard{"relay_unsupported"}
+	}
+	g, err := s.guardLocked()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	prev := *g
+	next := prev
+	if filter != nil {
+		next.RelayFilter = filter
+	}
+	if shareBans != nil {
+		switch {
+		case *shareBans && !next.ShareBans:
+			next.ShareBansAt = s.now().UTC()
+		case !*shareBans:
+			next.ShareBansAt = time.Time{}
+		}
+		next.ShareBans = *shareBans
+	}
+	if err := s.storeGuardLocked(next); err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("the protection settings cannot be saved: %w", err)
+	}
+	s.mu.Unlock()
+	switch err := s.pushRelay(ctx); {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrRelayNoShare): // as on a relay known old: the change does not stay
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if serr := s.storeGuardLocked(prev); serr != nil {
+			return fmt.Errorf("the protection settings cannot be saved: %w", serr)
+		}
+		return ErrGuard{"relay_unsupported"}
+	case errors.Is(err, ErrWaitMaster):
+		return ErrWaitMaster
+	default:
+		s.log("share: cannot send the relay protection settings", err)
+		s.wakeResync()
+		return ErrRelayPush
+	}
+}
+
+// RelayRefusals is what the relay refused at its door for this box's name over a week; a relay without the route gives [].
+func (s *Service) RelayRefusals(ctx context.Context) (json.RawMessage, error) {
+	if _, ok := s.relayURL(); !ok || s.Relay.Signed == nil {
+		return nil, ErrNoRelay
+	}
+	out, err := s.Relay.Refusals(ctx)
+	if errors.Is(err, ErrRelayNoShare) {
+		return json.RawMessage("[]"), nil
+	}
+	return out, err
 }

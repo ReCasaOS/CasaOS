@@ -112,6 +112,11 @@ type relayReply struct {
 // do sends one request. relay must pass ValidMasterURL (https, or http on loopback) before anything
 // leaves. A transport error is returned without its URL, so nothing but the cause is kept.
 func (c *RelayClient) do(ctx context.Context, method, relay, path string, hdr http.Header, body []byte) (relayReply, error) {
+	return c.doMax(ctx, method, relay, path, hdr, body, relayMaxBody)
+}
+
+// doMax is do keeping at most maxBody bytes of the answer.
+func (c *RelayClient) doMax(ctx context.Context, method, relay, path string, hdr http.Header, body []byte, maxBody int) (relayReply, error) {
 	if err := ValidMasterURL(relay); err != nil {
 		return relayReply{}, fmt.Errorf("the relay address is not valid: %w", err)
 	}
@@ -133,7 +138,7 @@ func (c *RelayClient) do(ctx context.Context, method, relay, path string, hdr ht
 	}
 	var out []byte
 	if err == nil {
-		out, err = io.ReadAll(io.LimitReader(resp.Body, relayMaxBody))
+		out, err = io.ReadAll(io.LimitReader(resp.Body, int64(maxBody)))
 	}
 	if err != nil {
 		var ue *url.Error
@@ -487,14 +492,17 @@ func (c *RelayClient) SetBoxKey(ctx context.Context, relay, fleetID, secret, nod
 }
 
 // Signed calls the relay as this box: the X-Box-* headers over "<METHOD> <PATH>\n"+time, a JSON body
-// when body != nil. It returns the status, the body (capped) and a 429's Retry-After (0 otherwise)
-// whatever the status; only a transport failure is an error (ErrRelayUnreachable).
-func (c *RelayClient) Signed(ctx context.Context, relay, method, path string, body []byte) (status int, reply []byte, retryAfter time.Duration, err error) {
+// when body != nil. It returns the status, the body (cut at maxReply bytes, 64 KiB when 0) and a 429's Retry-After
+// (0 otherwise) whatever the status; only a transport failure is an error (ErrRelayUnreachable).
+func (c *RelayClient) Signed(ctx context.Context, relay, method, path string, body []byte, maxReply int) (status int, reply []byte, retryAfter time.Duration, err error) {
 	key, err := loadBoxKey(c.Dir)
 	if err != nil {
 		return 0, nil, 0, err
 	}
-	r, err := c.do(ctx, method, relay, path, boxHeaders(key, method, path, strconv.FormatInt(c.now().Unix(), 10)), body)
+	if maxReply <= 0 {
+		maxReply = relayMaxBody
+	}
+	r, err := c.doMax(ctx, method, relay, path, boxHeaders(key, method, path, strconv.FormatInt(c.now().Unix(), 10)), body, maxReply)
 	if err != nil {
 		return 0, nil, 0, err
 	}

@@ -31,6 +31,7 @@ type fakeManagement struct {
 	fail     int
 	guard    int
 	status   string // when set, the body of GET /v1/gateway/guard
+	bans     string // when set, the body of GET /v1/gateway/guard/bans
 	putGuard int    // when set, the answer to PUT /v1/gateway/guard
 	putMsg   string // when set, the message of that answer
 	hosts    map[string]string
@@ -69,6 +70,10 @@ func (m *fakeManagement) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/gateway/guard" && m.status != "" {
 		io.WriteString(w, m.status)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/gateway/guard/bans" && m.bans != "" {
+		io.WriteString(w, m.bans)
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/gateway/hosts" {
@@ -669,7 +674,7 @@ func TestResetDeletesTheHostsBeforeTheRelay(t *testing.T) {
 	f.named(t)
 	f.share(t, "jellyfin")
 	f.share(t, "nextcloud")
-	f.s.Relay.Signed = func(ctx context.Context, _, _ string, _ []byte) (int, []byte, time.Duration, error) {
+	f.s.Relay.Signed = func(ctx context.Context, _, _ string, _ []byte, _ int) (int, []byte, time.Duration, error) {
 		<-ctx.Done() // a relay that does not answer
 		return 0, nil, 0, ctx.Err()
 	}
@@ -735,9 +740,9 @@ var (
 )
 
 // twoShared is a fixture whose share.json holds jellyfin and nextcloud, both installed, with guard as share-guard.json (nil: none).
-func twoShared(t *testing.T, guard *GuardState) *fixture {
+func twoShared(t *testing.T, guard *GuardState, replies ...reply) *fixture {
 	t.Helper()
-	f := newFixture(t)
+	f := newFixture(t, replies...)
 	f.compose.set("nextcloud", "7580", "https")
 	if err := saveState(f.state, State{Name: "mybox", Host: "mybox.box.example.org", Domain: "box.example.org",
 		Apps: map[string]App{"jellyfin": {Port: "8096", Scheme: "http"}, "nextcloud": {Port: "7580", Scheme: "https"}}}); err != nil {

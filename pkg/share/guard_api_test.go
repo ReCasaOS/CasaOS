@@ -292,3 +292,146 @@ func TestSetAppGuardNormalisesOverride(t *testing.T) {
 		t.Fatalf("nil lists saved: %s", raw)
 	}
 }
+
+const protectionAnswer = `{"relay_filter":true,"share_bans":false,"share_bans_at":null,"community_size":12,"contributed_month":3}`
+
+var protectionOK = reply{status: 200, body: protectionAnswer}
+
+func TestOldFilePushesFilterOnShareOff(t *testing.T) {
+	f := twoShared(t, jellyCode(), protectionOK) // no relay_filter, no share_bans_at: a file from before
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := *f.relay; len(got) != 1 || got[0] != (sent{"PUT", "/v1/share/protection", `{"relay_filter":true,"share_bans":false}`}) {
+		t.Fatalf("relay %+v", got)
+	}
+}
+
+func TestSetRelayNeedsConsent(t *testing.T) {
+	f := twoShared(t, jellyCode())
+	before, _ := os.ReadFile(f.s.guardPath())
+	on := true
+	_, err := f.s.SetRelay(context.Background(), nil, &on, false)
+	wantGuardErr(t, err, "consent_required")
+	_, err = f.s.SetRelay(context.Background(), nil, nil, true)
+	wantGuardErr(t, err, "bad_request")
+	if after, _ := os.ReadFile(f.s.guardPath()); string(after) != string(before) || len(*f.relay) != 0 {
+		t.Fatalf("saved or pushed: %d calls", len(*f.relay))
+	}
+}
+
+func TestSetRelayConsentStamps(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, jellyCode(), protectionOK, protectionOK)
+	on, off := true, false
+	view, err := f.s.SetRelay(ctx, nil, &on, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := loadGuard(f.s.guardPath())
+	if !saved.ShareBans || !saved.ShareBansAt.Equal(f.now) || view.Relay.ShareBansAt == nil || !view.Relay.ShareBansAt.Equal(f.now) || !view.Relay.ShareBans {
+		t.Fatalf("saved %+v view %+v", saved, view.Relay)
+	}
+	if got := (*f.relay)[0]; got != (sent{"PUT", "/v1/share/protection", `{"relay_filter":true,"share_bans":true}`}) {
+		t.Fatalf("relay %+v", got)
+	}
+	if _, err := f.s.SetRelay(ctx, nil, &off, false); err != nil {
+		t.Fatal(err)
+	}
+	if saved, _ = loadGuard(f.s.guardPath()); saved.ShareBans || !saved.ShareBansAt.IsZero() {
+		t.Fatalf("saved %+v", saved)
+	}
+	if got := (*f.relay)[1]; got != (sent{"PUT", "/v1/share/protection", `{"relay_filter":true,"share_bans":false}`}) {
+		t.Fatalf("relay %+v", got)
+	}
+}
+
+func TestSetRelayOnOldRelay(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, jellyCode(), reply{status: 404, body: "404 page not found\n"})
+	off := false
+	_, err := f.s.SetRelay(ctx, &off, nil, false)
+	wantGuardErr(t, err, "relay_unsupported")
+	if saved, _ := loadGuard(f.s.guardPath()); saved.RelayFilter != nil { // the change is undone, as on a relay known old
+		t.Fatalf("saved %+v", saved)
+	}
+	view, err := f.s.GuardView(ctx)
+	if err != nil || view.Relay.Supported {
+		t.Fatalf("%+v %v", view.Relay, err)
+	}
+	_, err = f.s.SetRelay(ctx, &off, nil, false) // known now: not asked again
+	wantGuardErr(t, err, "relay_unsupported")
+	if len(*f.relay) != 1 {
+		t.Fatalf("relay asked %d times", len(*f.relay))
+	}
+}
+
+func TestSetRelayPushFailureKeepsTheChange(t *testing.T) {
+	f := twoShared(t, jellyCode(), reply{err: errors.New("no route")})
+	off := false
+	_, err := f.s.SetRelay(context.Background(), &off, nil, false)
+	if !errors.Is(err, ErrRelayPush) {
+		t.Fatalf("error %v", err)
+	}
+	if saved, _ := loadGuard(f.s.guardPath()); saved.RelayFilter == nil || *saved.RelayFilter {
+		t.Fatalf("saved %+v", saved)
+	}
+}
+
+// A relay that does not know this box's key yet, with no master to link it: the change stays for the resync, and the
+// owner reads that the master must register the box.
+func TestSetRelayWaitsForTheMaster(t *testing.T) {
+	f := twoShared(t, jellyCode(), reply{status: 403, body: `{"error":"box key not linked"}`})
+	off := false
+	_, err := f.s.SetRelay(context.Background(), &off, nil, false)
+	if !errors.Is(err, ErrWaitMaster) {
+		t.Fatalf("error %v", err)
+	}
+	if saved, _ := loadGuard(f.s.guardPath()); saved.RelayFilter == nil || *saved.RelayFilter {
+		t.Fatalf("saved %+v", saved)
+	}
+}
+
+func TestSetRelayWakesReports(t *testing.T) {
+	f := twoShared(t, jellyCode(), protectionOK)
+	woken := 0
+	f.s.wakeReports = func() { woken++ }
+	on := true
+	if _, err := f.s.SetRelay(context.Background(), nil, &on, true); err != nil || woken != 1 {
+		t.Fatalf("%v, woken %d", err, woken)
+	}
+}
+
+func TestRelayDownDoesNotBlockResync(t *testing.T) {
+	f := twoShared(t, nil, reply{err: errors.New("no route")})
+	if err := f.s.resync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := f.mgmt.order()
+	if len(got) != 3 || got[0] != "PUT /v1/gateway/guard" || got[1] != "PUT /v1/gateway/hosts" || got[2] != "PUT /v1/gateway/hosts" {
+		t.Fatalf("gateway %v", got)
+	}
+}
+
+func TestViewCarriesRelayNumbers(t *testing.T) {
+	ctx := context.Background()
+	f := twoShared(t, jellyCode(), protectionOK, reply{err: errors.New("no route")})
+	if err := f.s.resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.resync(ctx); err != nil { // a failed answer keeps the last numbers
+		t.Fatal(err)
+	}
+	view, err := f.s.GuardView(ctx)
+	if r := view.Relay; err != nil || !r.Supported || !r.Filter || r.CommunitySize != 12 || r.ContributedMonth != 3 {
+		t.Fatalf("%+v %v", r, err)
+	}
+}
+
+func TestRelayRefusalsOldRelayIsEmpty(t *testing.T) {
+	f := twoShared(t, nil, reply{status: 404, body: "404 page not found\n"})
+	out, err := f.s.RelayRefusals(context.Background())
+	if err != nil || string(out) != "[]" {
+		t.Fatalf("%s %v", out, err)
+	}
+}
