@@ -1,0 +1,10 @@
+name: @NAME@
+services:
+  web:
+    image: nginx:alpine
+x-casaos:
+  main: web
+  index: /
+  scheme: http
+  title:
+    en_us: @NAME@
