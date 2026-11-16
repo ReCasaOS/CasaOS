@@ -277,11 +277,7 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		apps := make([]string, 0, len(operations))
-		for _, operation := range operations {
-			apps = append(apps, operation.App)
-		}
-		return apps, nil
+		return autoupdate.OperationNames(operations), nil
 	})
 	if !config.ServerInfo.ImageManaged {
 		go autoupdate.Default.Run(context.Background())
