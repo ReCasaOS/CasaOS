@@ -188,8 +188,8 @@ Avant chaque passage, dans `service/sync_run.go` **(mon choix)** :
 
 Le passage s'inscrit dans le registre vivant (`beginLive`) avec un champ nouveau `kind: "sync"` et le
 nom de la tâche à la place de l'app. Il apparaît donc dans `GET /backup/running`, avec sa progression
-par `core/stats`, et s'arrête par la route existante. À la fin, l'AM écrit `last_*` dans `sync.json` et
-publie un événement `sync:done` ou `sync:failed` sur le bus.
+par `core/stats`, et s'arrête par la route existante. À la fin, l'AM écrit `last_*` dans `sync.json`. Pas d'événement
+sur le bus de messages : aucun écran ne le lirait, la fenêtre relit ses tâches **(mon choix)**.
 
 ### Un passage dans les deux sens (mon choix)
 
@@ -246,9 +246,9 @@ pas arrête le passage, sauf à la première passe.
 
 **État perdu ou refusé.** L'API ne distingue pas une erreur passagère d'un état perdu : dans les deux
 cas elle répond seulement « bisync aborted » (essais B4 et B5b ; le détail n'est que dans le journal
-de rclone). L'AM regarde donc le `workdir` après un échec : s'il n'y a plus de fichier `*.path1.lst`
-ou `*.path2.lst` **deux passes de suite**, l'état est perdu. (Une seule fois ne suffit pas : après un
-arrêt ces fichiers manquent, et la passe suivante les refait.) L'AM **ne relance pas** de première
+de rclone). L'AM regarde donc le `workdir` après un échec : s'il n'y reste ni `*.path1.lst` ni
+`*.path1.lst-old`, l'état est perdu. (Sans `.lst` mais avec un `.lst-old`, c'est une passe coupée, que
+la suivante reprend : essai K3.) L'AM **ne relance pas** de première
 passe : elle écrit `needs_first_pass`, la tâche ne tourne plus, et l'UI demande « Refaire la première
 passe », en disant qu'elle fait réapparaître les fichiers supprimés d'un seul côté depuis la dernière
 passe réussie (essai B9 : c'est bien ce qui arrive). Changer `local_path`, `remote_path` ou
