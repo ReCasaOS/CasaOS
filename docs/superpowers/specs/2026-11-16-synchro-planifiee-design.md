@@ -421,6 +421,10 @@ Décidés par l'assistant pendant l'exécution du plan, à relire. Le code fait 
 - **Dossiers de sauvegarde refusés** sans tenir compte de la casse, et aussi tout premier dossier qui
   contient des dossiers datés. À chaque passe d'une tâche qui écrit dans le cloud, un dossier qui
   contient `casaos-system` ou `casaos-restic` est refusé.
+- **Autres destinations de la box** : un dossier qui est la racine d'une autre destination du même
+  compte, qui la contient ou qui se trouve dedans est refusé, à n'importe quelle profondeur, à
+  l'enregistrement et à chaque passe. Quand la configuration ne distingue pas deux comptes d'un même
+  service (Drive, Dropbox, OneDrive), ils comptent pour un seul.
 - **Le dossier d'un téléchargement** n'est créé qu'à la création de la tâche ou quand son dossier
   change, pas à chaque enregistrement.
 - **Le nom d'une tâche** n'est montré qu'au propriétaire (opérations en cours, refus de supprimer une
