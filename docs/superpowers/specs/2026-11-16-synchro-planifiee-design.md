@@ -122,7 +122,7 @@ Fichier `/var/lib/casaos/backups/sync.json`, écrit comme `schedules.json` (list
 | `last_run`, `last_result`, `last_error`, `last_files`, `last_bytes` | dernier passage, écrits par l'AM |
 | `first_pass_done` | `both` seulement, écrit par l'AM : la première passe a réussi |
 | `needs_first_pass` | `both` seulement, écrit par l'AM : l'état de bisync est perdu, la tâche attend une confirmation |
-| `needs_delete_confirm` | `both` seulement, écrit par l'AM : plus de la moitié d'un côté a disparu, la tâche attend une confirmation |
+| `needs_delete_confirm` | écrit par l'AM : trop de suppressions d'un coup (plafond d'un sens unique `mirror`, ou plus de la moitié d'un côté en `both`), la tâche attend une confirmation |
 
 Les comptes cloud **sont les destinations de sauvegarde** **(mon choix)** : même connexion, même
 dialogue. Deux conséquences à connaître :
@@ -168,8 +168,11 @@ Nouveau fichier `pkg/rclone/syncdir.go`, une méthode `SyncDirectory(ctx, src, d
 - `mirror: true` ajoute `_config.MaxDelete` = la moitié du nombre de fichiers du côté écrit
   (compté par `operations/size`, au moins 10) **(mon choix)**. C'est un **plafond**, pas un tout ou
   rien (essai T4) : rclone supprime jusqu'au plafond, puis arrête le passage en erreur
-  (« failed to delete N files »). Avec l'archive, ce qui a été supprimé y est. La tâche l'affiche et
-  ne retente pas avant le créneau suivant.
+  (« failed to delete N files »). Retenter au créneau suivant supprimerait une autre moitié, puis
+  une autre : après cette erreur la tâche **ne tourne plus**, l'AM écrit `needs_delete_confirm`, et
+  l'UI demande « Confirmer les suppressions » (une passe sans plafond). Avec l'archive, ce que la
+  passe plafonnée a supprimé y est ; **archive éteinte, jusqu'à la moitié du côté écrit peut être
+  perdue avant l'arrêt**, et le dialogue le dit quand on éteint l'archive.
 - Les liens symboliques locaux ne sont pas suivis (comme `verificationLocal`).
 
 Avant chaque passage, dans `service/sync_run.go` **(mon choix)** :
@@ -196,9 +199,11 @@ Méthode `BisyncDirectory` dans le même fichier, job `_async` sur `sync/bisync`
   vit avec les autres fichiers de sauvegarde, pas dans le cache du compte qui fait tourner rclone.
 - **Première passe** (`first_pass_done` faux) : `resync: true`, **suivie aussitôt d'une passe
   normale**. La première réunit les deux côtés et ne supprime rien ; si un fichier diffère, la
-  version de la box est gardée et celle du cloud part dans l'archive du cloud (essai B1), ce que le
-  dialogue dit. La seconde est nécessaire : tant qu'aucune passe normale n'a réussi, une coupure
-  oblige à tout refaire (essais K1 et K3). L'AM écrit `first_pass_done` après les deux.
+  version de la box est gardée **même si elle est la plus ancienne**, et celle du cloud part dans
+  l'archive du cloud (essai B1), ce que le dialogue dit. On garde ce réglage par défaut de bisync
+  **(mon choix)** ; `resyncMode` permettrait « la plus récente gagne », pas essayé. La seconde passe
+  est nécessaire : tant qu'aucune passe normale n'a réussi, une coupure oblige à tout refaire (essais
+  K1, K3 et R1). L'AM écrit `first_pass_done` après les deux.
 - **Passes suivantes** : les ajouts, modifications **et suppressions** de chaque côté sont portés en
   face. bisync n'a pas d'interrupteur « ne pas supprimer en face » : pour `both`, `mirror` vaut
   toujours `true`, et c'est l'archive qui protège. C'est moins que ce que Synology propose ; le
@@ -215,11 +220,20 @@ Méthode `BisyncDirectory` dans le même fichier, job `_async` sur `sync/bisync`
   `photo.conflict1.jpg` (celle de la box) et `photo.conflict2.jpg` (celle du cloud). Sans cette
   option le nom devient `photo.jpg.conflict1`, qui ne s'ouvre plus d'un clic (essais B3 et C1).
 - `resilient: true` et `recover: true` : après un arrêt depuis l'interface ou une coupure, la passe
-  suivante reprend seule et finit la copie (essais K3 et K5).
+  suivante reprend seule et finit la copie (essais K3, K5 et R1). **Mais la reprise fait réapparaître
+  les fichiers supprimés depuis la dernière passe réussie** (essais R2 et R2b : un fichier supprimé
+  sur la box avant la passe interrompue est de retour sur la box après la reprise). C'est l'un des
+  anti-objectifs, et bisync n'offre rien pour l'éviter. La spec l'assume comme limite : rien n'est
+  perdu, et le résultat de la passe de reprise dit « reprise après une interruption : des fichiers
+  supprimés depuis ont pu réapparaître ». L'UI le dit aussi avant un « Arrêter » sur une tâche
+  `both`. Voir la question 5.
 - `maxLock: "2m"` : une coupure de courant laisse un fichier verrou dans le `workdir`, et sans cette
-  option il bloque toutes les passes suivantes pour toujours (essai K4). Avec, le verrou expire :
-  refusé juste après la coupure, accepté 150 s plus tard (essai K5). Une passe refusée pour verrou
-  (« prior lock file found ») n'est pas une erreur à montrer : elle est retentée au créneau suivant.
+  option la passe suivante est refusée (essai K4 ; d'après la doc de rclone ce verrou n'expire
+  jamais). Avec, le verrou expire : refusé juste après la coupure, accepté 150 s plus tard (essai
+  K5). Une passe qui dure plus de deux minutes garde son verrou : une seconde passe demandée à 150 s
+  est refusée (essai R3), donc deux passes ne tournent jamais sur les mêmes dossiers, même si l'AM
+  redémarre pendant que rclone continue. Une passe refusée pour verrou (« prior lock file found »)
+  n'est pas une erreur à montrer : elle est retentée au créneau suivant.
 - `createEmptySrcDirs: true` : les dossiers vides sont portés en face (essai E1). S3 n'a pas de
   dossiers vides.
 - `checkAccess` éteint : il demande des fichiers témoins `RCLONE_TEST` posés à la main.
@@ -270,7 +284,7 @@ verrou et met à jour la tâche par `id` ; si elle a été supprimée entre-temp
 - `POST /sync/tasks/{id}/first-pass` : confirme une nouvelle première passe d'une tâche `both` en
   `needs_first_pass`, répond 202.
 - `POST /sync/tasks/{id}/confirm-deletes` : lance une passe qui accepte les suppressions d'une tâche
-  `both` en `needs_delete_confirm`, répond 202.
+  en `needs_delete_confirm` (`force` en `both`, sans plafond en sens unique), répond 202.
 
 Suivi et arrêt : routes `/backup/running` existantes.
 
@@ -325,7 +339,8 @@ Textes en anglais dans le code, traduits comme le reste (`$t`).
 ## Essais sur rclone v1.75.1 (2026-11-16)
 
 Image officielle `rclone/rclone:1.75.1`, `rclone rcd` sur un socket unix, appels par l'API comme le
-fait l'AM. Dossiers locaux, un remote `alias`, un remote `crypt`, et un S3 servi par
+fait l'AM. Les scripts sont dans `2026-11-16-synchro-planifiee-essais/` (cinq tours ; les parties S3
+des tours 2 et 3 n'ont pas tourné, le serveur de test n'était pas joignable : S3 vient du tour 4). Dossiers locaux, un remote `alias`, un remote `crypt`, et un S3 servi par
 `rclone serve s3`. **Pas essayé : un vrai compte Dropbox, Google Drive, OneDrive ou AWS S3.**
 
 Sens unique :
@@ -350,13 +365,18 @@ Deux sens :
 | B3, C1 conflit | `photo.jpg.conflict1/2` par défaut, `photo.conflict1.jpg` avec `SuffixKeepExtension` |
 | K1 arrêt pendant la passe qui suit la première passe | passe suivante refusée, « Must run --resync to recover » |
 | K3 arrêt après une passe normale réussie | la passe suivante reprend et finit la copie |
-| K4 `rclone rcd` tué (coupure de courant), sans `maxLock` | verrou laissé, toutes les passes refusées |
-| K5 même coupure avec `maxLock: 2m` | refusé aussitôt, accepté après 150 s, copie finie, fichier partiel nettoyé. Un fichier supprimé juste avant la coupure était encore présent côté cloud après la reprise (côté box non regardé) |
+| K4 `rclone rcd` tué (coupure de courant), sans `maxLock` | verrou laissé, passe suivante refusée |
+| K5 même coupure avec `maxLock: 2m` | refusé aussitôt, accepté après 150 s, copie finie |
+| R1 première passe, passe normale sans rien à faire, arrêt, reprise | la reprise marche |
+| R2 suppressions faites avant une passe arrêtée | le fichier supprimé sur la box revient sur la box à la reprise ; celui supprimé côté cloud était déjà parti dans l'archive de la box avant l'arrêt |
+| R2b même chose, coupure de courant | le fichier supprimé revient aussi ; un fichier `.partial` est resté sur la box |
+| R3 passe de plus de 2 min avec `maxLock: 2m` | une seconde passe demandée à 150 s est refusée, le verrou est tenu |
 | B5, F1 plus de la moitié supprimée | « too many deletes », rien ne bouge, répété à chaque passe ; avec `force` les suppressions passent par l'archive |
 | B5b un côté vide (disque absent) | « bisync aborted », rien ne bouge ; le dossier revenu, la passe suivante marche |
 | B4 `workdir` effacé | « bisync aborted », rien ne bouge, plus aucune passe |
 | B9 première passe refaite | un fichier supprimé d'un seul côté réapparaît |
 | E1 dossiers vides | portés avec `createEmptySrcDirs`, pas sans |
+| Essais ratés | le premier essai d'arrêt (tour 1, B6) a arrêté une copie déjà finie ; l'essai « listes perdues d'un seul côté » (tour 2, L1) a tourné sur une tâche déjà bloquée par « too many deletes » : aucun des deux ne prouve rien |
 | S3 deux sens | ajout, suppression, conflit et archive sur le bucket : comme en local ; une passe sans changement ne transfère rien |
 
 ## Reste à vérifier avant d'écrire le code
@@ -368,7 +388,7 @@ Deux sens :
 3. Sous quel compte tourne `rclone rcd` et s'il peut écrire dans `/DATA`, `/media` et `/mnt`.
 4. Comment les routes `/backup/*` limitent aujourd'hui l'accès selon le compte.
 5. L'UI a-t-elle un sélecteur de dossiers réutilisable hors de Fichiers ?
-6. K5 : ce que devient, côté box, un fichier supprimé juste avant une coupure.
+6. Le fichier `.partial` resté sur la box après une coupure (R2b) : qui le nettoie.
 
 ## Questions au propriétaire
 
@@ -380,3 +400,7 @@ Deux sens :
    et sur S3 elle se paie. Faut-il une durée de garde dès maintenant (par exemple 30 jours) ?
 4. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
    étant la protection. Est-ce acceptable, ou faut-il un vrai « ne jamais supprimer » aussi là ?
+5. Dans les deux sens, un arrêt ou une coupure pendant une passe fait réapparaître les fichiers
+   supprimés depuis la passe précédente (essais R2). Rien n'est perdu, mais c'est ce qu'on voulait
+   éviter, et bisync ne permet pas de faire autrement. Acceptable avec un message, ou est-ce une
+   raison de ne livrer d'abord que les sens uniques ?
