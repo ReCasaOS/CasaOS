@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Note du 2026-11-16 :** ce plan est gardé comme il a été exécuté. Depuis, le numéro d'un compte n'est jamais redonné à un autre compte (voir `docs/comptes-et-visibilite.md`) : les étapes qui parlent d'un id réutilisé décrivent l'état d'avant.
+
 **Goal:** Remplacer le filtre « lecture seule » par un accès fermé par défaut pour `user`, corriger les routes de compte et d'app cachée, puis ajouter les droits par module.
 
 **Architecture:** Les services corrigent leurs routes de compte et leurs fuites d'app cachée (étape 1). Le Gateway n'ouvre à un `user` que les lignes d'un tableau testé (étape 2), l'interface suit. Une colonne `rights` ouvre ensuite la lecture de modules (étape 3).

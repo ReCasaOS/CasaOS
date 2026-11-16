@@ -19,7 +19,7 @@ Every account gets a number of its own, never given to another account, even aft
 
 ## What a `user` sees by default
 
-- Their own account: they can change their display name, e-mail, description, avatar, password, two-factor authentication and display preferences (search bar, language, appearance, background, app launching). Their login name is the one the owner gave.
+- Their own account: they can change their avatar, password, two-factor authentication and display preferences (search bar, language, appearance, background, app launching). Their login name is the one the owner gave.
 - The apps that are visible to them: the dashboard, the apps list, and the apps themselves.
 - **Statistics** and **Logs** of the visible apps.
 
@@ -72,7 +72,7 @@ For a `user`, the values of environment variables, the content of the `.env` fil
 
 ## When the box says no
 
-Whatever the box refuses, a `user` sees one translated message, not a raw error. A `user` is refused at the box's entrance (the Gateway) for anything that reaches the network or the drives, writes or not.
+Whatever the box refuses, a `user` sees one translated message, not a raw error. A `user` is refused at the box's entrance (the Gateway) for every change, and for every read that is neither their own account, a visible app, nor a module the owner ticked.
 
 The owner is not refused what a `user` is refused. One exception: when the box's entrance has just restarted and the account service is not answering, the box cannot tell who is the owner, and answers "unavailable" to every account, the owner's included, until the account service is back.
 

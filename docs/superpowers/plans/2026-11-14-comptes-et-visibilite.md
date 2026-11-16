@@ -2,6 +2,8 @@
 
 > **Pour les exécutants :** sous-compétence requise : superpowers:subagent-driven-development (recommandé) ou superpowers:executing-plans. Les étapes sont des cases à cocher (`- [ ]`).
 
+> **Note du 2026-11-16 :** ce plan est gardé comme il a été exécuté. Depuis, le numéro d'un compte n'est jamais redonné à un autre compte (voir `docs/comptes-et-visibilite.md`) : les étapes qui parlent d'un id réutilisé décrivent l'état d'avant.
+
 **Objectif :** le propriétaire crée des comptes `user`, cache des apps pour certains d'entre eux, et un `user` est en lecture seule partout.
 
 **Architecture :** UserService porte comptes et rôles. Le rôle est lu par Gateway et AppManagement par un appel interne mis en cache (une seule implémentation, dans Common). Le Gateway refuse les écritures d'un `user` ; AppManagement refuse les siennes aussi et filtre ses listes d'après `/var/lib/casaos/visibility.json`.
