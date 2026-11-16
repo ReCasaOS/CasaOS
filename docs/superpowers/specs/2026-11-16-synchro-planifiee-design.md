@@ -49,7 +49,8 @@ archive des fichiers supprimés ou écrasés, S3 comme Dropbox, Google Drive et 
   `casaos-system`, `casaos-restic`).
 - Une tâche qui écrit dans `/`, dans le système ou dans les données des apps.
 - Une synchro de 13 heures qui bloque les sauvegardes de 03:00 (le cas seerr du 2026-11-09).
-- Une resynchronisation lancée seule qui fait réapparaître des fichiers supprimés.
+- Une resynchronisation lancée seule qui fait réapparaître des fichiers supprimés. (La reprise après
+  une interruption le fait quand même, voir plus bas : accepté avec un message.)
 - Casser une box plus ancienne : face à un AM sans les routes nouvelles (404), l'UI ne montre pas
   l'onglet et se comporte comme aujourd'hui.
 
@@ -223,10 +224,10 @@ Méthode `BisyncDirectory` dans le même fichier, job `_async` sur `sync/bisync`
   suivante reprend seule et finit la copie (essais K3, K5 et R1). **Mais la reprise fait réapparaître
   les fichiers supprimés depuis la dernière passe réussie** (essais R2 et R2b : un fichier supprimé
   sur la box avant la passe interrompue est de retour sur la box après la reprise). C'est l'un des
-  anti-objectifs, et bisync n'offre rien pour l'éviter. La spec l'assume comme limite : rien n'est
+  anti-objectifs, et bisync n'offre rien pour l'éviter. Limite acceptée **(propriétaire)** : rien n'est
   perdu, et le résultat de la passe de reprise dit « reprise après une interruption : des fichiers
   supprimés depuis ont pu réapparaître ». L'UI le dit aussi avant un « Arrêter » sur une tâche
-  `both`. Voir la question 5.
+  `both`.
 - `maxLock: "2m"` : une coupure de courant laisse un fichier verrou dans le `workdir`, et sans cette
   option la passe suivante est refusée (essai K4 ; d'après la doc de rclone ce verrou n'expire
   jamais). Avec, le verrou expire : refusé juste après la coupure, accepté 150 s plus tard (essai
@@ -400,7 +401,6 @@ Deux sens :
    et sur S3 elle se paie. Faut-il une durée de garde dès maintenant (par exemple 30 jours) ?
 4. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
    étant la protection. Est-ce acceptable, ou faut-il un vrai « ne jamais supprimer » aussi là ?
-5. Dans les deux sens, un arrêt ou une coupure pendant une passe fait réapparaître les fichiers
-   supprimés depuis la passe précédente (essais R2). Rien n'est perdu, mais c'est ce qu'on voulait
-   éviter, et bisync ne permet pas de faire autrement. Acceptable avec un message, ou est-ce une
-   raison de ne livrer d'abord que les sens uniques ?
+
+Tranché : les fichiers supprimés qui reviennent après un arrêt ou une coupure en double sens sont
+acceptés, avec le message décrit plus haut **(propriétaire, 2026-11-16)**.
