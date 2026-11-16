@@ -404,6 +404,35 @@ Deux sens :
 5. L'UI a-t-elle un sélecteur de dossiers réutilisable hors de Fichiers ?
 6. Le fichier `.partial` resté sur la box après une coupure (R2b) : qui le nettoie.
 
+## Écarts à l'exécution (2026-11-16)
+
+Décidés par l'assistant pendant l'exécution du plan, à relire. Le code fait foi.
+
+- **Première passe d'une tâche à deux sens** : un côté vide est accepté tant que la première passe
+  n'a pas réussi (sinon une tâche neuve dont un côté est vide ne démarrerait jamais). Elle ne
+  supprime rien.
+- **Une passe tourne sur le chemin réel du dossier** (liens symboliques résolus), archive comprise.
+- **La purge de l'archive** ne touche que le côté où la tâche archive : la box pour un
+  téléchargement, le cloud pour un envoi, les deux pour « les deux ».
+- **Modifier les dossiers ou le sens d'une tâche** efface ses attentes de confirmation et son état de
+  double sens : elle repart de zéro.
+- **Résultat impossible à écrire** (disque plein) : la tâche est tenue à l'arrêt jusqu'au redémarrage
+  du service, au lieu de retenter chaque minute avec un plafond neuf.
+- **Dossiers de sauvegarde refusés** sans tenir compte de la casse, et aussi tout premier dossier qui
+  contient des dossiers datés. À chaque passe d'une tâche qui écrit dans le cloud, un dossier qui
+  contient `casaos-system` ou `casaos-restic` est refusé.
+- **Le dossier d'un téléchargement** n'est créé qu'à la création de la tâche ou quand son dossier
+  change, pas à chaque enregistrement.
+- **Le nom d'une tâche** n'est montré qu'au propriétaire (opérations en cours, refus de supprimer une
+  destination).
+- **Box plus ancienne** : elle répond 400 « no matching operation was found », pas 404 ; l'UI cache
+  l'entrée dans les deux cas.
+- **Destination chiffrée** : l'UI ne peut pas le savoir ; elle montre un rappel sur tout envoi, et le
+  refus du téléchargement ou du double sens vient de la box.
+- **Pas d'événement sur le bus**, et **pas de pile complète** pour la vérification : un essai de bout
+  en bout sur le vrai rclone, et la fenêtre pilotée dans un navigateur sur le faux serveur de
+  développement.
+
 ## Décisions du propriétaire (2026-11-16)
 
 Plus aucune question ouverte.
