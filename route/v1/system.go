@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/port"
@@ -41,11 +42,23 @@ func GetSystemCheckVersion(ctx echo.Context) error {
 		data["version"] = map[string]interface{}{}
 		return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
 	}
-	need, latestVersion := version.IsNeedUpdate(service.MyService.Casa().GetCasaosVersion())
+	latest := service.MyService.Casa().GetCasaosVersion
+	// ?refresh=1 looks now, past the 20-minute cache ("check for updates"). The check is open to
+	// anyone on the network: one look per half minute for the whole box, the cache otherwise.
+	if ctx.QueryParam("refresh") != "" {
+		now, last := time.Now().Unix(), lastVersionRefresh.Load()
+		if now-last >= 30 && lastVersionRefresh.CompareAndSwap(last, now) {
+			latest = service.MyService.Casa().FetchCasaosVersion
+		}
+	}
+	need, latestVersion := version.IsNeedUpdate(latest())
 	data["need_update"] = need
 	data["version"] = latestVersion
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
 }
+
+// lastVersionRefresh is when a ?refresh=1 last went past the cache, in Unix seconds.
+var lastVersionRefresh atomic.Int64
 
 // @Summary 系统信息
 // @Produce  application/json
