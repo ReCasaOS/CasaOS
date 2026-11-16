@@ -35,7 +35,6 @@ archive des fichiers supprimés ou écrasés, S3 comme Dropbox, Google Drive et 
 - La détection en temps réel (inotify, webhooks du fournisseur) : planning seulement **(mon choix)**.
 - Les filtres par tâche (motifs à exclure), la limite de débit, plusieurs couples de dossiers par tâche
   (on crée plusieurs tâches) **(mon choix)**.
-- La purge automatique de l'archive **(mon choix)** : la carte de la tâche dit où elle est.
 - La flotte : créer ou voir les tâches d'une autre box depuis le maître.
 - restic : une synchro passe toujours par rclone, y compris vers une destination dont les sauvegardes
   sont tenues par restic.
@@ -118,6 +117,7 @@ Fichier `/var/lib/casaos/backups/sync.json`, écrit comme `schedules.json` (list
 | `direction` | `download` (cloud vers box), `upload` (box vers cloud), `both` (les deux) |
 | `mirror` | `false` par défaut : rien n'est supprimé en face. `true` : ce qui disparaît de la source disparaît en face. Toujours `true` pour `both` |
 | `archive` | `true` par défaut : ce qu'une synchro écrase ou supprime est déplacé dans l'archive |
+| `archive_days` | `30` par défaut **(propriétaire, 2026-11-16)** : ce qui est dans l'archive depuis plus longtemps est effacé. `0` : rien n'est jamais effacé **(mon choix)** |
 | `every`, `at`, `weekday` | comme un planning de sauvegarde, plus `hourly` (`at` = la minute) |
 | `enabled` | interrupteur |
 | `last_run`, `last_result`, `last_error`, `last_files`, `last_bytes` | dernier passage, écrits par l'AM |
@@ -255,6 +255,16 @@ passe réussie (essai B9 : c'est bien ce qui arrive). Changer `local_path`, `rem
 `destination` d'une tâche `both` efface son `workdir` et remet `first_pass_done` à faux ; supprimer
 la tâche efface son `workdir`.
 
+### La purge de l'archive
+
+L'archive est gardée **30 jours (propriétaire, 2026-11-16)**. Après chaque passe **réussie**, l'AM
+efface les dossiers `<stamp>` de l'archive dont la date (lue dans le nom, pas dans les dates des
+fichiers) a plus de `archive_days` jours : `os.RemoveAll` côté box, `Purge` (`operations/purge`, déjà
+dans le client) côté cloud, après une liste des dossiers par `operations/list`. Jamais après une passe
+ratée, arrêtée ou en attente de confirmation : c'est là qu'on a besoin de l'archive. Un nom qui n'est
+pas un `<stamp>` n'est jamais effacé. Une erreur de purge est journalisée et ne fait pas échouer la
+passe **(mon choix)**.
+
 ### Le planificateur (mon choix)
 
 `RunDueSyncs`, appelé chaque minute par une entrée de crontab à lui, avec **son propre verrou**
@@ -313,7 +323,7 @@ dossiers de Fichiers), sens, planning, puis deux interrupteurs :
 - « Supprimer en face ce qui est supprimé à la source », éteint par défaut, avec la phrase
   « Éteint : aucun fichier n'est jamais supprimé par cette tâche. »
 - « Garder une copie de ce qui est remplacé ou supprimé », allumé par défaut, avec le chemin de
-  l'archive.
+  l'archive et « pendant 30 jours ».
 
 Avec le sens « Les deux », le premier interrupteur est allumé et verrouillé, avec la phrase « Dans
 les deux sens, une suppression d'un côté est toujours portée de l'autre ; la copie gardée ci-dessous
@@ -331,7 +341,8 @@ Textes en anglais dans le code, traduits comme le reste (`$t`).
 - Avec le vrai rclone v1.75.1 (comme `signin_integration_test.go`), remotes locaux :
   copie simple ; fichier modifié à la source, l'ancien part dans l'archive ; `mirror` éteint, un
   fichier supprimé à la source reste en face ; `mirror` allumé, il part dans l'archive ; `MaxDelete`
-  dépassé, rien n'est supprimé et le passage échoue ; source vide, rien ne bouge ; arrêt en cours de
+  dépassé, le passage échoue et la tâche attend ; purge de l'archive : un dossier de 31 jours
+  effacé, un de 29 gardé, rien d'effacé après un échec ; source vide, rien ne bouge ; arrêt en cours de
   passage.
 - Deux sens, vrai rclone : première passe qui réunit ; ajout, modification et suppression portés
   dans chaque sens ; suppression gardée dans l'archive du bon côté ; conflit, deux copies renommées ;
@@ -395,11 +406,10 @@ Deux sens :
 
 ## Questions au propriétaire
 
-1. L'archive n'est jamais purgée dans cette version. Avec un planning horaire elle grossit sans fin,
-   et sur S3 elle se paie. Faut-il une durée de garde dès maintenant (par exemple 30 jours) ?
-2. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
+1. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
    étant la protection. Est-ce acceptable, ou faut-il un vrai « ne jamais supprimer » aussi là ?
 
 Tranché : les fichiers supprimés qui reviennent après un arrêt ou une coupure en double sens sont
 acceptés, avec le message décrit plus haut ; les comptes cloud sont les destinations de sauvegarde ;
-la synchro a son entrée à part dans les réglages **(propriétaire, 2026-11-16)**.
+la synchro a son entrée à part dans les réglages ; l'archive est gardée 30 jours
+**(propriétaire, 2026-11-16)**.
