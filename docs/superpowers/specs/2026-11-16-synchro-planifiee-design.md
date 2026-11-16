@@ -125,7 +125,7 @@ Fichier `/var/lib/casaos/backups/sync.json`, écrit comme `schedules.json` (list
 | `needs_first_pass` | `both` seulement, écrit par l'AM : l'état de bisync est perdu, la tâche attend une confirmation |
 | `needs_delete_confirm` | écrit par l'AM : trop de suppressions d'un coup (plafond d'un sens unique `mirror`, ou plus de la moitié d'un côté en `both`), la tâche attend une confirmation |
 
-Les comptes cloud **sont les destinations de sauvegarde** **(mon choix)** : même connexion, même
+Les comptes cloud **sont les destinations de sauvegarde** **(propriétaire, 2026-11-16)** : même connexion, même
 dialogue. Deux conséquences à connaître :
 
 - Une destination **chiffrée** (`crypt`) ne montre que des noms chiffrés : un téléchargement n'y verrait
@@ -393,14 +393,13 @@ Deux sens :
 
 ## Questions au propriétaire
 
-1. Les comptes cloud de la synchro sont-ils bien les destinations de sauvegarde, ou veut-on des
-   comptes séparés ?
-2. L'onglet « Synchronisation » dans la fenêtre des sauvegardes, ou une entrée à part dans les
+1. L'onglet « Synchronisation » dans la fenêtre des sauvegardes, ou une entrée à part dans les
    réglages ?
-3. L'archive n'est jamais purgée dans cette version. Avec un planning horaire elle grossit sans fin,
+2. L'archive n'est jamais purgée dans cette version. Avec un planning horaire elle grossit sans fin,
    et sur S3 elle se paie. Faut-il une durée de garde dès maintenant (par exemple 30 jours) ?
-4. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
+3. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
    étant la protection. Est-ce acceptable, ou faut-il un vrai « ne jamais supprimer » aussi là ?
 
 Tranché : les fichiers supprimés qui reviennent après un arrêt ou une coupure en double sens sont
-acceptés, avec le message décrit plus haut **(propriétaire, 2026-11-16)**.
+acceptés, avec le message décrit plus haut ; les comptes cloud sont les destinations de sauvegarde
+**(propriétaire, 2026-11-16)**.
