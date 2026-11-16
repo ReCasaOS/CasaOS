@@ -1,0 +1,340 @@
+# Synchroniser un dossier de la box avec un compte cloud, sur planning
+
+Date : 2026-11-16. Dépôts touchés : CasaOS-AppManagement (AM), CasaOS-UI. Demande : CasaOS#153.
+Marqueurs : **(propriétaire)** = décidé par le propriétaire ; **(mon choix)** = décidé par l'assistant, à relire.
+
+## Pourquoi
+
+Dans CasaOS#153, NoBackUp42 demande ce que font le Cloud Sync de Synology et celui de TrueNAS : une
+**copie locale tenue à jour sur planning**, dans un sens ou dans les deux, sans perte quand un fichier
+est supprimé ou modifié des deux côtés. Aujourd'hui la box sait :
+
+- **monter** un compte cloud dans Fichiers (un lien, rien n'est copié) ;
+- **sauvegarder** une app ou la box vers une destination (box vers cloud, par app, datée, restaurable).
+
+Aucun des deux ne garde un dossier quelconque de la box identique à un dossier du cloud. C'est une
+fonction nouvelle **(propriétaire)**. S3 doit en faire partie **(propriétaire)**.
+
+Ce qui a été annoncé publiquement dans l'issue, et que cette spec doit couvrir ou reporter en le disant :
+un sens par tâche (les deux sens, téléchargement seul, envoi seul), un choix de dossiers, un planning,
+un interrupteur « ne pas supprimer de l'autre côté », des conflits gardés en copies renommées, une
+archive des fichiers supprimés ou écrasés, S3 comme Dropbox, Google Drive et OneDrive, pas de date.
+
+## Objectifs
+
+1. Une **tâche de synchro** relie un dossier de la box à un dossier d'un compte cloud, avec un sens et
+   un planning.
+2. Rien n'est perdu par défaut : aucune suppression propagée, et tout fichier écrasé ou supprimé par
+   une synchro part dans une archive.
+3. Tout backend déjà accepté comme destination de sauvegarde marche, S3 compris, sans code par backend.
+4. Une synchro se voit, se suit et s'arrête comme une sauvegarde (onglet « En cours »).
+5. Une longue synchro ne retarde pas les sauvegardes, et l'inverse.
+
+## Non-objectifs
+
+- La détection en temps réel (inotify, webhooks du fournisseur) : planning seulement **(mon choix)**.
+- Les filtres par tâche (motifs à exclure), la limite de débit, plusieurs couples de dossiers par tâche
+  (on crée plusieurs tâches) **(mon choix)**.
+- La purge automatique de l'archive **(mon choix)** : la carte de la tâche dit où elle est.
+- La flotte : créer ou voir les tâches d'une autre box depuis le maître.
+- restic : une synchro passe toujours par rclone, y compris vers une destination dont les sauvegardes
+  sont tenues par restic.
+- Un historique des passages : seul le dernier résultat de chaque tâche est gardé **(mon choix)**.
+
+## Anti-objectifs
+
+- **Une source vide ou injoignable qui vide l'autre côté** : disque non monté, jeton expiré, bucket
+  renommé. C'est l'accident type de ce genre d'outil.
+- Une tâche qui écrit ou supprime dans les sauvegardes de la même destination (`<app>/<stamp>`,
+  `casaos-system`, `casaos-restic`).
+- Une tâche qui écrit dans `/`, dans le système ou dans les données des apps.
+- Une synchro de 13 heures qui bloque les sauvegardes de 03:00 (le cas seerr du 2026-11-09).
+- Une resynchronisation lancée seule qui fait réapparaître des fichiers supprimés.
+- Casser une box plus ancienne : face à un AM sans les routes nouvelles (404), l'UI ne montre pas
+  l'onglet et se comporte comme aujourd'hui.
+
+## Ce qui existe (relevé du code, inkly/main)
+
+AM (`7114ede`) :
+- `pkg/rclone` parle au démon `rclone rcd` par `/var/run/rclone/rclone.sock`. Les copies sont des jobs
+  `_async` (`copy.go` `startJob`, `waitForJob`), sondés toutes les 2 s, avec `core/stats` par
+  `group=job/<id>` (`copy.go:128`) et `job/stop` quand le contexte est annulé.
+- `CopyDirectory` appelle `sync/copy` (ne supprime jamais). `RestoreDirectory` (`restore.go`) appelle
+  `sync/sync` de la destination vers la box : le sens cloud vers box existe donc déjà dans le client.
+- `verify.go` passe des options par job avec `_config` (noms de champs `ConfigInfo`, pas de drapeaux)
+  et `_filter`.
+- rclone livré : **v1.75.1** (`get` `release/components.env:17`). Le commentaire d'en-tête de
+  `client.go:14` dit encore v1.61.1 : périmé, à corriger en passant.
+- Destinations : des remotes `casaos-backup-<nom>` dans la config de rclone, pas de second magasin.
+  Avec un `root` (dossier, ou bucket pour S3) la destination est un remote `alias` sur
+  `casaos-backup-<nom>-raw:<root>` (`client.go:168-209`) ; chiffrée, un remote `crypt` sur ce même
+  remote brut (`client.go:326`).
+- Connexion par navigateur pour Google Drive, Dropbox, OneDrive : `POST /backup/signin` et
+  `/backup/signin/finish`.
+- Planificateur `service/backup_scheduler.go` : `RunDueBackups` est appelé chaque minute par le
+  crontab de `main.go`, tient `backupTick` (`TryLock`, un passage à la fois pour toute la box), et
+  s'arrête tant qu'une mise à niveau du système est ouverte (`osUpgradeOpen`). Les plannings sont dans
+  `/var/lib/casaos/backups/schedules.json` (écriture `.tmp` puis `rename`, 0600), `every` vaut `daily`
+  ou `weekly`, et `mostRecentSlot` rattrape un créneau manqué.
+- `service/backup_live.go` : registre en mémoire des sauvegardes qui tournent (`beginLive`,
+  `LiveBackups`, `StopLiveBackup`), servi par `GET /backup/running` et
+  `POST /backup/running/{backup_id}/stop`.
+- L'unité sauvegardée est toujours une app, ou `casaos-system`. Aucun mode « dossier quelconque ».
+
+UI (`81297e8b`) : fenêtre « Sauvegardes et restauration » (`BackupDestinations.vue`), onglets nommés
+(`running` si quelque chose tourne, `destinations`, `schedules`, `exclusions`, `history`), ouverte sur
+un onglet par la prop `initialTab` ; `backupBackends.js` décrit les backends (S3 avec
+son champ « Bucket ») ; `service/backup.js` porte les appels.
+
+## Approches
+
+1. **Sens unique seulement** (`sync/copy` et `sync/sync`), jamais de double sens. Le plus simple et le
+   plus sûr, tout le client existe. Mais le double sens est annoncé dans l'issue.
+2. **Les trois sens d'un coup**, le double sens par `sync/bisync`. Couvre tout, mais bisync apporte un
+   état sur disque par tâche, une première passe spéciale (`resync`), un verrou, et des limites par
+   backend qu'on n'a jamais essayées sur cette box.
+3. **Deux lots, un seul modèle** : un premier lot livre téléchargement seul et envoi seul ; un second
+   ajoute « les deux » sans changer le fichier des tâches ni les routes.
+
+Retenue : **2 (propriétaire, 2026-11-16 : « tout d'un coup »)**. L'assistant proposait la 3. La
+conséquence : les essais de bisync sur le vrai rclone v1.75.1 (section « À vérifier ») passent
+**avant** le plan et le code, parce que la conception du double sens repose sur des faits lus dans la
+doc de rclone, pas encore essayés.
+
+## Conception
+
+### La tâche (mon choix)
+
+Fichier `/var/lib/casaos/backups/sync.json`, écrit comme `schedules.json` (liste entière, `.tmp` puis
+`rename`, 0600). Une tâche :
+
+| Champ | Sens |
+|---|---|
+| `id` | chaîne unique, donnée par l'AM à la création |
+| `name` | nom affiché, unique |
+| `destination` | nom d'une destination de sauvegarde existante |
+| `remote_path` | dossier dans cette destination |
+| `local_path` | dossier absolu sur la box |
+| `direction` | `download` (cloud vers box), `upload` (box vers cloud), `both` (les deux) |
+| `mirror` | `false` par défaut : rien n'est supprimé en face. `true` : ce qui disparaît de la source disparaît en face. Toujours `true` pour `both` |
+| `archive` | `true` par défaut : ce qu'une synchro écrase ou supprime est déplacé dans l'archive |
+| `every`, `at`, `weekday` | comme un planning de sauvegarde, plus `hourly` (`at` = la minute) |
+| `enabled` | interrupteur |
+| `last_run`, `last_result`, `last_error`, `last_files`, `last_bytes` | dernier passage, écrits par l'AM |
+| `first_pass_done` | `both` seulement, écrit par l'AM : la première passe a réussi |
+| `needs_first_pass` | `both` seulement, écrit par l'AM : l'état de bisync est perdu ou refusé, la tâche attend une confirmation |
+
+Les comptes cloud **sont les destinations de sauvegarde** **(mon choix)** : même connexion, même
+dialogue. Deux conséquences à connaître :
+
+- Une destination **chiffrée** (`crypt`) ne montre que des noms chiffrés : un téléchargement n'y verrait
+  aucun fichier ordinaire du compte, un envoi y poserait des fichiers illisibles depuis le site du
+  fournisseur. Le téléchargement depuis une destination chiffrée est **refusé** ; l'envoi est accepté
+  et le dialogue dit que les fichiers ne seront lisibles que par cette box **(mon choix)**. « Les
+  deux » y est refusé aussi : un fichier posé depuis le site du fournisseur n'y serait pas lu.
+- Une destination à `root` ne voit que l'intérieur de ce dossier, en général celui des sauvegardes.
+  Pour synchroniser un autre dossier du même compte, il faut une seconde destination sans `root` :
+  même compte, seconde connexion. Le dialogue le dit quand la liste de dossiers est vide.
+
+### Ce que l'AM refuse à l'enregistrement
+
+- `local_path` hors de `/DATA`, `/media` et `/mnt`, ou égal à l'une de ces racines, ou dans
+  `/DATA/AppData` (données des apps), ou **racine d'un disque monté** (il faut un sous-dossier)
+  **(mon choix)**. Le chemin est nettoyé et ses liens symboliques résolus avant le contrôle.
+- `direction: download` ou `both` avec une destination chiffrée.
+- Deux tâches dont les `local_path` se contiennent, ou deux tâches sur la même destination dont les
+  `remote_path` se contiennent.
+- `remote_path` vide pour `upload` (et `both`) : une tâche n'écrit jamais à la racine d'une
+  destination, là où vivent les sauvegardes. Pour tous les sens, un `remote_path` qui commence par
+  `casaos-restic`, `casaos-system`, ou par le nom d'une app sauvegardée sur cette destination.
+- Supprimer une destination qu'une tâche utilise : refusé, avec le nom de la tâche.
+
+Le dossier `local_path` d'un téléchargement est créé **à l'enregistrement**, jamais pendant un
+passage. Tous ces contrôles sont refaits au début de chaque passage : un lien symbolique peut avoir
+changé, une app installée depuis peut porter le nom du `remote_path`.
+
+Qui peut créer une tâche : les administrateurs seulement **(mon choix)** ; à brancher sur le contrôle
+que les routes `/backup/*` font aujourd'hui (à relever avant le code).
+
+### Un passage à sens unique
+
+Nouveau fichier `pkg/rclone/syncdir.go`, une méthode `SyncDirectory(ctx, src, dst, options)` :
+
+- `mirror: false` : `sync/copy`. `mirror: true` : `sync/sync`.
+- `archive: true` : `_config.BackupDir` = l'archive du côté **écrit**, dossier voisin daté :
+  - téléchargement : `<parent de local_path>/.<nom du dossier>-archive/<stamp>` ;
+  - envoi : `<remote_path>-archive/<stamp>` sur le même remote que `dstFs`.
+  rclone exige le même remote et aucun chevauchement : un dossier voisin remplit les deux.
+- `mirror: true` ajoute `_config.MaxDelete` = la moitié du nombre de fichiers du côté écrit
+  (compté par `operations/size`, au moins 10) **(mon choix)**. Dépassé, rclone arrête le passage en
+  erreur ; la tâche l'affiche et ne retente pas avant le créneau suivant.
+- Les liens symboliques locaux ne sont pas suivis (comme `verificationLocal`).
+
+Avant chaque passage, dans `service/sync_run.go` **(mon choix)** :
+
+1. La source doit répondre : `operations/list` sur le dossier source. Une erreur arrête le passage.
+2. **Source vide, côté écrit non vide : le passage est refusé**, que `mirror` soit actif ou non, avec
+   le message « la source est vide ». C'est la parade au disque non monté et au jeton expiré.
+3. `local_path` doit exister et être un dossier, dans les deux sens. Absent, le passage échoue avec
+   « le dossier de la box est introuvable » : c'est le disque non monté côté écrit, et sans cette
+   règle tout le compte cloud serait copié sur le disque système. Comme la racine d'un disque est
+   refusée, le dossier et son archive voisine sont toujours sur le même disque.
+
+Le passage s'inscrit dans le registre vivant (`beginLive`) avec un champ nouveau `kind: "sync"` et le
+nom de la tâche à la place de l'app. Il apparaît donc dans `GET /backup/running`, avec sa progression
+par `core/stats`, et s'arrête par la route existante. À la fin, l'AM écrit `last_*` dans `sync.json` et
+publie un événement `sync:done` ou `sync:failed` sur le bus.
+
+### Un passage dans les deux sens (mon choix)
+
+Méthode `BisyncDirectory` dans le même fichier, job `_async` sur `sync/bisync` :
+
+- `path1` = `local_path`, `path2` = le dossier du cloud.
+- `workdir` = `/var/lib/casaos/backups/bisync/<id>` : l'état de bisync (ses listes des deux côtés)
+  vit avec les autres fichiers de sauvegarde, pas dans le cache du compte qui fait tourner rclone.
+- **Première passe** (`first_pass_done` faux) : `resync: true`. Elle réunit les deux côtés et ne
+  supprime rien. Réussie, l'AM écrit `first_pass_done`.
+- **Passes suivantes** : les ajouts, modifications **et suppressions** de chaque côté sont portés en
+  face. bisync n'a pas d'interrupteur « ne pas supprimer en face » : pour `both`, `mirror` vaut
+  toujours `true`, et c'est l'archive qui protège. C'est moins que ce que Synology propose ; le
+  dialogue le dit.
+- `archive: true` : `backupDir1` et `backupDir2`, les deux dossiers voisins décrits plus haut, un par
+  côté.
+- `maxDelete: 50` (un pourcentage, le défaut de bisync) : au-delà de la moitié d'un côté à supprimer,
+  bisync s'arrête sans rien changer.
+- Conflits (un fichier modifié des deux côtés entre deux passes) : `conflictResolve: none`, les deux
+  versions sont gardées et renommées (`fichier.conflict1`, `fichier.conflict2`) des deux côtés.
+- `resilient: true` et `recover: true` : après une erreur passagère ou un passage coupé, la passe
+  suivante reprend sans première passe.
+- `checkAccess` éteint : il demande des fichiers témoins `RCLONE_TEST` posés à la main.
+- Google Drive : les Google Docs n'ont ni taille ni empreinte ; ils sont ignorés
+  (`skip_gdocs` sur le remote, quand le backend de la destination est `drive`).
+
+Les contrôles d'avant passage s'appliquent aux deux côtés : un côté vide alors que l'autre ne l'est
+pas arrête le passage, sauf à la première passe.
+
+**État perdu ou refusé.** Si bisync répond qu'il lui faut une resynchronisation (état absent, abîmé,
+ou erreur grave), l'AM **ne la lance pas** : elle écrit `needs_first_pass`, la tâche ne tourne plus,
+et l'UI demande « Refaire la première passe », en disant qu'elle peut faire réapparaître des fichiers
+supprimés d'un seul côté depuis la dernière passe réussie. Changer `local_path`, `remote_path` ou
+`destination` d'une tâche `both` efface son `workdir` et remet `first_pass_done` à faux ; supprimer
+la tâche efface son `workdir`.
+
+### Le planificateur (mon choix)
+
+`RunDueSyncs`, appelé chaque minute par une entrée de crontab à lui, avec **son propre verrou**
+`syncTick` : les synchros passent une à la fois entre elles, mais ne tiennent pas `backupTick`. Une
+synchro et une sauvegarde peuvent donc tourner ensemble ; `rclone rcd` sait mener plusieurs jobs.
+Comme les sauvegardes : `last_run` est écrit que le passage ait réussi ou non, et un créneau manqué
+est rattrapé une fois. `mostRecentSlot` apprend `hourly`.
+
+Mise à niveau du système : même ordre que `RunDueBackups`. La synchro **s'inscrit d'abord** comme
+opération en cours (ce que le core lit avant d'ouvrir une mise à niveau), **puis** regarde
+`osUpgradeOpen` ; ouverte, elle se retire et son créneau reste dû. Sans cet ordre, une mise à niveau
+pourrait démarrer au milieu d'une synchro. « Lancer maintenant » suit la même règle et répond 409
+pendant une mise à niveau.
+
+Écritures concurrentes : `sync.json` a son verrou. L'écriture des `last_*` relit le fichier sous ce
+verrou et met à jour la tâche par `id` ; si elle a été supprimée entre-temps, rien n'est écrit. Un
+`PUT` pendant un passage n'est donc jamais défait.
+
+### Routes (AM, openapi)
+
+- `GET /sync/tasks` : la liste, avec les `last_*`.
+- `PUT /sync/tasks` : remplace la liste (comme `/backup/schedules`) ; l'AM garde les `last_*` des
+  tâches dont l'`id` existe déjà et donne un `id` aux nouvelles.
+- `POST /sync/tasks/{id}/run` : lance le passage maintenant, répond 202 ; 409 si cette tâche tourne
+  déjà ou si une mise à niveau du système est ouverte.
+- `GET /backup/destinations/{name}/folders?path=` : les sous-dossiers d'un dossier de la destination
+  (`operations/list`, `dirsOnly`), pour choisir `remote_path` sans le taper.
+- `POST /sync/tasks/{id}/first-pass` : confirme une nouvelle première passe d'une tâche `both` en
+  `needs_first_pass`, répond 202.
+
+Suivi et arrêt : routes `/backup/running` existantes.
+
+### UI (mon choix)
+
+Un onglet **« Synchronisation »** (`value="sync"`) dans la fenêtre « Sauvegardes et restauration »,
+après `schedules`. Les onglets sont nommés, en ajouter un ne décale rien. Une carte par tâche, dans le langage des cartes de destinations :
+
+```
+┌───────────────────────────────────────────────────────────┐
+│ Photos                                    [ Activée  ●━ ]  │
+│ Dropbox /Photos  →  /DATA/Gallery/Photos                   │
+│ Tous les jours à 02:00 · rien n'est supprimé · archive     │
+│ Dernier passage : hier 02:00, réussi, 212 fichiers, 1,4 Go │
+│ [ Lancer maintenant ]  [ Modifier ]  [ Supprimer ]         │
+└───────────────────────────────────────────────────────────┘
+```
+
+Le dialogue de création demande : nom, compte (liste des destinations, lien « Ajouter un compte » vers
+l'onglet Destinations), dossier du cloud (liste de dossiers), dossier de la box (le sélecteur de
+dossiers de Fichiers), sens, planning, puis deux interrupteurs :
+
+- « Supprimer en face ce qui est supprimé à la source », éteint par défaut, avec la phrase
+  « Éteint : aucun fichier n'est jamais supprimé par cette tâche. »
+- « Garder une copie de ce qui est remplacé ou supprimé », allumé par défaut, avec le chemin de
+  l'archive.
+
+Avec le sens « Les deux », le premier interrupteur est allumé et verrouillé, avec la phrase « Dans
+les deux sens, une suppression d'un côté est toujours portée de l'autre ; la copie gardée ci-dessous
+est ce qui protège. » Une tâche en `needs_first_pass` porte un bandeau et le bouton « Refaire la
+première passe ». Une tâche en cours se voit dans l'onglet « En
+cours » avec les sauvegardes. Si `GET /sync/tasks` répond 404, l'onglet n'est pas montré.
+
+Textes en anglais dans le code, traduits comme le reste (`$t`).
+
+## Tests
+
+- Unitaires AM : contrôles d'enregistrement (chemins refusés, chevauchements, chiffré refusé),
+  créneaux `hourly`, refus sur source vide, `last_*` gardés par `PUT`, verrou distinct de `backupTick`.
+- Avec le vrai rclone v1.75.1 (comme `signin_integration_test.go`), remotes locaux :
+  copie simple ; fichier modifié à la source, l'ancien part dans l'archive ; `mirror` éteint, un
+  fichier supprimé à la source reste en face ; `mirror` allumé, il part dans l'archive ; `MaxDelete`
+  dépassé, rien n'est supprimé et le passage échoue ; source vide, rien ne bouge ; arrêt en cours de
+  passage.
+- Deux sens, vrai rclone : première passe qui réunit ; ajout, modification et suppression portés
+  dans chaque sens ; suppression gardée dans l'archive du bon côté ; conflit, deux copies renommées ;
+  `workdir` effacé, la tâche passe en `needs_first_pass` sans rien toucher ; passage tué au milieu,
+  la passe suivante reprend ; plus de la moitié d'un côté supprimée, rien ne bouge.
+- UI : specs du dialogue et de la carte, onglet absent sur 404.
+
+## À vérifier avant d'écrire le code
+
+Relevé dans la doc et le code de rclone, pas encore essayé sur le vrai binaire :
+
+1. `_config.BackupDir` et `_config.MaxDelete` sont bien pris par job sur `sync/copy` et `sync/sync`
+   du démon v1.75.1, et `MaxDelete` dépassé arrête bien le passage (la doc le dit, le code lu ne l'a
+   pas montré).
+2. `BackupDir` avec `sync/copy` garde bien la version écrasée.
+3. `BackupDir` sur une destination `alias` ou `crypt` : rclone accepte-t-il le dossier voisin comme
+   « même remote » ?
+4. Comment reconnaître la racine d'un disque monté (LocalStorage le sait ; sinon comparer le
+   périphérique du dossier et de son parent).
+5. Sous quel compte tourne `rclone rcd` et s'il peut écrire dans `/DATA`, `/media` et `/mnt`.
+6. Comment les routes `/backup/*` limitent aujourd'hui l'accès selon le compte.
+7. L'UI a-t-elle un sélecteur de dossiers réutilisable hors de Fichiers ?
+
+Deux sens, à essayer **avant le plan** (faits lus dans `cmd/bisync/rc.go` et la doc de rclone
+v1.75.1) :
+
+8. `sync/bisync` accepte `_async`, et `core/stats` par `group=job/<id>` donne sa progression ;
+   `job/stop` l'arrête proprement.
+9. La première passe (`resync`) ne supprime rien, et ce qu'elle fait d'un fichier différent des deux
+   côtés.
+10. Le message exact de bisync quand son état est perdu, pour le reconnaître sans se tromper.
+11. `recover` et `resilient` après un passage tué ; le verrou `.lck` laissé derrière et `maxLock`.
+12. `backupDir1` avec un chemin local et `backupDir2` sur S3, Dropbox, Google Drive et OneDrive.
+13. S3 : comparaison par date de modification et taille, et dossiers vides.
+14. Le format des noms de conflit (`.conflict1`) avec une extension (`photo.jpg`).
+
+## Questions au propriétaire
+
+1. Les comptes cloud de la synchro sont-ils bien les destinations de sauvegarde, ou veut-on des
+   comptes séparés ?
+2. L'onglet « Synchronisation » dans la fenêtre des sauvegardes, ou une entrée à part dans les
+   réglages ?
+3. L'archive n'est jamais purgée dans cette version. Avec un planning horaire elle grossit sans fin,
+   et sur S3 elle se paie. Faut-il une durée de garde dès maintenant (par exemple 30 jours) ?
+4. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
+   étant la protection. Est-ce acceptable, ou faut-il un vrai « ne jamais supprimer » aussi là ?
