@@ -52,7 +52,7 @@ archive des fichiers supprimés ou écrasés, S3 comme Dropbox, Google Drive et 
 - Une resynchronisation lancée seule qui fait réapparaître des fichiers supprimés. (La reprise après
   une interruption le fait quand même, voir plus bas : accepté avec un message.)
 - Casser une box plus ancienne : face à un AM sans les routes nouvelles (404), l'UI ne montre pas
-  l'onglet et se comporte comme aujourd'hui.
+  la carte « Synchronisation » et se comporte comme aujourd'hui.
 
 ## Ce qui existe (relevé du code, inkly/main)
 
@@ -289,10 +289,12 @@ verrou et met à jour la tâche par `id` ; si elle a été supprimée entre-temp
 
 Suivi et arrêt : routes `/backup/running` existantes.
 
-### UI (mon choix)
+### UI
 
-Un onglet **« Synchronisation »** (`value="sync"`) dans la fenêtre « Sauvegardes et restauration »,
-après `schedules`. Les onglets sont nommés, en ajouter un ne décale rien. Une carte par tâche, dans le langage des cartes de destinations :
+Une **entrée à part dans les réglages** **(propriétaire, 2026-11-16)** : une carte « Synchronisation »
+dans le menu des réglages de `TopBar.vue`, à côté de celle des sauvegardes (bouton
+`showBackupDestinations`, `TopBar.vue:320`), qui ouvre une fenêtre à elle, nouveau composant
+`settings/CloudSync.vue` **(mon choix pour le nom)**. La fenêtre des sauvegardes ne change pas. Une carte par tâche, dans le langage des cartes de destinations :
 
 ```
 ┌───────────────────────────────────────────────────────────┐
@@ -304,8 +306,8 @@ après `schedules`. Les onglets sont nommés, en ajouter un ne décale rien. Une
 └───────────────────────────────────────────────────────────┘
 ```
 
-Le dialogue de création demande : nom, compte (liste des destinations, lien « Ajouter un compte » vers
-l'onglet Destinations), dossier du cloud (liste de dossiers), dossier de la box (le sélecteur de
+Le dialogue de création demande : nom, compte (liste des destinations, lien « Ajouter un compte » qui ouvre
+la fenêtre des sauvegardes sur l'onglet `destinations`), dossier du cloud (liste de dossiers), dossier de la box (le sélecteur de
 dossiers de Fichiers), sens, planning, puis deux interrupteurs :
 
 - « Supprimer en face ce qui est supprimé à la source », éteint par défaut, avec la phrase
@@ -318,7 +320,7 @@ les deux sens, une suppression d'un côté est toujours portée de l'autre ; la 
 est ce qui protège. » Une tâche en `needs_first_pass` porte un bandeau et le bouton « Refaire la
 première passe » ; en `needs_delete_confirm`, un bandeau « Plus de la moitié des fichiers d'un côté
 ont disparu » et le bouton « Confirmer les suppressions ». Une tâche en cours se voit dans l'onglet « En
-cours » avec les sauvegardes. Si `GET /sync/tasks` répond 404, l'onglet n'est pas montré.
+cours » avec les sauvegardes. Si `GET /sync/tasks` répond 404, la carte du menu n'est pas montrée.
 
 Textes en anglais dans le code, traduits comme le reste (`$t`).
 
@@ -335,7 +337,7 @@ Textes en anglais dans le code, traduits comme le reste (`$t`).
   dans chaque sens ; suppression gardée dans l'archive du bon côté ; conflit, deux copies renommées ;
   `workdir` effacé, la tâche passe en `needs_first_pass` sans rien toucher ; passage tué au milieu,
   la passe suivante reprend ; plus de la moitié d'un côté supprimée, rien ne bouge.
-- UI : specs du dialogue et de la carte, onglet absent sur 404.
+- UI : specs du dialogue et de la carte, entrée du menu absente sur 404.
 
 ## Essais sur rclone v1.75.1 (2026-11-16)
 
@@ -393,13 +395,11 @@ Deux sens :
 
 ## Questions au propriétaire
 
-1. L'onglet « Synchronisation » dans la fenêtre des sauvegardes, ou une entrée à part dans les
-   réglages ?
-2. L'archive n'est jamais purgée dans cette version. Avec un planning horaire elle grossit sans fin,
+1. L'archive n'est jamais purgée dans cette version. Avec un planning horaire elle grossit sans fin,
    et sur S3 elle se paie. Faut-il une durée de garde dès maintenant (par exemple 30 jours) ?
-3. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
+2. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
    étant la protection. Est-ce acceptable, ou faut-il un vrai « ne jamais supprimer » aussi là ?
 
 Tranché : les fichiers supprimés qui reviennent après un arrêt ou une coupure en double sens sont
-acceptés, avec le message décrit plus haut ; les comptes cloud sont les destinations de sauvegarde
-**(propriétaire, 2026-11-16)**.
+acceptés, avec le message décrit plus haut ; les comptes cloud sont les destinations de sauvegarde ;
+la synchro a son entrée à part dans les réglages **(propriétaire, 2026-11-16)**.
