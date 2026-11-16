@@ -327,6 +327,23 @@ func AppOperations(ctx context.Context, runtimePath string) ([]Operation, error)
 	return *body.Operations, nil
 }
 
+// FolderSync is the name a folder sync in progress is listed under: AppManagement names it
+// after its task, free text that is no app name and would be shown as an invalid one.
+const FolderSync = "folder-sync"
+
+// OperationNames is what each operation is named after for the owner: its app, or FolderSync.
+func OperationNames(operations []Operation) []string {
+	names := make([]string, 0, len(operations))
+	for _, operation := range operations {
+		if operation.Kind == "sync" {
+			names = append(names, FolderSync)
+			continue
+		}
+		names = append(names, operation.App)
+	}
+	return names
+}
+
 // appsBusy is AppOperations for a caller that only needs to know whether to wait. No answer,
 // or any operation listed, is busy.
 func appsBusy(ctx context.Context, runtimePath string) bool {

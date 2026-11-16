@@ -657,3 +657,13 @@ func TestABusyRefusalFromStartIsNotAFailedAttempt(t *testing.T) {
 		t.Fatalf("started %v once the box was free", b.started)
 	}
 }
+
+func TestAFolderSyncIsNamedAsOneAndAnAppByItsName(t *testing.T) {
+	got := OperationNames([]Operation{{App: "nextcloud", Kind: "backup"}, {App: "sync:My photos", Kind: "sync"}, {App: "sync", Kind: "install"}})
+	if want := []string{"nextcloud", FolderSync, "sync"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if got := OperationNames(nil); got == nil || len(got) != 0 {
+		t.Fatalf("no operation is an empty list, got %#v", got)
+	}
+}
