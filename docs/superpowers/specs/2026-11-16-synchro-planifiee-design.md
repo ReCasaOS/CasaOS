@@ -207,8 +207,8 @@ Méthode `BisyncDirectory` dans le même fichier, job `_async` sur `sync/bisync`
   K1, K3 et R1). L'AM écrit `first_pass_done` après les deux.
 - **Passes suivantes** : les ajouts, modifications **et suppressions** de chaque côté sont portés en
   face. bisync n'a pas d'interrupteur « ne pas supprimer en face » : pour `both`, `mirror` vaut
-  toujours `true`, et c'est l'archive qui protège. C'est moins que ce que Synology propose ; le
-  dialogue le dit.
+  toujours `true`, et c'est l'archive qui protège : accepté **(propriétaire)**. C'est moins que ce
+  que Synology propose ; le dialogue le dit.
 - `archive: true` : `backupDir1` et `backupDir2`, les deux dossiers voisins décrits plus haut, un par
   côté, avec le `<stamp>` de la passe (bisync ne date rien lui-même).
 - `maxDelete: 50` (un pourcentage, le défaut de bisync) : au-delà de la moitié d'un côté à supprimer,
@@ -404,12 +404,15 @@ Deux sens :
 5. L'UI a-t-elle un sélecteur de dossiers réutilisable hors de Fichiers ?
 6. Le fichier `.partial` resté sur la box après une coupure (R2b) : qui le nettoie.
 
-## Questions au propriétaire
+## Décisions du propriétaire (2026-11-16)
 
-1. Dans les deux sens, une suppression est toujours portée en face (limite de bisync), l'archive
-   étant la protection. Est-ce acceptable, ou faut-il un vrai « ne jamais supprimer » aussi là ?
+Plus aucune question ouverte.
 
-Tranché : les fichiers supprimés qui reviennent après un arrêt ou une coupure en double sens sont
-acceptés, avec le message décrit plus haut ; les comptes cloud sont les destinations de sauvegarde ;
-la synchro a son entrée à part dans les réglages ; l'archive est gardée 30 jours
-**(propriétaire, 2026-11-16)**.
+1. Les trois sens sont livrés d'un coup.
+2. Les comptes cloud de la synchro sont les destinations de sauvegarde.
+3. La synchro a son entrée à part dans les réglages.
+4. L'archive est gardée 30 jours.
+5. Dans les deux sens, une suppression est toujours portée en face ; l'archive suffit comme
+   protection.
+6. Dans les deux sens, les fichiers supprimés qui reviennent après un arrêt ou une coupure sont
+   acceptés, avec un message.
