@@ -96,10 +96,9 @@ son champ « Bucket ») ; `service/backup.js` porte les appels.
 3. **Deux lots, un seul modèle** : un premier lot livre téléchargement seul et envoi seul ; un second
    ajoute « les deux » sans changer le fichier des tâches ni les routes.
 
-Retenue : **2 (propriétaire, 2026-11-16 : « tout d'un coup »)**. L'assistant proposait la 3. La
-conséquence : les essais de bisync sur le vrai rclone v1.75.1 (section « À vérifier ») passent
-**avant** le plan et le code, parce que la conception du double sens repose sur des faits lus dans la
-doc de rclone, pas encore essayés.
+Retenue : **2 (propriétaire, 2026-11-16 : « tout d'un coup »)**. L'assistant proposait la 3. Le
+double sens a donc été essayé sur le vrai rclone v1.75.1 avant le plan : voir « Essais ». La
+conception ci-dessous tient compte de ce qu'ils ont montré.
 
 ## Conception
 
@@ -122,7 +121,8 @@ Fichier `/var/lib/casaos/backups/sync.json`, écrit comme `schedules.json` (list
 | `enabled` | interrupteur |
 | `last_run`, `last_result`, `last_error`, `last_files`, `last_bytes` | dernier passage, écrits par l'AM |
 | `first_pass_done` | `both` seulement, écrit par l'AM : la première passe a réussi |
-| `needs_first_pass` | `both` seulement, écrit par l'AM : l'état de bisync est perdu ou refusé, la tâche attend une confirmation |
+| `needs_first_pass` | `both` seulement, écrit par l'AM : l'état de bisync est perdu, la tâche attend une confirmation |
+| `needs_delete_confirm` | `both` seulement, écrit par l'AM : plus de la moitié d'un côté a disparu, la tâche attend une confirmation |
 
 Les comptes cloud **sont les destinations de sauvegarde** **(mon choix)** : même connexion, même
 dialogue. Deux conséquences à connaître :
@@ -166,8 +166,10 @@ Nouveau fichier `pkg/rclone/syncdir.go`, une méthode `SyncDirectory(ctx, src, d
   - envoi : `<remote_path>-archive/<stamp>` sur le même remote que `dstFs`.
   rclone exige le même remote et aucun chevauchement : un dossier voisin remplit les deux.
 - `mirror: true` ajoute `_config.MaxDelete` = la moitié du nombre de fichiers du côté écrit
-  (compté par `operations/size`, au moins 10) **(mon choix)**. Dépassé, rclone arrête le passage en
-  erreur ; la tâche l'affiche et ne retente pas avant le créneau suivant.
+  (compté par `operations/size`, au moins 10) **(mon choix)**. C'est un **plafond**, pas un tout ou
+  rien (essai T4) : rclone supprime jusqu'au plafond, puis arrête le passage en erreur
+  (« failed to delete N files »). Avec l'archive, ce qui a été supprimé y est. La tâche l'affiche et
+  ne retente pas avant le créneau suivant.
 - Les liens symboliques locaux ne sont pas suivis (comme `verificationLocal`).
 
 Avant chaque passage, dans `service/sync_run.go` **(mon choix)** :
@@ -192,31 +194,49 @@ Méthode `BisyncDirectory` dans le même fichier, job `_async` sur `sync/bisync`
 - `path1` = `local_path`, `path2` = le dossier du cloud.
 - `workdir` = `/var/lib/casaos/backups/bisync/<id>` : l'état de bisync (ses listes des deux côtés)
   vit avec les autres fichiers de sauvegarde, pas dans le cache du compte qui fait tourner rclone.
-- **Première passe** (`first_pass_done` faux) : `resync: true`. Elle réunit les deux côtés et ne
-  supprime rien. Réussie, l'AM écrit `first_pass_done`.
+- **Première passe** (`first_pass_done` faux) : `resync: true`, **suivie aussitôt d'une passe
+  normale**. La première réunit les deux côtés et ne supprime rien ; si un fichier diffère, la
+  version de la box est gardée et celle du cloud part dans l'archive du cloud (essai B1), ce que le
+  dialogue dit. La seconde est nécessaire : tant qu'aucune passe normale n'a réussi, une coupure
+  oblige à tout refaire (essais K1 et K3). L'AM écrit `first_pass_done` après les deux.
 - **Passes suivantes** : les ajouts, modifications **et suppressions** de chaque côté sont portés en
   face. bisync n'a pas d'interrupteur « ne pas supprimer en face » : pour `both`, `mirror` vaut
   toujours `true`, et c'est l'archive qui protège. C'est moins que ce que Synology propose ; le
   dialogue le dit.
 - `archive: true` : `backupDir1` et `backupDir2`, les deux dossiers voisins décrits plus haut, un par
-  côté.
+  côté, avec le `<stamp>` de la passe (bisync ne date rien lui-même).
 - `maxDelete: 50` (un pourcentage, le défaut de bisync) : au-delà de la moitié d'un côté à supprimer,
-  bisync s'arrête sans rien changer.
-- Conflits (un fichier modifié des deux côtés entre deux passes) : `conflictResolve: none`, les deux
-  versions sont gardées et renommées (`fichier.conflict1`, `fichier.conflict2`) des deux côtés.
-- `resilient: true` et `recover: true` : après une erreur passagère ou un passage coupé, la passe
-  suivante reprend sans première passe.
+  bisync s'arrête sans rien changer, avec l'erreur « too many deletes », **et recommence à chaque
+  passe** tant que personne ne tranche (essai B5). L'AM écrit alors `needs_delete_confirm` ; l'UI
+  demande « Confirmer les suppressions », ce qui lance une passe avec `force: true` (essai F1 : les
+  fichiers partent dans l'archive).
+- Conflits (un fichier modifié des deux côtés entre deux passes) : `conflictResolve: none` et
+  `_config.SuffixKeepExtension: true`. Les deux versions sont gardées des deux côtés, renommées
+  `photo.conflict1.jpg` (celle de la box) et `photo.conflict2.jpg` (celle du cloud). Sans cette
+  option le nom devient `photo.jpg.conflict1`, qui ne s'ouvre plus d'un clic (essais B3 et C1).
+- `resilient: true` et `recover: true` : après un arrêt depuis l'interface ou une coupure, la passe
+  suivante reprend seule et finit la copie (essais K3 et K5).
+- `maxLock: "2m"` : une coupure de courant laisse un fichier verrou dans le `workdir`, et sans cette
+  option il bloque toutes les passes suivantes pour toujours (essai K4). Avec, le verrou expire :
+  refusé juste après la coupure, accepté 150 s plus tard (essai K5). Une passe refusée pour verrou
+  (« prior lock file found ») n'est pas une erreur à montrer : elle est retentée au créneau suivant.
+- `createEmptySrcDirs: true` : les dossiers vides sont portés en face (essai E1). S3 n'a pas de
+  dossiers vides.
 - `checkAccess` éteint : il demande des fichiers témoins `RCLONE_TEST` posés à la main.
 - Google Drive : les Google Docs n'ont ni taille ni empreinte ; ils sont ignorés
-  (`skip_gdocs` sur le remote, quand le backend de la destination est `drive`).
+  (`skip_gdocs` sur le remote, quand le backend de la destination est `drive`). Pas essayé.
 
 Les contrôles d'avant passage s'appliquent aux deux côtés : un côté vide alors que l'autre ne l'est
 pas arrête le passage, sauf à la première passe.
 
-**État perdu ou refusé.** Si bisync répond qu'il lui faut une resynchronisation (état absent, abîmé,
-ou erreur grave), l'AM **ne la lance pas** : elle écrit `needs_first_pass`, la tâche ne tourne plus,
-et l'UI demande « Refaire la première passe », en disant qu'elle peut faire réapparaître des fichiers
-supprimés d'un seul côté depuis la dernière passe réussie. Changer `local_path`, `remote_path` ou
+**État perdu ou refusé.** L'API ne distingue pas une erreur passagère d'un état perdu : dans les deux
+cas elle répond seulement « bisync aborted » (essais B4 et B5b ; le détail n'est que dans le journal
+de rclone). L'AM regarde donc le `workdir` après un échec : s'il n'y a plus de fichier `*.path1.lst`
+ou `*.path2.lst` **deux passes de suite**, l'état est perdu. (Une seule fois ne suffit pas : après un
+arrêt ces fichiers manquent, et la passe suivante les refait.) L'AM **ne relance pas** de première
+passe : elle écrit `needs_first_pass`, la tâche ne tourne plus, et l'UI demande « Refaire la première
+passe », en disant qu'elle fait réapparaître les fichiers supprimés d'un seul côté depuis la dernière
+passe réussie (essai B9 : c'est bien ce qui arrive). Changer `local_path`, `remote_path` ou
 `destination` d'une tâche `both` efface son `workdir` et remet `first_pass_done` à faux ; supprimer
 la tâche efface son `workdir`.
 
@@ -249,6 +269,8 @@ verrou et met à jour la tâche par `id` ; si elle a été supprimée entre-temp
   (`operations/list`, `dirsOnly`), pour choisir `remote_path` sans le taper.
 - `POST /sync/tasks/{id}/first-pass` : confirme une nouvelle première passe d'une tâche `both` en
   `needs_first_pass`, répond 202.
+- `POST /sync/tasks/{id}/confirm-deletes` : lance une passe qui accepte les suppressions d'une tâche
+  `both` en `needs_delete_confirm`, répond 202.
 
 Suivi et arrêt : routes `/backup/running` existantes.
 
@@ -279,7 +301,8 @@ dossiers de Fichiers), sens, planning, puis deux interrupteurs :
 Avec le sens « Les deux », le premier interrupteur est allumé et verrouillé, avec la phrase « Dans
 les deux sens, une suppression d'un côté est toujours portée de l'autre ; la copie gardée ci-dessous
 est ce qui protège. » Une tâche en `needs_first_pass` porte un bandeau et le bouton « Refaire la
-première passe ». Une tâche en cours se voit dans l'onglet « En
+première passe » ; en `needs_delete_confirm`, un bandeau « Plus de la moitié des fichiers d'un côté
+ont disparu » et le bouton « Confirmer les suppressions ». Une tâche en cours se voit dans l'onglet « En
 cours » avec les sauvegardes. Si `GET /sync/tasks` répond 404, l'onglet n'est pas montré.
 
 Textes en anglais dans le code, traduits comme le reste (`$t`).
@@ -299,34 +322,53 @@ Textes en anglais dans le code, traduits comme le reste (`$t`).
   la passe suivante reprend ; plus de la moitié d'un côté supprimée, rien ne bouge.
 - UI : specs du dialogue et de la carte, onglet absent sur 404.
 
-## À vérifier avant d'écrire le code
+## Essais sur rclone v1.75.1 (2026-11-16)
 
-Relevé dans la doc et le code de rclone, pas encore essayé sur le vrai binaire :
+Image officielle `rclone/rclone:1.75.1`, `rclone rcd` sur un socket unix, appels par l'API comme le
+fait l'AM. Dossiers locaux, un remote `alias`, un remote `crypt`, et un S3 servi par
+`rclone serve s3`. **Pas essayé : un vrai compte Dropbox, Google Drive, OneDrive ou AWS S3.**
 
-1. `_config.BackupDir` et `_config.MaxDelete` sont bien pris par job sur `sync/copy` et `sync/sync`
-   du démon v1.75.1, et `MaxDelete` dépassé arrête bien le passage (la doc le dit, le code lu ne l'a
-   pas montré).
-2. `BackupDir` avec `sync/copy` garde bien la version écrasée.
-3. `BackupDir` sur une destination `alias` ou `crypt` : rclone accepte-t-il le dossier voisin comme
-   « même remote » ?
-4. Comment reconnaître la racine d'un disque monté (LocalStorage le sait ; sinon comparer le
+Sens unique :
+
+| Essai | Résultat |
+|---|---|
+| T1 `sync/copy` + `_config.BackupDir` | la version écrasée est dans l'archive |
+| T2 `sync/copy`, fichier supprimé à la source | il reste en face |
+| T3 `sync/sync` + `BackupDir` | le fichier supprimé part dans l'archive |
+| T4 `MaxDelete: 3`, 8 à supprimer | 3 partis dans l'archive, puis erreur « failed to delete 5 files » |
+| T4b source vide, `MaxDelete: 0` | rien supprimé, erreur. Sans plafond tout serait supprimé : le contrôle d'avant passage est nécessaire |
+| T5 `BackupDir` sur `alias` et sur `crypt` | marche, dossier voisin accepté ; noms chiffrés sur le disque |
+| T5c `BackupDir` dans la destination | refusé : « destination and parameter to --backup-dir mustn't overlap » |
+| S3 `BackupDir` sur le même bucket | marche ; un fichier dont seule la date change n'est pas renvoyé |
+
+Deux sens :
+
+| Essai | Résultat |
+|---|---|
+| B1 première passe, `_async` | job suivi par `job/status`, compteurs par `core/stats` `group=job/<id>` ; rien supprimé ; fichier différent : la box gagne, l'autre version dans l'archive du cloud |
+| B2 ajout, modification, suppressions des deux côtés | tout porté en face, supprimés et écrasés dans l'archive du côté écrit |
+| B3, C1 conflit | `photo.jpg.conflict1/2` par défaut, `photo.conflict1.jpg` avec `SuffixKeepExtension` |
+| K1 arrêt pendant la passe qui suit la première passe | passe suivante refusée, « Must run --resync to recover » |
+| K3 arrêt après une passe normale réussie | la passe suivante reprend et finit la copie |
+| K4 `rclone rcd` tué (coupure de courant), sans `maxLock` | verrou laissé, toutes les passes refusées |
+| K5 même coupure avec `maxLock: 2m` | refusé aussitôt, accepté après 150 s, copie finie, fichier partiel nettoyé. Un fichier supprimé juste avant la coupure était encore présent côté cloud après la reprise (côté box non regardé) |
+| B5, F1 plus de la moitié supprimée | « too many deletes », rien ne bouge, répété à chaque passe ; avec `force` les suppressions passent par l'archive |
+| B5b un côté vide (disque absent) | « bisync aborted », rien ne bouge ; le dossier revenu, la passe suivante marche |
+| B4 `workdir` effacé | « bisync aborted », rien ne bouge, plus aucune passe |
+| B9 première passe refaite | un fichier supprimé d'un seul côté réapparaît |
+| E1 dossiers vides | portés avec `createEmptySrcDirs`, pas sans |
+| S3 deux sens | ajout, suppression, conflit et archive sur le bucket : comme en local ; une passe sans changement ne transfère rien |
+
+## Reste à vérifier avant d'écrire le code
+
+1. Un vrai compte Dropbox, Google Drive, OneDrive et un vrai S3, dans les deux sens (les essais
+   n'ont vu que des dossiers locaux et le S3 de rclone). Google Drive : les Google Docs.
+2. Comment reconnaître la racine d'un disque monté (LocalStorage le sait ; sinon comparer le
    périphérique du dossier et de son parent).
-5. Sous quel compte tourne `rclone rcd` et s'il peut écrire dans `/DATA`, `/media` et `/mnt`.
-6. Comment les routes `/backup/*` limitent aujourd'hui l'accès selon le compte.
-7. L'UI a-t-elle un sélecteur de dossiers réutilisable hors de Fichiers ?
-
-Deux sens, à essayer **avant le plan** (faits lus dans `cmd/bisync/rc.go` et la doc de rclone
-v1.75.1) :
-
-8. `sync/bisync` accepte `_async`, et `core/stats` par `group=job/<id>` donne sa progression ;
-   `job/stop` l'arrête proprement.
-9. La première passe (`resync`) ne supprime rien, et ce qu'elle fait d'un fichier différent des deux
-   côtés.
-10. Le message exact de bisync quand son état est perdu, pour le reconnaître sans se tromper.
-11. `recover` et `resilient` après un passage tué ; le verrou `.lck` laissé derrière et `maxLock`.
-12. `backupDir1` avec un chemin local et `backupDir2` sur S3, Dropbox, Google Drive et OneDrive.
-13. S3 : comparaison par date de modification et taille, et dossiers vides.
-14. Le format des noms de conflit (`.conflict1`) avec une extension (`photo.jpg`).
+3. Sous quel compte tourne `rclone rcd` et s'il peut écrire dans `/DATA`, `/media` et `/mnt`.
+4. Comment les routes `/backup/*` limitent aujourd'hui l'accès selon le compte.
+5. L'UI a-t-elle un sélecteur de dossiers réutilisable hors de Fichiers ?
+6. K5 : ce que devient, côté box, un fichier supprimé juste avant une coupure.
 
 ## Questions au propriétaire
 
