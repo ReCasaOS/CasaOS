@@ -39,9 +39,9 @@ The owner can let an account **read** a module. In **Settings → Accounts**, ea
 
 How it shows in the interface:
 
-- Storage, fleet and backups appear on the new dashboard **only together with `system`**. A module right without `system` shows nothing there.
-- The Fleet card is for the owner only, even when `fleet` is ticked.
-- The virtual machines page lists the machines with their state and IP address. There is no console, no way to start or stop a machine, and no files.
+- The new dashboard is offered to an account as soon as one module is ticked. Each module shows there with its own right: the storage, backups and fleet cards, the virtual machines' tiles, and, with `system`, the load, memory, disk space and network of the box.
+- The Fleet page, and its card among the apps, are for the owner only, even when `fleet` is ticked: the account reads the list of the boxes on the new dashboard.
+- The virtual machines page lists the machines with their state and IP address. There is no console, no way to start or stop a machine, and no files. Where a machine's disks, its ISO and its shared folders are on the box is not given to the account.
 - `system` does not open the hardware details or the OS version; it opens the load and utilization of the box. The terminal and the raw system logs stay with the owner.
 - A module with no right has no card and no menu entry.
 
@@ -58,7 +58,7 @@ Only the owner can do this. Open the app's settings and go to the **Visibility**
 
 ## What "hidden" means
 
-For an account the app is hidden for, the app is absent from the lists of the box (dashboard, apps list, Statistics, Logs, operations, backups) and its routes on the box answer "not found", as if it did not exist. Hiding applies to apps only: what belongs to no app (the box itself, virtual machines, containers started outside an app) is not hidden by it, and shows wherever the account may read it.
+For an account the app is hidden for, the app is absent from the lists of the box (dashboard, apps list, Statistics, Logs, operations, backups) and its routes on the box answer "not found", as if it did not exist. Hiding applies to apps only: the box itself and the virtual machines are not hidden by it, and show wherever the account may read them. A container started outside an app is the owner's alone: no other account sees it, whatever its rights.
 
 **Hidden is not locked.** An app listens on its own port, and that port is not behind the box's sign-in. Hiding means the box hides the app from its lists; it does not block the app's own address. Anyone who knows the address of the app can still open it.
 
