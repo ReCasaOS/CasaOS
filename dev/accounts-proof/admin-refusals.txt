@@ -1,0 +1,16 @@
+# GET routes the admin is refused by the service itself, not by the Gateway: the proof sends them
+# with no parameters and placeholder ids. Method and path as in routes.txt (parameters as x), a tab, then
+# words of the service's answer. Seen on the dev stack on 2026-11-15. A 401 or 403 to the admin on a
+# route not listed here, or with other words, fails a-admin.
+GET /v1/file/upload	the path is outside the managed file roots
+GET /v1/folder	the path is outside the managed file roots
+GET /v1/folder/count	the path is outside the managed file roots
+GET /v1/folder/size	the path is outside the managed file roots
+GET /v1/image	the path is outside the managed file roots
+GET /v1/fleet/boxes/x/relay/x	this route is not relayed
+GET /v1/recover/x	This sign-in was not started from this dashboard
+# user-service's RequireInternal: the box's own services only. Its words are the Gateway's refusal's too,
+# so this row trusts the route table of user-service (route/v1.go), not the answer.
+GET /v1/users/role/x	Insufficient permissions
+# core's own file token, read from the query
+GET /v3/file	token not found

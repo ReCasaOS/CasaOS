@@ -1,0 +1,18 @@
+# Routes of the services that routes.txt (built from core, user service and app management) does not
+# list: the message bus, local storage, virtual machines and the Gateway's own. A user is refused
+# each one. They are the probes of the Gateway's TestUnknownRouteRefusedForUser, so a path under a
+# service's prefix is enough: the Gateway answers before the service sees it.
+# /v1/gateway/routes is not here: it is on the management listener only; on the public one no
+# service has the prefix and the dashboard's files answer 404.
+GET /v2/message_bus/socket.io/
+POST /v2/message_bus/event/app-management
+GET /v2/local_storage/mount
+GET /v1/storage
+GET /v2/virt_management/host
+GET /v2/virt_management/stats
+GET /v2/virt_management/vms/:id/console
+GET /v1/gateway/port
+GET /v1/gateway/httpsport
+GET /v1/usb/usb-auto-mount
+GET /v3/file
+GET /v1/image
