@@ -173,6 +173,24 @@ func InitFile() http.Handler {
 		}
 		fileName := path.Base(filePath)
 		w.Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
+		if access.User() {
+			// an account's file is opened through the root of its folder, and sent from there
+			_, f, err := access.Pin(filePath)
+			if err != nil {
+				w.Header().Del("Content-Disposition")
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			defer f.Close()
+			info, err := f.Stat()
+			if err != nil || info.IsDir() {
+				w.Header().Del("Content-Disposition")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			http.ServeContent(w, r, fileName, info.ModTime(), f)
+			return
+		}
 		http.ServeFile(w, r, filePath)
 		// http.ServeFile(w, r, filePath)
 	})

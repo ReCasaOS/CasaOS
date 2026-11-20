@@ -9,6 +9,7 @@
 package fileroots
 
 import (
+	"os"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -128,4 +129,16 @@ func probe(rootFD int, relative string, extra int) error {
 		return err
 	}
 	return unix.Close(fd)
+}
+
+// OpenFolder opens folder, spelled as its real path (no symlink anywhere in it), as an
+// os.Root: what is then opened, made or removed below it is resolved by the kernel
+// relative to it, and never leaves it whatever is renamed meanwhile.
+func OpenFolder(folder string) (*os.Root, error) {
+	fd, err := openRoot(folder)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(fd)
+	return os.OpenRoot(fmt.Sprintf("/proc/self/fd/%d", fd))
 }

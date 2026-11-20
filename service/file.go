@@ -26,6 +26,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/model"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/ReCasaOS/CasaOS/pkg/fileaccess"
+	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/moby/sys/mountinfo"
 	"go.uber.org/zap"
@@ -247,12 +248,12 @@ func accountOperate(ctx context.Context, access *fileaccess.Scope, kind, style, 
 	}
 	srcFolder, srcRel := access.FolderOf(from)
 	dstFolder, dstRel := access.FolderOf(to)
-	src, err := os.OpenRoot(srcFolder)
+	src, err := fileroots.OpenFolder(srcFolder)
 	if err != nil {
 		return err
 	}
 	defer src.Close()
-	dst, err := os.OpenRoot(dstFolder)
+	dst, err := fileroots.OpenFolder(dstFolder)
 	if err != nil {
 		return err
 	}

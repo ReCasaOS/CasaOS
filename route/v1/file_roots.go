@@ -33,7 +33,23 @@ func scope(ctx echo.Context) (*fileaccess.Scope, error) {
 // managed: every client path of a file request, checked against [file]
 // ManagementRoots (pkg/fileroots) and, for an account, its folders (a writable one
 // for fileaccess.Write), and replaced with its canonical spelling.
+//
+// An account is refused here: what it reaches goes through the root of its folder
+// (pinned, rooted), never by a path a later rename can move.
 func managed(ctx echo.Context, intent fileaccess.Intent, paths ...*string) error {
+	s, err := scope(ctx)
+	if err != nil {
+		return err
+	}
+	if s.User() {
+		return fileaccess.ErrPathNotRooted
+	}
+	return s.Check(intent, paths...)
+}
+
+// policy: the paths of a request held to what the account may reach (Scope.Check), for a
+// request whose work then goes through the root of its folders (a queued copy or move).
+func policy(ctx echo.Context, intent fileaccess.Intent, paths ...*string) error {
 	s, err := scope(ctx)
 	if err != nil {
 		return err
@@ -48,6 +64,9 @@ func managedEntry(ctx echo.Context, paths ...*string) error {
 	s, err := scope(ctx)
 	if err != nil {
 		return err
+	}
+	if s.User() {
+		return fileaccess.ErrPathNotRooted
 	}
 	return s.CheckEntries(paths...)
 }

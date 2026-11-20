@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"os"
 	"path/filepath"
@@ -74,8 +75,40 @@ func (s *FileUploadService) TestChunk(
 	return nil
 }
 
-func (s *FileUploadService) UploadFile(
+// uploadFS is where an upload writes: the host's paths for the owner, the os.Root of an
+// account's folder for an account (CasaOS#168), whose every name the kernel resolves
+// relative to that folder.
+type uploadFS interface {
+	Stat(name string) (fs.FileInfo, error)
+	MkdirAll(name string, perm fs.FileMode) error
+	OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error)
+	Rename(oldname, newname string) error
+}
+
+type hostFS struct{}
+
+func (hostFS) Stat(name string) (fs.FileInfo, error)        { return os.Stat(name) }
+func (hostFS) MkdirAll(name string, perm fs.FileMode) error { return os.MkdirAll(name, perm) }
+func (hostFS) Rename(oldname, newname string) error         { return os.Rename(oldname, newname) }
+func (hostFS) OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {
+	return os.OpenFile(name, flag, perm)
+}
+
+// UploadFile writes a chunk of an upload into the folder path, by the host's paths.
+func (s *FileUploadService) UploadFile(c echo.Context, path string, chunkNumber, chunkSize, currentChunkSize, totalChunks, totalSize int64, identifier, relativePath, fileName string, bin *multipart.FileHeader) error {
+	return s.upload(c, hostFS{}, path, path, chunkNumber, chunkSize, currentChunkSize, totalChunks, totalSize, identifier, relativePath, fileName, bin)
+}
+
+// UploadFileIn is UploadFile for an account: the folder path is rel below root, and every
+// file of the upload is made through root.
+func (s *FileUploadService) UploadFileIn(c echo.Context, root *os.Root, rel, path string, chunkNumber, chunkSize, currentChunkSize, totalChunks, totalSize int64, identifier, relativePath, fileName string, bin *multipart.FileHeader) error {
+	return s.upload(c, root, rel, path, chunkNumber, chunkSize, currentChunkSize, totalChunks, totalSize, identifier, relativePath, fileName, bin)
+}
+
+func (s *FileUploadService) upload(
 	c echo.Context,
+	fsys uploadFS,
+	base string,
 	path string,
 	chunkNumber int64,
 	chunkSize int64,
@@ -103,9 +136,9 @@ func (s *FileUploadService) UploadFile(
 
 	if relativePath != fileName {
 		// uploaded file is folder
-		folderPath := filepath.Dir(path + "/" + relativePath)
-		if _, err := os.Stat(folderPath); os.IsNotExist(err) {
-			err := os.MkdirAll(folderPath, os.ModePerm)
+		folderPath := filepath.Dir(filepath.Join(base, relativePath))
+		if _, err := fsys.Stat(folderPath); os.IsNotExist(err) {
+			err := fsys.MkdirAll(folderPath, os.ModePerm)
 			if err != nil {
 				s.lock.Unlock()
 				return err
@@ -113,7 +146,7 @@ func (s *FileUploadService) UploadFile(
 		}
 	}
 
-	file, err := os.OpenFile(path+"/"+relativePath+".tmp", os.O_WRONLY|os.O_CREATE, 0644)
+	file, err := fsys.OpenFile(filepath.Join(base, relativePath)+".tmp", os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		s.lock.Unlock()
 		return err
@@ -178,7 +211,7 @@ func (s *FileUploadService) UploadFile(
 			logger.Error("close file error: ", zap.Error(err))
 			return err
 		}
-		if err := os.Rename(path+"/"+relativePath+".tmp", path+"/"+relativePath); err != nil {
+		if err := fsys.Rename(filepath.Join(base, relativePath)+".tmp", filepath.Join(base, relativePath)); err != nil {
 			logger.Error("rename file error: ", zap.Error(err))
 			return err
 		}

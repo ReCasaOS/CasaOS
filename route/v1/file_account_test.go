@@ -126,7 +126,7 @@ func TestAnAccountStaysInItsFolders(t *testing.T) {
 	ok("the owner reads Other", callAs(t, "1", GetFilerContent, http.MethodGet, "/v1/file/content?path="+q(data+"/Other/o.txt"), nil))
 }
 
-// An upload of an account lands in a folder it may write, nowhere else.
+// The older upload is not open to an account, whatever the folder.
 func TestAnAccountUploadsInItsWritableFoldersOnly(t *testing.T) {
 	data := accountBox(t)
 	upload := func(path, relative string) int {
@@ -152,8 +152,9 @@ func TestAnAccountUploadsInItsWritableFoldersOnly(t *testing.T) {
 			t.Errorf("upload %s + %s: %d, want 403", c[0], c[1], code)
 		}
 	}
-	if code := upload(data+"/Kids", "b.txt"); code != http.StatusOK {
-		t.Errorf("upload in Kids: %d", code)
+	// the older upload is the owner's: an account sends files by /v2/casaos/file/upload
+	if code := upload(data+"/Kids", "b.txt"); code != http.StatusForbidden {
+		t.Errorf("v1 upload in Kids: %d, want 403", code)
 	}
 }
 

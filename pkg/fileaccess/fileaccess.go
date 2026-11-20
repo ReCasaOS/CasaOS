@@ -10,7 +10,10 @@ package fileaccess
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"strings"
+	"syscall"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
@@ -184,4 +187,51 @@ func clone(paths []*string) []*string {
 	}
 
 	return out
+}
+
+// ErrPathNotRooted is a route that does not yet reach an account's folders through their
+// root: it is not open to an account (see Pin and Root).
+var ErrPathNotRooted = errors.New("this is not open to an account")
+
+// Root is, for an account, the os.Root of its folder that holds p, and p relative to it,
+// once p passes Check (CheckEntries for an entry renamed or deleted). Whatever is renamed
+// after, an operation through the root stays in the folder. folder is the folder's path.
+func (s *Scope) Root(intent Intent, p string, entry bool) (root *os.Root, folder, rel string, err error) {
+	if !s.user {
+		return nil, "", "", ErrPathNotRooted
+	}
+	if entry {
+		err = s.CheckEntries(&p)
+	} else {
+		err = s.Check(intent, &p)
+	}
+	if err != nil {
+		return nil, "", "", err
+	}
+	folder, rel = s.FolderOf(p)
+	if folder == "" {
+		return nil, "", "", fileroots.ErrOutside
+	}
+	if root, err = fileroots.OpenFolder(folder); err != nil {
+		return nil, "", "", err
+	}
+
+	return root, folder, rel, nil
+}
+
+// Pin opens p for reading, for an account through the root of its folder, and gives the
+// path that reaches that very file or folder from now on: /proc/self/fd/N, which a later
+// rename does not move. The caller closes f once it is done with pinned.
+func (s *Scope) Pin(p string) (pinned string, f *os.File, err error) {
+	root, _, rel, err := s.Root(Read, p, false)
+	if err != nil {
+		return "", nil, err
+	}
+	defer root.Close()
+	// O_NONBLOCK: a pipe in the file's place does not hold the request
+	if f, err = root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0); err != nil {
+		return "", nil, err
+	}
+
+	return fmt.Sprintf("/proc/self/fd/%d", f.Fd()), f, nil
 }

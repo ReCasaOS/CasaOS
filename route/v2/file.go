@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/ReCasaOS/CasaOS/codegen"
 	"github.com/ReCasaOS/CasaOS-Common/external"
+	"github.com/ReCasaOS/CasaOS/codegen"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/ReCasaOS/CasaOS/pkg/fileaccess"
 	"github.com/ReCasaOS/CasaOS/service"
@@ -98,19 +98,29 @@ func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 		return ctx.JSON(http.StatusBadRequest, err)
 	}
 
-	err = c.fileUploadService.UploadFile(
-		ctx,
-		path,
-		chunkNumber,
-		chunkSize,
-		currentChunkSize,
-		totalChunks,
-		totalSize,
-		identifier,
-		relativePath,
-		fileName,
-		bin,
-	)
+	if access.User() {
+		// an account's upload is written through the root of its folder
+		root, _, rel, rootErr := access.Root(fileaccess.Write, path, false)
+		if rootErr != nil {
+			return ctx.JSON(http.StatusForbidden, map[string]string{"message": rootErr.Error(), "data": rootErr.Error()})
+		}
+		defer root.Close()
+		err = c.fileUploadService.UploadFileIn(ctx, root, rel, path, chunkNumber, chunkSize, currentChunkSize, totalChunks, totalSize, identifier, relativePath, fileName, bin)
+	} else {
+		err = c.fileUploadService.UploadFile(
+			ctx,
+			path,
+			chunkNumber,
+			chunkSize,
+			currentChunkSize,
+			totalChunks,
+			totalSize,
+			identifier,
+			relativePath,
+			fileName,
+			bin,
+		)
+	}
 	if errors.Is(err, service.ErrInvalidChunk) {
 		return ctx.JSON(http.StatusBadRequest, err.Error())
 	}
