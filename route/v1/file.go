@@ -782,8 +782,9 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 
 	list.TotalSize = total
 	list.ProcessedSize = 0
-	if access, err := scope(ctx); err == nil {
-		list.LinkRoots = access.Links()
+	// an account's task reads its folders again when it runs, and runs inside them
+	if access, err := scope(ctx); err == nil && access.User() {
+		list.Account = ctx.Request().Header.Get("user_id")
 	}
 
 	uid := uuid.NewString()

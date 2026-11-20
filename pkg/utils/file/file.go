@@ -335,17 +335,6 @@ func CopyDir(src string, dst string, style string) error {
 }
 
 // CopyDirContext is CopyDir that stops when ctx is done, between files and inside them.
-type linkRootsKey struct{}
-
-// WithLinkRoots is ctx for a copy that keeps a link found inside a copied folder only where
-// it stays below roots too (an account's folders), on top of the box's. nil changes nothing.
-func WithLinkRoots(ctx context.Context, roots *fileroots.Roots) context.Context {
-	if roots == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, linkRootsKey{}, roots)
-}
-
 func CopyDirContext(ctx context.Context, src, dst, style string) error {
 	return copyDir(ctx, src, dst, style, map[[2]uint64]bool{})
 }
@@ -396,14 +385,9 @@ func copyDir(ctx context.Context, src, dst, style string, made map[[2]uint64]boo
 		if key, ok := fileKey(fd); ok && fd.IsDir() && made[key] {
 			return fmt.Errorf("%s is a folder this copy made: it would copy into itself", srcfp)
 		}
-		// a link is copied as what it points to: only where that stays below the roots, and
-		// below the folders of the account that asked
+		// a link is copied as what it points to: only where that stays below the roots
 		if fd.Mode()&os.ModeSymlink != 0 {
-			_, err := fileroots.Default.Check(srcfp)
-			if account, ok := ctx.Value(linkRootsKey{}).(*fileroots.Roots); err == nil && ok {
-				_, err = account.Check(srcfp)
-			}
-			if err != nil {
+			if _, err := fileroots.Default.Check(srcfp); err != nil {
 				skipped = fmt.Errorf("%s: %w", srcfp, ErrLinkOutside)
 				continue
 			}

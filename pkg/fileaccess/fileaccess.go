@@ -10,6 +10,7 @@ package fileaccess
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
@@ -159,14 +160,19 @@ func (s *Scope) Listing() *fileroots.Roots {
 	return fileroots.Default
 }
 
-// Links is the roots a link must stay below to be copied as what it points to, on top of
-// the box's: an account's folders; nil for the owner.
-func (s *Scope) Links() *fileroots.Roots {
-	if s.user {
-		return s.read
+// FolderOf is the account's folder that holds the canonical path p (as Check gives it),
+// and p relative to it ("." for the folder itself); "" when none does.
+func (s *Scope) FolderOf(p string) (folder, rel string) {
+	for _, f := range s.readable {
+		if p == f {
+			return f, "."
+		}
+		if strings.HasPrefix(p, f+"/") {
+			return f, strings.TrimPrefix(p, f+"/")
+		}
 	}
 
-	return nil
+	return "", ""
 }
 
 // clone copies the paths, for a check that must not respell them.

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,6 +24,8 @@ import (
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/model"
+	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/fileaccess"
 	"github.com/ReCasaOS/CasaOS/pkg/utils/file"
 	"github.com/moby/sys/mountinfo"
 	"go.uber.org/zap"
@@ -135,7 +138,6 @@ func fileOperate(ctx context.Context, k string) {
 	}
 
 	temp = list.(model.FileOperate)
-	ctx = file.WithLinkRoots(ctx, temp.LinkRoots)
 	// fail logs every failure and keeps the first one's code for the notifier
 	fail := func(from string, err error) {
 		if ctx.Err() != nil {
@@ -157,8 +159,25 @@ func fileOperate(ctx context.Context, k string) {
 			temp.Error = temp.Type + "_failed"
 		}
 	}
+	// an account's task: its folders as they are now, and only inside them
+	var access *fileaccess.Scope
+	if temp.Account != "" {
+		var err error
+		if access, err = fileaccess.For(config.CommonInfo.RuntimePath, temp.Account, false); err != nil {
+			for _, v := range temp.Item {
+				fail(v.From, err)
+			}
+			temp.Item = nil
+		}
+	}
 	for i := 0; i < len(temp.Item) && ctx.Err() == nil; i++ {
 		v := temp.Item[i]
+		if access != nil {
+			if err := accountOperate(ctx, access, temp.Type, temp.Style, v.From, temp.To); err != nil {
+				fail(v.From, err)
+			}
+			continue
+		}
 		target := temp.To + "/" + v.From[strings.LastIndex(v.From, "/")+1:]
 		if file.Overlap(v.From, temp.To) { // the route refuses these: never remove or overwrite the source
 			fail(v.From, errSamePath)
@@ -203,6 +222,77 @@ func fileOperate(ctx context.Context, k string) {
 	}
 	temp.Finished = true
 	finished = true
+}
+
+// accountOperate copies or moves from into the folder to for an account, checked against
+// its folders as they are now, and done inside them through os.Root: a folder swapped for
+// a link while the task waited or runs leads nowhere outside.
+func accountOperate(ctx context.Context, access *fileaccess.Scope, kind, style, from, to string) error {
+	fromIntent := fileaccess.Read
+	if kind == "move" {
+		fromIntent = fileaccess.Write
+		entry := from
+		if err := access.CheckEntries(&entry); err != nil {
+			return err
+		}
+	}
+	if err := access.Check(fromIntent, &from); err != nil {
+		return err
+	}
+	if err := access.Check(fileaccess.Write, &to); err != nil {
+		return err
+	}
+	if file.Overlap(from, to) {
+		return errSamePath
+	}
+	srcFolder, srcRel := access.FolderOf(from)
+	dstFolder, dstRel := access.FolderOf(to)
+	src, err := os.OpenRoot(srcFolder)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := os.OpenRoot(dstFolder)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	target := path.Join(dstRel, path.Base(srcRel))
+
+	if kind == "move" {
+		if _, err := dst.Lstat(target); err == nil {
+			if style == "skip" {
+				return nil
+			}
+			if err := file.CheckNoMountPoint(path.Join(dstFolder, target)); err != nil {
+				return err
+			}
+			if err := dst.RemoveAll(target); err != nil {
+				return err
+			}
+		}
+		// a rename inside one folder; across two, or two disks, a copy, then the source goes
+		if srcFolder == dstFolder {
+			err := src.Rename(srcRel, target)
+			if !errors.Is(err, syscall.EXDEV) {
+				return err
+			}
+		}
+		if err := file.CheckNoMountPoint(path.Join(srcFolder, srcRel)); err != nil {
+			return err
+		}
+		if err := file.CopyInRoots(ctx, src, srcRel, dst, dstRel, style); err != nil {
+			return err
+		}
+		return src.RemoveAll(srcRel)
+	}
+
+	_, statErr := dst.Lstat(target)
+	err = file.CopyInRoots(ctx, src, srcRel, dst, dstRel, style)
+	if err != nil && ctx.Err() != nil && statErr != nil {
+		dst.RemoveAll(target) // the half copy of a cancelled task
+	}
+	return err
 }
 
 // CancelFileOperate takes the task id ("0": every task) out of the queue and stops its operation; the next task starts once that operation has stopped.

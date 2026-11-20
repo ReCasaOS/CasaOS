@@ -60,8 +60,12 @@ func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 		err = access.Check(fileaccess.Write, &path, &target, &temp)
 	}
 	if err != nil {
+		status := http.StatusForbidden
+		if errors.Is(err, fileaccess.ErrRoleUnknown) {
+			status = http.StatusServiceUnavailable // asked again shortly
+		}
 		// message and data, as the v1 file API answers (the dashboard shows data)
-		return ctx.JSON(http.StatusForbidden, map[string]string{"message": err.Error(), "data": err.Error()})
+		return ctx.JSON(status, map[string]string{"message": err.Error(), "data": err.Error()})
 	}
 
 	// handle the request
