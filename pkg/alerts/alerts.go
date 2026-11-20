@@ -64,9 +64,14 @@ const (
 	Apps      = "apps"
 	Resources = "resources"
 	Fleet     = "fleet"
+	// AppUpdates is what the apps' updates did by themselves: the night's automatic updates
+	// and the newer versions of images pinned to one (CasaOS#170).
+	AppUpdates = "app-updates"
+	// Cleanup is what the weekly cleanup of Docker freed, or why it could not.
+	Cleanup = "cleanup"
 )
 
-var categories = []string{Backups, Disks, Updates, Apps, Resources, Fleet}
+var categories = []string{Backups, Disks, Updates, Apps, Resources, Fleet, AppUpdates, Cleanup}
 
 // alert is one condition: its key is what dedupe and resolution go by, its
 // sentence says what and where, and never anything more sensitive than an

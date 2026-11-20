@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,9 +62,14 @@ var containerEvents = []string{"app:container-died", "app:container-unhealthy", 
 // appEvents are passed to Hub.OnAppEvent; they raise no alert.
 var appEvents = []string{"app:install-end", "app:uninstall-end", "app:apply-changes-end"}
 
+// boxEvents are what the box did by itself: the night's automatic updates, the newer
+// versions of pinned images, the weekly cleanup (CasaOS#170).
+var boxEvents = []string{"auto-update:night-end", "newer-tags:found", "cleanup:end", "cleanup:error"}
+
 // busEvents are the events of AppManagement this package subscribes to.
 func busEvents() []string {
 	names := append([]string{"backup:error", "backup:check-error"}, containerEvents...)
+	names = append(names, boxEvents...)
 	names = append(names, appEvents...)
 	names = append(names, resourceEvents...)
 	for operation := range operations {
@@ -277,6 +283,24 @@ func fromEvent(name string, p map[string]string) (a alert, resolved, ok bool) {
 		return alert{key: runtime, category: Apps, sentence: app + " keeps restarting" + container + "."}, false, true
 	case "app:container-healthy":
 		return alert{key: runtime, category: Apps, sentence: "Resolved: " + app + " runs normally again."}, true, true
+	case "auto-update:night-end":
+		return nightAlert(p)
+	case "newer-tags:found":
+		return newerTagsAlert(p)
+	case "cleanup:end":
+		count, _ := strconv.Atoi(p["cleanup:count"])
+		size, _ := strconv.ParseInt(p["cleanup:size"], 10, 64)
+		sentence := "The weekly cleanup freed " + bytesText(size)
+		if count > 0 {
+			sentence += fmt.Sprintf(": %d old image versions and the build cache", count)
+		}
+		return alert{key: "cleanup:end:" + p["cleanup:count"] + ":" + p["cleanup:size"], category: Cleanup, sentence: sentence + "."}, false, true
+	case "cleanup:error":
+		sentence := "The weekly cleanup failed"
+		if reason := plain(p["message"]); reason != "" {
+			sentence += ": " + reason
+		}
+		return alert{key: "cleanup:error", category: Cleanup, sentence: sentence + "."}, false, true
 	}
 	operation, isError := strings.CutSuffix(strings.TrimPrefix(name, "app:"), "-error")
 	if doing, known := operations[operation]; isError && known {
@@ -285,6 +309,71 @@ func fromEvent(name string, p map[string]string) (a alert, resolved, ok bool) {
 		return alert{key: "app:" + p["app:name"] + ":" + operation, category: Apps, sentence: doing + " " + app + " failed."}, false, true
 	}
 	return alert{}, false, false
+}
+
+// nightAlert is what the night's automatic updates did: the apps updated, and those whose
+// update failed (each runs the version it had).
+func nightAlert(p map[string]string) (alert, bool, bool) {
+	updated, failed := names(p["auto-update:updated"]), names(p["auto-update:failed"])
+	var parts []string
+	if len(updated) > 0 {
+		parts = append(parts, "updated "+strings.Join(updated, ", "))
+	}
+	if len(failed) > 0 {
+		parts = append(parts, "failed for "+strings.Join(failed, ", ")+" (each runs the version it had)")
+	}
+	if len(parts) == 0 {
+		return alert{}, false, false
+	}
+	sentence := truncate("Tonight's automatic updates: "+strings.Join(parts, "; "), 400)
+	return alert{key: "auto-update-night:" + p["auto-update:updated"] + "|" + p["auto-update:failed"], category: AppUpdates, sentence: sentence + "."}, false, true
+}
+
+// newerTagsAlert is the newer versions of images pinned to one, found since they were last
+// told: the image, the version it runs and the ones it can move to.
+func newerTagsAlert(p map[string]string) (alert, bool, bool) {
+	var found []struct {
+		App     string `json:"app"`
+		Image   string `json:"image"`
+		Current string `json:"current"`
+		Tag     string `json:"tag"`
+		Level   string `json:"level"`
+	}
+	if json.Unmarshal([]byte(p["newer-tags:found"]), &found) != nil || len(found) == 0 {
+		return alert{}, false, false
+	}
+	levels := map[string]string{"patch": "bug fixes", "minor": "minor", "major": "major"}
+	var parts []string
+	for _, f := range found {
+		repository, _, _ := strings.Cut(f.Image, ":")
+		parts = append(parts, fmt.Sprintf("%s (%s) %s → %s, %s", f.App, repository, f.Current, f.Tag, levels[f.Level]))
+	}
+	sentence := truncate("Newer versions are out: "+strings.Join(parts, "; "), 400)
+	return alert{key: "newer-tags:" + p["newer-tags:found"], category: AppUpdates, sentence: sentence + ". Choose one in the app's settings."}, false, true
+}
+
+// names is a comma-separated list, without its empty items.
+func names(list string) []string {
+	var out []string
+	for _, name := range strings.Split(list, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// bytesText is a size as the dashboard writes it: 1.2 GB.
+func bytesText(n int64) string {
+	units := []string{"bytes", "KB", "MB", "GB", "TB"}
+	size, unit := float64(n), 0
+	for size >= 1000 && unit < len(units)-1 {
+		size, unit = size/1000, unit+1
+	}
+	if unit == 0 {
+		return fmt.Sprintf("%d bytes", n)
+	}
+	return fmt.Sprintf("%.1f %s", size, units[unit])
 }
 
 // appName is the app's English title when the event has it, else its name.
