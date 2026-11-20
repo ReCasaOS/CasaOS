@@ -16,11 +16,16 @@ import (
 )
 
 func GetImage(path string, width, height int) ([]byte, error) {
+	return GetImageNamed(path, path, width, height)
+}
+
+// GetImageNamed is GetImage of the file at path, whose format is told by name (path may be
+// a /proc/self/fd/N that has none).
+func GetImageNamed(path, name string, width, height int) ([]byte, error) {
 	if thumbnail, err := GetThumbnailByOwnerPhotos(path); err == nil {
 		return thumbnail, nil
-	} else {
-		return GetThumbnailByWebPhoto(path, width, height)
 	}
+	return thumbnailByWebPhoto(path, name, width, height)
 }
 func GetThumbnailByOwnerPhotos(path string) ([]byte, error) {
 	file, err := os.Open(path)
@@ -70,6 +75,10 @@ func GetThumbnailByOwnerPhotos(path string) ([]byte, error) {
 	return thumbnail, nil
 }
 func GetThumbnailByWebPhoto(path string, width, height int) ([]byte, error) {
+	return thumbnailByWebPhoto(path, path, width, height)
+}
+
+func thumbnailByWebPhoto(path, name string, width, height int) ([]byte, error) {
 	src, err := imaging.Open(path)
 	if err != nil {
 		fmt.Println(err)
@@ -78,7 +87,7 @@ func GetThumbnailByWebPhoto(path string, width, height int) ([]byte, error) {
 
 	img := imaging.Resize(src, width, 0, imaging.Lanczos)
 
-	f, err := imaging.FormatFromFilename(path)
+	f, err := imaging.FormatFromFilename(name)
 	if err != nil {
 		return nil, err
 	}

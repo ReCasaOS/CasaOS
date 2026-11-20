@@ -404,8 +404,10 @@ func (c *systemService) GetDirPath(path string) ([]model.Path, error) {
 			}
 			temp := model.Path{Name: l.Name(), Path: filePath, IsDir: l.IsDir(), Date: tempFile.ModTime(), Size: tempFile.Size()}
 			if filePath != link {
-				file, _ := os.Stat(link)
-				temp.IsDir = file.IsDir()
+				// a link changed since it was resolved: shown as the entry it is
+				if file, err := os.Stat(link); err == nil {
+					temp.IsDir = file.IsDir()
+				}
 			}
 			dirs = append(dirs, temp)
 		}

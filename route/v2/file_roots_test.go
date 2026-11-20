@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/ReCasaOS/CasaOS-Common/external"
+	"github.com/ReCasaOS/CasaOS/pkg/fileaccess"
 	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
 	"github.com/labstack/echo/v4"
 )
@@ -98,5 +100,69 @@ func TestAV2UploadCannotLeaveItsRoot(t *testing.T) {
 	}
 	if b, err := os.ReadFile(data + "/Media/a.txt"); err != nil || !bytes.Equal(b, content) {
 		t.Errorf("upload inside: %q %v", b, err)
+	}
+}
+
+// An account's upload lands in a folder it may write, through its root: not in a folder it
+// may only read, not through a link out, not outside its folders.
+func TestAV2UploadOfAnAccountStaysInItsWritableFolders(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kids, media, other := filepath.Join(base, "Kids"), filepath.Join(base, "Media"), filepath.Join(base, "Other")
+	for _, dir := range []string{kids, media, other} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("../Other", kids+"/out"); err != nil {
+		t.Fatal(err)
+	}
+	previous := fileroots.Default
+	fileroots.Default = nil
+	wasAccount, wasFolders := fileaccess.AccountOf, fileaccess.FoldersOf
+	t.Cleanup(func() { fileroots.Default, fileaccess.AccountOf, fileaccess.FoldersOf = previous, wasAccount, wasFolders })
+	fileaccess.AccountOf = func(string, string) (string, bool, bool) { return "user", false, true }
+	fileaccess.FoldersOf = func(string, string) []external.Folder {
+		return []external.Folder{{Path: kids, Write: true}, {Path: media}}
+	}
+
+	c := NewCasaOS().(*CasaOS)
+	upload := func(path, relative string) int {
+		t.Helper()
+		var body bytes.Buffer
+		w := multipart.NewWriter(&body)
+		for k, v := range map[string]string{
+			"path": path, "relativePath": relative, "filename": filepath.Base(relative), "identifier": path + relative,
+			"chunkNumber": "1", "totalChunks": "1", "chunkSize": "3", "currentChunkSize": "3", "totalSize": "3",
+		} {
+			_ = w.WriteField(k, v)
+		}
+		part, _ := w.CreateFormFile("file", filepath.Base(relative))
+		_, _ = part.Write([]byte("abc"))
+		_ = w.Close()
+		req := httptest.NewRequest(http.MethodPost, "/v2/casaos/file/upload", &body)
+		req.Header.Set(echo.HeaderContentType, w.FormDataContentType())
+		req.Header.Set("user_id", "4")
+		rec := httptest.NewRecorder()
+		if err := c.PostUploadFile(echo.New().NewContext(req, rec)); err != nil {
+			t.Fatal(err)
+		}
+		return rec.Code
+	}
+	for _, u := range [][2]string{{media, "x.txt"}, {other, "x.txt"}, {kids, "out/x.txt"}} {
+		if code := upload(u[0], u[1]); code != http.StatusForbidden {
+			t.Errorf("upload %s + %s: %d, want 403", u[0], u[1], code)
+		}
+	}
+	if _, err := os.Lstat(other + "/x.txt"); err == nil {
+		t.Error("an upload landed outside")
+	}
+	if code := upload(kids, "school/a.txt"); code != http.StatusOK {
+		t.Fatalf("upload in Kids: %d", code)
+	}
+	if b, err := os.ReadFile(kids + "/school/a.txt"); err != nil || string(b) != "abc" {
+		t.Errorf("upload in Kids: %q %v", b, err)
 	}
 }

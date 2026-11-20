@@ -10,6 +10,7 @@
  */
 package model
 
+
 type FileOperate struct {
 	Type          string     `json:"type" binding:"required"`
 	Item          []FileItem `json:"item" binding:"required"`
@@ -19,6 +20,9 @@ type FileOperate struct {
 	Style         string     `json:"style"`
 	Finished      bool       `json:"finished"`
 	Error         string     `json:"-"` // the first failure of the task, for the notifier
+	// Account is the account of role user that asked, "" for the owner: its folders are
+	// read again when the task runs, and the task runs inside them (CasaOS#168).
+	Account string `json:"-"`
 }
 
 type FileItem struct {

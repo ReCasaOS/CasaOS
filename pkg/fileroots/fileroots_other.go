@@ -8,6 +8,8 @@
 
 package fileroots
 
+import "os"
+
 // Open: confinement needs openat2; no roots stays unconfined.
 func Open(paths []string) (*Roots, error) {
 	if len(paths) > 0 {
@@ -34,3 +36,6 @@ func (r *Roots) Check(path string) (string, error) {
 	}
 	return "", ErrUnsupported
 }
+
+// OpenFolder: confinement needs openat2.
+func OpenFolder(string) (*os.Root, error) { return nil, ErrUnsupported }

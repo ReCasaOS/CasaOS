@@ -1,6 +1,7 @@
 package route
 
 import (
+	"errors"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/ReCasaOS/CasaOS/codegen"
 	"github.com/ReCasaOS/CasaOS/pkg/config"
-	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
+	"github.com/ReCasaOS/CasaOS/pkg/fileaccess"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	v2Route "github.com/ReCasaOS/CasaOS/route/v2"
@@ -147,22 +148,49 @@ func InitFile() http.Handler {
 			return
 		}
 
-		if _, err := accessClaims(token); err != nil {
+		claims, err := accessClaims(token)
+		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte(`{"message": "validation failure"}`))
 			return
 		}
 		filePath := r.URL.Query().Get("path")
-		// [file] ManagementRoots (pkg/fileroots)
-		if err := fileroots.Default.CheckEach(&filePath); err != nil {
+		// [file] ManagementRoots (pkg/fileroots), and an account's folders (pkg/fileaccess)
+		access, err := fileaccess.For(config.CommonInfo.RuntimePath, strconv.Itoa(claims.ID), false)
+		if err == nil {
+			err = access.Check(fileaccess.Read, &filePath)
+		}
+		if err != nil {
+			status := http.StatusForbidden
+			if errors.Is(err, fileaccess.ErrRoleUnknown) {
+				status = http.StatusServiceUnavailable // asked again shortly
+			}
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
+			w.WriteHeader(status)
 			_ = json.NewEncoder(w).Encode(map[string]string{"message": err.Error(), "data": err.Error()})
 			return
 		}
 		fileName := path.Base(filePath)
 		w.Header().Add("Content-Disposition", "attachment; filename*=utf-8''"+url.PathEscape(fileName))
+		if access.User() {
+			// an account's file is opened through the root of its folder, and sent from there
+			_, f, err := access.Pin(filePath)
+			if err != nil {
+				w.Header().Del("Content-Disposition")
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			defer f.Close()
+			info, err := f.Stat()
+			if err != nil || info.IsDir() {
+				w.Header().Del("Content-Disposition")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			http.ServeContent(w, r, fileName, info.ModTime(), f)
+			return
+		}
 		http.ServeFile(w, r, filePath)
 		// http.ServeFile(w, r, filePath)
 	})

@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/Curtis-Milo/nat-type-identifier-go v0.0.0-20220215191915-18d42168c63d
-	github.com/ReCasaOS/CasaOS-Common v0.4.33
+	github.com/ReCasaOS/CasaOS-Common v0.4.35
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/deckarep/golang-set/v2 v2.3.0
 	github.com/deepmap/oapi-codegen v1.12.4
@@ -62,7 +62,6 @@ require (
 	github.com/dsoprea/go-utility/v2 v2.0.0-20221003172846-a3e1774ef349 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/eclipse/paho.golang v0.23.0 // indirect
-	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/geoffgarside/ber v1.1.0 // indirect
 	github.com/glebarez/go-sqlite v1.21.1 // indirect
 	github.com/go-errors/errors v1.4.2 // indirect
@@ -118,7 +117,6 @@ require (
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	modernc.org/libc v1.22.4 // indirect
