@@ -74,6 +74,26 @@ func TestEachEventsAlert(t *testing.T) {
 			alert{"app:immich:runtime", Apps, "immich keeps restarting (container immich-server)."}, false,
 		},
 		{"app:container-healthy", with(immich), alert{"app:immich:runtime", Apps, "Resolved: Immich runs normally again."}, true},
+		{
+			"auto-update:night-end", map[string]string{"auto-update:updated": "jellyfin,immich", "auto-update:failed": "sonarr"},
+			alert{"auto-update-night:jellyfin,immich|sonarr", AppUpdates, "Tonight's automatic updates: updated jellyfin, immich; failed for sonarr (each runs the version it had)."}, false,
+		},
+		{
+			"auto-update:night-end", map[string]string{"auto-update:updated": "plex", "auto-update:failed": ""},
+			alert{"auto-update-night:plex|", AppUpdates, "Tonight's automatic updates: updated plex."}, false,
+		},
+		{
+			"newer-tags:found", map[string]string{"newer-tags:found": `[{"app":"immich","image":"postgres:16.2","current":"16.2","tag":"16.4","level":"minor"}]`},
+			alert{`newer-tags:[{"app":"immich","image":"postgres:16.2","current":"16.2","tag":"16.4","level":"minor"}]`, AppUpdates, "Newer versions are out: immich (postgres) 16.2 → 16.4, minor. Choose one in the app's settings."}, false,
+		},
+		{
+			"cleanup:end", map[string]string{"cleanup:count": "12", "cleanup:size": "1234567890"},
+			alert{"cleanup:end:12:1234567890", Cleanup, "The weekly cleanup freed 1.2 GB: 12 old image versions and the build cache."}, false,
+		},
+		{
+			"cleanup:error", map[string]string{"message": "compose file of `odd`: yaml\nmore"},
+			alert{"cleanup:error", Cleanup, "The weekly cleanup failed: compose file of `odd`: yaml."}, false,
+		},
 	} {
 		t.Run(tc.event, func(t *testing.T) {
 			got, resolved, ok := fromEvent(tc.event, tc.properties)
