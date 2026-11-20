@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"syscall"
 
 	cfile "github.com/ReCasaOS/CasaOS-Common/utils/file"
 	"github.com/ReCasaOS/CasaOS/model"
@@ -118,7 +120,16 @@ func accountSave(root *os.Root, rel string, content []byte) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(content)
+	// the file keeps its owner, as the owner's save keeps it: an app still reads its config
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		err = f.Chown(int(st.Uid), int(st.Gid))
+	}
+	if err == nil {
+		err = f.Chmod(info.Mode().Perm()) // the chown cleared nothing worth keeping: no setuid copied
+	}
+	if err == nil {
+		_, err = f.Write(content)
+	}
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
@@ -233,4 +244,63 @@ func accountDelete(ctx echo.Context, paths []string) error {
 		}
 	}
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS)})
+}
+
+// errNotMeasured: a size the account may not ask for.
+var errNotMeasured = errors.New("not measured")
+
+// measured is the size of p: for an account through the root of its folder, links not
+// followed; for the owner, by its path as before.
+func measured(ctx echo.Context, p string) (int64, error) {
+	s, err := scope(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", errNotMeasured, err)
+	}
+	if !s.User() {
+		if err := s.Check(fileaccess.Read, &p); err != nil {
+			return 0, fmt.Errorf("%w: %w", errNotMeasured, err)
+		}
+		return file.GetFileOrDirSize(p)
+	}
+	root, _, rel, err := s.Root(fileaccess.Read, p, false)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", errNotMeasured, err)
+	}
+	defer root.Close()
+	return file.SizeIn(root, rel)
+}
+
+// accountListing is what the folder p holds, read through the root of the account's
+// folder: an entry is measured as it is, and a link is a folder only when it leads to one
+// inside that folder.
+func accountListing(access *fileaccess.Scope, p string) ([]model.Path, error) {
+	root, _, rel, err := access.Root(fileaccess.Read, p, false)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	dir, err := root.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := dir.ReadDir(-1)
+	dir.Close()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Path, 0, len(entries))
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue // gone since it was listed
+		}
+		entry := model.Path{Name: e.Name(), Path: filepath.Join(p, e.Name()), IsDir: e.IsDir(), Date: info.ModTime(), Size: info.Size()}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			if target, err := root.Stat(path.Join(rel, e.Name())); err == nil {
+				entry.IsDir = target.IsDir()
+			}
+		}
+		out = append(out, entry)
+	}
+	return out, nil
 }

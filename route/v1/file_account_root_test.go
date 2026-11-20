@@ -5,6 +5,7 @@ package v1
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
@@ -100,5 +101,30 @@ func TestAFolderSpelledThroughALinkIsNotARoot(t *testing.T) {
 	folder, _, _ := hostileFolder(t)
 	if _, err := fileroots.OpenFolder(folder + "/rel"); err == nil {
 		t.Error("a folder spelled through a link was opened")
+	}
+}
+
+// A save keeps the file's owner and mode: an app still reads its config.
+func TestAnAccountsSaveKeepsTheOwner(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("chown needs root")
+	}
+	folder, _, root := hostileFolder(t)
+	if err := os.Chown(folder+"/docs/a.txt", 1000, 1001); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(folder+"/docs/a.txt", 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := accountSave(root, "docs/a.txt", []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(folder + "/docs/a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := info.Sys().(*syscall.Stat_t)
+	if st.Uid != 1000 || st.Gid != 1001 || info.Mode().Perm() != 0o640 {
+		t.Errorf("owner %d:%d mode %v", st.Uid, st.Gid, info.Mode().Perm())
 	}
 }

@@ -124,3 +124,17 @@ func TestAnAccountsTaskChecksItsFoldersWhenItRuns(t *testing.T) {
 		t.Error("a task of an account with no folder left did not fail")
 	}
 }
+
+// The folder itself, copied: under its own name, not poured into the destination.
+func TestAnAccountCopiesItsFolderUnderItsName(t *testing.T) {
+	base := accountFolders(t)
+	writeOperateFile(t, base+"/r/a.txt", "a")
+
+	runOperation(t, accountTask("copy", base+"/r", base+"/w"))
+	if b, err := os.ReadFile(base + "/w/r/a.txt"); err != nil || string(b) != "a" {
+		t.Errorf("w/r/a.txt: %q %v", b, err)
+	}
+	if exists(base + "/w/a.txt") {
+		t.Error("the folder was poured into the destination")
+	}
+}

@@ -225,6 +225,24 @@ func fileOperate(ctx context.Context, k string) {
 	finished = true
 }
 
+// progressOf is the size copied so far of from, at its destination: for an account's
+// task, measured through the root of the destination folder, links not followed.
+func progressOf(task model.FileOperate, from string) (int64, error) {
+	if task.Account == "" {
+		return file.GetFileOrDirSize(task.To + "/" + filepath.Base(from))
+	}
+	access, err := fileaccess.For(config.CommonInfo.RuntimePath, task.Account, false)
+	if err != nil {
+		return 0, err
+	}
+	root, _, rel, err := access.Root(fileaccess.Write, task.To, false)
+	if err != nil {
+		return 0, err
+	}
+	defer root.Close()
+	return file.SizeIn(root, path.Join(rel, path.Base(from)))
+}
+
 // accountOperate copies or moves from into the folder to for an account, checked against
 // its folders as they are now, and done inside them through os.Root: a folder swapped for
 // a link while the task waited or runs leads nowhere outside.
@@ -258,7 +276,11 @@ func accountOperate(ctx context.Context, access *fileaccess.Scope, kind, style, 
 		return err
 	}
 	defer dst.Close()
-	target := path.Join(dstRel, path.Base(srcRel))
+	name := path.Base(srcRel)
+	if srcRel == "." { // the folder itself: copied or moved under its own name
+		name = path.Base(srcFolder)
+	}
+	target := path.Join(dstRel, name)
 
 	if kind == "move" {
 		if _, err := dst.Lstat(target); err == nil {
@@ -282,14 +304,14 @@ func accountOperate(ctx context.Context, access *fileaccess.Scope, kind, style, 
 		if err := file.CheckNoMountPoint(path.Join(srcFolder, srcRel)); err != nil {
 			return err
 		}
-		if err := file.CopyInRoots(ctx, src, srcRel, dst, dstRel, style); err != nil {
+		if err := file.CopyInRootsAs(ctx, src, srcRel, dst, target, style); err != nil {
 			return err
 		}
 		return src.RemoveAll(srcRel)
 	}
 
 	_, statErr := dst.Lstat(target)
-	err = file.CopyInRoots(ctx, src, srcRel, dst, dstRel, style)
+	err = file.CopyInRootsAs(ctx, src, srcRel, dst, target, style)
 	if err != nil && ctx.Err() != nil && statErr != nil {
 		dst.RemoveAll(target) // the half copy of a cancelled task
 	}
@@ -360,7 +382,7 @@ func CheckFileStatus() {
 			temp := item.(model.FileOperate)
 			for i := 0; i < len(temp.Item); i++ {
 				if !temp.Item[i].Finished {
-					size, err := file.GetFileOrDirSize(temp.To + "/" + filepath.Base(temp.Item[i].From))
+					size, err := progressOf(temp, temp.Item[i].From)
 					if err != nil {
 						continue
 					}

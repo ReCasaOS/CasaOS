@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
@@ -128,5 +129,26 @@ func TestAnUnknownRoleIsRefusedAndTheOwnerReachesTheBox(t *testing.T) {
 	}
 	if s, err := For("", "", false); err != nil || s.User() {
 		t.Errorf("no account (an internal call): %v %v", s, err)
+	}
+}
+
+// A pipe or a device an app made in the folder is not opened for the account.
+func TestPinOpensAFileOrAFolderOnly(t *testing.T) {
+	data, s, err := box(t, "user", true, []external.Folder{{Path: "Kids", Write: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(data, "Kids", "pipe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Pin(filepath.Join(data, "Kids", "pipe")); !errors.Is(err, ErrNotAFileOrFolder) {
+		t.Errorf("pipe: %v", err)
+	}
+	for _, p := range []string{"Kids/f", "Kids"} {
+		if _, f, err := s.Pin(filepath.Join(data, p)); err != nil {
+			t.Errorf("%s: %v", p, err)
+		} else {
+			f.Close()
+		}
 	}
 }

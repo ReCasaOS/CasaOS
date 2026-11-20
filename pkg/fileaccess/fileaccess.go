@@ -189,6 +189,9 @@ func clone(paths []*string) []*string {
 	return out
 }
 
+// ErrNotAFileOrFolder is a device, a pipe or a socket: not read for an account.
+var ErrNotAFileOrFolder = errors.New("this is neither a file nor a folder")
+
 // ErrPathNotRooted is a route that does not yet reach an account's folders through their
 // root: it is not open to an account (see Pin and Root).
 var ErrPathNotRooted = errors.New("this is not open to an account")
@@ -230,6 +233,15 @@ func (s *Scope) Pin(p string) (pinned string, f *os.File, err error) {
 	defer root.Close()
 	// O_NONBLOCK: a pipe in the file's place does not hold the request
 	if f, err = root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0); err != nil {
+		return "", nil, err
+	}
+	// a device or a pipe an app made in the folder: not read by the box's root for the account
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() && !info.IsDir() {
+		f.Close()
+		if err == nil {
+			err = ErrNotAFileOrFolder
+		}
 		return "", nil, err
 	}
 

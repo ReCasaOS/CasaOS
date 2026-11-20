@@ -25,7 +25,12 @@ const copyDepthMax = 64
 // skipped otherwise (ErrLinkOutside, said at the end, as a device or a pipe is,
 // ErrNotRegular). style "skip" leaves a file already there; anything else overwrites it.
 func CopyInRoots(ctx context.Context, src *os.Root, srcRel string, dst *os.Root, dstDir, style string) error {
-	return copyRootEntry(ctx, src, srcRel, dst, path.Join(dstDir, path.Base(srcRel)), style, 0)
+	return CopyInRootsAs(ctx, src, srcRel, dst, path.Join(dstDir, path.Base(srcRel)), style)
+}
+
+// CopyInRootsAs is CopyInRoots to the name dstRel itself.
+func CopyInRootsAs(ctx context.Context, src *os.Root, srcRel string, dst *os.Root, dstRel, style string) error {
+	return copyRootEntry(ctx, src, srcRel, dst, dstRel, style, 0)
 }
 
 func copyRootEntry(ctx context.Context, src *os.Root, s string, dst *os.Root, d, style string, depth int) error {
@@ -124,4 +129,29 @@ func (r ctxReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.r.Read(p)
+}
+
+// SizeIn is the size of rel below root, a folder counted with all it holds: entries are
+// measured as they are (Lstat), links not followed, and nothing is read outside root.
+func SizeIn(root *os.Root, rel string) (int64, error) {
+	info, err := root.Lstat(rel)
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return info.Size(), nil
+	}
+	var size int64
+	err = fs.WalkDir(root.FS(), rel, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // gone, or unreadable: not counted
+		}
+		if !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				size += info.Size()
+			}
+		}
+		return nil
+	})
+	return size, err
 }

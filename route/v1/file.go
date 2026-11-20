@@ -308,27 +308,20 @@ func DirPath(ctx echo.Context) error {
 	}
 	roots := access.Listing()
 	ancestor := roots.IsAncestor(req.Path)
-	listed := req.Path
-	if !ancestor {
-		if access.User() {
-			done, err := pinned(ctx, &listed)
-			defer done()
-			if err != nil {
+	var info []model.Path
+	if !ancestor && access.User() {
+		// an account's folder is read through its root
+		if info, err = accountListing(access, req.Path); err != nil {
+			return outsideRoots(ctx, err)
+		}
+	} else {
+		if !ancestor {
+			if err := managed(ctx, fileaccess.Read, &req.Path); err != nil {
 				return outsideRoots(ctx, err)
 			}
-		} else if err := managed(ctx, fileaccess.Read, &req.Path); err != nil {
-			return outsideRoots(ctx, err)
-		} else {
-			listed = req.Path
 		}
-	}
-	info, err := service.MyService.System().GetDirPath(listed)
-	if err != nil {
-		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
-	}
-	if listed != req.Path { // read through the pinned folder: its entries are of req.Path
-		for i := range info {
-			info[i].Path = filepath.Join(req.Path, info[i].Name)
+		if info, err = service.MyService.System().GetDirPath(req.Path); err != nil {
+			return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 		}
 	}
 	if ancestor {
@@ -826,14 +819,7 @@ func PostOperateFileOrDir(ctx echo.Context) error {
 	for i := 0; i < len(list.Item); i++ {
 
 		// an account's source is measured through its folder's root
-		from := list.Item[i].From
-		done, err := pinned(ctx, &from)
-		if err != nil {
-			done()
-			continue
-		}
-		size, err := file.GetFileOrDirSize(from)
-		done()
+		size, err := measured(ctx, list.Item[i].From)
 		if err != nil {
 			continue
 		}
@@ -1010,12 +996,10 @@ func GetSize(ctx echo.Context) error {
 	json := make(map[string]string)
 	ctx.Bind(&json)
 	path := json["path"]
-	done, err := pinned(ctx, &path)
-	defer done()
-	if err != nil {
+	size, err := measured(ctx, path)
+	if errors.Is(err, errNotMeasured) {
 		return outsideRoots(ctx, err)
 	}
-	size, err := file.GetFileOrDirSize(path)
 	if err != nil {
 		return ctx.JSON(common_err.SERVICE_ERROR, model.Result{Success: common_err.SERVICE_ERROR, Message: common_err.GetMsg(common_err.SERVICE_ERROR), Data: err.Error()})
 	}
