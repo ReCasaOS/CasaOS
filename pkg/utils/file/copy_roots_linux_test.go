@@ -1,6 +1,7 @@
 package file
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -96,5 +97,44 @@ func TestSpliceReadsNoLink(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(out); string(b) != "onetwo" {
 		t.Errorf("spliced: %q", b)
+	}
+}
+
+// An account's copy keeps a link only below its folders too: a link in its folder to
+// another folder of the box is not copied as what it points to, even unconfined.
+func TestCopyOfAnAccountSkipsALinkOutOfItsFolders(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kids, other := filepath.Join(base, "Kids"), filepath.Join(base, "Other")
+	src := filepath.Join(kids, "Photos")
+	for _, dir := range []string{src, filepath.Join(kids, "Copy"), other} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(other, "private"), "private")
+	writeTestFile(t, filepath.Join(src, "a.jpg"), "a")
+	if err := os.Symlink("../../Other/private", filepath.Join(src, "leak")); err != nil {
+		t.Fatal(err)
+	}
+	account, err := fileroots.Open([]string{kids})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := fileroots.Default
+	fileroots.Default = nil
+	t.Cleanup(func() { fileroots.Default = previous })
+
+	dst := filepath.Join(kids, "Copy")
+	if err := CopyDirContext(WithLinkRoots(context.Background(), account), src, dst, "overwrite"); !errors.Is(err, ErrLinkOutside) {
+		t.Errorf("copy = %v, want ErrLinkOutside", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "Photos", "leak")); err == nil {
+		t.Error("the link was copied: a file of another folder came into the account's")
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "Photos", "a.jpg")); err != nil || string(b) != "a" {
+		t.Errorf("a.jpg: %q %v", b, err)
 	}
 }

@@ -157,6 +157,7 @@ func TestTheV2TokenInTheQueryIsTakenOnlyOnAGetAndNeverTheRefreshToken(t *testing
 
 func TestTheFileOfV3TakesTheAccessTokenAndNotTheRefreshToken(t *testing.T) {
 	access, refresh, _ := theTokensOfTheTests(t, &fakeUpdateSystem{})
+	asAccount(t, "admin")
 	path := filepath.Join(t.TempDir(), "note.txt")
 	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)

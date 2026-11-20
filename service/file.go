@@ -135,6 +135,7 @@ func fileOperate(ctx context.Context, k string) {
 	}
 
 	temp = list.(model.FileOperate)
+	ctx = file.WithLinkRoots(ctx, temp.LinkRoots)
 	// fail logs every failure and keeps the first one's code for the notifier
 	fail := func(from string, err error) {
 		if ctx.Err() != nil {

@@ -6,7 +6,9 @@ import (
 	"strconv"
 
 	"github.com/ReCasaOS/CasaOS/codegen"
-	"github.com/ReCasaOS/CasaOS/pkg/fileroots"
+	"github.com/ReCasaOS/CasaOS-Common/external"
+	"github.com/ReCasaOS/CasaOS/pkg/config"
+	"github.com/ReCasaOS/CasaOS/pkg/fileaccess"
 	"github.com/ReCasaOS/CasaOS/service"
 	"github.com/labstack/echo/v4"
 )
@@ -21,6 +23,13 @@ func (s *CasaOS) GetFileTest(ctx echo.Context) error {
 	return ctx.String(200, "pong")
 }
 
+// uploadScope is what this upload may reach: the box's roots, or an account's writable
+// folders (pkg/fileaccess).
+func uploadScope(ctx echo.Context) (*fileaccess.Scope, error) {
+	internal := external.IsInternalRequest(ctx.RealIP(), ctx.Request().Header.Get(echo.HeaderAuthorization), config.CommonInfo.RuntimePath)
+	return fileaccess.For(config.CommonInfo.RuntimePath, ctx.Request().Header.Get("user_id"), internal)
+}
+
 func (c *CasaOS) CheckUploadChunk(ctx echo.Context, params codegen.CheckUploadChunkParams) error {
 	identifier := ctx.QueryParam("identifier")
 	chunkNumber, err := strconv.ParseInt(ctx.QueryParam("chunkNumber"), 10, 64)
@@ -30,7 +39,7 @@ func (c *CasaOS) CheckUploadChunk(ctx echo.Context, params codegen.CheckUploadCh
 
 	// the folder as PostUploadFile reads it: an upload is the identifier and the file it lands in
 	path := ctx.QueryParam("path")
-	if fileroots.Default.CheckEach(&path) != nil {
+	if access, err := uploadScope(ctx); err != nil || access.Check(fileaccess.Write, &path) != nil {
 		return ctx.NoContent(http.StatusNoContent)
 	}
 	err = c.fileUploadService.TestChunk(ctx, identifier, path+"/"+ctx.QueryParam("relativePath"), chunkNumber)
@@ -46,7 +55,11 @@ func (c *CasaOS) PostUploadFile(ctx echo.Context) error {
 	// [file] ManagementRoots: the folder, the file it lands in and the `.tmp`
 	// it is written to first (pkg/fileroots)
 	target, temp := path+"/"+relativePath, path+"/"+relativePath+".tmp"
-	if err := fileroots.Default.CheckEach(&path, &target, &temp); err != nil {
+	access, err := uploadScope(ctx)
+	if err == nil {
+		err = access.Check(fileaccess.Write, &path, &target, &temp)
+	}
+	if err != nil {
 		// message and data, as the v1 file API answers (the dashboard shows data)
 		return ctx.JSON(http.StatusForbidden, map[string]string{"message": err.Error(), "data": err.Error()})
 	}

@@ -10,6 +10,8 @@
  */
 package model
 
+import "github.com/ReCasaOS/CasaOS/pkg/fileroots"
+
 type FileOperate struct {
 	Type          string     `json:"type" binding:"required"`
 	Item          []FileItem `json:"item" binding:"required"`
@@ -19,6 +21,9 @@ type FileOperate struct {
 	Style         string     `json:"style"`
 	Finished      bool       `json:"finished"`
 	Error         string     `json:"-"` // the first failure of the task, for the notifier
+	// LinkRoots are the folders a link inside a copied folder must stay below to be copied as
+	// what it points to, on top of the box's roots: an account's folders; nil for the owner.
+	LinkRoots *fileroots.Roots `json:"-"`
 }
 
 type FileItem struct {
