@@ -32,8 +32,20 @@ type feed struct {
 // alerts, its feed finds nothing registered and retries at the one-minute cap.
 const virtSource = "virt-management"
 
-// feeds are the sources followed: AppManagement's events, and the virt module's resource events.
-var feeds = []feed{{"app-management", busEvents}, {virtSource, func() []string { return resourceEvents }}}
+// vulnSource is the scan module's SourceID on the message bus (common.ServiceName in
+// ReCasaOS-VulnScan), and vulnEvents the one event it publishes: at the end of a scan, the
+// apps with a critical vulnerability not told yet that an update of the app fixes.
+const vulnSource = "vuln-scan"
+
+var vulnEvents = []string{"vuln:found"}
+
+// feeds are the sources followed: AppManagement's events, the virt module's resource events, and
+// the scan module's findings.
+var feeds = []feed{
+	{"app-management", busEvents},
+	{virtSource, func() []string { return resourceEvents }},
+	{vulnSource, func() []string { return vulnEvents }},
+}
 
 // operations are the app operations whose failure is an alert, by the name of
 // their error event, app:<operation>-error, and what the sentence says.
@@ -283,6 +295,8 @@ func fromEvent(name string, p map[string]string) (a alert, resolved, ok bool) {
 		return alert{key: runtime, category: Apps, sentence: app + " keeps restarting" + container + "."}, false, true
 	case "app:container-healthy":
 		return alert{key: runtime, category: Apps, sentence: "Resolved: " + app + " runs normally again."}, true, true
+	case "vuln:found":
+		return vulnAlert(p)
 	case "auto-update:night-end":
 		return nightAlert(p)
 	case "newer-tags:found":
@@ -350,6 +364,26 @@ func newerTagsAlert(p map[string]string) (alert, bool, bool) {
 	}
 	sentence := truncate("Newer versions are out: "+strings.Join(parts, "; "), 400)
 	return alert{key: "newer-tags:" + p["newer-tags:found"], category: AppUpdates, sentence: sentence + ". Choose one in the app's settings."}, false, true
+}
+
+// vulnAlert is the apps in whose images the scan module found a critical vulnerability that an
+// update of the app fixes. The module tells each vulnerability once, so the sentence says what
+// to do and not how many there are: a vulnerability two apps share is counted for each.
+func vulnAlert(p map[string]string) (alert, bool, bool) {
+	apps := names(plain(p["apps"]))
+	if len(apps) == 0 {
+		return alert{}, false, false
+	}
+	list := truncate(strings.Join(apps, ", "), 300)
+
+	sentence, them := "Critical vulnerabilities are fixed by an update of "+list, "them"
+	if p["count"] == "1" {
+		sentence = "A critical vulnerability is fixed by an update of " + list
+	}
+	if len(apps) == 1 {
+		them = "it"
+	}
+	return alert{key: "vuln:found:" + list + ":" + p["count"], category: Vulnerabilities, sentence: sentence + ". Update " + them + " from the dashboard."}, false, true
 }
 
 // names is a comma-separated list, without its empty items.

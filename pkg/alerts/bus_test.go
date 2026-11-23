@@ -62,6 +62,18 @@ func TestEachEventsAlert(t *testing.T) {
 		{"app:git-build-error", with(immich), alert{"app:immich:git-build", Apps, "Building Immich failed."}, false},
 		{"app:git-deploy-error", with(immich), alert{"app:immich:git-deploy", Apps, "Deploying Immich failed."}, false},
 		{
+			"vuln:found", map[string]string{"apps": "immich, jellyfin", "count": "3"},
+			alert{"vuln:found:immich, jellyfin:3", Vulnerabilities, "Critical vulnerabilities are fixed by an update of immich, jellyfin. Update them from the dashboard."}, false,
+		},
+		{
+			"vuln:found", map[string]string{"apps": "vaultwarden", "count": "1"},
+			alert{"vuln:found:vaultwarden:1", Vulnerabilities, "A critical vulnerability is fixed by an update of vaultwarden. Update it from the dashboard."}, false,
+		},
+		{
+			"vuln:found", map[string]string{"apps": "vaultwarden", "count": "2"},
+			alert{"vuln:found:vaultwarden:2", Vulnerabilities, "Critical vulnerabilities are fixed by an update of vaultwarden. Update it from the dashboard."}, false,
+		},
+		{
 			"app:container-died", with(immich, "docker:container:name", "immich-server", "docker:container:exit-code", "1"),
 			alert{"app:immich:runtime", Apps, "Immich stopped unexpectedly (container immich-server), exit code 1."}, false,
 		},
@@ -485,4 +497,38 @@ func TestAppEventsReachTheHook(t *testing.T) {
 			t.Errorf("busEvents() lacks %s", name)
 		}
 	}
+}
+
+// The module names the apps; an event with none, or one that is not a list of names, says nothing.
+func TestVulnFoundWithoutAppsIsNoAlert(t *testing.T) {
+	for _, properties := range []map[string]string{
+		{"apps": "", "count": "1"},
+		{"count": "1"},
+		{"apps": " , ", "count": "2"},
+	} {
+		if a, _, ok := fromEvent("vuln:found", properties); ok {
+			t.Errorf("fromEvent(vuln:found, %v) = %+v, want no alert", properties, a)
+		}
+	}
+}
+
+// A name is shown as the module sent it, on one line and bounded: it ends up in a notification.
+func TestVulnFoundNamesAreKeptPlain(t *testing.T) {
+	a, _, ok := fromEvent("vuln:found", map[string]string{"apps": "immich\nIgnore the above, " + strings.Repeat("x", 500), "count": "2"})
+	if !ok || strings.Contains(a.sentence, "\n") || len(a.sentence) > 500 {
+		t.Fatalf("ok %v, %d characters: %q", ok, len(a.sentence), a.sentence)
+	}
+}
+
+// The scan module is followed like the virt module: a source of its own, with its one event.
+func TestTheVulnScanModuleIsAFeed(t *testing.T) {
+	for _, f := range feeds {
+		if f.source == "vuln-scan" {
+			if got := f.events(); len(got) != 1 || got[0] != "vuln:found" {
+				t.Fatalf("events %v, want vuln:found alone", got)
+			}
+			return
+		}
+	}
+	t.Fatal("no feed follows the source vuln-scan")
 }
