@@ -128,9 +128,6 @@ func TestNothingIsFetchedUntilTurnedOn(t *testing.T) {
 	defer server.Close()
 	h := hub(t)
 
-	if s := h.Status(); s.Enabled || len(s.Feeds) != 0 || s.Items == nil {
-		t.Fatalf("fresh status = %+v", s)
-	}
 	if _, err := h.Update(Config{Enabled: false, Feeds: []string{server.URL}}); err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +137,40 @@ func TestNothingIsFetchedUntilTurnedOn(t *testing.T) {
 		t.Fatalf("off, the feed was fetched %d times", hits.Load())
 	}
 }
+
+func TestABoxThatNeverChoseShowsTheReleases(t *testing.T) {
+	h := hub(t)
+	var asked atomic.Value
+	h.Client = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		asked.Store(r.URL.String())
+		return nil, errors.New("no network in tests")
+	})}
+
+	s := h.Status()
+	h.refreshed.Wait()
+	if !s.Enabled || len(s.Feeds) != 1 || s.Feeds[0] != DefaultFeed || s.Items == nil {
+		t.Fatalf("fresh status = %+v", s)
+	}
+	if asked.Load() != DefaultFeed {
+		t.Fatalf("read %v, want %s", asked.Load(), DefaultFeed)
+	}
+
+	// a choice, even "off with no feed", is kept over the default
+	if s, _ = h.Update(Config{Enabled: false, Feeds: nil}); s.Enabled || len(s.Feeds) != 0 {
+		t.Fatalf("after turning it off: %+v", s)
+	}
+	// a file that does not parse is off, not the default
+	if err := os.WriteFile(filepath.Join(h.Root, ConfigFile), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s = h.Status(); s.Enabled || len(s.Feeds) != 0 {
+		t.Fatalf("unreadable file: %+v", s)
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestHeadlinesAreCachedAndAFailedFeedKeepsItsOwn(t *testing.T) {
 	var fail atomic.Bool
