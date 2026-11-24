@@ -42,9 +42,14 @@ type Result struct {
 // pseudo is what a walk never enters, nor starts from: the kernel's and the run time's file
 // systems, where names mean nothing to a person and reading can hang or never end, and the
 // container engines' layers, which hold every image's files again.
-var pseudo = map[string]bool{
-	"/proc": true, "/sys": true, "/dev": true, "/run": true,
-	"/var/lib/docker": true, "/var/lib/containerd": true,
+// (A switch, not a map: a package-level map is work at start-up, done before the core's
+// assistant runs, which boot's tests refuse.)
+func pseudo(p string) bool {
+	switch p {
+	case "/proc", "/sys", "/dev", "/run", "/var/lib/docker", "/var/lib/containerd":
+		return true
+	}
+	return false
 }
 
 // Search walks each folder of starts and returns the entries whose name holds query, case
@@ -73,7 +78,7 @@ func Search(ctx context.Context, starts []string, query string, limits Limits) R
 		if stop() {
 			break
 		}
-		if pseudo[start] {
+		if pseudo(start) {
 			continue
 		}
 		_ = filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
@@ -91,7 +96,7 @@ func Search(ctx context.Context, starts []string, query string, limits Limits) R
 			if p == start {
 				return nil
 			}
-			if d.IsDir() && (pseudo[p] || remote[p] || d.Name() == ".temp") {
+			if d.IsDir() && (pseudo(p) || remote[p] || d.Name() == ".temp") {
 				return filepath.SkipDir
 			}
 			if !strings.Contains(strings.ToLower(d.Name()), needle) {

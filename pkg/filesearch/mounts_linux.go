@@ -5,15 +5,18 @@ import (
 	"strings"
 )
 
-// remoteTypes are the file systems a walk does not enter on its own: a network one can hang
+// remoteType is the file systems a walk does not enter on its own: a network one can hang
 // a read for as long as its server is gone, and an overlay is a container's view of layers
 // read elsewhere already.
-var remoteTypes = map[string]bool{
-	"nfs": true, "nfs4": true, "cifs": true, "smb3": true, "smbfs": true, "9p": true,
-	"ceph": true, "glusterfs": true, "davfs": true, "sshfs": true, "overlay": true,
+func remoteType(t string) bool {
+	switch t {
+	case "nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "ceph", "glusterfs", "davfs", "sshfs", "overlay":
+		return true
+	}
+	return strings.HasPrefix(t, "fuse.") && t != "fuse.mergerfs"
 }
 
-// mountsToSkip is the mount points of remoteTypes and of FUSE remotes (rclone, sshfs), read
+// mountsToSkip is the mount points whose type remoteType names (FUSE remotes such as rclone included), read
 // from /proc/self/mountinfo once per search: no call that could block on such a mount.
 func mountsToSkip() map[string]bool {
 	data, err := os.ReadFile("/proc/self/mountinfo")
@@ -39,7 +42,7 @@ func parseMountinfo(data string) map[string]bool {
 			continue
 		}
 		fsType := fields[dash+1]
-		if remoteTypes[fsType] || strings.HasPrefix(fsType, "fuse.") && fsType != "fuse.mergerfs" {
+		if remoteType(fsType) {
 			skip[unescapeMount(fields[4])] = true
 		}
 	}
