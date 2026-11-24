@@ -1,6 +1,7 @@
 // Package feeds keeps the RSS and Atom feeds the owner chose for the dashboard's
-// footer (CasaOS#180) and their latest headlines. It is off and fetches nothing
-// until the owner turns it on with at least one feed. Reading the headlines never
+// footer (CasaOS#180) and their latest headlines. A box whose owner never saved
+// the settings shows the distribution's own releases (DefaultFeed); turned off, or
+// with no feed, it fetches nothing. Reading the headlines never
 // waits on the network: it answers what is cached and, when that is older than
 // refreshEvery, starts a refresh in the background. Feeds are fetched by the box,
 // never toward an address of the box itself or of its networks (guard.go).
@@ -31,6 +32,10 @@ const (
 	maxItemsPerFeed = 10
 	refreshEvery    = 30 * time.Minute
 )
+
+// DefaultFeed is what a box whose owner never saved the settings shows: the
+// distribution's releases.
+const DefaultFeed = "https://github.com/ReCasaOS/CasaOS-Install/releases.atom"
 
 // ErrInvalid is a PUT body that is not one: too many feeds, or one that is not an
 // http(s) URL. Nothing is written.
@@ -88,10 +93,14 @@ func New(root string) *Hub {
 
 func (h *Hub) path() string { return filepath.Join(h.Root, ConfigFile) }
 
-// load reads feeds.json; no file, or one that does not parse, is off with no feed.
+// load reads feeds.json. No file is on with DefaultFeed; a file that cannot be read
+// or parsed is off with no feed, until the next PUT rewrites it.
 func (h *Hub) load() Config {
 	c := Config{Feeds: []string{}}
 	data, err := os.ReadFile(h.path())
+	if errors.Is(err, os.ErrNotExist) {
+		return Config{Enabled: true, Feeds: []string{DefaultFeed}}
+	}
 	if err != nil || json.Unmarshal(data, &c) != nil {
 		return Config{Feeds: []string{}}
 	}
