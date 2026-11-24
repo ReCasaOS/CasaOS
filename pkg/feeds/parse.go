@@ -28,20 +28,33 @@ type atomLink struct {
 	Rel  string `xml:"rel,attr"`
 }
 
+// rssItem keeps every <link> of an item: a feed that also names itself with an
+// <atom:link href=".." rel="self"/> after the page's <link> must not lose the page.
+type rssItem struct {
+	Title string `xml:"title"`
+	Links []struct {
+		Text string `xml:",chardata"`
+	} `xml:"link"`
+}
+
+// link is the first <link> with text.
+func (i rssItem) link() string {
+	for _, l := range i.Links {
+		if strings.TrimSpace(l.Text) != "" {
+			return l.Text
+		}
+	}
+	return ""
+}
+
 // document is RSS 2.0 (<rss><channel><item>), RSS 1.0 (<rdf:RDF><channel/><item>)
 // and Atom (<feed><entry>) at once: each fills only its own fields.
 type document struct {
-	ChannelTitle string `xml:"channel>title"`
-	RSSItems     []struct {
-		Title string `xml:"title"`
-		Link  string `xml:"link"`
-	} `xml:"channel>item"`
-	RDFItems []struct {
-		Title string `xml:"title"`
-		Link  string `xml:"link"`
-	} `xml:"item"`
-	FeedTitle string `xml:"title"`
-	Entries   []struct {
+	ChannelTitle string    `xml:"channel>title"`
+	RSSItems     []rssItem `xml:"channel>item"`
+	RDFItems     []rssItem `xml:"item"`
+	FeedTitle    string    `xml:"title"`
+	Entries      []struct {
 		Title string     `xml:"title"`
 		Links []atomLink `xml:"link"`
 	} `xml:"entry"`
@@ -87,11 +100,8 @@ func parse(r io.Reader, base *url.URL) ([]Item, error) {
 
 	type raw struct{ title, link string }
 	var all []raw
-	for _, i := range doc.RSSItems {
-		all = append(all, raw{i.Title, i.Link})
-	}
-	for _, i := range doc.RDFItems {
-		all = append(all, raw{i.Title, i.Link})
+	for _, i := range append(doc.RSSItems, doc.RDFItems...) {
+		all = append(all, raw{i.Title, i.link()})
 	}
 	for _, e := range doc.Entries {
 		all = append(all, raw{e.Title, entryLink(e.Links)})
@@ -117,7 +127,7 @@ func parse(r io.Reader, base *url.URL) ([]Item, error) {
 // entryLink is an Atom entry's page: its alternate link, else its first.
 func entryLink(links []atomLink) string {
 	for _, l := range links {
-		if l.Rel == "" || l.Rel == "alternate" {
+		if (l.Rel == "" || l.Rel == "alternate") && strings.TrimSpace(l.Href) != "" {
 			return l.Href
 		}
 	}
@@ -130,7 +140,12 @@ func entryLink(links []atomLink) string {
 // absolute is link resolved against the feed's address, "" unless http(s): the
 // dashboard opens it.
 func absolute(base *url.URL, link string) string {
-	u, err := url.Parse(strings.TrimSpace(link))
+	link = strings.TrimSpace(link)
+	if link == "" {
+		// resolved, it would be the feed's own address
+		return ""
+	}
+	u, err := url.Parse(link)
 	if err != nil {
 		return ""
 	}

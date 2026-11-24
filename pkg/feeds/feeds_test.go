@@ -19,6 +19,8 @@ const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>ReCasaOS re
 <item><title>&lt;b&gt;Bold&lt;/b&gt;   news</title><link>/relative</link></item>
 <item><title>Script</title><link>javascript:alert(1)</link></item>
 <item><title></title><link>https://example.org/untitled</link></item>
+<item><title>No link</title></item>
+<item><title>With atom:link</title><link>https://example.org/page</link><atom:link xmlns:atom="http://www.w3.org/2005/Atom" href="https://example.org/feed" rel="self"/></item>
 </channel></rss>`
 
 const atom = `<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Blog</title>
@@ -37,6 +39,7 @@ func TestParse(t *testing.T) {
 		{"rss", rss, []Item{
 			{"v0.5.180 & more", "https://example.org/a", "ReCasaOS releases"},
 			{"Bold news", "https://feeds.example.org/relative", "ReCasaOS releases"},
+			{"With atom:link", "https://example.org/page", "ReCasaOS releases"},
 		}},
 		{"atom", atom, []Item{
 			{"First", "https://example.org/first", "Blog"},
@@ -84,9 +87,30 @@ func TestTheGuardedClientRefusesTheBoxsOwnNetwork(t *testing.T) {
 	defer server.Close()
 	localhost := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
 	for _, feed := range []string{server.URL, localhost} {
-		if _, err := fetch(guardedClient(), feed); err == nil || !errors.Is(err, errRefused) {
+		_, err := fetch(guardedClient(), feed)
+		if err == nil || !errors.Is(err, errRefused) {
 			t.Errorf("fetch(%s) = %v, want refused", feed, err)
 		}
+		if !strings.HasPrefix(reason(err), "refused: ") {
+			t.Errorf("reason(%v) = %q", err, reason(err))
+		}
+	}
+}
+
+func TestARedirectTowardARefusedAddressIsRefused(t *testing.T) {
+	inside := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(rss)) }))
+	defer inside.Close()
+	outside := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, inside.URL, http.StatusFound) }))
+	defer outside.Close()
+	// outside stands for a public server, inside for the box's network
+	insidePort := netip.MustParseAddrPort(strings.TrimPrefix(inside.URL, "http://")).Port()
+	client := clientAllowing(func(ap netip.AddrPort) bool { return ap.Port() != insidePort })
+
+	if _, err := fetch(client, inside.URL); !errors.Is(err, errRefused) {
+		t.Fatalf("the refused server itself: %v", err)
+	}
+	if _, err := fetch(client, outside.URL); !errors.Is(err, errRefused) {
+		t.Fatalf("redirected toward the refused server: %v, want refused", err)
 	}
 }
 
@@ -158,6 +182,9 @@ func TestHeadlinesAreCachedAndAFailedFeedKeepsItsOwn(t *testing.T) {
 	}
 	if s = h.Status(); len(s.Items) != 2 {
 		t.Fatalf("a failed refresh lost the headlines: %+v", s.Items)
+	}
+	if got := s.Errors[server.URL]; got != "answered 502" {
+		t.Fatalf("the failure says %q, want answered 502", got)
 	}
 
 	// a private feed's URL can carry its token

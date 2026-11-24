@@ -24,25 +24,28 @@ func public(a netip.Addr) bool {
 	return a.IsGlobalUnicast() && !a.IsPrivate() && !cgnat.Contains(a) && !thisNetwork.Contains(a)
 }
 
-// dialControl refuses a connection to any address public refuses. It runs on the
+// dialControl refuses a connection to any address allowed refuses. It runs on the
 // address the name resolved to, for every dial, so a redirect or a name that
 // resolves to the box's network is refused too.
-func dialControl(_, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return errRefused
+func dialControl(allowed func(netip.AddrPort) bool) func(string, string, syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		ap, err := netip.ParseAddrPort(address)
+		if err != nil || !allowed(ap) {
+			return errRefused
+		}
+		return nil
 	}
-	a, err := netip.ParseAddr(host)
-	if err != nil || !public(a) {
-		return errRefused
-	}
-	return nil
 }
 
-// guardedClient fetches feeds: no proxy (the guard would see the proxy's address),
-// 10 s in all, three redirects at most, http(s) only.
+// guardedClient fetches feeds from public addresses only.
 func guardedClient() *http.Client {
-	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: dialControl}
+	return clientAllowing(func(ap netip.AddrPort) bool { return public(ap.Addr()) })
+}
+
+// clientAllowing fetches feeds from the addresses allowed lets through: no proxy (the
+// guard would see the proxy's address), 10 s in all, three redirects at most, http(s) only.
+func clientAllowing(allowed func(netip.AddrPort) bool) *http.Client {
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: dialControl(allowed)}
 	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{

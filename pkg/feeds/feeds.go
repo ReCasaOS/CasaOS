@@ -56,11 +56,14 @@ type Status struct {
 	Enabled bool     `json:"enabled"`
 	Feeds   []string `json:"feeds"`
 	Items   []Item   `json:"items"`
+	// why the last read of a feed failed, by feed; absent for a feed read fine or not read yet
+	Errors map[string]string `json:"errors,omitempty"`
 }
 
 type cached struct {
 	items []Item
 	at    time.Time // the last try, good or not: a feed that fails waits refreshEvery too
+	err   string    // why the last try failed, "" when it did not
 }
 
 // Hub is the feeds of one box.
@@ -113,6 +116,12 @@ func (h *Hub) Status() Status {
 			due = true
 		}
 		s.Items = append(s.Items, entry.items...)
+		if entry.err != "" {
+			if s.Errors == nil {
+				s.Errors = map[string]string{}
+			}
+			s.Errors[feed] = entry.err
+		}
 	}
 	if c.Enabled && due && !h.refreshing {
 		h.refreshing = true
@@ -191,10 +200,30 @@ func (h *Hub) refresh(feeds []string) {
 	for i, feed := range feeds {
 		entry := h.cache[feed]
 		entry.at = now
+		entry.err = ""
 		if errs[i] == nil {
 			entry.items = results[i]
+		} else {
+			entry.err = reason(errs[i])
 		}
 		h.cache[feed] = entry
 	}
 	h.refreshing = false
+}
+
+// reason is what the settings show of a failed read: the box's network refused, or
+// the error with the feed's address left out (the owner sees which feed it is).
+func reason(err error) string {
+	if errors.Is(err, errRefused) {
+		return "refused: the box reads feeds from the Internet only, not from itself or its own network"
+	}
+	var failed *url.Error
+	if errors.As(err, &failed) {
+		err = failed.Err
+	}
+	text := err.Error()
+	if len(text) > 200 {
+		text = text[:200]
+	}
+	return text
 }
