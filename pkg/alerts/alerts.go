@@ -69,9 +69,12 @@ const (
 	AppUpdates = "app-updates"
 	// Cleanup is what the weekly cleanup of Docker freed, or why it could not.
 	Cleanup = "cleanup"
+	// Vulnerabilities is what the scan module found in the images of the apps: a critical
+	// vulnerability that an update of the app fixes.
+	Vulnerabilities = "vulnerabilities"
 )
 
-var categories = []string{Backups, Disks, Updates, Apps, Resources, Fleet, AppUpdates, Cleanup}
+var categories = []string{Backups, Disks, Updates, Apps, Resources, Fleet, AppUpdates, Cleanup, Vulnerabilities}
 
 // alert is one condition: its key is what dedupe and resolution go by, its
 // sentence says what and where, and never anything more sensitive than an
