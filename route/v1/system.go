@@ -42,18 +42,20 @@ func GetSystemCheckVersion(ctx echo.Context) error {
 		data["version"] = map[string]interface{}{}
 		return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
 	}
-	latest := service.MyService.Casa().GetCasaosVersion
+	fresh := false
 	// ?refresh=1 looks now, past the 20-minute cache ("check for updates"). The check is open to
 	// anyone on the network: one look per half minute for the whole box, the cache otherwise.
 	if ctx.QueryParam("refresh") != "" {
 		now, last := time.Now().Unix(), lastVersionRefresh.Load()
 		if now-last >= 30 && lastVersionRefresh.CompareAndSwap(last, now) {
-			latest = service.MyService.Casa().FetchCasaosVersion
+			fresh = true
 		}
 	}
-	need, latestVersion := version.IsNeedUpdate(latest())
+	// the last release, or on the pre-release channel a newer pre-release (version.prerelease)
+	need, latestVersion := version.IsNeedUpdate(service.OfferedCasaosVersion(service.MyService.Casa(), fresh))
 	data["need_update"] = need
 	data["version"] = latestVersion
+	data["channel"] = service.UpdateChannel()
 	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: data})
 }
 
@@ -68,9 +70,14 @@ var lastVersionRefresh atomic.Int64
 // @Success 200 {string} string "ok"
 // @Router /sys/update [post]
 func SystemUpdate(ctx echo.Context) error {
-	need, latestVersion := version.IsNeedUpdate(service.MyService.Casa().GetCasaosVersion())
+	need, latestVersion := version.IsNeedUpdate(service.OfferedCasaosVersion(service.MyService.Casa(), false))
 	if need {
-		if err := service.MyService.System().UpdateSystemVersion(latestVersion.Version); err != nil {
+		// a pre-release is installed by its own tag: the latest installer is the last release's
+		update := service.MyService.System().UpdateSystemVersion
+		if latestVersion.Prerelease {
+			update = service.MyService.System().UpdateSystemRelease
+		}
+		if err := update(latestVersion.Version); err != nil {
 			if errors.Is(err, service.ErrSystemMaintenanceBusy) {
 				return ctx.JSON(http.StatusConflict, model.Result{Success: http.StatusConflict, Message: err.Error()})
 			}
@@ -592,4 +599,43 @@ func GetSystemEntry(ctx echo.Context) error {
 		return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: entry, Data: json.RawMessage("[]")})
 	}
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: str})
+}
+
+// GetUpdateChannel answers the update channel of the box: release or prerelease.
+//
+// @Summary update channel
+// @Produce application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /sys/update-channel [get]
+func GetUpdateChannel(ctx echo.Context) error {
+	return ctx.JSON(common_err.SUCCESS, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: map[string]string{"channel": service.UpdateChannel()}})
+}
+
+// PutUpdateChannel sets {channel}: "release", or "prerelease" to be offered a pre-release
+// newer than the last release when updating by hand. The night's automatic update installs
+// releases only, whatever the channel. Anything else is a 400.
+//
+// @Summary set the update channel
+// @Accept application/json
+// @Produce application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /sys/update-channel [put]
+func PutUpdateChannel(ctx echo.Context) error {
+	var body struct {
+		Channel string `json:"channel"`
+	}
+	if err := ctx.Bind(&body); err != nil {
+		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
+	}
+	if err := service.SetUpdateChannel(body.Channel); err != nil {
+		if errors.Is(err, service.ErrUnknownChannel) {
+			return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.CLIENT_ERROR, Message: err.Error()})
+		}
+		return ctx.JSON(http.StatusInternalServerError, model.Result{Success: common_err.SERVICE_ERROR, Message: err.Error()})
+	}
+	return GetUpdateChannel(ctx)
 }

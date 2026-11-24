@@ -118,18 +118,9 @@ func SettledCasaosVersion(before time.Time) model.Version {
 	if resolveUpdateVersionURL() != common.FORK_VERSION_URL {
 		return model.Version{}
 	}
-	key := "casa_releases:" + common.FORK_RELEASES_API
-	list, ok := Cache.Get(key)
-	payload, _ := list.(string)
-	if !ok {
-		payload = httper.Get(common.FORK_RELEASES_API, map[string]string{
-			"Accept":     "application/vnd.github+json",
-			"User-Agent": "CasaOS-Fork-Updater",
-		})
-		if !gjson.Valid(payload) || !gjson.Parse(payload).IsArray() {
-			return model.Version{}
-		}
-		Cache.Set(key, payload, time.Minute*20)
+	payload := releasesList(false)
+	if payload == "" {
+		return model.Version{}
 	}
 	return pickSettled(payload, before)
 }

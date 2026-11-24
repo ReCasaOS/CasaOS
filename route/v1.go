@@ -367,6 +367,9 @@ func registerHostManagement(v1SysGroup *echo.Group) {
 	v1SysGroup.POST("/os/upgrade/beta", v1.SetSystemOSUpgradeBeta, headerTokenOnly)
 
 	v1SysGroup.POST("/update", v1.SystemUpdate, headerTokenOnly)
+	// the channel the update button follows: releases, or pre-releases too (the night stays on releases)
+	v1SysGroup.GET("/update-channel", v1.GetUpdateChannel)
+	v1SysGroup.PUT("/update-channel", v1.PutUpdateChannel)
 	v1SysGroup.GET("/packages", v1.GetSystemPackageUpdates)
 	v1SysGroup.POST("/packages/update", v1.StartSystemPackageUpdate)
 	v1SysGroup.GET("/packages/update/status", v1.GetSystemPackageUpdateStatus)

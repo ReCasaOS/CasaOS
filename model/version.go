@@ -12,4 +12,6 @@ type Version struct {
 	// update waits 24 hours after. A string: a value that is not a time leaves
 	// the release to the button and never makes the whole version.json unreadable.
 	PublishedAt string `json:"published_at,omitempty"`
+	// Prerelease: a version offered on the pre-release channel, installed by its tag.
+	Prerelease bool `json:"prerelease,omitempty"`
 }
