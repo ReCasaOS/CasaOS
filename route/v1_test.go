@@ -159,6 +159,8 @@ func TestTheTelemetryAutoUpdateAndAlertsRoutesAreSysRoutesBehindTheToken(t *test
 		{http.MethodGet, "/v1/sys/alerts"},
 		{http.MethodPut, "/v1/sys/alerts"},
 		{http.MethodPost, "/v1/sys/alerts/test"},
+		{http.MethodGet, "/v1/sys/feeds"},
+		{http.MethodPut, "/v1/sys/feeds"},
 	} {
 		method, path := route[0], route[1]
 		if !registered[method+" "+path] {
