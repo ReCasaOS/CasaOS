@@ -153,6 +153,10 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/alerts", v1.GetAlerts)
 			v1SysGroup.PUT("/alerts", v1.PutAlerts)
 			v1SysGroup.POST("/alerts/test", v1.PostAlertsTest)
+			// The footer's RSS/Atom feeds and their headlines (owner only: the Gateway
+			// lets an account of role user reach none of these).
+			v1SysGroup.GET("/feeds", v1.GetFeeds)
+			v1SysGroup.PUT("/feeds", v1.PutFeeds)
 		}
 		v1PortGroup := v1Group.Group("/port")
 		v1PortGroup.Use()
