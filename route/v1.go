@@ -168,6 +168,8 @@ func InitV1Router() http.Handler {
 		v1FileGroup.Use()
 		{
 			v1FileGroup.GET("", v1.GetDownloadSingleFile) // download/:path
+			// Files' search by name (CasaOS#184), held to the roots as the listing is
+			v1FileGroup.GET("/search", v1.SearchFiles)
 			v1FileGroup.POST("", v1.PostCreateFile)
 			v1FileGroup.PUT("", v1.PutFileContent)
 			v1FileGroup.PUT("/name", v1.RenamePath)
