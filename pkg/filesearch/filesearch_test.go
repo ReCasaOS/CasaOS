@@ -105,3 +105,31 @@ func TestSearchOfNothingFindsNothing(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+func TestNetworkMountsAndOverlaysAreReadFromMountinfo(t *testing.T) {
+	info := `22 1 0:21 / /proc rw - proc proc rw
+36 1 8:1 / / rw - ext4 /dev/sda1 rw
+40 36 0:44 / /mnt/smb\040share rw - cifs //nas/share rw
+41 36 0:45 / /mnt/nfs rw - nfs4 nas:/x rw
+42 36 0:46 / /DATA rw - fuse.mergerfs a:b rw
+43 36 0:47 / /mnt/drive rw - fuse.rclone gdrive: rw
+44 36 0:48 / /var/lib/docker/overlay2/abc/merged rw - overlay overlay rw
+`
+	got := parseMountinfo(info)
+	for _, want := range []string{"/mnt/smb share", "/mnt/nfs", "/mnt/drive", "/var/lib/docker/overlay2/abc/merged"} {
+		if !got[want] {
+			t.Errorf("%s not skipped: %v", want, got)
+		}
+	}
+	for _, kept := range []string{"/", "/DATA", "/proc"} {
+		if got[kept] {
+			t.Errorf("%s skipped", kept)
+		}
+	}
+}
+
+func TestAPseudoFolderIsNotAStart(t *testing.T) {
+	if r := Search(context.Background(), []string{"/proc"}, "self", DefaultLimits); len(r.Hits) != 0 {
+		t.Fatalf("searched /proc: %d hits", len(r.Hits))
+	}
+}

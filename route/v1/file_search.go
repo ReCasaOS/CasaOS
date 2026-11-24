@@ -1,9 +1,11 @@
 package v1
 
 import (
+	"context"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ReCasaOS/CasaOS/model"
@@ -35,7 +37,7 @@ type SearchResp struct {
 // @Router /file/search [get]
 func SearchFiles(ctx echo.Context) error {
 	query := strings.TrimSpace(ctx.QueryParam("q"))
-	if n := utf8.RuneCountInString(query); n < 2 || len(query) > 200 {
+	if n := utf8.RuneCountInString(query); n < 2 || n > 200 {
 		return ctx.JSON(http.StatusBadRequest, model.Result{Success: common_err.INVALID_PARAMS, Message: "the search needs 2 to 200 characters"})
 	}
 	path := ctx.QueryParam("path")
@@ -60,7 +62,24 @@ func SearchFiles(ctx echo.Context) error {
 		starts = []string{path}
 	}
 
-	found := filesearch.Search(ctx.Request().Context(), starts, query, filesearch.DefaultLimits)
+	// Two searches at a time, each in its own goroutine: a read stuck on a disk that does not
+	// answer keeps its slot, never the request, which answers at the deadline with nothing.
+	select {
+	case searching <- struct{}{}:
+	default:
+		return ctx.JSON(http.StatusTooManyRequests, model.Result{Success: common_err.SERVICE_ERROR, Message: "a search is already running, try again in a moment"})
+	}
+	done := make(chan filesearch.Result, 1)
+	go func() {
+		defer func() { <-searching }()
+		done <- filesearch.Search(context.WithoutCancel(ctx.Request().Context()), starts, query, filesearch.DefaultLimits)
+	}()
+	var found filesearch.Result
+	select {
+	case found = <-done:
+	case <-time.After(filesearch.DefaultLimits.Time + 2*time.Second):
+		found = filesearch.Result{Hits: []filesearch.Hit{}, Truncated: true}
+	}
 	resp := SearchResp{Content: make([]ObjResp, 0, len(found.Hits)), Truncated: found.Truncated}
 	for _, h := range found.Hits {
 		resp.Content = append(resp.Content, ObjResp{Name: h.Name, Path: h.Path, IsDir: h.IsDir, Size: h.Size, Date: h.Date, Modified: h.Date})
@@ -68,6 +87,9 @@ func SearchFiles(ctx echo.Context) error {
 
 	return ctx.JSON(http.StatusOK, model.Result{Success: common_err.SUCCESS, Message: common_err.GetMsg(common_err.SUCCESS), Data: resp})
 }
+
+// searching holds the searches running; one that cannot get a slot is refused.
+var searching = make(chan struct{}, 2)
 
 // rootsUnder is the roots at or below dir, without one that lies inside another (walking the
 // outer one reads it already).
