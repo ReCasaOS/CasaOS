@@ -159,6 +159,8 @@ func TestTheTelemetryAutoUpdateAndAlertsRoutesAreSysRoutesBehindTheToken(t *test
 		{http.MethodGet, "/v1/sys/alerts"},
 		{http.MethodPut, "/v1/sys/alerts"},
 		{http.MethodPost, "/v1/sys/alerts/test"},
+		{http.MethodGet, "/v1/sys/update-channel"},
+		{http.MethodPut, "/v1/sys/update-channel"},
 		{http.MethodGet, "/v1/sys/feeds"},
 		{http.MethodPut, "/v1/sys/feeds"},
 	} {
