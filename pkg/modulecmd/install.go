@@ -266,6 +266,10 @@ func runInstall(ctx context.Context, env Env, c command) (code int) {
 // confirm shows what is going to be done and asks.
 func (j *job) confirm(name, tag, tier string, packages []string, download int64, url, verb string) bool {
 	fmt.Fprintf(j.env.Stdout, "%s %s %s (%s)\n", verb, name, tag, tier)
+	// the plan does not carry the repository: it is read from the catalogue, as the plan was
+	if e, ok := loadCatalogue(j.env).cat.Find(name); ok && e.Foreign() {
+		fmt.Fprintf(j.env.Stdout, "  this module comes from %s and is not written by ReCasaOS\n", e.Repository)
+	}
 	if verb == "install" || verb == "update" {
 		fmt.Fprintf(j.env.Stdout, "  packages to install: %s\n  download: %d bytes of packages, then %s\n", strings.Join(packages, " "), download, url)
 	}
