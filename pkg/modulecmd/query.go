@@ -178,6 +178,8 @@ type ListModule struct {
 	AutoUpdate *bool `json:"auto_update,omitempty"`
 	// Withdrawn is there when the version that is installed is one the online catalogue withdrew.
 	Withdrawn *WithdrawnInfo `json:"withdrawn,omitempty"`
+	// LatestWithdrawn says the catalogue withdrew the tag Update offers: for the night of the core, which never installs it, and not in the JSON.
+	LatestWithdrawn bool `json:"-"`
 	// (install.sh reads a module by patterns, from the key name to the key update: name stays first and update last)
 	// Update is there for a module that is installed, that the catalogue has and whose installed version can be read; Available says the catalogue's tag is strictly later.
 	Update *UpdateInfo `json:"update,omitempty"`
@@ -275,6 +277,7 @@ func List(ctx context.Context, env Env) (ListResult, error) {
 			m.Installed = &Installed{Version: installedVersion(env, e.Name)}
 			m.Update = updateInfo(m.Installed.Version, e.Tag)
 			m.Withdrawn = withdrawnInfo(cs.cat, e.Name, m.Installed.Version)
+			m.LatestWithdrawn = withdrawnInfo(cs.cat, e.Name, &e.Tag) != nil
 			if m.Foreign {
 				// a yes is for the repository it was given for, not for any module of that name
 				repo, there := allowed[e.Name]

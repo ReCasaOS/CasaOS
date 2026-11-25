@@ -18,6 +18,9 @@ type fakeModules struct {
 	fail     map[string]string // name: the detail of an update that fails
 	refuse   map[string]string // name: the detail of an update the box refuses to start
 	onUpdate func(name string)
+	// the installed versions the catalogue withdrew, and the error of asking for them
+	withdrawn    []Withdrawn
+	withdrawnErr error
 
 	listed  int
 	updated []string

@@ -96,3 +96,30 @@ func TestAReleaseNotSentIsNotAnnounced(t *testing.T) {
 		t.Fatalf("sent %q, want the release once there is a channel", got)
 	}
 }
+
+// A module's version withdrawn from the catalogue is told with the reason quoted as it is, and not when no channel takes updates.
+func TestAWithdrawnModuleVersionIsTold(t *testing.T) {
+	h, o, _ := newHub(t)
+	reason := `It loses the data of its disks: "%s" and %d stay as they are.`
+
+	if !h.ModuleWithdrawn("virt", "v0.2.4", reason) {
+		t.Fatal("not told")
+	}
+	h.sending.Wait()
+
+	want := `virt v0.2.4 was withdrawn from the catalogue: "` + reason + `"` + "\nhttp://192.168.1.20"
+	if got := o.texts(phone); !reflect.DeepEqual(got, []string{want}) || o.sent[0].title != "ReCasaOS · box · updates" {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+	if _, sent := h.sent["withdrawn:virt:v0.2.4"]; !sent {
+		t.Fatal("not on record under withdrawn:virt:v0.2.4")
+	}
+
+	off, _, _ := newHub(t)
+	c := off.load()
+	c.Categories[Updates] = false
+	saveConfig(t, off, c)
+	if off.ModuleWithdrawn("virt", "v0.2.4", reason) {
+		t.Fatal("told with the updates category off")
+	}
+}

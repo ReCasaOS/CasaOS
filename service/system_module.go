@@ -350,7 +350,8 @@ func (u *systemPackageUpdater) startModulePlanned(reqCtx context.Context, verb, 
 	return SystemModuleStatus{Job: job, Status: u.statusAfterLaunch(env, name)}, nil
 }
 
-// refusalOfPlan is the refusal of a start whose plan is refused: the code of the plan, and its checks. A plan that is refused because the box is busy says what with, as every busy does.
+// refusalOfPlan is the refusal of a start whose plan is refused: the code of the plan, and its checks. A plan that is refused because the box is busy says what with, as every busy does, and one
+// refused for a tag the catalogue withdrew says the catalogue's reason.
 func refusalOfPlan(plan osmodule.PlanResult, verb string) *ModuleRefusal {
 	refusal := refuseModule(string(plan.Refused), "The module cannot be "+map[string]string{moduleVerbInstall: "installed", moduleVerbUpdate: "updated"}[verb]+": "+string(plan.Refused)+".", map[string]any{"checks": plan.Checks})
 	if plan.Refused == osmodule.CheckBusy {
@@ -368,6 +369,13 @@ func refusalOfPlan(plan osmodule.PlanResult, verb string) *ModuleRefusal {
 			}
 		}
 		refusal.Data["reason"] = reason
+	}
+	if plan.Refused == osmodule.RefusedWithdrawn {
+		for _, c := range plan.Checks {
+			if c.Code == osmodule.CheckWithdrawn {
+				refusal.Data["reason"] = c.Detail // the catalogue's
+			}
+		}
 	}
 	return refusal
 }

@@ -27,8 +27,8 @@ type NightModules struct {
 	latest map[string]string // the tag each module was listed with
 }
 
-// List is the installed modules whose update the catalogue has, a foreign one with whether its owner allowed the
-// night to update it (the list's auto_update, read from modulecmd.AutoAllowed). A catalogue that cannot be read is an error, not an
+// List is the installed modules whose update the catalogue has, with whether the catalogue withdrew that update, a
+// foreign one with whether its owner allowed the night to update it (the list's auto_update, read from modulecmd.AutoAllowed). A catalogue that cannot be read is an error, not an
 // empty list: the night then changes nothing.
 func (n *NightModules) List(context.Context) ([]autoupdate.ModuleUpdate, error) {
 	result, err := n.Provider.ListSystemModules()
@@ -44,8 +44,9 @@ func (n *NightModules) List(context.Context) ([]autoupdate.ModuleUpdate, error) 
 			continue
 		}
 		allowed := m.AutoUpdate != nil && *m.AutoUpdate
-		list = append(list, autoupdate.ModuleUpdate{Name: m.Name, Installed: m.Update.Installed, Latest: m.Update.Latest, Foreign: m.Foreign, Allowed: allowed})
-		if m.Foreign && !allowed {
+		list = append(list, autoupdate.ModuleUpdate{Name: m.Name, Installed: m.Update.Installed, Latest: m.Update.Latest, Foreign: m.Foreign, Allowed: allowed,
+			Withdrawn: m.LatestWithdrawn})
+		if m.Foreign && !allowed || m.LatestWithdrawn {
 			continue // the night leaves it alone; Update refuses it by name too
 		}
 		latest[m.Name] = m.Update.Latest
@@ -112,4 +113,19 @@ func nightOutcome(job modulecmd.Job) (autoupdate.Outcome, string) {
 		return autoupdate.Failed, job.State + ": " + job.Code
 	}
 	return autoupdate.Failed, job.State
+}
+
+// Withdrawn is the installed modules at a version the catalogue withdrew, as the list says them.
+func (n *NightModules) Withdrawn(context.Context) ([]autoupdate.Withdrawn, error) {
+	result, err := n.Provider.ListSystemModules()
+	if err != nil {
+		return nil, err
+	}
+	var list []autoupdate.Withdrawn
+	for _, m := range result.Modules {
+		if m.Installed != nil && m.Withdrawn != nil {
+			list = append(list, autoupdate.Withdrawn{Name: m.Name, Tag: m.Withdrawn.Tag, Reason: m.Withdrawn.Reason})
+		}
+	}
+	return list, nil
 }

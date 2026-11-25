@@ -94,6 +94,9 @@ type AutoUpdate struct {
 	// NotifyModules hears one sentence for each round that attempted one.
 	Modules       Modules
 	NotifyModules func(sentence string)
+	// NotifyWithdrawn, when set, hears of an installed module at a version its catalogue withdrew, and
+	// answers whether a channel was told: a withdrawal told is not told again, one not told is next hour.
+	NotifyWithdrawn func(name, tag, reason string) bool
 
 	mu sync.Mutex // serialises the read-modify-writes of autoupdate.json
 }
@@ -157,8 +160,11 @@ func fromEnv(env string, fallback time.Duration) time.Duration {
 // asked when off or outside the window, and systemd and AppManagement only
 // once everything else holds. A release held is not logged: the next check
 // tries again while the window lasts. The modules come after, in a round that
-// started no release.
+// started no release. Before all of it, on or off, the installed modules at a
+// version their catalogue withdrew are told (checkWithdrawn): that list is read
+// every hour, off or not.
 func (a *AutoUpdate) Check(ctx context.Context) {
+	a.checkWithdrawn(ctx)
 	if !a.checkRelease(ctx) {
 		a.checkModules(ctx)
 	}

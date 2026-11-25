@@ -19,7 +19,7 @@ const (
 	ModeUpdate  = "update"
 )
 
-// The checks that only an update has. The order of an update plan is catalogue, os, arch, recasaos, installed, newer, foreign_unit, busy, dpkg_state, disk, apt.
+// The checks that only an update has. The order of an update plan is catalogue, withdrawn (in schema 3), os, arch, recasaos, installed, newer, foreign_unit, busy, dpkg_state, disk, apt.
 const (
 	CheckInstalledNow = "installed"
 	CheckNewer        = "newer"
@@ -233,6 +233,9 @@ func PlanUpdate(cat Catalogue, name string, box UpdateBox) PlanResult {
 	entry, found := cat.Find(name)
 	if !found {
 		r.Checks = []Check{{Code: CheckCatalogue, Detail: "not_in_catalogue"}}
+		if cat.Withdrawn != nil {
+			r.Checks = append(r.Checks, notChecked(CheckWithdrawn))
+		}
 		for _, code := range []string{CheckOS, CheckArch, CheckReCasaOS, CheckInstalledNow, CheckNewer, CheckForeignUnit, CheckBusy, CheckDpkgState, CheckDisk, CheckApt} {
 			r.Checks = append(r.Checks, notChecked(code))
 		}
@@ -256,7 +259,7 @@ func PlanUpdate(cat Catalogue, name string, box UpdateBox) PlanResult {
 		r.Update.Dropped = diff(PackagesFor(st.Manifest, arch), packages)
 	}
 
-	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, OSFrom: osr.From, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
+	checks := append(append([]Check{{Code: CheckCatalogue, OK: true}}, withdrawnChecks(cat, entry)...), SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, OSFrom: osr.From, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
 	checks = append(checks, installed, newer, updateUnitCheck(box, entry, st), busyCheck(box), dpkgCheck(box))
 	standing := !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK && !c.skipped })
 
