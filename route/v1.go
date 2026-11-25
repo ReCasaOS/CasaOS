@@ -157,6 +157,11 @@ func InitV1Router() http.Handler {
 			// lets an account of role user reach none of these).
 			v1SysGroup.GET("/feeds", v1.GetFeeds)
 			v1SysGroup.PUT("/feeds", v1.PutFeeds)
+			// The dashboard's weather, read from Open-Meteo by the box (owner only,
+			// as the feeds).
+			v1SysGroup.GET("/weather", v1.GetWeather)
+			v1SysGroup.PUT("/weather", v1.PutWeather)
+			v1SysGroup.GET("/weather/places", v1.GetWeatherPlaces)
 		}
 		v1PortGroup := v1Group.Group("/port")
 		v1PortGroup.Use()
