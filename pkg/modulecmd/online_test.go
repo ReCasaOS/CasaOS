@@ -15,7 +15,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 )
 
-const testCatalogueURL = "https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-2.json"
+const testCatalogueURL = "https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-3.json"
 
 // bodyGet is a Downloader that answers every address with the same bytes; safe for concurrent use.
 type bodyGet []byte
@@ -156,6 +156,78 @@ func TestRefreshRefusesACutBody(t *testing.T) {
 		t.Errorf("a dropped connection: %+v", r)
 	}
 	f.assertOnlineUnchanged(before)
+}
+
+func TestRefreshKeepsAValidCatalogueOfSchema3(t *testing.T) {
+	f := newFixture(t)
+	body := online3Raw(t, 4, "[]", f.mirrorEntry(onlineTag, foreignRepo))
+	if r := f.refresh(bodyGet(body)); !r.Kept || r.Serial != 4 {
+		t.Fatalf("result: %+v", r)
+	}
+	if f.read(pathOnlineCatalogue) != body {
+		t.Error("the file is not in place")
+	}
+}
+
+// a catalogue of schema 3 is refused whole when one thing in it does not pass
+func TestRefreshRefusesAnInvalidCatalogueOfSchema3(t *testing.T) {
+	f := newFixture(t)
+	before := string(f.onlineRaw(5))
+	f.writeFile(pathOnlineCatalogue, before)
+	author := f.mirrorEntry(onlineTag, foreignRepo)
+	a := *author.Assets.AMD64
+	a.URL = "https://github.com/someone/" + testComponent + "/releases/download/" + onlineTag + "/linux-amd64-casaos-virt-management-" + onlineTag + ".tar.gz"
+	author.Assets.AMD64 = &a
+	noRepo := f.mirrorEntry(onlineTag, "")
+	for name, body := range map[string]string{
+		"an archive of the author":   online3Raw(t, 6, "[]", author),
+		"no repository":              online3Raw(t, 6, "[]", noRepo),
+		"no withdrawn list":          strings.Replace(online3Raw(t, 6, "[]", f.mirrorEntry(onlineTag, foreignRepo)), `,"withdrawn":[]`, "", 1),
+		"a withdrawn with no reason": online3Raw(t, 6, `[{"name":"virt","tag":"v0.1.0","reason":""}]`, f.mirrorEntry(onlineTag, foreignRepo)),
+	} {
+		if r := f.refresh(bodyGet(body)); r.Kept || r.Reason != "invalid" {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+	f.assertOnlineUnchanged(before)
+}
+
+// the serial is compared across schemas: a box that holds a file of schema 2 takes one of schema 3 at the same serial or a higher one, never a lower one
+func TestRefreshComparesTheSerialAcrossSchemas(t *testing.T) {
+	for serial, kept := range map[int64]bool{4: false, 5: true, 6: true} {
+		f := newFixture(t)
+		before := string(f.onlineRaw(5))
+		f.writeFile(pathOnlineCatalogue, before)
+		body := online3Raw(t, serial, "[]", f.mirrorEntry(onlineTag, foreignRepo))
+		r := f.refresh(bodyGet(body))
+		if r.Kept != kept || !kept && r.Reason != "older" {
+			t.Errorf("serial %d: %+v", serial, r)
+		}
+		if kept && f.read(pathOnlineCatalogue) != body || !kept && f.read(pathOnlineCatalogue) != before {
+			t.Errorf("serial %d: the file in place is not the right one", serial)
+		}
+	}
+}
+
+// a file of a lower schema never replaces the one in place, whatever its serial: it would drop the withdrawn list and the foreign entries; a file in place that does not pass counts
+// for nothing
+func TestRefreshRefusesALowerSchema(t *testing.T) {
+	f := newFixture(t)
+	before := online3Raw(t, 5, withdrawnList(onlineTag), f.mirrorEntry(onlineTag, foreignRepo))
+	f.writeFile(pathOnlineCatalogue, before)
+	if r := f.refresh(bodyGet(f.onlineRaw(9))); r.Kept || r.Reason != "schema" || r.Serial != 9 {
+		t.Errorf("schema 2 over schema 3: %+v", r)
+	}
+	f.assertOnlineUnchanged(before)
+
+	broken := strings.Replace(before, `"reason":"`+withdrawnWhy+`"`, `"reason":""`, 1)
+	f.writeFile(pathOnlineCatalogue, broken)
+	if r := f.refresh(bodyGet(f.onlineRaw(9))); !r.Kept {
+		t.Errorf("schema 2 over a schema 3 that does not pass: %+v", r)
+	}
+	if f.read(pathOnlineCatalogue) != string(f.onlineRaw(9)) {
+		t.Error("the new file is not in place")
+	}
 }
 
 // catalogueDownloaderTo is the catalogue's downloader, sent to the test server whatever the host.

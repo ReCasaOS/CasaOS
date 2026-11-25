@@ -220,6 +220,36 @@ func TestATerminalThatSaysYesGoesOn(t *testing.T) {
 	}
 }
 
+// The question before an install or an update says where a module written outside ReCasaOS comes from; for a module of ReCasaOS it is the question it always was
+func TestTheQuestionSaysAForeignModuleIsNotOfReCasaOS(t *testing.T) {
+	const said = "  this module comes from " + foreignRepo + " and is not written by ReCasaOS\n"
+	for _, verb := range []string{"install", "update"} {
+		for repo, want := range map[string]bool{foreignRepo: true, ownRepo: false} {
+			t.Run(verb+" "+repo, func(t *testing.T) {
+				var f *fixture
+				if verb == "install" {
+					f = newFixture(t)
+				} else {
+					f = installed(t)
+				}
+				f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, "[]", f.mirrorEntry(onlineTag, repo)))
+				f.isTTY, f.input = true, "n\n"
+				if code := f.main(context.Background(), verb, testName); code != ExitRefused || !strings.Contains(f.out.String(), "refused: "+CodeDeclined+"\n") {
+					t.Fatalf("exit %d\n%s", code, f.out)
+				}
+				out := f.out.String()
+				head := verb + " " + testName + " " + onlineTag + " (community)\n"
+				if !strings.HasPrefix(out, head) {
+					t.Errorf("the question does not begin with %q:\n%s", head, out)
+				}
+				if got := strings.Contains(out, head+said); got != want || !want && strings.Contains(out, "not written by ReCasaOS") {
+					t.Errorf("the question says the origin: %v, want %v:\n%s", got, want, out)
+				}
+			})
+		}
+	}
+}
+
 func TestThePlanIdOfThePlanIsTheOneThatInstalls(t *testing.T) {
 	f := newFixture(t)
 	if code := f.main(context.Background(), "plan", testName); code != ExitOK {

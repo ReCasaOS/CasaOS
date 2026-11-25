@@ -42,8 +42,8 @@ func Main(ctx context.Context, args []string, env Env) (code int) {
 		return ExitRefused
 	}
 	if c.shipped {
-		// the list, the update's plan and its own load all read env: the shipped file alone, as with [modules] OnlineCatalogue = false
-		env.OnlineCatalogueOff = true
+		// the list, the update's plan and its own load all read env: the modules of the shipped file alone, and still none the online file withdrew
+		env.shippedOnly = true
 	}
 	switch c.verb {
 	case "list":

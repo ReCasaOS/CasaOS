@@ -47,3 +47,12 @@ func (h *Hub) checkRelease() {
 		h.announced = latest
 	}
 }
+
+// ModuleWithdrawn tells that an installed module is at a version its catalogue withdrew, with the catalogue's reason
+// quoted as it is. It waits for the channels: true when one of them took the message, so that the caller can keep it
+// told for good; false (no channel, the category off, every send failed) leaves nothing on record, to try again.
+func (h *Hub) ModuleWithdrawn(name, tag, reason string) bool {
+	// the reason is the catalogue's text: put in as it is, never read as a format
+	sentence := name + " " + tag + ` was withdrawn from the catalogue: "` + reason + `"`
+	return h.raiseAs(alert{key: "withdrawn:" + name + ":" + tag, category: Updates, sentence: sentence}, true, "")
+}

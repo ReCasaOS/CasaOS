@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,8 @@ const (
 	ModuleNotInstalled = "not_installed"
 	ModulePlanTimeout  = "plan_timeout"
 	ModuleStartFailed  = "start_failed"
+	// ModuleNotForeign refuses the auto-update switch of a module of ReCasaOS, which the general switch of the automatic updates decides for.
+	ModuleNotForeign = "not_foreign"
 )
 
 // the bounds of what the core asks in its own process; vars, for the tests
@@ -101,6 +104,39 @@ func (s *systemService) refreshModuleCatalogue(ctx context.Context, get modulecm
 		return
 	}
 	logger.Warn("the online catalogue of the modules was not kept: the box keeps the one it has", zap.String("reason", r.Reason), zap.Int64("serial", r.Serial))
+}
+
+// SetSystemModuleAutoUpdate puts the module called name in the list of the foreign modules the night may update, or takes it out. It refuses a module the list does not show installed
+// (not_installed), one that is not written outside ReCasaOS (not_foreign), and any module when the catalogue cannot be read (catalogue): whether a module is foreign is the catalogue's to say.
+// A no for a module that is not installed, or that the catalogue does not list, is taken: it drops a yes left behind.
+func (s *systemService) SetSystemModuleAutoUpdate(name string, enabled bool) error {
+	if !osmodule.ValidName(name) {
+		return badModuleRequest("name")
+	}
+	list, err := s.ListSystemModules()
+	if err != nil {
+		return err
+	}
+	if !list.Catalogue.OK {
+		return refuseModule(osmodule.CheckCatalogue, "The catalogue of the modules cannot be read: whether this module is written outside ReCasaOS cannot be told.", nil)
+	}
+	roots := s.systemPackageUpdater().moduleWorld().Roots
+	i := slices.IndexFunc(list.Modules, func(m modulecmd.ListModule) bool { return m.Name == name })
+	notInstalled := i < 0 || list.Modules[i].Installed == nil
+	switch {
+	case !enabled && (notInstalled || !list.Modules[i].Catalogue || list.Modules[i].Foreign):
+		return modulecmd.SetAutoAllowed(roots, name, "", false)
+	case notInstalled:
+		return refuseModule(ModuleNotInstalled, "This module is not installed.", nil)
+	case !list.Modules[i].Foreign:
+		return refuseModule(ModuleNotForeign, "This module is not one written outside ReCasaOS that the catalogue lists: the general setting of automatic updates decides for it.", nil)
+	}
+	// the yes is for the repository the list shows the module from now, and for a module still installed when it is written
+	err = modulecmd.AllowAutoUpdate(roots, name, list.Modules[i].Repository)
+	if errors.Is(err, modulecmd.ErrNotInstalled) {
+		return refuseModule(ModuleNotInstalled, "This module is not installed.", nil)
+	}
+	return err
 }
 
 // listModules is the list of the modules of this release and what the box says of each. A catalogue that is not there or does not pass is an empty list that says so (catalogue.ok is false).
@@ -323,7 +359,8 @@ func (u *systemPackageUpdater) startModulePlanned(reqCtx context.Context, verb, 
 	return SystemModuleStatus{Job: job, Status: u.statusAfterLaunch(env, name)}, nil
 }
 
-// refusalOfPlan is the refusal of a start whose plan is refused: the code of the plan, and its checks. A plan that is refused because the box is busy says what with, as every busy does.
+// refusalOfPlan is the refusal of a start whose plan is refused: the code of the plan, and its checks. A plan that is refused because the box is busy says what with, as every busy does, and one
+// refused for a tag the catalogue withdrew says the catalogue's reason.
 func refusalOfPlan(plan osmodule.PlanResult, verb string) *ModuleRefusal {
 	refusal := refuseModule(string(plan.Refused), "The module cannot be "+map[string]string{moduleVerbInstall: "installed", moduleVerbUpdate: "updated"}[verb]+": "+string(plan.Refused)+".", map[string]any{"checks": plan.Checks})
 	if plan.Refused == osmodule.CheckBusy {
@@ -341,6 +378,13 @@ func refusalOfPlan(plan osmodule.PlanResult, verb string) *ModuleRefusal {
 			}
 		}
 		refusal.Data["reason"] = reason
+	}
+	if plan.Refused == osmodule.RefusedWithdrawn {
+		for _, c := range plan.Checks {
+			if c.Code == osmodule.CheckWithdrawn {
+				refusal.Data["reason"] = c.Detail // the catalogue's
+			}
+		}
 	}
 	return refusal
 }

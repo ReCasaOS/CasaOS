@@ -29,6 +29,15 @@ type State struct {
 	Failures    *Failures `json:"failures,omitempty"`
 	// Modules is what the night saw of each module's update, by name.
 	Modules map[string]ModuleSeen `json:"modules,omitempty"`
+	// Withdrawn is each installed module version withdrawn from the catalogue that was told, kept
+	// for good: a withdrawal lifted and made again is not told twice.
+	Withdrawn []ModuleTag `json:"withdrawn,omitempty"`
+}
+
+// ModuleTag is a version of a module.
+type ModuleTag struct {
+	Name string `json:"name"`
+	Tag  string `json:"tag"`
 }
 
 // ModuleSeen is the latest tag of a module, when this box first saw it in its

@@ -3,8 +3,10 @@ package modulecmd
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -163,5 +165,121 @@ func TestAnOnlineEntryOfTheSystemImageIsInvalid(t *testing.T) {
 	cat, m := catalogueOf(t, f)
 	if on := cat["online"].(map[string]any); on["ok"] != false || on["error"] != "invalid" || m["source"] != "shipped" {
 		t.Errorf("catalogue %v, module %v", cat, m)
+	}
+}
+
+// ---- schema 3: modules written outside ReCasaOS ------------------------------------------------------------------------------
+
+const (
+	foreignRepo = "someone/" + testComponent
+	ownRepo     = "ReCasaOS/" + testComponent
+)
+
+// mirrorEntry is the fixture's entry at tag as a catalogue of schema 3 has it: from the repository repo, its archive the copy in the mirror of ReCasaOS.
+func (f *fixture) mirrorEntry(tag, repo string) osmodule.Entry {
+	e := f.onlineEntry(tag)
+	a := *e.Assets.AMD64
+	a.URL = "https://github.com/ReCasaOS/modules/releases/download/m-" + testName + "-" + tag + "/linux-amd64-casaos-virt-management-" + tag + ".tar.gz"
+	e.Assets, e.Repository = osmodule.Assets{AMD64: &a}, repo
+	return e
+}
+
+// online3Raw is an online catalogue of schema 3 at a serial; withdrawn is its list as JSON text, written by hand since json.Marshal leaves an empty one out and schema 3 requires it.
+func online3Raw(t *testing.T, serial int64, withdrawn string, entries ...osmodule.Entry) string {
+	t.Helper()
+	raw, err := json.Marshal(osmodule.Catalogue{Schema: 3, Serial: serial, Generated: "2026-11-25T10:00:00Z", Modules: entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSuffix(string(raw), "}") + `,"withdrawn":` + withdrawn + "}"
+}
+
+func TestListSaysWhereAModuleOfSchema3ComesFrom(t *testing.T) {
+	f := newFixture(t)
+	e := f.mirrorEntry(onlineTag, foreignRepo)
+	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, "[]", e))
+	cat, m := catalogueOf(t, f)
+	if cat["online"].(map[string]any)["ok"] != true || m["source"] != "online" || m["repository"] != foreignRepo || m["foreign"] != true {
+		t.Errorf("catalogue %v, module %v", cat, m)
+	}
+	// the plan's archive is the copy in the mirror, and the download takes it as it is
+	p := PlanOf(context.Background(), f.env, testName)
+	if p.Archive.URL != e.Assets.AMD64.URL {
+		t.Errorf("plan: %+v", p)
+	}
+	if u, err := url.Parse(p.Archive.URL); err != nil || checkURL(u) != nil {
+		t.Errorf("the mirror's address is not one to download: %v %v", u, err)
+	}
+	// a module of ReCasaOS says its repository and is not foreign
+	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, "[]", f.mirrorEntry(onlineTag, ownRepo)))
+	if _, m := catalogueOf(t, f); m["repository"] != ownRepo || m["foreign"] != nil {
+		t.Errorf("a module of ReCasaOS: %v", m)
+	}
+}
+
+func TestListReadsASchema2OnlineFileAsBefore(t *testing.T) {
+	f := newFixture(t)
+	f.writeOnline(f.onlineEntry(onlineTag))
+	_, m := catalogueOf(t, f)
+	for _, k := range []string{"repository", "foreign", "withdrawn"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("%s in %v", k, m)
+		}
+	}
+	if m["source"] != "online" || m["tag"] != onlineTag {
+		t.Errorf("module: %v", m)
+	}
+}
+
+func TestListSaysTheInstalledVersionIsWithdrawn(t *testing.T) {
+	withdrawn := func(tag string) string {
+		return `[{"name":"` + testName + `","tag":"` + tag + `","reason":"it loses the data of its disks"}]`
+	}
+	f := installed(t)
+	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawn(testTag), f.mirrorEntry(onlineTag, foreignRepo)))
+	_, m := catalogueOf(t, f)
+	if w, ok := m["withdrawn"].(map[string]any); !ok || w["tag"] != testTag || w["reason"] != "it loses the data of its disks" || len(w) != 2 {
+		t.Errorf("installed at the withdrawn tag: %v", m)
+	}
+	// another tag than the installed one is withdrawn: nothing
+	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawn(onlineTag), f.mirrorEntry(onlineTag, foreignRepo)))
+	if _, m := catalogueOf(t, f); m["withdrawn"] != nil {
+		t.Errorf("another tag withdrawn: %v", m)
+	}
+	// installed, withdrawn, and no longer in any catalogue: still said
+	if err := os.Remove(f.path(pathCatalogue)); err != nil {
+		t.Fatal(err)
+	}
+	f.writeFile(pathOnlineCatalogue, `{"schema":3,"serial":8,"generated":"2026-11-25T10:00:00Z","modules":[],"withdrawn":`+withdrawn(testTag)+`}`)
+	if _, m := catalogueOf(t, f); m["catalogue"] != false || m["withdrawn"] == nil || m["withdrawn"].(map[string]any)["tag"] != testTag {
+		t.Errorf("delisted and withdrawn: %v", m)
+	}
+	// a module that is not installed: nothing
+	g := newFixture(t)
+	g.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawn(testTag), g.mirrorEntry(onlineTag, foreignRepo)))
+	if _, m := catalogueOf(t, g); m["withdrawn"] != nil {
+		t.Errorf("not installed: %v", m)
+	}
+}
+
+// install.sh reads the list by patterns: a module begins with the key "name" and, when it has one, ends with the key "update"
+func TestAListedModuleBeginsWithNameAndEndsWithUpdate(t *testing.T) {
+	v, on := "v0.1.0", true
+	raw, err := json.Marshal(ListModule{
+		Name: testName, Title: "t", Description: "d", Tier: "community", Tag: v, Catalogue: true, Source: "online", Repository: foreignRepo, Foreign: true, AutoUpdate: &on,
+		Installed: &Installed{Version: &v}, System: SystemInfo{Supported: true, Reasons: []string{}}, Broken: "manifest_invalid",
+		Withdrawn: &WithdrawnInfo{Tag: v, Reason: "r"}, Update: &UpdateInfo{Available: true, Installed: v, Latest: onlineTag},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	for _, k := range []string{"repository", "foreign", "auto_update", "withdrawn"} {
+		if !strings.Contains(s, `"`+k+`":`) {
+			t.Errorf("no %s: %s", k, s)
+		}
+	}
+	if !strings.HasPrefix(s, `{"name":`) || !regexp.MustCompile(`,"update":\{[^{}]*\}\}$`).MatchString(s) {
+		t.Errorf("name is not first or update is not last: %s", s)
 	}
 }

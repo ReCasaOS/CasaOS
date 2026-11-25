@@ -256,3 +256,37 @@ func GetSystemModuleStatus(ctx echo.Context) error {
 	}
 	return osPlanAnswer(ctx, http.StatusOK, common_err.GetMsg(common_err.SUCCESS), status)
 }
+
+// moduleAutoUpdateRequest is the body of the auto-update switch: enabled, true or false, and nothing else.
+type moduleAutoUpdateRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+// @Summary  let the night update a module written outside ReCasaOS, or no longer
+// @Description A module written outside ReCasaOS (foreign in the list) is never updated by the automatic updates unless its owner said yes for it; this is that yes, or a no. A yes is stored with the repository the list shows the module from (its repository), and holds only while the catalogue lists the module from that repository; a remove drops it. The body is strict JSON, {"enabled": true} or {"enabled": false}, with no field besides; a missing, null or non-boolean enabled is a 400 bad_request (data.data.field is enabled). 200 with data {"name", "auto_update"}; the list then says auto_update for the module. 409 with data.error_code when it is refused: not_installed (the module is not installed), not_foreign (a module of ReCasaOS: the general switch of the automatic updates decides for it), catalogue (the catalogue cannot be read, so whether the module is foreign cannot be told). A no for a module that is not installed, or that the catalogue does not list, is a 200: it drops a yes left behind. The general switch still rules: off, nothing is updated at night. The token goes in the Authorization header, and is not the refresh token.
+// @Produce  application/json
+// @Accept   application/json
+// @Tags sys
+// @Security ApiKeyAuth
+// @Param    name path string true "the name of the module"
+// @Success 200 {object} model.Result
+// @Failure 400 {object} model.Result "the name, the body or a field is not valid: data.error_code is bad_request"
+// @Failure 409 {object} model.Result "refused: data.error_code says why"
+// @Router /sys/modules/{name}/auto-update [put]
+func PutSystemModuleAutoUpdate(ctx echo.Context) error {
+	name, err := moduleName(ctx)
+	if err != nil {
+		return moduleFailed(ctx, err)
+	}
+	var req moduleAutoUpdateRequest
+	if err := readOSUpgradeBody(ctx, &req); err != nil {
+		return moduleFailed(ctx, err)
+	}
+	if req.Enabled == nil {
+		return moduleFailed(ctx, badOSUpgradeRequest("enabled"))
+	}
+	if err := service.MyService.System().SetSystemModuleAutoUpdate(name, *req.Enabled); err != nil {
+		return moduleFailed(ctx, err)
+	}
+	return osPlanAnswer(ctx, http.StatusOK, common_err.GetMsg(common_err.SUCCESS), map[string]any{"name": name, "auto_update": *req.Enabled})
+}

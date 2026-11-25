@@ -115,6 +115,8 @@ func InitV1Router() http.Handler {
 			v1SysGroup.POST("/modules/:name/install", v1.InstallSystemModule, headerTokenOnly)
 			v1SysGroup.POST("/modules/:name/remove", v1.RemoveSystemModule, headerTokenOnly)
 			v1SysGroup.GET("/modules/:name/status", v1.GetSystemModuleStatus)
+			// whether the night may update a module written outside ReCasaOS: owner only, as every route the Gateway's table does not open
+			v1SysGroup.PUT("/modules/:name/auto-update", v1.PutSystemModuleAutoUpdate, headerTokenOnly)
 
 			v1SysGroup.GET("/hardware", v1.GetSystemHardwareInfo) // hardware/info
 

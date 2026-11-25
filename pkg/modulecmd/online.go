@@ -13,10 +13,11 @@ import (
 )
 
 // The online catalogue: the core fetches it (RefreshOnline) and the commands read what it kept (loadCatalogue). What is fetched decides what is later installed as root, so a fetch is
-// kept only when it is a whole catalogue that passes, whose serial is not below the one in place; anything else leaves the file in place as it was.
+// kept only when it is a whole catalogue that passes, of a schema not below the one in place and whose serial is not below its; anything else leaves the file in place as it was.
 
 // A RefreshResult is what became of a fetch: Kept when the fetched file is now in place, the serial it carries when it was read, and otherwise why not: "fetch" (the address did
-// not give a whole answer within its bounds), "invalid" (not a catalogue that passes), "older" (a serial below the one in place) or "write" (it could not be put in place).
+// not give a whole answer within its bounds), "invalid" (not a catalogue that passes), "schema" (a schema below the one in place, which would drop what only the later one says:
+// the versions withdrawn, the modules written outside ReCasaOS), "older" (a serial below the one in place) or "write" (it could not be put in place).
 type RefreshResult struct {
 	Kept   bool
 	Serial int64
@@ -52,7 +53,10 @@ func RefreshOnline(ctx context.Context, roots Roots, get Downloader, url string)
 		return failed
 	}
 	defer release()
-	if cur := readCatalogueFile(path, osmodule.ParseOnlineCatalogue); cur.ok && serial < cur.cat.Serial {
+	// a file in place that does not pass counts for nothing
+	if cur := readCatalogueFile(path, osmodule.ParseOnlineCatalogue); cur.ok && fetched.cat.Schema < cur.cat.Schema {
+		return RefreshResult{Serial: serial, Reason: "schema"}
+	} else if cur.ok && serial < cur.cat.Serial {
 		return RefreshResult{Serial: serial, Reason: "older"}
 	}
 	// a link or a directory where the file goes stays as it is

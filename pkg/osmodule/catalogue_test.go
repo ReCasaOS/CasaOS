@@ -30,8 +30,14 @@ func catalogueText(entries ...string) string {
 // catalogueWith changes one place of the catalogue of one module (the path goes through objects and, by number, through lists), by decoding it and encoding it again.
 func catalogueWith(t *testing.T, path, literal string) string {
 	t.Helper()
+	return textWith(t, catalogueText(entryText("virt")), path, literal)
+}
+
+// textWith changes one place of a JSON text as catalogueWith does: the literal there, or the key removed when the literal is empty.
+func textWith(t *testing.T, text, path, literal string) string {
+	t.Helper()
 	var doc any
-	if err := json.Unmarshal([]byte(catalogueText(entryText("virt"))), &doc); err != nil {
+	if err := json.Unmarshal([]byte(text), &doc); err != nil {
 		t.Fatal(err)
 	}
 	keys := strings.Split(path, ".")

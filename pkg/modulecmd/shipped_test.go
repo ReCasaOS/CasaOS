@@ -8,7 +8,7 @@ import (
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
 )
 
-// --shipped is the installer's: the shipped catalogue alone, as if the online one were off, so the installer never installs a tag the night has not waited for.
+// --shipped is the installer's: the modules of the shipped catalogue alone, as if the online one were off, so the installer never installs a tag the night has not waited for.
 
 func TestListShippedReadsTheShippedCatalogueAlone(t *testing.T) {
 	f := installed(t)
@@ -74,6 +74,60 @@ func TestUpdateShippedNeverMovesAModuleBack(t *testing.T) {
 				t.Fatalf("update: %d\n%s", code, f.out)
 			}
 			sameTree(t, before, f.treeWithoutBookkeeping())
+		})
+	}
+}
+
+// flaggedOnline is updatable with the shipped tag withdrawn by the online catalogue.
+func flaggedOnline(t *testing.T) *fixture {
+	t.Helper()
+	f := updatable(t)
+	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawnList(newTag), f.mirrorEntry(onlineTag, foreignRepo)))
+	return f
+}
+
+// --shipped takes the modules of the shipped file alone, and still heeds the versions the online catalogue withdrew.
+func TestUpdateShippedRefusesAShippedTagWithdrawnOnline(t *testing.T) {
+	f := flaggedOnline(t)
+	before := f.treeWithoutBookkeeping()
+	if code := f.update("--yes", "--shipped"); code != ExitRefused || !strings.Contains(f.out.String(), "refused: "+osmodule.RefusedWithdrawn+"\n") {
+		t.Fatalf("update: exit %d\n%s%s", code, f.out, f.errOut)
+	}
+	sameTree(t, before, f.treeWithoutBookkeeping())
+}
+
+func TestListShippedOffersNoUpdateToAShippedTagWithdrawnOnline(t *testing.T) {
+	f := flaggedOnline(t)
+	v := f.json("list", "--shipped")
+	cat, m := v["catalogue"].(map[string]any), v["modules"].([]any)[0].(map[string]any)
+	if on := cat["online"].(map[string]any); on["ok"] != false || on["error"] != "off" || m["source"] != "shipped" || m["tag"] != newTag {
+		t.Errorf("catalogue %v, module %v", cat, m)
+	}
+	if u := m["update"].(map[string]any); u["available"] != false || u["latest"] != newTag {
+		t.Errorf("update: %v", u)
+	}
+}
+
+// an online file that does not pass changes nothing to --shipped, and with the setting off it is not read at all
+func TestUpdateShippedWithoutAGoodOnlineFileOrWithTheSettingOff(t *testing.T) {
+	for name, set := range map[string]func(f *fixture){
+		"an online file that does not pass": func(f *fixture) {
+			f.writeFile(pathOnlineCatalogue, strings.Replace(online3Raw(t, 7, withdrawnList(newTag), f.mirrorEntry(onlineTag, foreignRepo)), `"schema":3`, `"schema":"3"`, 1))
+		},
+		"setting off": func(f *fixture) {
+			f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawnList(newTag), f.mirrorEntry(onlineTag, foreignRepo)))
+			f.env.OnlineCatalogueOff = true
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := updatable(t)
+			set(f)
+			if code := f.update("--yes", "--shipped"); code != ExitOK {
+				t.Fatalf("exit %d:\n%s%s", code, f.out, f.errOut)
+			}
+			if got := strings.TrimSpace(f.read("/var/lib/casaos/modules/virt.version")); got != newTag {
+				t.Errorf("installed %q, want the shipped %s", got, newTag)
+			}
 		})
 	}
 }

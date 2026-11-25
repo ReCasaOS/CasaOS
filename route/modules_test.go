@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -18,10 +19,11 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// The routes of the modules, exactly: the list and the status, which anyone with the token may read, and the plan, the install and the remove, which take the access token in the header.
+// The routes of the modules, exactly: the list and the status, which anyone with the token may read, and the plan, the install, the remove and the auto-update switch, which take the access token in the header.
 // Nothing else is registered below the path, so that a route is never added to it without this list being changed.
 var moduleRoutes = []string{
 	"GET /v1/sys/modules", "POST /v1/sys/modules/:name/plan", "POST /v1/sys/modules/:name/install", "POST /v1/sys/modules/:name/remove", "GET /v1/sys/modules/:name/status",
+	"PUT /v1/sys/modules/:name/auto-update",
 }
 
 const modulePlanID = "m1-0123456789abcdef0123456789abcdef"
@@ -89,6 +91,11 @@ func (f *fakeModuleSystem) StartSystemModuleRemove(ctx context.Context, name str
 	return f.status(modulecmd.KindRemove), f.err
 }
 
+func (f *fakeModuleSystem) SetSystemModuleAutoUpdate(name string, enabled bool) error {
+	f.calls = append(f.calls, fmt.Sprintf("auto-update %s %v", name, enabled))
+	return f.err
+}
+
 func (f *fakeModuleSystem) GetSystemModuleStatus(name string) (service.SystemModuleStatus, error) {
 	f.calls = append(f.calls, "status "+name)
 	return f.status(f.statusKind), f.err
@@ -124,6 +131,7 @@ func TestWhatActsOnTheModulesTakesTheAccessTokenInTheHeaderAndNoOther(t *testing
 		{"plan", http.MethodPost, "plan", ``, http.StatusOK, "plan virt"},
 		{"install", http.MethodPost, "install", `{"plan_id":"` + modulePlanID + `"}`, http.StatusAccepted, "install virt " + modulePlanID},
 		{"remove", http.MethodPost, "remove", `{}`, http.StatusAccepted, "remove virt"},
+		{"auto-update", http.MethodPut, "auto-update", `{"enabled":true}`, http.StatusOK, "auto-update virt true"},
 	}
 	for _, g := range guarded {
 		for _, c := range []struct {
@@ -211,6 +219,7 @@ func TestTheAnswersOfTheModulesAreTheEnvelopeAndAreNotKept(t *testing.T) {
 		{"install", http.MethodPost, "/v1/sys/modules/virt/install", `{"plan_id":"` + modulePlanID + `"}`, http.StatusAccepted, "accepted"},
 		{"remove", http.MethodPost, "/v1/sys/modules/virt/remove", `{}`, http.StatusAccepted, "accepted"},
 		{"status", http.MethodGet, "/v1/sys/modules/virt/status", "", http.StatusOK, ""},
+		{"auto-update", http.MethodPut, "/v1/sys/modules/virt/auto-update", `{"enabled":false}`, http.StatusOK, ""},
 	} {
 		recorder := moduleCall(e, c.method, c.target, c.body, access, "")
 		if recorder.Code != c.want || recorder.Header().Get(echo.HeaderCacheControl) != "no-store" {
@@ -247,6 +256,7 @@ func TestTheNameInTheAddressIsCheckedBeforeAnythingElse(t *testing.T) {
 		for _, c := range []struct{ method, tail, body string }{
 			{http.MethodPost, "plan", ``}, {http.MethodPost, "install", `not json at all`}, {http.MethodPost, "install", `{"plan_id":"` + modulePlanID + `"}`},
 			{http.MethodPost, "remove", `{"unknown":1}`}, {http.MethodPost, "remove", `{}`}, {http.MethodGet, "status", ``},
+			{http.MethodPut, "auto-update", `{"enabled":true}`}, {http.MethodPut, "auto-update", `nonsense`},
 		} {
 			recorder := moduleCall(e, c.method, "/v1/sys/modules/"+name+"/"+c.tail, c.body, access, "")
 			// (the router may say 404 for an address it cannot read, which is as good: it is never the service that answers)
@@ -317,6 +327,27 @@ func TestTheBodiesOfTheModulesAreStrictJSON(t *testing.T) {
 			t.Errorf("%s: the answer repeats what was sent", c.name)
 		}
 	}
+	for _, c := range []struct{ name, body, field string }{
+		{"auto-update: an unknown field", `{"enabled":true,"yes":true}`, "body"},
+		{"auto-update: a field twice", `{"enabled":true,"enabled":false}`, "body"},
+		{"auto-update: a field in capitals", `{"ENABLED":true}`, "body"},
+		{"auto-update: no field", `{}`, "enabled"},
+		{"auto-update: null", `{"enabled":null}`, "enabled"},
+		{"auto-update: a string", `{"enabled":"true"}`, "enabled"},
+		{"auto-update: a number", `{"enabled":1}`, "enabled"},
+		{"auto-update: an array", `[true]`, "body"},
+		{"auto-update: nothing", ``, "body"},
+		{"auto-update: text after the object", `{"enabled":true} x`, "body"},
+		{"auto-update: more than 64 KiB", `{"enabled":true,"x":"` + strings.Repeat("a", 64<<10) + `"}`, "body"},
+	} {
+		system.calls = nil
+		recorder := moduleCall(e, http.MethodPut, "/v1/sys/modules/virt/auto-update", c.body, access, "")
+		data, _ := decodeAnswer(t, recorder)["data"].(map[string]any)
+		field, _ := data["data"].(map[string]any)
+		if recorder.Code != http.StatusBadRequest || data["error_code"] != "bad_request" || field["field"] != c.field || len(system.calls) != 0 {
+			t.Errorf("%s: %d %v, the service was asked %v", c.name, recorder.Code, data, system.calls)
+		}
+	}
 	// and whitespace around the object is fine
 	system.calls = nil
 	if recorder := moduleCall(e, http.MethodPost, "/v1/sys/modules/virt/install", " \n{ "+good+" } \n", access, ""); recorder.Code != http.StatusAccepted || len(system.calls) != 1 {
@@ -336,6 +367,7 @@ func TestEveryRefusalOfTheModulesIsADataCodeAndTheRightStatus(t *testing.T) {
 		service.ModuleBadRequest: http.StatusBadRequest, service.ModuleStartFailed: http.StatusInternalServerError,
 		service.ModuleNotRoot: http.StatusConflict, service.ModuleUnsupported: http.StatusConflict, service.ModuleBusy: http.StatusConflict,
 		service.ModulePlanChanged: http.StatusConflict, service.ModuleNotInstalled: http.StatusConflict, service.ModulePlanTimeout: http.StatusConflict,
+		service.ModuleNotForeign: http.StatusConflict,
 	}
 	for _, code := range []string{
 		osmodule.CheckCatalogue, osmodule.CheckOS, osmodule.CheckArch, osmodule.CheckReCasaOS, osmodule.CheckInstalled, osmodule.CheckForeignUnit, osmodule.CheckBusy,
@@ -352,6 +384,7 @@ func TestEveryRefusalOfTheModulesIsADataCodeAndTheRightStatus(t *testing.T) {
 			{http.MethodPost, "/v1/sys/modules/virt/remove", `{}`},
 			{http.MethodGet, "/v1/sys/modules/virt/status", ``},
 			{http.MethodGet, "/v1/sys/modules", ``},
+			{http.MethodPut, "/v1/sys/modules/virt/auto-update", `{"enabled":true}`},
 		} {
 			recorder := moduleCall(e, c.method, c.target, c.body, access, "")
 			answer := decodeAnswer(t, recorder)
@@ -402,6 +435,8 @@ func TestTheServiceIsAskedWhatTheRequestSays(t *testing.T) {
 		{http.MethodPost, "/v1/sys/modules/tool-2/remove", `{}`, "remove tool-2"},
 		{http.MethodGet, "/v1/sys/modules/tool-2/status", ``, "status tool-2"},
 		{http.MethodGet, "/v1/sys/modules", ``, "list"},
+		{http.MethodPut, "/v1/sys/modules/tool-2/auto-update", `{"enabled":true}`, "auto-update tool-2 true"},
+		{http.MethodPut, "/v1/sys/modules/tool-2/auto-update", `{"enabled":false}`, "auto-update tool-2 false"},
 	} {
 		system.calls = nil
 		if recorder := moduleCall(e, c.method, c.target, c.body, access, ""); recorder.Code >= 300 || len(system.calls) != 1 || system.calls[0] != c.want {
@@ -445,4 +480,18 @@ func (f *fakeModuleSystem) PlanSystemModuleUpdate(name string) (osmodule.PlanRes
 func (f *fakeModuleSystem) StartSystemModuleUpdate(ctx context.Context, name, planID string) (service.SystemModuleStatus, error) {
 	f.calls, f.ended = append(f.calls, "update "+name+" "+planID), ctx.Err() != nil
 	return f.status(modulecmd.KindUpdate), f.err
+}
+
+// The answer of the switch says the module and what it is now.
+func TestTheAutoUpdateSwitchAnswersTheModuleAndItsState(t *testing.T) {
+	system := &fakeModuleSystem{}
+	access, _, _ := theTokensOfTheTests(t, system)
+	e := InitV1Router()
+	for _, enabled := range []bool{true, false} {
+		recorder := moduleCall(e, http.MethodPut, "/v1/sys/modules/virt/auto-update", fmt.Sprintf(`{"enabled":%v}`, enabled), access, "")
+		data, _ := decodeAnswer(t, recorder)["data"].(map[string]any)
+		if recorder.Code != http.StatusOK || data["name"] != "virt" || data["auto_update"] != enabled || len(data) != 2 {
+			t.Errorf("enabled %v: %d %v", enabled, recorder.Code, data)
+		}
+	}
 }

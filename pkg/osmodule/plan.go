@@ -15,9 +15,10 @@ import (
 // The plan of an install: what the install would do and whether the box can do it, decided from the catalogue and from a Box, which is everything the world has to answer. The plan reads
 // nothing and writes nothing itself; a Box that is the real machine reads (and never writes) to answer, and one that is a table of answers makes the plan a function that tests can call.
 
-// The checks of a plan, in the order they are listed in.
+// The checks of a plan, in the order they are listed in. CheckWithdrawn is listed only for a catalogue that has a list of the versions withdrawn (schema 3), right after the catalogue's.
 const (
 	CheckCatalogue   = "catalogue"
+	CheckWithdrawn   = "withdrawn"
 	CheckOS          = "os"
 	CheckArch        = "arch"
 	CheckReCasaOS    = "recasaos"
@@ -33,6 +34,8 @@ const (
 // there is not room or it cannot be told, apt is not there, gave no answer, would remove or downgrade a package, finds one held, or would install something other than the packages
 // that were asked for (apt reads a name with a "." or a "+" in it as a regular expression when no package has that name, and a name that a package provides as that package).
 const (
+	// RefusedWithdrawn is a tag the catalogue withdrew: the code of its check.
+	RefusedWithdrawn       = CheckWithdrawn
 	RefusedDiskShort       = "disk_short"
 	RefusedDiskUnknown     = "disk_unknown"
 	RefusedAptMissing      = "apt_missing"
@@ -269,6 +272,9 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 	entry, found := cat.Find(name)
 	if !found {
 		r.Checks = []Check{{Code: CheckCatalogue, Detail: "not_in_catalogue"}}
+		if cat.Withdrawn != nil {
+			r.Checks = append(r.Checks, notChecked(CheckWithdrawn))
+		}
 		for _, code := range []string{CheckOS, CheckArch, CheckReCasaOS, CheckInstalled, CheckForeignUnit, CheckBusy, CheckDpkgState, CheckDisk, CheckApt} {
 			r.Checks = append(r.Checks, notChecked(code))
 		}
@@ -283,7 +289,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 	asset, _ := entry.Asset(arch)
 	r.Archive.URL = asset.URL
 
-	checks := append([]Check{{Code: CheckCatalogue, OK: true}}, SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, OSFrom: osr.From, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
+	checks := append(append([]Check{{Code: CheckCatalogue, OK: true}}, withdrawnChecks(cat, entry)...), SystemChecks(entry, System{OSID: osID, OSVersion: osVersion, OSFrom: osr.From, Arch: arch, ReCasaOS: box.ReCasaOSVersion()})...)
 	checks = append(checks, installedCheck(box, entry), foreignUnitCheck(box, entry), busyCheck(box), dpkgCheck(box))
 	standing := !slices.ContainsFunc(checks, func(c Check) bool { return !c.OK && !c.skipped })
 
@@ -315,7 +321,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 		r.Packages = PlanPackages{ToInstall: sortedCopy(sim.ToInstall), ToUpgrade: sortedCopy(sim.ToUpgrade), DownloadBytes: sim.DownloadBytes, ExtraBytes: sim.ExtraBytes, Known: sim.Known}
 	}
 	if r.Refused == "" {
-		r.PlanID = PlanID(entry.Name, entry.Tag, asset.SHA256, osID, osVersion, r.Packages.ToInstall)
+		r.PlanID = fromRepository(PlanID(entry.Name, entry.Tag, asset.SHA256, osID, osVersion, r.Packages.ToInstall), entry.Repository)
 	}
 	return r
 }
@@ -349,6 +355,16 @@ func PlanID(name, tag, archiveSHA256, osID, osVersion string, toInstall []string
 		OSVersion string   `json:"os_version"`
 	}{name, tag, archiveSHA256, sortedCopy(toInstall), osID, osVersion})
 	sum := sha256.Sum256(text)
+	return "m1-" + hex.EncodeToString(sum[:])[:32]
+}
+
+// fromRepository binds a plan's id to the repository its entry comes from (schema 3), so that a question and an install that read the catalogue at two times cannot
+// disagree on the module's origin. An entry without a repository (schema 1 and 2) keeps the id as it is.
+func fromRepository(id, repository string) string {
+	if repository == "" {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id + "\n" + repository))
 	return "m1-" + hex.EncodeToString(sum[:])[:32]
 }
 
@@ -542,3 +558,17 @@ func clipTo(s string, most int) string {
 
 // releaseRe is a version of ReCasaOS as the plan takes it (comparableRe, compared by CompareVersions), with numbers of four digits at most.
 var releaseRe = regexp.MustCompile(`^v?([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})(?:(-)[0-9A-Za-z.+-]{1,40}|\+[0-9A-Za-z.+-]{1,40})?$`)
+
+// withdrawnChecks is the check of the tag a plan aims at against the catalogue's versions withdrawn: none for a catalogue that has no such list (schemas 1 and 2), not ok with the reason
+// for a tag that is on it. The reason is shown as the catalogue gives it: its parser has already judged it printable, and of 200 characters at most.
+func withdrawnChecks(cat Catalogue, e Entry) []Check {
+	if cat.Withdrawn == nil {
+		return nil
+	}
+	for _, w := range cat.Withdrawn {
+		if w.Name == e.Name && w.Tag == e.Tag {
+			return []Check{{Code: CheckWithdrawn, Detail: w.Reason}}
+		}
+	}
+	return []Check{{Code: CheckWithdrawn, OK: true}}
+}

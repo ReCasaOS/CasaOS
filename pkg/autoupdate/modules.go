@@ -2,6 +2,7 @@ package autoupdate
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,14 @@ type Modules interface {
 	List(ctx context.Context) ([]ModuleUpdate, error)
 	// Update updates a module to the tag List gave and waits for its job to end.
 	Update(ctx context.Context, name string) (Outcome, string)
+	// Withdrawn is the installed modules whose installed version the catalogue withdrew, with or without an
+	// update, from the catalogue the box already has (never the network).
+	Withdrawn(ctx context.Context) ([]Withdrawn, error)
+}
+
+// Withdrawn is an installed module at a version its catalogue withdrew, and the catalogue's reason, text to show.
+type Withdrawn struct {
+	Name, Tag, Reason string
 }
 
 // Outcome is how a module's update ended.
@@ -29,11 +38,17 @@ const (
 	NotStarted                // refused before anything began: busy, plan refused or timed out, could not launch
 )
 
-// ModuleUpdate is an installed module and the later tag the catalogue has.
-type ModuleUpdate struct{ Name, Installed, Latest string }
+// ModuleUpdate is an installed module and the later tag the catalogue has. Foreign is a module written outside
+// ReCasaOS, and Allowed says the owner of the box lets the night update it: a foreign module that is not allowed is
+// left alone.
+type ModuleUpdate struct {
+	Name, Installed, Latest string
+	Foreign, Allowed        bool
+}
 
 // checkModules is the modules' part of a round, with the release's switch and
-// window. Each tag is first seen while the switch is on, in or out of the
+// window. A module written outside ReCasaOS takes part only when its owner
+// allowed it. Each tag is first seen while the switch is on, in or out of the
 // window, and is installed minAge later, inside the window, once: a failure
 // waits for another tag, a refusal before anything began does not count. One module at a time, each to the end of its job; the
 // round stops as soon as the box is busy or the window closes.
@@ -46,6 +61,8 @@ func (a *AutoUpdate) checkModules(ctx context.Context) {
 		logger.Info("automatic update: the modules cannot be listed", zap.Error(err))
 		return
 	}
+	// a module the owner did not allow is not even seen: no trace in autoupdate.json, and its wait starts at his yes
+	list = slices.DeleteFunc(list, func(m ModuleUpdate) bool { return m.Foreign && !m.Allowed })
 	var due []ModuleUpdate
 	if err := a.modify(func(s *State) bool {
 		var changed bool
@@ -159,4 +176,38 @@ func modulesSentence(updated, failed []string) string {
 		parts = append(parts, "Module updates failed: "+strings.Join(failed, ", ")+".")
 	}
 	return strings.Join(parts, " ")
+}
+
+// checkWithdrawn tells NotifyWithdrawn of each installed module at a version its
+// catalogue withdrew, once per module and version for good: what was told is kept
+// in autoupdate.json, written only when something new is told. It is a warning,
+// not an update: made whether automatic updates are on or off, and it removes or
+// stops nothing.
+func (a *AutoUpdate) checkWithdrawn(ctx context.Context) {
+	if a.Modules == nil || a.NotifyWithdrawn == nil {
+		return
+	}
+	list, err := a.Modules.Withdrawn(ctx)
+	if err != nil {
+		logger.Info("automatic update: the modules withdrawn cannot be listed", zap.Error(err))
+		return
+	}
+	told := a.load().Withdrawn
+	for _, w := range list {
+		pair := ModuleTag{Name: w.Name, Tag: w.Tag}
+		// not told (no channel, the category off, no channel took it): told next hour
+		if slices.Contains(told, pair) || !a.NotifyWithdrawn(w.Name, w.Tag, w.Reason) {
+			continue
+		}
+		told = append(told, pair)
+		if err := a.modify(func(s *State) bool {
+			if slices.Contains(s.Withdrawn, pair) {
+				return false
+			}
+			s.Withdrawn = append(s.Withdrawn, pair)
+			return true
+		}); err != nil {
+			logger.Info("automatic update: cannot save autoupdate.json", zap.Error(err))
+		}
+	}
 }

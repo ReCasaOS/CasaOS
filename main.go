@@ -274,6 +274,7 @@ func main() {
 	// After ReCasaOS, the night updates the installed modules through the dashboard's own plan and start.
 	autoupdate.Default.Modules = &service.NightModules{Provider: service.MyService.System()}
 	autoupdate.Default.NotifyModules = alerts.Default.ModuleUpdates
+	autoupdate.Default.NotifyWithdrawn = alerts.Default.ModuleWithdrawn
 	// The update of Docker stops every container: it waits for the apps that AppManagement says
 	// are being installed, updated, backed up or restored, and does not start when it cannot ask.
 	service.MyService.System().SetAppOperations(func(ctx context.Context) ([]string, error) {
