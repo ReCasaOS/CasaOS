@@ -60,9 +60,17 @@ const systemDockerUpdateUnit = "casaos-docker-update.service" // reserved for an
 
 // systemMaintenanceUnits are the transient units that change the box's packages or the
 // ReCasaOS release: at most one of them runs at a time, and none while a package manager
-// holds dpkg's lock. The last is a pattern, the units of the jobs of the modules, which
-// install and remove packages and files: systemd matches it against the units it has.
-var systemMaintenanceUnits = []string{common.UPDATE_UNIT + ".service", systemPackageUpdateUnit, systemDockerUpdateUnit, systemOSUpgradeUnit, systemModuleUnits}
+// holds dpkg's lock. The patterns are the units of the jobs of the modules, which install
+// and remove packages and files, and the installer's hand-off of the modules' updates (its
+// own unit, then one unit per module): systemd matches a pattern against the units it has.
+var systemMaintenanceUnits = []string{common.UPDATE_UNIT + ".service", systemPackageUpdateUnit, systemDockerUpdateUnit, systemOSUpgradeUnit, systemModuleUnits, installerModulesUnit, installerModulesUnits}
+
+// the installer's hand-off of the modules' updates: casaos-update-modules.service, and
+// casaos-update-modules-<name>-<timestamp>.service for the update of each module
+const (
+	installerModulesUnit  = "casaos-update-modules.service"
+	installerModulesUnits = "casaos-update-modules-*.service"
+)
 
 // maintenanceBusy says whether the box is being changed by something else than the unit
 // named in except (the caller's own, which it checks in its own way): another of the units
@@ -89,14 +97,17 @@ func (u *systemPackageUpdater) maintenanceState(ctx context.Context, except stri
 		}
 		// a pattern is answered by the state of every unit that matches it, one to a line (and by nothing when none does)
 		states := []string{strings.TrimSpace(string(output))}
-		if unit == systemModuleUnits {
+		if strings.Contains(unit, "*") {
 			states = strings.Fields(string(output))
 		}
 		for _, state := range states {
 			switch state {
 			case "active", "activating", "deactivating":
-				if unit == systemModuleUnits {
+				switch unit {
+				case systemModuleUnits:
 					return "a module is being installed or removed", true, nil
+				case installerModulesUnit, installerModulesUnits:
+					return "the installer is updating the modules", true, nil
 				}
 				return fmt.Sprintf("%s is running", strings.TrimSuffix(unit, ".service")), true, nil
 			}

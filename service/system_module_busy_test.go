@@ -70,6 +70,9 @@ func TestAModuleJobKeepsEveryOtherChangeOfTheBoxAway(t *testing.T) {
 		"a unit that stops":                 {"casaos-module-virt.service": "deactivating"},
 		"two, one of them idle":             {"casaos-module-a.service": "inactive", "casaos-module-b.service": "active"},
 		"a unit of a module of a long name": {"casaos-module-" + strings.Repeat("a", 32) + ".service": "active"},
+		// the installer's hand-off of the modules' updates, from its start to its last module
+		"the installer's hand-off":           {"casaos-update-modules.service": "active"},
+		"the installer's update of a module": {"casaos-update-modules-virt-1764030000.service": "active"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			updater := newTestSystemPackageUpdater(t)
