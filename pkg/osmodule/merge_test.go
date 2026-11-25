@@ -52,3 +52,30 @@ func TestMergeKeepsTheVersionsWithdrawnOfTheOnlineCatalogue(t *testing.T) {
 		t.Fatalf("%+v", got.Withdrawn)
 	}
 }
+
+// A version the online catalogue withdrew is not what the box takes when it has a choice: it counts as one the system does not accept, in either file.
+func TestMergeDoesNotPreferAWithdrawnVersion(t *testing.T) {
+	e := func(name, tag string) Entry { return Entry{Name: name, Tag: tag} }
+	flag := func(name, tag string) Withdrawn { return Withdrawn{Name: name, Tag: tag, Reason: "Broken."} }
+	accepts := func(Entry) bool { return true }
+	for _, c := range []struct {
+		name            string
+		shipped, online []Entry
+		withdrawn       []Withdrawn
+		want            Entry
+		fromOnline      bool
+	}{
+		{"online flagged, shipped accepted", []Entry{e("a", "v0.2.0")}, []Entry{e("a", "v0.2.1")}, []Withdrawn{flag("a", "v0.2.1")}, e("a", "v0.2.0"), false},
+		{"online flagged, no shipped entry", nil, []Entry{e("a", "v0.2.1")}, []Withdrawn{flag("a", "v0.2.1")}, e("a", "v0.2.1"), true},
+		{"shipped flagged, online higher", []Entry{e("a", "v0.2.0")}, []Entry{e("a", "v0.2.1")}, []Withdrawn{flag("a", "v0.2.0")}, e("a", "v0.2.1"), true},
+		{"shipped flagged, online lower", []Entry{e("a", "v0.2.0")}, []Entry{e("a", "v0.1.9")}, []Withdrawn{flag("a", "v0.2.0")}, e("a", "v0.1.9"), true},
+		{"shipped flagged and nothing else", []Entry{e("a", "v0.2.0")}, nil, []Withdrawn{flag("a", "v0.2.0")}, e("a", "v0.2.0"), false},
+		{"both flagged: the highest", []Entry{e("a", "v0.2.0")}, []Entry{e("a", "v0.2.1")}, []Withdrawn{flag("a", "v0.2.0"), flag("a", "v0.2.1")}, e("a", "v0.2.1"), true},
+		{"another pair flagged", []Entry{e("a", "v0.2.0")}, []Entry{e("a", "v0.2.1")}, []Withdrawn{flag("b", "v0.2.1"), flag("a", "v0.1.0")}, e("a", "v0.2.1"), true},
+	} {
+		got, fromOnline := Merge(Catalogue{Schema: 1, Modules: c.shipped}, Catalogue{Schema: 3, Serial: 4, Modules: c.online, Withdrawn: c.withdrawn}, accepts)
+		if len(got.Modules) != 1 || got.Modules[0].Tag != c.want.Tag || fromOnline["a"] != c.fromOnline {
+			t.Errorf("%s: %+v %v", c.name, got.Modules, fromOnline)
+		}
+	}
+}

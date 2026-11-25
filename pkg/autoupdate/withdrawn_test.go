@@ -111,16 +111,3 @@ func TestAnOlderStateFileWithoutWithdrawalsLoads(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 }
-
-// the night never installs a version the catalogue withdrew, nor starts its day of waiting
-func TestAWithdrawnLatestIsNeverSeenNorUpdated(t *testing.T) {
-	a, _, m, at, _ := newModulesBox(t)
-	m.list[0].Withdrawn = true
-	for _, when := range []string{"2026-09-24 03:30", "2026-09-25 03:30", "2026-09-26 03:30"} {
-		at(when)
-		a.Check(context.Background())
-	}
-	if len(m.updated) != 0 || len(a.load().Modules) != 0 {
-		t.Fatalf("updated %v, seen %+v", m.updated, a.load().Modules)
-	}
-}

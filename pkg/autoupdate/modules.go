@@ -40,10 +40,10 @@ const (
 
 // ModuleUpdate is an installed module and the later tag the catalogue has. Foreign is a module written outside
 // ReCasaOS, and Allowed says the owner of the box lets the night update it: a foreign module that is not allowed is
-// left alone. Withdrawn says the catalogue withdrew Latest: the night neither waits for it nor installs it.
+// left alone.
 type ModuleUpdate struct {
-	Name, Installed, Latest     string
-	Foreign, Allowed, Withdrawn bool
+	Name, Installed, Latest string
+	Foreign, Allowed        bool
 }
 
 // checkModules is the modules' part of a round, with the release's switch and
@@ -61,9 +61,8 @@ func (a *AutoUpdate) checkModules(ctx context.Context) {
 		logger.Info("automatic update: the modules cannot be listed", zap.Error(err))
 		return
 	}
-	// a module the owner did not allow is not even seen: no trace in autoupdate.json, and its wait starts at his yes;
-	// a tag the catalogue withdrew is not seen either, and never installed
-	list = slices.DeleteFunc(list, func(m ModuleUpdate) bool { return m.Foreign && !m.Allowed || m.Withdrawn })
+	// a module the owner did not allow is not even seen: no trace in autoupdate.json, and its wait starts at his yes
+	list = slices.DeleteFunc(list, func(m ModuleUpdate) bool { return m.Foreign && !m.Allowed })
 	var due []ModuleUpdate
 	if err := a.modify(func(s *State) bool {
 		var changed bool

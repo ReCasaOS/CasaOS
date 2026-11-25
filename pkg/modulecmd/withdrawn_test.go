@@ -2,6 +2,7 @@ package modulecmd
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -23,8 +24,12 @@ func planCheck(p osmodule.PlanResult, code string) (osmodule.Check, bool) {
 	return osmodule.Check{}, false
 }
 
+// the online entry is the only one: a shipped one that is not withdrawn would be kept instead
 func TestAnInstallOfAVersionTheCatalogueWithdrewIsRefused(t *testing.T) {
 	f := newFixture(t)
+	if err := os.Remove(f.path(pathCatalogue)); err != nil {
+		t.Fatal(err)
+	}
 	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawnList(onlineTag), f.mirrorEntry(onlineTag, foreignRepo)))
 	p := PlanOf(context.Background(), f.env, testName)
 	if c, ok := planCheck(p, osmodule.CheckWithdrawn); p.Refused != osmodule.RefusedWithdrawn || !ok || c.OK || c.Detail != withdrawnWhy {
@@ -45,6 +50,9 @@ func TestAnInstallOfAVersionTheCatalogueWithdrewIsRefused(t *testing.T) {
 
 func TestAnUpdateToAVersionTheCatalogueWithdrewIsRefused(t *testing.T) {
 	f := installed(t)
+	if err := os.Remove(f.path(pathCatalogue)); err != nil {
+		t.Fatal(err)
+	}
 	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawnList(onlineTag), f.mirrorEntry(onlineTag, foreignRepo)))
 	p := PlanUpdateOf(context.Background(), f.env, testName)
 	if c, ok := planCheck(p, osmodule.CheckWithdrawn); p.Refused != osmodule.RefusedWithdrawn || !ok || c.Detail != withdrawnWhy {
@@ -59,22 +67,34 @@ func TestAnUpdateToAVersionTheCatalogueWithdrewIsRefused(t *testing.T) {
 	}
 }
 
-// the night reads from the list whether the catalogue's tag of an installed module is withdrawn; the list's JSON does not say it
-func TestListTellsTheNightTheLatestTagIsWithdrawn(t *testing.T) {
-	f := installed(t)
+// an installed module whose listed version is withdrawn is offered no update, whichever file the entry comes from
+func TestListOffersNoUpdateToAWithdrawnVersion(t *testing.T) {
+	f := installed(t) // testTag, the shipped catalogue's
 	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawnList(onlineTag), f.mirrorEntry(onlineTag, foreignRepo)))
-	res, err := List(context.Background(), f.env)
-	if err != nil || len(res.Modules) != 1 {
-		t.Fatalf("%+v %v", res, err)
+	if _, m := catalogueOf(t, f); m["source"] != "shipped" || m["tag"] != testTag || m["update"].(map[string]any)["available"] != false {
+		t.Errorf("a withdrawn online version and the shipped one: %v", m)
 	}
-	if m := res.Modules[0]; !m.LatestWithdrawn || m.Update == nil || m.Update.Latest != onlineTag || m.Withdrawn != nil {
-		t.Errorf("%+v", m)
+	// the flagged version is the only entry
+	if err := os.Remove(f.path(pathCatalogue)); err != nil {
+		t.Fatal(err)
 	}
-	if _, m := catalogueOf(t, f); strings.Contains(strings.ToLower(f.out.String()), "latest_withdrawn") || m["withdrawn"] != nil {
-		t.Errorf("the JSON says it: %v", m)
+	_, m := catalogueOf(t, f)
+	if m["source"] != "online" || m["tag"] != onlineTag {
+		t.Fatalf("the only entry: %v", m)
 	}
-	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawnList(testTag), f.mirrorEntry(onlineTag, foreignRepo)))
-	if res, _ := List(context.Background(), f.env); res.Modules[0].LatestWithdrawn {
-		t.Errorf("the installed tag is the withdrawn one: %+v", res.Modules[0])
+	if u, ok := m["update"].(map[string]any); ok && u["available"] != false {
+		t.Errorf("the only entry, withdrawn: %v", m)
+	}
+}
+
+// an install of a module whose only entry is withdrawn is refused
+func TestAnInstallOfAModuleWhoseOnlyEntryIsWithdrawnIsRefused(t *testing.T) {
+	f := newFixture(t)
+	if err := os.Remove(f.path(pathCatalogue)); err != nil {
+		t.Fatal(err)
+	}
+	f.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawnList(onlineTag), f.mirrorEntry(onlineTag, foreignRepo)))
+	if p := PlanOf(context.Background(), f.env, testName); p.Refused != osmodule.RefusedWithdrawn || p.Tag != onlineTag {
+		t.Fatalf("plan: %+v", p)
 	}
 }

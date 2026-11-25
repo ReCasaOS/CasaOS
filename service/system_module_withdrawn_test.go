@@ -38,6 +38,7 @@ func TestAnInstallOfAWithdrawnModuleVersionIsRefused(t *testing.T) {
 	withOnlineCatalogueSetting(t, true)
 	b := newModuleBox(t)
 	b.foreignCatalogue("virt", "someone/CasaOS-Virt")
+	b.setCatalogue() // the online entry is the only one: a shipped one that is not withdrawn would be kept instead
 	plan := b.planned("virt")
 	b.withdraw("virt", onlineModuleTag)
 	if got, err := b.system.PlanSystemModule("virt"); err != nil || got.Refused != osmodule.RefusedWithdrawn {
@@ -54,6 +55,7 @@ func TestAnUpdateToAWithdrawnModuleVersionIsRefused(t *testing.T) {
 	b := newModuleBox(t)
 	b.updatable("virt", boxModuleTag, boxModuleTag)
 	b.foreignCatalogue("virt", "someone/CasaOS-Virt")
+	b.setCatalogue()
 	plan := b.updatePlanned("virt")
 	b.withdraw("virt", onlineModuleTag)
 	if got, err := b.system.PlanSystemModuleUpdate("virt"); err != nil || got.Refused != osmodule.RefusedWithdrawn {
@@ -82,18 +84,26 @@ func TestTheNightIsToldOfTheInstalledVersionsWithdrawn(t *testing.T) {
 	}
 }
 
-// A module whose latest tag is withdrawn is listed so, and never updated by name.
+// The night is never offered a version the catalogue withdrew: not while the box keeps the shipped one, not when it is the only one.
 func TestTheNightNeverUpdatesToAWithdrawnVersion(t *testing.T) {
-	version := "v1.0.0"
-	p := &nightProvider{planLatest: "v1.1.0", more: []modulecmd.ListModule{
-		{Name: "flagged", Installed: &modulecmd.Installed{Version: &version}, Update: &modulecmd.UpdateInfo{Available: true, Installed: version, Latest: "v1.1.0"}, LatestWithdrawn: true},
-	}}
-	n := &NightModules{Provider: p}
-	list, err := n.List(context.Background())
-	if err != nil || len(list) != 2 || list[1] != (autoupdate.ModuleUpdate{Name: "flagged", Installed: version, Latest: "v1.1.0", Withdrawn: true}) {
-		t.Fatalf("List() = %+v, %v", list, err)
+	withOnlineCatalogueSetting(t, true)
+	b := newModuleBox(t)
+	b.updatable("virt", boxModuleTag, boxModuleTag)
+	b.foreignCatalogue("virt", "ReCasaOS/CasaOS-Virt")
+	b.withdraw("virt", onlineModuleTag)
+	n := &NightModules{Provider: b.system}
+	for _, only := range []bool{false, true} {
+		if only {
+			b.setCatalogue()
+		}
+		if list, err := n.List(context.Background()); err != nil || len(list) != 0 {
+			t.Errorf("only %v: List() = %+v, %v", only, list, err)
+		}
+		if outcome, detail := n.Update(context.Background(), "virt"); outcome != autoupdate.NotStarted || detail != "not started: not listed" {
+			t.Errorf("only %v: Update() = %v, %q", only, outcome, detail)
+		}
 	}
-	if outcome, detail := n.Update(context.Background(), "flagged"); outcome != autoupdate.NotStarted || detail != "not started: not listed" || len(p.started) != 0 {
-		t.Fatalf("Update() = %v, %q, started %v", outcome, detail, p.started)
+	if len(b.startedUnits()) != 0 {
+		t.Error("a unit was started")
 	}
 }
