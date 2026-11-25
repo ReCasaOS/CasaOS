@@ -16,8 +16,17 @@ type Modules interface {
 	// catalogue that cannot be read, is no list: nothing is changed.
 	List(ctx context.Context) ([]ModuleUpdate, error)
 	// Update updates a module to the tag List gave and waits for its job to end.
-	Update(ctx context.Context, name string) (ok bool, detail string)
+	Update(ctx context.Context, name string) (Outcome, string)
 }
+
+// Outcome is how a module's update ended.
+type Outcome int
+
+const (
+	Updated    Outcome = iota // the job ran and ended well
+	Failed                    // the job started and ended badly, or still ran at the wait's bound
+	NotStarted                // refused before anything began: busy, plan refused or timed out, could not launch
+)
 
 // ModuleUpdate is an installed module and the later tag the catalogue has.
 type ModuleUpdate struct{ Name, Installed, Latest string }
@@ -25,7 +34,7 @@ type ModuleUpdate struct{ Name, Installed, Latest string }
 // checkModules is the modules' part of a round, with the release's switch and
 // window. Each tag is first seen while the switch is on, in or out of the
 // window, and is installed minAge later, inside the window, once: a failure
-// waits for another tag. One module at a time, each to the end of its job; the
+// waits for another tag, a refusal before anything began does not count. One module at a time, each to the end of its job; the
 // round stops as soon as the box is busy or the window closes.
 func (a *AutoUpdate) checkModules(ctx context.Context) {
 	if a.Modules == nil || !a.load().Enabled {
@@ -52,13 +61,13 @@ func (a *AutoUpdate) checkModules(ctx context.Context) {
 		}
 		// saved before the job, as a release's attempt is: a core restarted in
 		// the middle of the job does not try that tag again
-		tried := false
+		tried, at := false, a.Now().UTC().Truncate(time.Second)
 		if err := a.modify(func(s *State) bool {
 			seen, ok := s.Modules[m.Name]
 			if !ok || seen.Tag != m.Latest || !seen.Tried.IsZero() {
 				return false
 			}
-			seen.Tried = a.Now().UTC().Truncate(time.Second)
+			seen.Tried = at
 			s.Modules[m.Name], tried = seen, true
 			return true
 		}); err != nil || !tried {
@@ -66,10 +75,26 @@ func (a *AutoUpdate) checkModules(ctx context.Context) {
 			break
 		}
 		logger.Info("automatic update: updating a module", zap.String("module", m.Name), zap.String("from", m.Installed), zap.String("to", m.Latest))
-		ok, detail := a.Modules.Update(ctx, m.Name)
+		outcome, detail := a.Modules.Update(ctx, m.Name)
 		change := m.Name + " " + m.Installed + " → " + m.Latest
-		if ok {
+		switch outcome {
+		case Updated:
 			updated = append(updated, change)
+			continue
+		case NotStarted:
+			// nothing began: the tag is not spent, and the next round tries it again
+			logger.Info("automatic update: a module update was not started", zap.String("module", m.Name), zap.String("to", m.Latest), zap.String("detail", detail))
+			if err := a.modify(func(s *State) bool {
+				seen, ok := s.Modules[m.Name]
+				if !ok || seen.Tag != m.Latest || !seen.Tried.Equal(at) {
+					return false
+				}
+				seen.Tried = time.Time{}
+				s.Modules[m.Name] = seen
+				return true
+			}); err != nil {
+				logger.Info("automatic update: cannot save autoupdate.json", zap.Error(err))
+			}
 			continue
 		}
 		logger.Info("automatic update: a module update failed", zap.String("module", m.Name), zap.String("to", m.Latest), zap.String("detail", detail))

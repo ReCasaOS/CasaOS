@@ -15,6 +15,9 @@ import (
 type nightProvider struct {
 	ModuleProvider // the methods the night does not use
 	planLatest     string
+	planErr        error
+	planRefused    osmodule.Refusal
+	startErr       error
 	jobs           []modulecmd.Job
 	started        []string
 }
@@ -32,10 +35,13 @@ func (p *nightProvider) ListSystemModules() (modulecmd.ListResult, error) {
 }
 
 func (p *nightProvider) PlanSystemModuleUpdate(name string) (osmodule.PlanResult, error) {
-	return osmodule.PlanResult{Name: name, PlanID: "plan-1", Mode: "update", Update: &osmodule.UpdateInfo{Installed: "v0.2.4", Latest: p.planLatest}}, nil
+	return osmodule.PlanResult{Name: name, PlanID: "plan-1", Mode: "update", Refused: p.planRefused, Update: &osmodule.UpdateInfo{Installed: "v0.2.4", Latest: p.planLatest}}, p.planErr
 }
 
 func (p *nightProvider) StartSystemModuleUpdate(_ context.Context, name, planID string) (SystemModuleStatus, error) {
+	if p.startErr != nil {
+		return SystemModuleStatus{}, p.startErr
+	}
 	p.started = append(p.started, name+" "+planID)
 	return SystemModuleStatus{}, nil
 }
@@ -54,30 +60,33 @@ func TestTheNightUpdatesAModuleAsTheDashboardDoes(t *testing.T) {
 	t.Cleanup(func() { nightModulePoll, nightModuleBound = poll, bound })
 	running := modulecmd.Job{State: modulecmd.JobRunning}
 
+	failed := modulecmd.Job{State: modulecmd.JobFailed, Code: "apt_failed", Undo: modulecmd.UndoRolledBack}
 	for _, c := range []struct {
-		name       string
-		planLatest string
-		jobs       []modulecmd.Job
-		ok         bool
-		detail     string
-		started    int
+		name    string
+		p       nightProvider
+		outcome autoupdate.Outcome
+		detail  string
+		started int
 	}{
-		{"succeeded", "v0.2.5", []modulecmd.Job{running, running, {State: modulecmd.JobSucceeded}}, true, "", 1},
-		{"failed and put back", "v0.2.5", []modulecmd.Job{running, {State: modulecmd.JobFailed, Code: "apt_failed", Undo: modulecmd.UndoRolledBack}}, false, "put back", 1},
-		{"failed before changing anything", "v0.2.5", []modulecmd.Job{{State: modulecmd.JobFailed, Code: "download_failed"}}, false, "failed: download_failed", 1},
-		{"never ends", "v0.2.5", []modulecmd.Job{running}, false, "still running after 200ms", 1},
-		{"a tag the night did not wait for", "v0.2.6", nil, false, "not started: the catalogue changed", 0},
+		{"succeeded", nightProvider{planLatest: "v0.2.5", jobs: []modulecmd.Job{running, running, {State: modulecmd.JobSucceeded}}}, autoupdate.Updated, "", 1},
+		{"failed and put back", nightProvider{planLatest: "v0.2.5", jobs: []modulecmd.Job{running, failed}}, autoupdate.Failed, "put back", 1},
+		{"failed before changing anything", nightProvider{planLatest: "v0.2.5", jobs: []modulecmd.Job{{State: modulecmd.JobFailed, Code: "download_failed"}}}, autoupdate.Failed, "failed: download_failed", 1},
+		{"never ends", nightProvider{planLatest: "v0.2.5", jobs: []modulecmd.Job{running}}, autoupdate.Failed, "still running after 200ms", 1},
+		{"a tag the night did not wait for", nightProvider{planLatest: "v0.2.6"}, autoupdate.NotStarted, "not started: the catalogue changed", 0},
+		{"the plan is refused", nightProvider{planLatest: "v0.2.5", planRefused: osmodule.CheckBusy}, autoupdate.NotStarted, "not started: busy", 0},
+		{"the plan times out", nightProvider{planLatest: "v0.2.5", planErr: refuseModule(ModulePlanTimeout, "the plan could not be made in the time it has", nil)}, autoupdate.NotStarted, "not started: the plan could not be made in the time it has", 0},
+		{"the start is refused as busy", nightProvider{planLatest: "v0.2.5", startErr: moduleBusy("a package manager is at work")}, autoupdate.NotStarted, "not started: Another job or package operation is running on this box: a package manager is at work", 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			p := &nightProvider{planLatest: c.planLatest, jobs: c.jobs}
+			p := &c.p
 			n := &NightModules{Provider: p}
 			list, err := n.List(context.Background())
 			if err != nil || len(list) != 1 || list[0] != (autoupdate.ModuleUpdate{Name: "virt", Installed: "v0.2.4", Latest: "v0.2.5"}) {
 				t.Fatalf("List() = %+v, %v: want virt alone", list, err)
 			}
-			ok, detail := n.Update(context.Background(), "virt")
-			if ok != c.ok || detail != c.detail || len(p.started) != c.started {
-				t.Fatalf("Update() = %v, %q, started %v: want %v, %q", ok, detail, p.started, c.ok, c.detail)
+			outcome, detail := n.Update(context.Background(), "virt")
+			if outcome != c.outcome || detail != c.detail || len(p.started) != c.started {
+				t.Fatalf("Update() = %v, %q, started %v: want %v, %q", outcome, detail, p.started, c.outcome, c.detail)
 			}
 		})
 	}
@@ -85,7 +94,7 @@ func TestTheNightUpdatesAModuleAsTheDashboardDoes(t *testing.T) {
 
 func TestTheNightUpdatesNothingItDidNotList(t *testing.T) {
 	p := &nightProvider{planLatest: "v0.2.5"}
-	if ok, detail := (&NightModules{Provider: p}).Update(context.Background(), "virt"); ok || len(p.started) != 0 {
-		t.Fatalf("Update() before List = %v, %q, started %v", ok, detail, p.started)
+	if outcome, detail := (&NightModules{Provider: p}).Update(context.Background(), "virt"); outcome != autoupdate.NotStarted || len(p.started) != 0 {
+		t.Fatalf("Update() before List = %v, %q, started %v", outcome, detail, p.started)
 	}
 }

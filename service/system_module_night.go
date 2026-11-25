@@ -52,25 +52,26 @@ func (n *NightModules) List(context.Context) ([]autoupdate.ModuleUpdate, error) 
 }
 
 // Update plans the update of the module, starts it as the dashboard does and waits for its job to end, at most
-// nightModuleBound. Only a job that succeeded is ok; detail says how one that did not ended.
-func (n *NightModules) Update(ctx context.Context, name string) (bool, string) {
+// nightModuleBound. What is refused before the unit is launched is NotStarted (a start error means systemd has no
+// unit: launchModule says a unit that may be there as a job); a job that ended other than succeeded is Failed.
+func (n *NightModules) Update(ctx context.Context, name string) (autoupdate.Outcome, string) {
 	n.mu.Lock()
 	want, listed := n.latest[name]
 	n.mu.Unlock()
 	if !listed {
-		return false, "not started: not listed"
+		return autoupdate.NotStarted, "not started: not listed"
 	}
 	plan, err := n.Provider.PlanSystemModuleUpdate(name)
 	switch {
 	case err != nil:
-		return false, "not started: " + err.Error()
+		return autoupdate.NotStarted, "not started: " + err.Error()
 	case plan.Refused != "":
-		return false, "not started: " + string(plan.Refused)
+		return autoupdate.NotStarted, "not started: " + string(plan.Refused)
 	case plan.Update == nil || plan.Update.Latest != want:
-		return false, "not started: the catalogue changed"
+		return autoupdate.NotStarted, "not started: the catalogue changed"
 	}
 	if _, err := n.Provider.StartSystemModuleUpdate(ctx, name, plan.PlanID); err != nil {
-		return false, "not started: " + err.Error()
+		return autoupdate.NotStarted, "not started: " + err.Error()
 	}
 	deadline := time.Now().Add(nightModuleBound)
 	for {
@@ -79,27 +80,27 @@ func (n *NightModules) Update(ctx context.Context, name string) (bool, string) {
 			return nightOutcome(status.Job)
 		}
 		if !time.Now().Before(deadline) {
-			return false, "still running after " + nightModuleBound.String()
+			return autoupdate.Failed, "still running after " + nightModuleBound.String()
 		}
 		select {
 		case <-ctx.Done():
-			return false, "not waited for to its end"
+			return autoupdate.Failed, "not waited for to its end"
 		case <-time.After(nightModulePoll):
 		}
 	}
 }
 
 // nightOutcome is the job's end as the night tells it.
-func nightOutcome(job modulecmd.Job) (bool, string) {
+func nightOutcome(job modulecmd.Job) (autoupdate.Outcome, string) {
 	switch {
 	case job.State == modulecmd.JobSucceeded:
-		return true, ""
+		return autoupdate.Updated, ""
 	case job.Undo == modulecmd.UndoRolledBack:
-		return false, "put back"
+		return autoupdate.Failed, "put back"
 	case job.Undo != "":
-		return false, "not fully put back: " + job.Undo
+		return autoupdate.Failed, "not fully put back: " + job.Undo
 	case job.Code != "":
-		return false, job.State + ": " + job.Code
+		return autoupdate.Failed, job.State + ": " + job.Code
 	}
-	return false, job.State
+	return autoupdate.Failed, job.State
 }

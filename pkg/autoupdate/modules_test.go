@@ -16,6 +16,7 @@ type fakeModules struct {
 	list     []ModuleUpdate
 	listErr  error
 	fail     map[string]string // name: the detail of an update that fails
+	refuse   map[string]string // name: the detail of an update the box refuses to start
 	onUpdate func(name string)
 
 	listed  int
@@ -27,13 +28,16 @@ func (f *fakeModules) List(context.Context) ([]ModuleUpdate, error) {
 	return append([]ModuleUpdate(nil), f.list...), f.listErr
 }
 
-func (f *fakeModules) Update(_ context.Context, name string) (bool, string) {
+func (f *fakeModules) Update(_ context.Context, name string) (Outcome, string) {
 	f.updated = append(f.updated, name)
 	if f.onUpdate != nil {
 		f.onUpdate(name)
 	}
+	if detail, refused := f.refuse[name]; refused {
+		return NotStarted, detail
+	}
 	if detail, failed := f.fail[name]; failed {
-		return false, detail
+		return Failed, detail
 	}
 	for i, m := range f.list {
 		if m.Name == name {
@@ -41,7 +45,7 @@ func (f *fakeModules) Update(_ context.Context, name string) (bool, string) {
 			break
 		}
 	}
-	return true, ""
+	return Updated, ""
 }
 
 // newModulesBox is newBox up to date (no release to start), turned on from 03:00
@@ -302,5 +306,65 @@ func TestTheModulesAreKeptInAutoupdateJSON(t *testing.T) {
 	write(t, a.Root, StateFile, `{"enabled":true,"window_start":"03:00","window_end":"05:00"}`)
 	if s := a.load(); !s.Enabled || s.Modules != nil {
 		t.Fatalf("an older autoupdate.json loads as %+v", s)
+	}
+}
+
+func TestARefusedModuleUpdateIsTriedAgainNextRound(t *testing.T) {
+	a, _, m, at, _ := newModulesBox(t)
+	m.refuse = map[string]string{"virt": "not started: busy"}
+	ctx := context.Background()
+
+	at("2026-09-24 03:30")
+	a.Check(ctx)
+	before := stateFile(t, a)
+	at("2026-09-25 03:30")
+	a.Check(ctx)
+	if !reflect.DeepEqual(m.updated, []string{"virt"}) {
+		t.Fatalf("updated %v, want virt tried once", m.updated)
+	}
+	if after := stateFile(t, a); after != before {
+		t.Fatalf("autoupdate.json = %s, want it as it was (not tried, first sight kept): %s", after, before)
+	}
+
+	delete(m.refuse, "virt")
+	at("2026-09-25 04:30")
+	a.Check(ctx)
+	if !reflect.DeepEqual(m.updated, []string{"virt", "virt"}) || len(m.list) != 0 {
+		t.Fatalf("updated %v, list %v: want virt tried again and updated", m.updated, m.list)
+	}
+}
+
+func TestARefusalDoesNotStopTheNextModule(t *testing.T) {
+	a, _, m, at, alerts := newModulesBox(t)
+	m.list = []ModuleUpdate{
+		{Name: "scan", Installed: "v0.1.2", Latest: "v0.1.3"},
+		{Name: "virt", Installed: "v0.2.4", Latest: "v0.2.5"},
+	}
+	m.refuse = map[string]string{"scan": "not started: apt_failed"}
+	ctx := context.Background()
+
+	at("2026-09-24 03:30")
+	a.Check(ctx)
+	at("2026-09-25 03:30")
+	a.Check(ctx)
+	if !reflect.DeepEqual(m.updated, []string{"scan", "virt"}) {
+		t.Fatalf("updated %v, want virt attempted after scan's refusal", m.updated)
+	}
+	if want := []string{"Modules updated: virt v0.2.4 → v0.2.5."}; !reflect.DeepEqual(*alerts, want) {
+		t.Fatalf("alerts %q, want %q: a refusal is not told", *alerts, want)
+	}
+}
+
+func TestNoAlertWhenNothingStarted(t *testing.T) {
+	a, _, m, at, alerts := newModulesBox(t)
+	m.refuse = map[string]string{"virt": "not started: busy"}
+	ctx := context.Background()
+
+	at("2026-09-24 03:30")
+	a.Check(ctx)
+	at("2026-09-25 03:30")
+	a.Check(ctx)
+	if len(m.updated) != 1 || len(*alerts) != 0 {
+		t.Fatalf("updated %v, alerts %q: want one refused attempt and no alert", m.updated, *alerts)
 	}
 }
