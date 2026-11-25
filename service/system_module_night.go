@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,12 +20,24 @@ var (
 )
 
 // NightModules is pkg/autoupdate's Modules on a module provider: the dashboard's own list, update plan, start and
-// status. It updates a module only to the tag its last List gave, so the night never installs a tag it did not wait for.
+// status. It updates a module only to the tag and from the repository its last List gave, so the night never installs a
+// tag it did not wait for, nor one from another origin.
 type NightModules struct {
 	Provider ModuleProvider
 
 	mu     sync.Mutex
-	latest map[string]string // the tag each module was listed with
+	latest map[string]nightTarget // what each module was listed with
+}
+
+// nightTarget is what the night may update a module to: the catalogue's tag and the repository it comes from.
+type nightTarget struct{ tag, repository string }
+
+// nightTargetOf is what the night may update m to; false when m has no update or is foreign without its owner's yes.
+func nightTargetOf(m modulecmd.ListModule) (nightTarget, bool) {
+	if m.Installed == nil || m.Update == nil || !m.Update.Available || m.Foreign && (m.AutoUpdate == nil || !*m.AutoUpdate) {
+		return nightTarget{}, false
+	}
+	return nightTarget{m.Update.Latest, m.Repository}, true
 }
 
 // List is the installed modules whose update the catalogue has (never a version it withdrew: the list does not offer
@@ -38,17 +51,17 @@ func (n *NightModules) List(context.Context) ([]autoupdate.ModuleUpdate, error) 
 	if !result.Catalogue.OK {
 		return nil, fmt.Errorf("the catalogue of the modules cannot be read: %s", result.Catalogue.Error)
 	}
-	list, latest := []autoupdate.ModuleUpdate{}, map[string]string{}
+	list, latest := []autoupdate.ModuleUpdate{}, map[string]nightTarget{}
 	for _, m := range result.Modules {
 		if m.Installed == nil || m.Update == nil || !m.Update.Available {
 			continue
 		}
 		allowed := m.AutoUpdate != nil && *m.AutoUpdate
 		list = append(list, autoupdate.ModuleUpdate{Name: m.Name, Installed: m.Update.Installed, Latest: m.Update.Latest, Foreign: m.Foreign, Allowed: allowed})
-		if m.Foreign && !allowed {
-			continue // the night leaves it alone; Update refuses it by name too
+		// a foreign module not allowed is left alone; Update refuses it by name too
+		if target, ok := nightTargetOf(m); ok {
+			latest[m.Name] = target
 		}
-		latest[m.Name] = m.Update.Latest
 	}
 	n.mu.Lock()
 	n.latest = latest
@@ -59,7 +72,8 @@ func (n *NightModules) List(context.Context) ([]autoupdate.ModuleUpdate, error) 
 // Update plans the update of the module, starts it as the dashboard does and waits for its job to end, at most
 // nightModuleBound. What is refused before the unit is launched is NotStarted (a start error means systemd has no
 // unit: launchModule says a unit that may be there as a job), and so is a job the unit refused; a job that ended other
-// than succeeded or refused is Failed.
+// than succeeded or refused is Failed. The list is read again first: a round lasts hours, and a "no" given since its List,
+// or another repository under the same tag, leaves the module alone.
 func (n *NightModules) Update(ctx context.Context, name string) (autoupdate.Outcome, string) {
 	n.mu.Lock()
 	want, listed := n.latest[name]
@@ -67,13 +81,29 @@ func (n *NightModules) Update(ctx context.Context, name string) (autoupdate.Outc
 	if !listed {
 		return autoupdate.NotStarted, "not started: not listed"
 	}
+	result, err := n.Provider.ListSystemModules()
+	switch {
+	case err != nil:
+		return autoupdate.NotStarted, "not started: " + err.Error()
+	case !result.Catalogue.OK:
+		return autoupdate.NotStarted, "not started: the catalogue of the modules cannot be read: " + result.Catalogue.Error
+	}
+	i := slices.IndexFunc(result.Modules, func(m modulecmd.ListModule) bool { return m.Name == name })
+	if i < 0 {
+		return autoupdate.NotStarted, "not started: not listed"
+	}
+	if now, ok := nightTargetOf(result.Modules[i]); !ok {
+		return autoupdate.NotStarted, "not started: not listed"
+	} else if now != want {
+		return autoupdate.NotStarted, "not started: the catalogue changed"
+	}
 	plan, err := n.Provider.PlanSystemModuleUpdate(name)
 	switch {
 	case err != nil:
 		return autoupdate.NotStarted, "not started: " + err.Error()
 	case plan.Refused != "":
 		return autoupdate.NotStarted, "not started: " + string(plan.Refused)
-	case plan.Update == nil || plan.Update.Latest != want:
+	case plan.Update == nil || plan.Update.Latest != want.tag:
 		return autoupdate.NotStarted, "not started: the catalogue changed"
 	}
 	if _, err := n.Provider.StartSystemModuleUpdate(ctx, name, plan.PlanID); err != nil {

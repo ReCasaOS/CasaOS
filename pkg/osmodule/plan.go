@@ -321,7 +321,7 @@ func Plan(cat Catalogue, name string, box Box) PlanResult {
 		r.Packages = PlanPackages{ToInstall: sortedCopy(sim.ToInstall), ToUpgrade: sortedCopy(sim.ToUpgrade), DownloadBytes: sim.DownloadBytes, ExtraBytes: sim.ExtraBytes, Known: sim.Known}
 	}
 	if r.Refused == "" {
-		r.PlanID = PlanID(entry.Name, entry.Tag, asset.SHA256, osID, osVersion, r.Packages.ToInstall)
+		r.PlanID = fromRepository(PlanID(entry.Name, entry.Tag, asset.SHA256, osID, osVersion, r.Packages.ToInstall), entry.Repository)
 	}
 	return r
 }
@@ -355,6 +355,16 @@ func PlanID(name, tag, archiveSHA256, osID, osVersion string, toInstall []string
 		OSVersion string   `json:"os_version"`
 	}{name, tag, archiveSHA256, sortedCopy(toInstall), osID, osVersion})
 	sum := sha256.Sum256(text)
+	return "m1-" + hex.EncodeToString(sum[:])[:32]
+}
+
+// fromRepository binds a plan's id to the repository its entry comes from (schema 3), so that a question and an install that read the catalogue at two times cannot
+// disagree on the module's origin. An entry without a repository (schema 1 and 2) keeps the id as it is.
+func fromRepository(id, repository string) string {
+	if repository == "" {
+		return id
+	}
+	sum := sha256.Sum256([]byte(id + "\n" + repository))
 	return "m1-" + hex.EncodeToString(sum[:])[:32]
 }
 

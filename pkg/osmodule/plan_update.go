@@ -291,7 +291,7 @@ func PlanUpdate(cat Catalogue, name string, box UpdateBox) PlanResult {
 		r.Update.Added = sortedCopy(sim.ToInstall)
 	}
 	if r.Refused == "" {
-		r.PlanID = UpdatePlanID(entry.Name, st.Tag, entry.Tag, asset.SHA256, osID, osVersion, r.Packages.ToInstall)
+		r.PlanID = fromRepository(UpdatePlanID(entry.Name, st.Tag, entry.Tag, asset.SHA256, osID, osVersion, r.Packages.ToInstall), entry.Repository)
 	}
 	return r
 }
