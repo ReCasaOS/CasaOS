@@ -134,6 +134,8 @@ type Env struct {
 	// OnlineCatalogueOff says that the online catalogue (/var/lib/casaos/modules/catalogue.json) is not read: [modules] OnlineCatalogue = false in the core's configuration. The zero
 	// value reads it.
 	OnlineCatalogueOff bool
+	// shippedOnly is --shipped: the modules of the shipped catalogue alone, as with OnlineCatalogueOff, and the versions the online one withdrew, when it is read and passes.
+	shippedOnly bool
 	// StepHook, when set, is called at the start and at the end of every step of an install and a remove, with the step and "begin" or "done": a test uses it to stop the run at a
 	// chosen point. Production leaves it nil.
 	StepHook func(ctx context.Context, step, phase string)

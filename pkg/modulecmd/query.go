@@ -72,7 +72,7 @@ func checkCatalogue(raw []byte, parse func([]byte) (osmodule.Catalogue, error)) 
 
 // loadCatalogue reads the catalogue of this release (the file the installer put at /usr/share/casaos/modules) and the one the box fetched (/var/lib/casaos/modules), and gives the
 // merge of the two. Only when CASAOS_MODULE_TEST is exactly "1" do CASAOS_MODULE_CATALOGUE and CASAOS_MODULE_ONLINE_CATALOGUE name other files. An online file that does not pass
-// counts for nothing and online says why; ok is true as soon as one of the two is good; with env.OnlineCatalogueOff the online file is not read at all. Nothing here reads the network.
+// counts for nothing and online says why; ok is true as soon as one of the two is good; with env.OnlineCatalogueOff the online file is not read at all; with --shipped (env.shippedOnly) the modules are those of the shipped file alone, with the versions withdrawn of an online file that passes. Nothing here reads the network.
 func loadCatalogue(env Env) catalogueState {
 	path, onlinePath := env.Roots.catalogue(), env.Roots.OnlineCatalogue()
 	if env.testMode() {
@@ -84,8 +84,15 @@ func loadCatalogue(env Env) catalogueState {
 		}
 	}
 	shipped := readCatalogueFile(path, osmodule.ParseCatalogue)
-	if env.OnlineCatalogueOff {
-		return catalogueState{cat: shipped.cat, ok: shipped.ok, err: shipped.err, detail: shipped.detail, online: OnlineInfo{Error: catalogueOff}}
+	if env.OnlineCatalogueOff || env.shippedOnly {
+		res := catalogueState{cat: shipped.cat, ok: shipped.ok, err: shipped.err, detail: shipped.detail, online: OnlineInfo{Error: catalogueOff}}
+		// --shipped takes no module from the online file, but no version it withdrew either; the setting off reads nothing online
+		if !env.OnlineCatalogueOff {
+			if on := readCatalogueFile(onlinePath, osmodule.ParseOnlineCatalogue); on.ok {
+				res.cat.Withdrawn = on.cat.Withdrawn
+			}
+		}
+		return res
 	}
 	on := readCatalogueFile(onlinePath, osmodule.ParseOnlineCatalogue)
 	res := catalogueState{cat: shipped.cat, ok: shipped.ok, err: shipped.err, detail: shipped.detail, online: OnlineInfo{Error: on.err}}
