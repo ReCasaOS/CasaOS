@@ -30,17 +30,13 @@ type catalogueState struct {
 	ok     bool
 	err    string
 	detail string
+	// online is what became of the online file; fromOnline says, by name, which entries of cat come from it.
+	online     OnlineInfo
+	fromOnline map[string]bool
 }
 
-// loadCatalogue reads the catalogue of this release: the file the installer put at /usr/share/casaos/modules, or, only when CASAOS_MODULE_TEST is exactly "1", the file that
-// CASAOS_MODULE_CATALOGUE names. A catalogue that does not pass is no catalogue at all.
-func loadCatalogue(env Env) catalogueState {
-	path := env.Roots.catalogue()
-	if env.testMode() {
-		if p := env.Getenv("CASAOS_MODULE_CATALOGUE"); p != "" {
-			path = p
-		}
-	}
+// readCatalogueFile reads and parses the file at path, with the same refusals for both catalogues. A catalogue that does not pass is no catalogue at all.
+func readCatalogueFile(path string, parse func([]byte) (osmodule.Catalogue, error)) catalogueState {
 	raw, err := readRegular(path, osmodule.MaxCatalogueBytes)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -50,7 +46,7 @@ func loadCatalogue(env Env) catalogueState {
 	case err != nil:
 		return catalogueState{err: catalogueUnreadable}
 	}
-	cat, err := osmodule.ParseCatalogue(raw)
+	cat, err := parse(raw)
 	var bad *osmodule.Invalid
 	if errors.As(err, &bad) {
 		return catalogueState{err: catalogueInvalid, detail: bad.Field + " " + bad.Reason}
@@ -65,6 +61,43 @@ func loadCatalogue(env Env) catalogueState {
 		}
 	}
 	return catalogueState{cat: cat, ok: true}
+}
+
+// loadCatalogue reads the catalogue of this release (the file the installer put at /usr/share/casaos/modules) and the one the box fetched (/var/lib/casaos/modules), and gives the
+// merge of the two. Only when CASAOS_MODULE_TEST is exactly "1" do CASAOS_MODULE_CATALOGUE and CASAOS_MODULE_ONLINE_CATALOGUE name other files. An online file that does not pass
+// counts for nothing and online says why; ok is true as soon as one of the two is good. Nothing here reads the network.
+func loadCatalogue(env Env) catalogueState {
+	path, onlinePath := env.Roots.catalogue(), env.Roots.OnlineCatalogue()
+	if env.testMode() {
+		if p := env.Getenv("CASAOS_MODULE_CATALOGUE"); p != "" {
+			path = p
+		}
+		if p := env.Getenv("CASAOS_MODULE_ONLINE_CATALOGUE"); p != "" {
+			onlinePath = p
+		}
+	}
+	shipped := readCatalogueFile(path, osmodule.ParseCatalogue)
+	on := readCatalogueFile(onlinePath, osmodule.ParseOnlineCatalogue)
+	res := catalogueState{cat: shipped.cat, ok: shipped.ok, err: shipped.err, detail: shipped.detail, online: OnlineInfo{Error: on.err}}
+	if !on.ok {
+		return res
+	}
+	res.online = OnlineInfo{OK: true, Serial: on.cat.Serial, Generated: on.cat.Generated}
+	res.ok, res.err, res.detail = true, "", ""
+	// the checks that say no are those of the system this box is (the os reads no network and no context)
+	bx := &box{ctx: context.Background(), env: &env}
+	osr := bx.OS()
+	sys := osmodule.System{OSID: osr.ID, OSVersion: osr.Version, OSFrom: osr.From, Arch: env.Arch, ReCasaOS: env.Version}
+	accepts := func(e osmodule.Entry) bool {
+		for _, c := range osmodule.SystemChecks(e, sys) {
+			if !c.OK {
+				return false
+			}
+		}
+		return true
+	}
+	res.cat, res.fromOnline = osmodule.Merge(shipped.cat, on.cat, accepts)
+	return res
 }
 
 func printJSON(w io.Writer, v any) error {
@@ -103,6 +136,16 @@ type CatalogueInfo struct {
 	OK     bool   `json:"ok"`
 	Error  string `json:"error,omitempty"`
 	Detail string `json:"detail,omitempty"`
+	// Online is what became of the catalogue the box fetched; nil only for a caller that does not read it (the image provider).
+	Online *OnlineInfo `json:"online,omitempty"`
+}
+
+// OnlineInfo says whether the online catalogue was read: its serial and date when it was, and if not why ("none", "unreadable" or "invalid").
+type OnlineInfo struct {
+	OK        bool   `json:"ok"`
+	Serial    int64  `json:"serial,omitempty"`
+	Generated string `json:"generated,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // A ListModule is a module of the catalogue or one that is installed. Catalogue says whether the catalogue of this release has it.
@@ -113,6 +156,7 @@ type ListModule struct {
 	Tier        string     `json:"tier"`
 	Tag         string     `json:"tag"`
 	Catalogue   bool       `json:"catalogue"`
+	Source      string     `json:"source"` // "shipped" | "online": the catalogue the entry was taken from
 	Installed   *Installed `json:"installed"`
 	System      SystemInfo `json:"system"`
 	Broken      string     `json:"broken,omitempty"`
@@ -168,7 +212,7 @@ func updateInfo(installed *string, latest string) *UpdateInfo {
 func List(ctx context.Context, env Env) (ListResult, error) {
 	env = env.withDefaults()
 	cs := loadCatalogue(env)
-	res := ListResult{Catalogue: CatalogueInfo{OK: cs.ok, Error: cs.err, Detail: cs.detail}, Modules: []ListModule{}}
+	res := ListResult{Catalogue: CatalogueInfo{OK: cs.ok, Error: cs.err, Detail: cs.detail, Online: &cs.online}, Modules: []ListModule{}}
 	bx := &box{ctx: ctx, env: &env}
 	installed, broken, err := bx.InstalledManifests()
 	if err != nil {
@@ -178,13 +222,16 @@ func List(ctx context.Context, env Env) (ListResult, error) {
 	sys := osmodule.System{OSID: osr.ID, OSVersion: osr.Version, OSFrom: osr.From, Arch: env.Arch, ReCasaOS: env.Version}
 	listed := map[string]bool{}
 	for _, e := range cs.cat.Modules {
-		m := ListModule{Name: e.Name, Title: e.Manifest.Title, Description: e.Manifest.Description, Tier: e.Tier, Tag: e.Tag, Catalogue: true, System: SystemInfo{Reasons: []string{}}}
+		m := ListModule{Name: e.Name, Title: e.Manifest.Title, Description: e.Manifest.Description, Tier: e.Tier, Tag: e.Tag, Catalogue: true, Source: "shipped", System: SystemInfo{Reasons: []string{}}}
 		for _, c := range osmodule.SystemChecks(e, sys) {
 			if !c.OK {
 				m.System.Reasons = append(m.System.Reasons, c.Code)
 			}
 		}
 		m.System.Supported = len(m.System.Reasons) == 0
+		if cs.fromOnline[e.Name] {
+			m.Source = "online"
+		}
 		if _, ok := installed[e.Name]; ok {
 			m.Installed = &Installed{Version: installedVersion(env, e.Name)}
 			m.Update = updateInfo(m.Installed.Version, e.Tag)

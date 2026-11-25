@@ -8,17 +8,18 @@ import (
 // Every path the commands touch is one of these, absolute as the box spells it, and is reached through a Roots: production uses the real file system (an empty Prefix), a test points
 // the Prefix at a temporary directory and nothing is read or written outside it. /DATA is not a path of the commands at all.
 const (
-	pathCatalogue    = "/usr/share/casaos/modules/catalogue.json"
-	pathManifests    = "/etc/casaos/modules"
-	pathState        = "/var/lib/casaos/modules"
-	pathLogs         = "/var/log/casaos"
-	pathOSRelease    = "/etc/os-release"
-	pathOSReleaseLib = "/usr/lib/os-release" // what os-release(5) falls back to when /etc has none
-	pathGateway      = "/etc/casaos/gateway.ini"
-	pathOSBusy       = "/var/lib/casaos/os-upgrade/busy"
-	pathAptConfD     = "/etc/apt/apt.conf.d"
-	pathDpkgStatus   = "/var/lib/dpkg/status"
-	pathForkRelease  = "/var/lib/casaos/fork-release"
+	pathCatalogue       = "/usr/share/casaos/modules/catalogue.json"
+	pathOnlineCatalogue = "/var/lib/casaos/modules/catalogue.json" // the catalogue the box fetched itself (schema 2)
+	pathManifests       = "/etc/casaos/modules"
+	pathState           = "/var/lib/casaos/modules"
+	pathLogs            = "/var/log/casaos"
+	pathOSRelease       = "/etc/os-release"
+	pathOSReleaseLib    = "/usr/lib/os-release" // what os-release(5) falls back to when /etc has none
+	pathGateway         = "/etc/casaos/gateway.ini"
+	pathOSBusy          = "/var/lib/casaos/os-upgrade/busy"
+	pathAptConfD        = "/etc/apt/apt.conf.d"
+	pathDpkgStatus      = "/var/lib/dpkg/status"
+	pathForkRelease     = "/var/lib/casaos/fork-release"
 )
 
 // dpkgLocks are the files that apt and dpkg lock while they work.
@@ -56,9 +57,12 @@ func (r Roots) Slash(real string) string {
 }
 
 func (r Roots) catalogue() string { return r.Path(pathCatalogue) }
-func (r Roots) manifests() string { return r.Path(pathManifests) }
-func (r Roots) state() string     { return r.Path(pathState) }
-func (r Roots) tmp() string       { return r.Path(pathState + "/tmp") }
+
+// OnlineCatalogue is where the catalogue fetched from the network is kept.
+func (r Roots) OnlineCatalogue() string { return r.Path(pathOnlineCatalogue) }
+func (r Roots) manifests() string       { return r.Path(pathManifests) }
+func (r Roots) state() string           { return r.Path(pathState) }
+func (r Roots) tmp() string             { return r.Path(pathState + "/tmp") }
 
 // backup is the folder an update keeps the files it replaces in, stage the one it unpacks the new archive into; both are under the area of the download.
 func (r Roots) backup(name string) string   { return r.tmp() + "/backup-" + name }
