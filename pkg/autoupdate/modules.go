@@ -112,14 +112,15 @@ func (a *AutoUpdate) checkModules(ctx context.Context) {
 // seeModules records the first sight of each listed tag and returns the
 // modules due: seen minAge ago and not tried, by name. Only a tag newer than
 // the one recorded starts its own wait: an older one (the shipped catalogue
-// while the online one cannot be read) keeps the record and is not due, so a
-// catalogue that falls back neither restarts the wait nor clears a try.
+// while the online one cannot be read), or the same version spelled otherwise,
+// keeps the record and is not due, so a catalogue that falls back neither
+// restarts the wait nor clears a try.
 // Modules no longer listed are kept for the same reason.
 func (s *State) seeModules(list []ModuleUpdate, now time.Time) (due []ModuleUpdate, changed bool) {
 	for _, m := range list {
 		seen, ok := s.Modules[m.Name]
 		if ok && seen.Tag != m.Latest {
-			if c, comparable := osmodule.CompareVersions(m.Latest, seen.Tag); comparable && c < 0 {
+			if c, comparable := osmodule.CompareVersions(m.Latest, seen.Tag); comparable && c <= 0 {
 				continue
 			}
 		}

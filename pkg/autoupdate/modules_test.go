@@ -455,3 +455,44 @@ func TestALaterTagAfterAnUpdateStartsAFreshWait(t *testing.T) {
 		t.Fatalf("updated %v, want v0.2.6 after its own wait", m.updated)
 	}
 }
+
+func TestATagSpelledDifferentlyKeepsItsWaitAndItsTry(t *testing.T) {
+	a, _, m, at, _ := newModulesBox(t)
+	m.fail = map[string]string{"virt": "put back"}
+	ctx := context.Background()
+
+	at("2026-09-23 03:30")
+	a.Check(ctx)
+	at("2026-09-24 03:30") // v0.2.5 fails
+	a.Check(ctx)
+	before := a.load().Modules["virt"]
+	m.list[0].Latest = "v0.2.05" // the same version, written otherwise
+	for day := 1; day <= 3; day++ {
+		at(local("2026-09-24 03:30").AddDate(0, 0, day).Format("2006-01-02 15:04"))
+		a.Check(ctx)
+	}
+	if got := a.load().Modules["virt"]; got != before {
+		t.Fatalf("virt in autoupdate.json = %+v, want the record kept: %+v", got, before)
+	}
+	if !reflect.DeepEqual(m.updated, []string{"virt"}) {
+		t.Fatalf("updated %v: the failed version was tried again under another spelling", m.updated)
+	}
+}
+
+func TestTheTryIsSavedBeforeTheUpdateStarts(t *testing.T) {
+	a, _, m, at, _ := newModulesBox(t)
+	ctx := context.Background()
+	at("2026-09-24 03:30")
+	a.Check(ctx)
+	at("2026-09-25 03:30")
+	m.onUpdate = func(name string) {
+		// what a core restarted now would read
+		if got := (&AutoUpdate{Root: a.Root}).load().Modules[name]; !got.Tried.Equal(local("2026-09-25 03:30")) {
+			t.Errorf("autoupdate.json during the update has %s as %+v, want tried at 03:30", name, got)
+		}
+	}
+	a.Check(ctx)
+	if len(m.updated) != 1 {
+		t.Fatalf("updated %v, want virt", m.updated)
+	}
+}
