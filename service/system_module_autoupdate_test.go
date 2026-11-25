@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -38,18 +39,34 @@ func TestTheOwnerAllowsTheNightToUpdateAForeignModule(t *testing.T) {
 	withOnlineCatalogueSetting(t, true)
 	b := newModuleBox(t)
 	b.install("virt")
+	b.write("/var/lib/casaos/modules/virt.version", boxModuleTag+"\n")
 	b.foreignCatalogue("virt", "someone/CasaOS-Virt")
 
 	if err := b.system.SetSystemModuleAutoUpdate("virt", true); err != nil {
 		t.Fatal(err)
 	}
-	if got := modulecmd.AutoAllowed(b.env.Roots); !reflect.DeepEqual(got, map[string]bool{"virt": true}) {
+	// the yes is stored with the repository of the entry the list shows
+	if got := modulecmd.AutoAllowed(b.env.Roots); !reflect.DeepEqual(got, map[string]string{"virt": "someone/CasaOS-Virt"}) {
 		t.Fatalf("allowed %v", got)
 	}
 	list, err := b.system.ListSystemModules()
 	if err != nil || len(list.Modules) != 1 || list.Modules[0].AutoUpdate == nil || !*list.Modules[0].AutoUpdate {
 		t.Fatalf("the list: %+v %v", list.Modules, err)
 	}
+	night := &NightModules{Provider: b.system}
+	if updates, err := night.List(context.Background()); err != nil || len(updates) != 1 || !updates[0].Foreign || !updates[0].Allowed {
+		t.Fatalf("the night: %+v %v", updates, err)
+	}
+	// the catalogue now lists a module of that name from another repository: the yes was not given for it
+	b.foreignCatalogue("virt", "bob/CasaOS-Virt")
+	list, err = b.system.ListSystemModules()
+	if err != nil || len(list.Modules) != 1 || list.Modules[0].AutoUpdate == nil || *list.Modules[0].AutoUpdate {
+		t.Fatalf("the list from another repository: %+v %v", list.Modules, err)
+	}
+	if updates, err := night.List(context.Background()); err != nil || len(updates) != 1 || !updates[0].Foreign || updates[0].Allowed {
+		t.Fatalf("the night from another repository: %+v %v", updates, err)
+	}
+	b.foreignCatalogue("virt", "someone/CasaOS-Virt")
 	if err := b.system.SetSystemModuleAutoUpdate("virt", false); err != nil {
 		t.Fatal(err)
 	}

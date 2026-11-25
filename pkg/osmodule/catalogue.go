@@ -319,6 +319,12 @@ func (e Entry) validAsset(arch string, a Asset, schema int) bool {
 	return m != nil && m[1] == arch && m[2] == e.Tag
 }
 
+// ValidRepository says whether s is "<owner>/<repo>" as an entry of schema 3 may name its repository: an owner of GitHub and the name of a component.
+func ValidRepository(s string) bool {
+	owner, repo, ok := strings.Cut(s, "/")
+	return ok && ownerRe.MatchString(owner) && componentRe.MatchString(repo)
+}
+
 // Foreign says whether the entry comes from a repository that is not one of ReCasaOS: its owner is not exactly ReCasaOS. An entry of schema 1 or 2 has no repository and is of ReCasaOS.
 func (e Entry) Foreign() bool {
 	owner, _, _ := strings.Cut(e.Repository, "/")

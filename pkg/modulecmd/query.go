@@ -173,7 +173,8 @@ type ListModule struct {
 	// Repository is the "<owner>/<repo>" an entry of schema 3 comes from; Foreign says it is not one of ReCasaOS.
 	Repository string `json:"repository,omitempty"`
 	Foreign    bool   `json:"foreign,omitempty"`
-	// AutoUpdate is there for a module that is foreign and installed: whether its owner lets the night update it (AutoAllowed). A module of ReCasaOS follows the general switch.
+	// AutoUpdate is there for a module that is foreign and installed: whether its owner lets the night update it from this repository (AutoAllowed). A module of ReCasaOS follows the
+	// general switch.
 	AutoUpdate *bool `json:"auto_update,omitempty"`
 	// Withdrawn is there when the version that is installed is one the online catalogue withdrew.
 	Withdrawn *WithdrawnInfo `json:"withdrawn,omitempty"`
@@ -275,7 +276,9 @@ func List(ctx context.Context, env Env) (ListResult, error) {
 			m.Update = updateInfo(m.Installed.Version, e.Tag)
 			m.Withdrawn = withdrawnInfo(cs.cat, e.Name, m.Installed.Version)
 			if m.Foreign {
-				on := allowed[e.Name]
+				// a yes is for the repository it was given for, not for any module of that name
+				repo, there := allowed[e.Name]
+				on := there && repo == e.Repository
 				m.AutoUpdate = &on
 			}
 		} else if slices.Contains(broken, e.Name) {

@@ -417,6 +417,12 @@ func runRemove(ctx context.Context, env Env, c command) (code int) {
 	j.marker(StepDone, "done")
 	j.result("ok", StepDone, "-", "-")
 	j.say("removed: %s", c.name)
+	// the owner's yes for the night was for this install: one installed again waits for a yes of its own. Best effort: the module is removed whatever comes of it
+	if _, there := AutoAllowed(env.Roots)[c.name]; there {
+		if err := SetAutoAllowed(env.Roots, c.name, "", false); err != nil {
+			j.say("left: %s (the yes for the automatic updates of %s could not be taken out: %s)", pathAutoAllow, c.name, printable(err.Error(), 200))
+		}
+	}
 	j.sayLeftovers(c.name, osmodule.PackagesFor(manifest, env.Arch))
 	if j.keptBackup != "" {
 		j.say("the backup in %s was not touched: it is the one copy of the files of the old version, and is deleted by hand", j.keptBackup)

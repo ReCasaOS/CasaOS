@@ -126,7 +126,8 @@ func (s *systemService) SetSystemModuleAutoUpdate(name string, enabled bool) err
 	case !list.Modules[i].Foreign:
 		return refuseModule(ModuleNotForeign, "This module is not one written outside ReCasaOS that the catalogue lists: the general setting of automatic updates decides for it.", nil)
 	}
-	return modulecmd.SetAutoAllowed(s.systemPackageUpdater().moduleWorld().Roots, name, enabled)
+	// the yes is for the repository the list shows the module from now
+	return modulecmd.SetAutoAllowed(s.systemPackageUpdater().moduleWorld().Roots, name, list.Modules[i].Repository, enabled)
 }
 
 // listModules is the list of the modules of this release and what the box says of each. A catalogue that is not there or does not pass is an empty list that says so (catalogue.ok is false).
