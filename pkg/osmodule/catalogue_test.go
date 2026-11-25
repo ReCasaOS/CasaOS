@@ -353,3 +353,73 @@ func TestAModuleOfTheImageHasNoAssets(t *testing.T) {
 		t.Error("an archive module without assets")
 	}
 }
+
+// onlineText is a catalogue of schema 2 with one module, head is what comes between the schema and the modules.
+func onlineText(head string) string {
+	return `{"schema":2,` + head + `"modules":[` + entryText("virt") + `]}`
+}
+
+func TestOnlineCatalogueIsTaken(t *testing.T) {
+	got, err := ParseOnlineCatalogue([]byte(onlineText(`"serial":7,"generated":"2026-11-25T10:00:00Z",`)))
+	if err != nil || got.Serial != 7 || got.Generated != "2026-11-25T10:00:00Z" || len(got.Modules) != 1 {
+		t.Fatalf("%+v, %v", got, err)
+	}
+}
+
+func TestOnlineCatalogueNeedsASerial(t *testing.T) {
+	const date = `"generated":"2026-11-25T10:00:00Z",`
+	for name, head := range map[string]string{
+		"none": date, "zero": `"serial":0,` + date, "negative": `"serial":-1,` + date, "a text": `"serial":"3",` + date, "a fraction": `"serial":1.5,` + date, "null": `"serial":null,` + date,
+	} {
+		_, err := ParseOnlineCatalogue([]byte(onlineText(head)))
+		var inv *Invalid
+		if !errors.As(err, &inv) || inv.Field != "serial" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestOnlineCatalogueNeedsADate(t *testing.T) {
+	for name, head := range map[string]string{
+		"none": `"serial":1,`, "a number": `"serial":1,"generated":5,`, "not a date": `"serial":1,"generated":"yesterday",`,
+		"not in UTC": `"serial":1,"generated":"2026-11-25T10:00:00+01:00",`, "empty": `"serial":1,"generated":"",`,
+	} {
+		_, err := ParseOnlineCatalogue([]byte(onlineText(head)))
+		var inv *Invalid
+		if !errors.As(err, &inv) || inv.Field != "generated" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestOnlineCatalogueRefusesSchemaOne(t *testing.T) {
+	_, err := ParseOnlineCatalogue([]byte(catalogueText(entryText("virt"))))
+	var inv *Invalid
+	if !errors.As(err, &inv) || inv.Field != "schema" {
+		t.Fatal(err)
+	}
+}
+
+func TestParseCatalogueRefusesSchemaTwo(t *testing.T) {
+	_, err := ParseCatalogue([]byte(onlineText(`"serial":1,"generated":"2026-11-25T10:00:00Z",`)))
+	var inv *Invalid
+	if !errors.As(err, &inv) || inv.Field != "schema" {
+		t.Fatal(err)
+	}
+}
+
+func TestOnlineCatalogueRefusesAnUnknownField(t *testing.T) {
+	_, err := ParseOnlineCatalogue([]byte(onlineText(`"serial":1,"generated":"2026-11-25T10:00:00Z","extra":1,`)))
+	var inv *Invalid
+	if !errors.As(err, &inv) {
+		t.Fatal(err)
+	}
+}
+
+func TestACatalogueOfAReleaseHasNoSerial(t *testing.T) {
+	_, err := ParseCatalogue([]byte(strings.Replace(catalogueText(entryText("virt")), `"modules"`, `"serial":1,"modules"`, 1)))
+	var inv *Invalid
+	if !errors.As(err, &inv) {
+		t.Fatal(err)
+	}
+}
