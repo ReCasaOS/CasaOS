@@ -88,11 +88,19 @@ func TestEachEventsAlert(t *testing.T) {
 		{"app:container-healthy", with(immich), alert{"app:immich:runtime", Apps, "Resolved: Immich runs normally again."}, true},
 		{
 			"auto-update:night-end", map[string]string{"auto-update:updated": "jellyfin,immich", "auto-update:failed": "sonarr"},
-			alert{"auto-update-night:jellyfin,immich|sonarr", AppUpdates, "Tonight's automatic updates: updated jellyfin, immich; failed for sonarr (each runs the version it had)."}, false,
+			alert{"auto-update-night:jellyfin,immich|sonarr|", AppUpdates, "Tonight's automatic updates: updated jellyfin, immich; failed for sonarr (each runs the version it had)."}, false,
 		},
 		{
 			"auto-update:night-end", map[string]string{"auto-update:updated": "plex", "auto-update:failed": ""},
-			alert{"auto-update-night:plex|", AppUpdates, "Tonight's automatic updates: updated plex."}, false,
+			alert{"auto-update-night:plex||", AppUpdates, "Tonight's automatic updates: updated plex."}, false,
+		},
+		{
+			"auto-update:night-end", map[string]string{"auto-update:blocked": "jellyfin"},
+			alert{"auto-update-night:||jellyfin", AppUpdates, "Tonight's automatic updates: blocked for jellyfin (the new version has more critical vulnerabilities)."}, false,
+		},
+		{
+			"auto-update:night-end", map[string]string{"auto-update:updated": "immich", "auto-update:failed": "plex", "auto-update:blocked": "jellyfin"},
+			alert{"auto-update-night:immich|plex|jellyfin", AppUpdates, "Tonight's automatic updates: updated immich; failed for plex (each runs the version it had); blocked for jellyfin (the new version has more critical vulnerabilities)."}, false,
 		},
 		{
 			"newer-tags:found", map[string]string{"newer-tags:found": `[{"app":"immich","image":"postgres:16.2","current":"16.2","tag":"16.4","level":"minor"}]`},
@@ -531,4 +539,19 @@ func TestTheVulnScanModuleIsAFeed(t *testing.T) {
 		}
 	}
 	t.Fatal("no feed follows the source vuln-scan")
+}
+
+func TestNightEndWithNothingIsNoAlert(t *testing.T) {
+	p := map[string]string{"auto-update:updated": "", "auto-update:failed": "", "auto-update:blocked": ""}
+	if a, _, ok := fromEvent("auto-update:night-end", p); ok {
+		t.Fatalf("fromEvent() = %+v, want no alert", a)
+	}
+}
+
+func TestNightEndKeyChangesWithUpdated(t *testing.T) {
+	one, _, _ := fromEvent("auto-update:night-end", map[string]string{"auto-update:updated": "immich", "auto-update:blocked": "jellyfin"})
+	two, _, _ := fromEvent("auto-update:night-end", map[string]string{"auto-update:updated": "plex", "auto-update:blocked": "jellyfin"})
+	if one.key == two.key {
+		t.Fatalf("both nights share the key %q", one.key)
+	}
 }

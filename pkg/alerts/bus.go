@@ -326,9 +326,11 @@ func fromEvent(name string, p map[string]string) (a alert, resolved, ok bool) {
 }
 
 // nightAlert is what the night's automatic updates did: the apps updated, and those whose
-// update failed (each runs the version it had).
+// update failed (each runs the version it had), and those held back because the new image has
+// more critical vulnerabilities than the installed one.
 func nightAlert(p map[string]string) (alert, bool, bool) {
 	updated, failed := names(p["auto-update:updated"]), names(p["auto-update:failed"])
+	blocked := names(p["auto-update:blocked"])
 	var parts []string
 	if len(updated) > 0 {
 		parts = append(parts, "updated "+strings.Join(updated, ", "))
@@ -336,11 +338,14 @@ func nightAlert(p map[string]string) (alert, bool, bool) {
 	if len(failed) > 0 {
 		parts = append(parts, "failed for "+strings.Join(failed, ", ")+" (each runs the version it had)")
 	}
+	if len(blocked) > 0 {
+		parts = append(parts, "blocked for "+strings.Join(blocked, ", ")+" (the new version has more critical vulnerabilities)")
+	}
 	if len(parts) == 0 {
 		return alert{}, false, false
 	}
 	sentence := truncate("Tonight's automatic updates: "+strings.Join(parts, "; "), 400)
-	return alert{key: "auto-update-night:" + p["auto-update:updated"] + "|" + p["auto-update:failed"], category: AppUpdates, sentence: sentence + "."}, false, true
+	return alert{key: "auto-update-night:" + p["auto-update:updated"] + "|" + p["auto-update:failed"] + "|" + p["auto-update:blocked"], category: AppUpdates, sentence: sentence + "."}, false, true
 }
 
 // newerTagsAlert is the newer versions of images pinned to one, found since they were last
