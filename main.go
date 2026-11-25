@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -270,6 +271,9 @@ func main() {
 		return err
 	}
 	autoupdate.Default.Busy = service.MyService.System().MaintenanceBusy
+	// After ReCasaOS, the night updates the installed modules through the dashboard's own plan and start.
+	autoupdate.Default.Modules = &service.NightModules{Provider: service.MyService.System()}
+	autoupdate.Default.NotifyModules = alerts.Default.ModuleUpdates
 	// The update of Docker stops every container: it waits for the apps that AppManagement says
 	// are being installed, updated, backed up or restored, and does not start when it cannot ask.
 	service.MyService.System().SetAppOperations(func(ctx context.Context) ([]string, error) {
@@ -312,6 +316,15 @@ func main() {
 	}
 	go purgeTrash()
 	if _, err := crontab.AddFunc("@every 6h", purgeTrash); err != nil {
+		logger.Error("add crontab error", zap.Error(err))
+	}
+	// the online catalogue of the modules: at start after up to two minutes (boxes that start together do not ask at once), then every six hours
+	refreshModules := func() { service.MyService.System().RefreshSystemModuleCatalogue(context.Background()) }
+	go func() {
+		time.Sleep(rand.N(2 * time.Minute))
+		refreshModules()
+	}()
+	if _, err := crontab.AddFunc("@every 6h", refreshModules); err != nil {
 		logger.Error("add crontab error", zap.Error(err))
 	}
 

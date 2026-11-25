@@ -37,6 +37,8 @@ var (
 	}
 	ServerInfo      = &model.ServerModel{}
 	FileSettingInfo = &model.FileSetting{}
+	// a key that is not in the file keeps this value: on by default
+	ModulesInfo = &model.ModulesSetting{OnlineCatalogue: true}
 
 	Cfg            *ini.File
 	ConfigFilePath string
@@ -78,6 +80,7 @@ func InitSetup(config string, sample string) {
 	mapTo("server", ServerInfo)
 	mapTo("file", FileSettingInfo)
 	mapTo("common", CommonInfo)
+	mapTo("modules", ModulesInfo)
 }
 
 // 映射

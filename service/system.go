@@ -118,6 +118,8 @@ type SystemService interface {
 	SetOSUpgradeNotifier(notify func(key, sentence string))
 	// The modules (system_module_provider.go): the module assistant's, or the system image's ([server] ImageManaged).
 	ModuleProvider
+	// RefreshSystemModuleCatalogue fetches the online catalogue of the modules once, when [modules] OnlineCatalogue is on and the host is not image-managed, and logs what became of it.
+	RefreshSystemModuleCatalogue(ctx context.Context)
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()

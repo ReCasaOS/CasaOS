@@ -58,7 +58,6 @@ type Result struct {
 	Data    interface{} `json:"data" example:"返回结果"`
 }
 
-
 type FileSetting struct {
 	ShareDir    []string `json:"share_dir" delim:"|"`
 	DownloadDir string   `json:"download_dir"`
@@ -66,6 +65,13 @@ type FileSetting struct {
 	// (pkg/fileroots); empty: anywhere (unchanged)
 	ManagementRoots string
 }
+
+// ModulesSetting is the [modules] section. OnlineCatalogue false: the box neither fetches the
+// online catalogue of the modules nor reads the one it already has.
+type ModulesSetting struct {
+	OnlineCatalogue bool
+}
+
 type BaseInfo struct {
 	Hash       string `json:"i"`
 	Version    string `json:"v"`

@@ -21,6 +21,11 @@ func (h *Hub) AutoUpdate(result, release string) {
 	}
 }
 
+// ModuleUpdates tells what a night did with the modules: one sentence a round, which names its tags.
+func (h *Hub) ModuleUpdates(sentence string) {
+	h.raise(alert{key: "modules:" + sentence, category: Updates, sentence: sentence})
+}
+
 // checkRelease announces a release newer than the one installed, once per
 // release, when automatic updates are off: they announce their own. It looks
 // at most once a day, through the update button's own version check.

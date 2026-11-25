@@ -41,6 +41,10 @@ func Main(ctx context.Context, args []string, env Env) (code int) {
 		fmt.Fprintf(env.Stderr, "casaos module: %v\n%s\n", err, usage)
 		return ExitRefused
 	}
+	if c.shipped {
+		// the list, the update's plan and its own load all read env: the shipped file alone, as with [modules] OnlineCatalogue = false
+		env.OnlineCatalogueOff = true
+	}
 	switch c.verb {
 	case "list":
 		res, err := List(ctx, env)
@@ -98,9 +102,11 @@ func Production() Env {
 		Getenv: os.Getenv, EUID: os.Geteuid,
 		// the release of the distribution (the one min_recasaos is a number of), not the version of this component, and not the release that this binary was built for either
 		Arch: runtime.GOARCH, Version: distributionVersion(Roots{}),
-		Download: NewHTTPDownloader(),
-		Clock:    realClock{},
-		Host:     newHost(),
+		// the core sets it from the configuration it was started with; the command reads the same file
+		OnlineCatalogueOff: onlineCatalogueOff(Roots{}),
+		Download:           NewHTTPDownloader(),
+		Clock:              realClock{},
+		Host:               newHost(),
 	}
 	env.Runner = newRunner(env.Roots)
 	env.Sandbox = newSandbox(env.Roots)

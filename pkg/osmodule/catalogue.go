@@ -1,18 +1,25 @@
 package osmodule
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The catalogue of a release of ReCasaOS: the module versions that this release has been tested with, installed with it at /usr/share/casaos/modules/catalogue.json. Nothing that a module's
 // author publishes reaches a box by itself: the box installs what the catalogue names, and only the archive whose sha256 the catalogue gives. The file is read as data and as a whole: if one
 // rule is broken anywhere in it there is no module at all and an error, never the entries that happened to pass.
 
-// CatalogueSchema is the one version of the catalogue that is read.
-const CatalogueSchema = 1
+// CatalogueSchema is the schema of the catalogue a release ships; OnlineCatalogueSchema is the one of the catalogue published online, which is schema 1 plus a serial and the date it was
+// generated.
+const (
+	CatalogueSchema       = 1
+	OnlineCatalogueSchema = 2
+)
 
 // the bounds of a catalogue
 const (
@@ -38,9 +45,21 @@ const (
 )
 
 // A Catalogue is the list of the modules a release of ReCasaOS can install.
+//
+// Serial and Generated are those of an online catalogue (schema 2) and empty in a shipped one: Serial grows with each publication, Generated is an RFC 3339 UTC date.
 type Catalogue struct {
-	Schema  int     `json:"schema"`
-	Modules []Entry `json:"modules"`
+	Schema    int     `json:"schema"`
+	Serial    int64   `json:"serial,omitempty"`
+	Generated string  `json:"generated,omitempty"`
+	Modules   []Entry `json:"modules"`
+}
+
+// catalogueWire is the text of a catalogue of either schema: the head fields of schema 2 are kept raw so that a wrong one is named, not just unreadable.
+type catalogueWire struct {
+	Schema    int             `json:"schema"`
+	Serial    json.RawMessage `json:"serial"`
+	Generated json.RawMessage `json:"generated"`
+	Modules   []Entry         `json:"modules"`
 }
 
 // An Entry is a module at a version: where its release is (the repository, the tag and the commit it was built from), the archive of each architecture with the sha256 it must have, and
@@ -78,18 +97,35 @@ var (
 	archiveRe = regexp.MustCompile(`^linux-(amd64|arm64)-casaos-[a-z-]+-(v[0-9.]+)\.tar\.gz$`)
 )
 
-// ParseCatalogue reads a catalogue and checks everything in it. The error is an *Invalid that names the place; the Catalogue is empty whenever there is an error.
-func ParseCatalogue(raw []byte) (Catalogue, error) {
+// ParseCatalogue reads a catalogue of a release (schema 1) and checks everything in it. The error is an *Invalid that names the place; the Catalogue is empty whenever there is an error.
+func ParseCatalogue(raw []byte) (Catalogue, error) { return parseCatalogue(raw, CatalogueSchema) }
+
+// ParseOnlineCatalogue reads an online catalogue (schema 2): the rules of ParseCatalogue, and a serial of 1 or more and the date it was generated.
+func ParseOnlineCatalogue(raw []byte) (Catalogue, error) {
+	return parseCatalogue(raw, OnlineCatalogueSchema)
+}
+
+func parseCatalogue(raw []byte, schema int) (Catalogue, error) {
 	if len(raw) > MaxCatalogueBytes {
 		return Catalogue{}, invalid("catalogue", ReasonTooLarge)
 	}
-	var c Catalogue
-	if err := decodeStrict(raw, &c); err != nil {
+	var w catalogueWire
+	if err := decodeStrict(raw, &w); err != nil {
 		return Catalogue{}, invalid("catalogue", ReasonUnreadable)
 	}
+	c := Catalogue{Schema: w.Schema, Modules: w.Modules}
 	switch {
-	case c.Schema != CatalogueSchema:
+	case c.Schema != schema:
 		return Catalogue{}, invalid("schema", ReasonSchema)
+	case schema == CatalogueSchema && (w.Serial != nil || w.Generated != nil):
+		return Catalogue{}, invalid("catalogue", ReasonUnreadable)
+	}
+	if schema == OnlineCatalogueSchema {
+		if err := c.readOnlineHead(w); err != nil {
+			return Catalogue{}, err
+		}
+	}
+	switch {
 	case c.Modules == nil:
 		return Catalogue{}, invalid("modules", ReasonMissing)
 	case len(c.Modules) > MaxCatalogueModules:
@@ -106,6 +142,26 @@ func ParseCatalogue(raw []byte) (Catalogue, error) {
 		seen[e.Name] = true
 	}
 	return c, nil
+}
+
+// readOnlineHead sets and checks the serial (a whole number of 1 or more) and the date (RFC 3339 in UTC, "Z").
+func (c *Catalogue) readOnlineHead(w catalogueWire) error {
+	if w.Serial == nil {
+		return invalid("serial", ReasonMissing)
+	}
+	if err := json.Unmarshal(w.Serial, &c.Serial); err != nil || c.Serial < 1 || bytes.ContainsAny(w.Serial, ".eE") {
+		return invalid("serial", ReasonValue)
+	}
+	if w.Generated == nil {
+		return invalid("generated", ReasonMissing)
+	}
+	if err := json.Unmarshal(w.Generated, &c.Generated); err != nil {
+		return invalid("generated", ReasonValue)
+	}
+	if t, err := time.Parse(time.RFC3339, c.Generated); err != nil || !strings.HasSuffix(c.Generated, "Z") || t.IsZero() {
+		return invalid("generated", ReasonValue)
+	}
+	return nil
 }
 
 // validate checks an entry; at is the place of it in the catalogue, for the error.

@@ -40,7 +40,7 @@ func clientTo(srv *httptest.Server) *http.Client {
 func get(t *testing.T, srv *httptest.Server, max int64, rawURL string) ([]byte, error) {
 	t.Helper()
 	var buf bytes.Buffer
-	_, err := httpDownloader{client: clientTo(srv), max: max}.Get(context.Background(), rawURL, &buf)
+	_, err := httpDownloader{client: clientTo(srv), max: max, timeout: downloadTryTime}.Get(context.Background(), rawURL, &buf)
 	return buf.Bytes(), err
 }
 

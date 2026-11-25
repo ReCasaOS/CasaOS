@@ -131,6 +131,9 @@ type Env struct {
 	// Terminal says whether there is someone to ask.
 	Terminal func() bool
 	Host     Host
+	// OnlineCatalogueOff says that the online catalogue (/var/lib/casaos/modules/catalogue.json) is not read: [modules] OnlineCatalogue = false in the core's configuration. The zero
+	// value reads it.
+	OnlineCatalogueOff bool
 	// StepHook, when set, is called at the start and at the end of every step of an install and a remove, with the step and "begin" or "done": a test uses it to stop the run at a
 	// chosen point. Production leaves it nil.
 	StepHook func(ctx context.Context, step, phase string)

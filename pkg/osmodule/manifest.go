@@ -244,15 +244,17 @@ func listOf(field string, values []string, valid func(string) bool, max int) err
 // reservedUnits are the units of the box that a module's unit cannot be: the transient units with which the core changes the box (the update of ReCasaOS, of the packages and of Docker,
 // the upgrade of the operating system and its measures), which the rest of the box waits for while they run; the services of the core and of the distribution; and the units of apt, which
 // the plan of an install counts as a package manager at work. The prefixes are the units of the jobs of the modules (casaos-module-<name>.service: a module of that unit would be stopped by
-// its own remove, and would keep the box busy), and the instances of the template that mounts a USB disk.
+// its own remove, and would keep the box busy), those of the installer's update of each module (casaos-update-modules-<name>-<timestamp>.service, which the box waits for as well), and
+// the instances of the template that mounts a USB disk.
 var (
 	reservedUnits = []string{
 		"casaos-update.service", "casaos-package-update.service", "casaos-docker-update.service", "casaos-os-upgrade.service", "casaos-os-upgrade-measure.service",
+		"casaos-update-modules.service",
 		"casaos.service", "casaos-gateway.service", "casaos-user-service.service", "casaos-message-bus.service", "casaos-local-storage.service", "casaos-app-management.service",
 		"rclone.service", "casaos-wsdd.service",
 		"apt-daily.service", "apt-daily-upgrade.service",
 	}
-	reservedUnitPrefixes = []string{"casaos-module-", "usb-mount@"}
+	reservedUnitPrefixes = []string{"casaos-module-", "casaos-update-modules-", "usb-mount@"}
 )
 
 // ValidUnit says whether a text is the unit of a module: a service by the pattern of the manifest that is none of the reserved ones.

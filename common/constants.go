@@ -15,6 +15,9 @@ const (
 	// UPDATE_UNIT is the transient systemd unit the update runs in, detached
 	// from the core it restarts: the button's and the automatic one.
 	UPDATE_UNIT = "casaos-update"
+	// MODULES_CATALOGUE_URL is the online catalogue of the modules (schema 2) the box fetches
+	// itself; there is no other address, and [modules] OnlineCatalogue = false turns it off.
+	MODULES_CATALOGUE_URL = "https://github.com/ReCasaOS/modules/releases/latest/download/catalogue-2.json"
 )
 
 // VERSION is this component's own version. The release build stamps it with the tag
