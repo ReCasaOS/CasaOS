@@ -84,19 +84,32 @@ func TestMountInfoIsReadAsProcSaysIt(t *testing.T) {
 }
 
 // The names of a list are made once each: a list of fifty thousand different packages, said twice, is not a list that is
-// searched for each name it is given.
+// searched for each name it is given. Measured as growth on this machine, not as a time: eight times the names take
+// about ten times as long when each is made once (the sort), and sixty-four times when the list is searched for each.
 func TestTheNamesOfAListAreMadeOnceEachAndInTime(t *testing.T) {
-	var list []string
-	for i := 0; i < 50000; i++ {
-		list = append(list, "pkg"+strconv.Itoa(i))
+	listOf := func(n int) []string {
+		var list []string
+		for i := 0; i < n; i++ {
+			list = append(list, "pkg"+strconv.Itoa(i))
+		}
+		list = append(list, list...)
+		return append(list, "Not A Name", "")
 	}
-	list = append(list, list...)
-	list = append(list, "Not A Name", "")
-	started := time.Now()
+	fastest := func(list []string) time.Duration { // the least disturbed of three runs
+		best := time.Duration(1<<63 - 1)
+		for range 3 {
+			started := time.Now()
+			names(list)
+			best = min(best, time.Since(started))
+		}
+		return best
+	}
+	list := listOf(50000)
+	small, large := fastest(listOf(50000/8)), fastest(list)
+	if large > 32*small {
+		t.Errorf("eight times the names took %v against %v: more than 32 times as long", large, small)
+	}
 	got := names(list)
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Errorf("names took %v", elapsed)
-	}
 	if len(got) != 50000 || !slices.IsSorted(got) || got[0] != "pkg0" {
 		t.Errorf("%d names, sorted %v, first %q", len(got), slices.IsSorted(got), got[0])
 	}
