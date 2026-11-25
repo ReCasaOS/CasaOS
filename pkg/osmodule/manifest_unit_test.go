@@ -33,6 +33,7 @@ func TestTheUnitOfAModuleIsNoUnitOfTheCoreOrOfAJob(t *testing.T) {
 		},
 		"the units that the maintenance check lists": {
 			"casaos-update.service", "casaos-package-update.service", "casaos-docker-update.service", "casaos-os-upgrade.service",
+			"casaos-update-modules.service", "casaos-update-modules-virt-1764030000.service",
 		},
 		"the services of the core and of the distribution": {
 			"casaos.service", "casaos-gateway.service", "casaos-user-service.service", "casaos-message-bus.service", "casaos-local-storage.service", "casaos-app-management.service",
