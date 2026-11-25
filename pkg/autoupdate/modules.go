@@ -195,7 +195,7 @@ func (a *AutoUpdate) checkWithdrawn(ctx context.Context) {
 	told := a.load().Withdrawn
 	for _, w := range list {
 		pair := ModuleTag{Name: w.Name, Tag: w.Tag}
-		// not told (no channel, the category off): told next hour
+		// not told (no channel, the category off, no channel took it): told next hour
 		if slices.Contains(told, pair) || !a.NotifyWithdrawn(w.Name, w.Tag, w.Reason) {
 			continue
 		}

@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -121,5 +122,29 @@ func TestAWithdrawnModuleVersionIsTold(t *testing.T) {
 	saveConfig(t, off, c)
 	if off.ModuleWithdrawn("virt", "v0.2.4", reason) {
 		t.Fatal("told with the updates category off")
+	}
+}
+
+// A withdrawal that no channel took is not on record: the next hour, with the network back, tells it.
+func TestAWithdrawnModuleVersionNotSentIsToldNextHour(t *testing.T) {
+	h, o, now := newHub(t)
+	o.fail[phone] = errors.New("network is unreachable")
+	o.fail[mail] = errors.New("network is unreachable")
+
+	if h.ModuleWithdrawn("virt", "v0.2.4", "Broken.") {
+		t.Fatal("said told while every channel failed")
+	}
+	h.sending.Wait()
+	if _, sent := h.sent["withdrawn:virt:v0.2.4"]; sent {
+		t.Fatal("on record while no channel took it")
+	}
+
+	*now = now.Add(time.Hour)
+	delete(o.fail, phone)
+	if !h.ModuleWithdrawn("virt", "v0.2.4", "Broken.") {
+		t.Fatal("not told with the phone back")
+	}
+	if got := o.texts(phone); len(got) != 1 {
+		t.Fatalf("sent %q, want it told once", got)
 	}
 }
