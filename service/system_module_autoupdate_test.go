@@ -98,8 +98,12 @@ func TestTheAutoUpdateOfAModuleIsRefusedWhenItIsNotAnInstalledForeignOne(t *test
 			b := newModuleBox(t)
 			c.setup(b)
 			for _, on := range []bool{true, false} {
-				if got := moduleRefusalCode(b.system.SetSystemModuleAutoUpdate("virt", on)); got != c.code {
-					t.Errorf("on = %v: refused with %q, want %q", on, got, c.code)
+				want := c.code
+				if !on && want == ModuleNotInstalled {
+					want = "" // a no is taken for a module that is not installed: it drops a yes left behind
+				}
+				if got := moduleRefusalCode(b.system.SetSystemModuleAutoUpdate("virt", on)); got != want {
+					t.Errorf("on = %v: refused with %q, want %q", on, got, want)
 				}
 			}
 			if b.exists("/var/lib/casaos/modules/auto-update.json") {
@@ -110,5 +114,27 @@ func TestTheAutoUpdateOfAModuleIsRefusedWhenItIsNotAnInstalledForeignOne(t *test
 	b := newModuleBox(t)
 	if got := moduleRefusalCode(b.system.SetSystemModuleAutoUpdate("Virt", true)); got != ModuleBadRequest {
 		t.Errorf("a bad name: %q", got)
+	}
+}
+
+// A yes left in the file for a module that is no longer installed, or no longer in the catalogue, is taken out by a no.
+func TestANoDropsAYesLeftForAModuleNotInstalledOrNotListed(t *testing.T) {
+	withOnlineCatalogueSetting(t, true)
+	for name, setup := range map[string]func(b *moduleBox){
+		"not installed":          func(b *moduleBox) { b.foreignCatalogue("virt", "someone/CasaOS-Virt") },
+		"not in the catalogue":   func(b *moduleBox) { b.install("virt"); b.setCatalogue("mcp") },
+		"neither, nor any entry": func(b *moduleBox) { b.setCatalogue("mcp") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := newModuleBox(t)
+			setup(b)
+			b.write("/var/lib/casaos/modules/auto-update.json", `{"modules":{"mcp":"alice/mcp","virt":"someone/CasaOS-Virt"}}`+"\n")
+			if err := b.system.SetSystemModuleAutoUpdate("virt", false); err != nil {
+				t.Fatal(err)
+			}
+			if got := modulecmd.AutoAllowed(b.env.Roots); !reflect.DeepEqual(got, map[string]string{"mcp": "alice/mcp"}) {
+				t.Fatalf("allowed %v", got)
+			}
+		})
 	}
 }

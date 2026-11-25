@@ -2,6 +2,7 @@ package modulecmd
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -262,5 +263,23 @@ func TestARemoveWhoseYesCannotBeDroppedStillRemoves(t *testing.T) {
 	}
 	if got := allowedOf(f); got[testName] != foreignRepo {
 		t.Errorf("the file changed: %v", got)
+	}
+}
+
+// A yes is written only for a module installed when the lock is held: a remove takes the yes out once the module's files are gone, so a yes given meanwhile is refused, never left behind.
+func TestAYesIsForAModuleInstalledUnderTheLock(t *testing.T) {
+	f := newFixture(t)
+	if err := AllowAutoUpdate(f.env.Roots, testName, foreignRepo); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("a module not installed: %v", err)
+	}
+	if _, err := os.Lstat(f.path(pathAutoAllow)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the file was written: %v", err)
+	}
+	g := installed(t)
+	if err := AllowAutoUpdate(g.env.Roots, testName, foreignRepo); err != nil {
+		t.Fatal(err)
+	}
+	if got := allowedOf(g); !reflect.DeepEqual(got, map[string]string{testName: foreignRepo}) {
+		t.Fatalf("allowed %v", got)
 	}
 }

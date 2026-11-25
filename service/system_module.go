@@ -108,6 +108,7 @@ func (s *systemService) refreshModuleCatalogue(ctx context.Context, get modulecm
 
 // SetSystemModuleAutoUpdate puts the module called name in the list of the foreign modules the night may update, or takes it out. It refuses a module the list does not show installed
 // (not_installed), one that is not written outside ReCasaOS (not_foreign), and any module when the catalogue cannot be read (catalogue): whether a module is foreign is the catalogue's to say.
+// A no for a module that is not installed, or that the catalogue does not list, is taken: it drops a yes left behind.
 func (s *systemService) SetSystemModuleAutoUpdate(name string, enabled bool) error {
 	if !osmodule.ValidName(name) {
 		return badModuleRequest("name")
@@ -119,15 +120,23 @@ func (s *systemService) SetSystemModuleAutoUpdate(name string, enabled bool) err
 	if !list.Catalogue.OK {
 		return refuseModule(osmodule.CheckCatalogue, "The catalogue of the modules cannot be read: whether this module is written outside ReCasaOS cannot be told.", nil)
 	}
+	roots := s.systemPackageUpdater().moduleWorld().Roots
 	i := slices.IndexFunc(list.Modules, func(m modulecmd.ListModule) bool { return m.Name == name })
+	notInstalled := i < 0 || list.Modules[i].Installed == nil
 	switch {
-	case i < 0 || list.Modules[i].Installed == nil:
+	case !enabled && (notInstalled || !list.Modules[i].Catalogue || list.Modules[i].Foreign):
+		return modulecmd.SetAutoAllowed(roots, name, "", false)
+	case notInstalled:
 		return refuseModule(ModuleNotInstalled, "This module is not installed.", nil)
 	case !list.Modules[i].Foreign:
 		return refuseModule(ModuleNotForeign, "This module is not one written outside ReCasaOS that the catalogue lists: the general setting of automatic updates decides for it.", nil)
 	}
-	// the yes is for the repository the list shows the module from now
-	return modulecmd.SetAutoAllowed(s.systemPackageUpdater().moduleWorld().Roots, name, list.Modules[i].Repository, enabled)
+	// the yes is for the repository the list shows the module from now, and for a module still installed when it is written
+	err = modulecmd.AllowAutoUpdate(roots, name, list.Modules[i].Repository)
+	if errors.Is(err, modulecmd.ErrNotInstalled) {
+		return refuseModule(ModuleNotInstalled, "This module is not installed.", nil)
+	}
+	return err
 }
 
 // listModules is the list of the modules of this release and what the box says of each. A catalogue that is not there or does not pass is an empty list that says so (catalogue.ok is false).

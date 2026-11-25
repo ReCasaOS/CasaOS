@@ -48,6 +48,19 @@ func AutoAllowed(roots Roots) map[string]string {
 // all, root's, 0644. A change that changes nothing writes nothing. The read, the change and the rename are done under a lock of a neighbour file, so two changes at once both count. A
 // link or anything but a regular file at the place of the file is left as it is, and refused.
 func SetAutoAllowed(roots Roots, name, repository string, on bool) error {
+	return setAutoAllowed(roots, name, repository, on, false)
+}
+
+// ErrNotInstalled is AllowAutoUpdate's answer for a module that is not installed.
+var ErrNotInstalled = errors.New("the module is not installed")
+
+// AllowAutoUpdate is SetAutoAllowed's yes for an installed module: under the lock it checks that the module's manifest is still there, and answers ErrNotInstalled, writing
+// nothing, when it is not. A remove takes the yes out after the module's files are gone, so a yes given while it runs is never left behind.
+func AllowAutoUpdate(roots Roots, name, repository string) error {
+	return setAutoAllowed(roots, name, repository, true, true)
+}
+
+func setAutoAllowed(roots Roots, name, repository string, on, installedOnly bool) error {
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("not the name of a module: %q", name)
 	}
@@ -70,6 +83,15 @@ func SetAutoAllowed(roots Roots, name, repository string, on bool) error {
 	defer release()
 	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() || err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("%s is not a regular file", path)
+	}
+	if installedOnly {
+		installed, _, err := (&box{env: &Env{Roots: roots}}).InstalledManifests()
+		if err != nil {
+			return err
+		}
+		if _, there := installed[name]; !there {
+			return ErrNotInstalled
+		}
 	}
 	allowed := AutoAllowed(roots)
 	if repo, there := allowed[name]; on && there && repo == repository || !on && !there {
