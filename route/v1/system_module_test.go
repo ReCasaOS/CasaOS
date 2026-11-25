@@ -50,6 +50,11 @@ func TestModulesRefreshIsLimitedToOneInThirtySeconds(t *testing.T) {
 	if got := list("/v1/sys/modules"); got != 0 || fake.refreshes != 0 {
 		t.Errorf("a plain list fetched: %d", fake.refreshes)
 	}
+	for _, other := range []string{"0", "true", "yes"} {
+		if list("/v1/sys/modules?refresh=" + other); fake.refreshes != 0 {
+			t.Errorf("refresh=%s fetched: %d", other, fake.refreshes)
+		}
+	}
 	// the list answered is the one after the fetch
 	if got := list("/v1/sys/modules?refresh=1"); got != 1 || fake.refreshes != 1 {
 		t.Errorf("the first refresh: list after %d fetches, %d fetches", got, fake.refreshes)

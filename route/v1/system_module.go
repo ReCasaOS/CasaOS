@@ -124,7 +124,7 @@ var lastModulesRefresh atomic.Int64
 // @Router /sys/modules [get]
 func GetSystemModules(ctx echo.Context) error {
 	// the same guard as the version check's: one fetch per half minute for the whole box
-	if ctx.QueryParam("refresh") != "" {
+	if ctx.QueryParam("refresh") == "1" {
 		now, last := time.Now().Unix(), lastModulesRefresh.Load()
 		if now-last >= 30 && lastModulesRefresh.CompareAndSwap(last, now) {
 			service.MyService.System().RefreshSystemModuleCatalogue(ctx.Request().Context())
