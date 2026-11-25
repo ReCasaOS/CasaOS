@@ -246,6 +246,14 @@ func TestListSaysTheInstalledVersionIsWithdrawn(t *testing.T) {
 	if _, m := catalogueOf(t, f); m["withdrawn"] != nil {
 		t.Errorf("another tag withdrawn: %v", m)
 	}
+	// installed, withdrawn, and no longer in any catalogue: still said
+	if err := os.Remove(f.path(pathCatalogue)); err != nil {
+		t.Fatal(err)
+	}
+	f.writeFile(pathOnlineCatalogue, `{"schema":3,"serial":8,"generated":"2026-11-25T10:00:00Z","modules":[],"withdrawn":`+withdrawn(testTag)+`}`)
+	if _, m := catalogueOf(t, f); m["catalogue"] != false || m["withdrawn"] == nil || m["withdrawn"].(map[string]any)["tag"] != testTag {
+		t.Errorf("delisted and withdrawn: %v", m)
+	}
 	// a module that is not installed: nothing
 	g := newFixture(t)
 	g.writeFile(pathOnlineCatalogue, online3Raw(t, 7, withdrawn(testTag), g.mirrorEntry(onlineTag, foreignRepo)))
