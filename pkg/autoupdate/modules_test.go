@@ -368,3 +368,90 @@ func TestNoAlertWhenNothingStarted(t *testing.T) {
 		t.Fatalf("updated %v, alerts %q: want one refused attempt and no alert", m.updated, *alerts)
 	}
 }
+
+func TestAListThatFallsBackDoesNotRestartTheWait(t *testing.T) {
+	a, _, m, at, _ := newModulesBox(t)
+	m.list[0].Latest = "v0.2.6"
+	var tags []string
+	m.onUpdate = func(string) { tags = append(tags, m.list[0].Latest) }
+	ctx := context.Background()
+
+	at("2026-09-24 03:30") // v0.2.6 seen, online
+	a.Check(ctx)
+	m.list[0].Latest = "v0.2.5" // the shipped catalogue for an hour
+	at("2026-09-24 04:30")
+	a.Check(ctx)
+	m.list[0].Latest = "v0.2.6"
+	at("2026-09-24 05:30")
+	a.Check(ctx)
+	if got := a.load().Modules["virt"]; got.Tag != "v0.2.6" || !got.FirstSeen.Equal(local("2026-09-24 03:30")) {
+		t.Fatalf("virt in autoupdate.json = %+v, want v0.2.6 first seen at 03:30", got)
+	}
+
+	at("2026-09-25 03:30")
+	a.Check(ctx)
+	if !reflect.DeepEqual(tags, []string{"v0.2.6"}) {
+		t.Fatalf("updated to %v, want v0.2.6 24 hours after its first sight", tags)
+	}
+}
+
+func TestAnOlderTagIsNeverUpdatedTo(t *testing.T) {
+	a, _, m, at, _ := newModulesBox(t)
+	m.list[0].Latest = "v0.2.6"
+	ctx := context.Background()
+
+	at("2026-09-23 03:30")
+	a.Check(ctx)
+	m.list[0].Latest = "v0.2.5" // falls back for the whole night
+	at("2026-09-25 03:30")
+	a.Check(ctx)
+	if len(m.updated) != 0 {
+		t.Fatalf("updated %v to a tag older than the one recorded", m.updated)
+	}
+}
+
+func TestAFailedTagIsNotRetriedAfterAFallBack(t *testing.T) {
+	a, _, m, at, _ := newModulesBox(t)
+	m.list[0].Latest = "v0.2.6"
+	m.fail = map[string]string{"virt": "put back"}
+	ctx := context.Background()
+
+	at("2026-09-23 03:30")
+	a.Check(ctx)
+	at("2026-09-24 03:30") // v0.2.6 fails
+	a.Check(ctx)
+	m.list[0].Latest = "v0.2.5"
+	at("2026-09-24 04:30")
+	a.Check(ctx)
+	m.list[0].Latest = "v0.2.6"
+	for day := 1; day <= 3; day++ {
+		at(local("2026-09-24 03:30").AddDate(0, 0, day).Format("2006-01-02 15:04"))
+		a.Check(ctx)
+	}
+	if !reflect.DeepEqual(m.updated, []string{"virt"}) {
+		t.Fatalf("updated %v: the failed v0.2.6 was tried again after the fall back", m.updated)
+	}
+}
+
+func TestALaterTagAfterAnUpdateStartsAFreshWait(t *testing.T) {
+	a, _, m, at, _ := newModulesBox(t)
+	ctx := context.Background()
+
+	at("2026-09-23 03:30")
+	a.Check(ctx)
+	at("2026-09-24 03:30") // v0.2.5 installed
+	a.Check(ctx)
+	m.list = []ModuleUpdate{{Name: "virt", Installed: "v0.2.5", Latest: "v0.2.6"}}
+	at("2026-09-24 04:00")
+	a.Check(ctx)
+	at("2026-09-25 03:59")
+	a.Check(ctx)
+	if !reflect.DeepEqual(m.updated, []string{"virt"}) {
+		t.Fatalf("updated %v before v0.2.6 was 24 hours old", m.updated)
+	}
+	at("2026-09-25 04:00")
+	a.Check(ctx)
+	if !reflect.DeepEqual(m.updated, []string{"virt", "virt"}) {
+		t.Fatalf("updated %v, want v0.2.6 after its own wait", m.updated)
+	}
+}
