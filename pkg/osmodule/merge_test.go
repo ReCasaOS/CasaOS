@@ -44,3 +44,11 @@ func TestMergeWithNoOnlineCatalogueIsTheShippedOne(t *testing.T) {
 		t.Fatalf("%+v %v", got, fromOnline)
 	}
 }
+
+func TestMergeKeepsTheVersionsWithdrawnOfTheOnlineCatalogue(t *testing.T) {
+	withdrawn := []Withdrawn{{Name: "a", Tag: "v0.1.0", Reason: "Broken."}}
+	got, _ := Merge(Catalogue{Schema: 1, Modules: []Entry{{Name: "a", Tag: "v0.1.0"}}}, Catalogue{Schema: 3, Serial: 2, Withdrawn: withdrawn}, func(Entry) bool { return true })
+	if !reflect.DeepEqual(got.Withdrawn, withdrawn) {
+		t.Fatalf("%+v", got.Withdrawn)
+	}
+}

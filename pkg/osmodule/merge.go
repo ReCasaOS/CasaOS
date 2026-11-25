@@ -3,10 +3,10 @@ package osmodule
 import "sort"
 
 // Merge gives, for each module name in either catalogue, the entry to keep: the one with the highest tag that the system accepts; if the system accepts neither, the one with the highest tag;
-// the same tag in both: the shipped one. The merged catalogue is sorted by name and has the serial and the date of the online one (none when it is empty). online says, by name, whether the
-// kept entry is the online one.
+// the same tag in both: the shipped one. The merged catalogue is sorted by name and has the serial, the date and the versions withdrawn of the online one (none when it is empty; a shipped
+// catalogue has none). online says, by name, whether the kept entry is the online one.
 func Merge(shipped, online Catalogue, accepts func(Entry) bool) (Catalogue, map[string]bool) {
-	merged := Catalogue{Schema: shipped.Schema, Serial: online.Serial, Generated: online.Generated}
+	merged := Catalogue{Schema: shipped.Schema, Serial: online.Serial, Generated: online.Generated, Withdrawn: online.Withdrawn}
 	fromOnline := map[string]bool{}
 	for _, s := range shipped.Modules {
 		kept := s
