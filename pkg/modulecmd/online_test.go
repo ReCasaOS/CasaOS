@@ -209,6 +209,27 @@ func TestRefreshComparesTheSerialAcrossSchemas(t *testing.T) {
 	}
 }
 
+// a file of a lower schema never replaces the one in place, whatever its serial: it would drop the withdrawn list and the foreign entries; a file in place that does not pass counts
+// for nothing
+func TestRefreshRefusesALowerSchema(t *testing.T) {
+	f := newFixture(t)
+	before := online3Raw(t, 5, withdrawnList(onlineTag), f.mirrorEntry(onlineTag, foreignRepo))
+	f.writeFile(pathOnlineCatalogue, before)
+	if r := f.refresh(bodyGet(f.onlineRaw(9))); r.Kept || r.Reason != "schema" || r.Serial != 9 {
+		t.Errorf("schema 2 over schema 3: %+v", r)
+	}
+	f.assertOnlineUnchanged(before)
+
+	broken := strings.Replace(before, `"reason":"`+withdrawnWhy+`"`, `"reason":""`, 1)
+	f.writeFile(pathOnlineCatalogue, broken)
+	if r := f.refresh(bodyGet(f.onlineRaw(9))); !r.Kept {
+		t.Errorf("schema 2 over a schema 3 that does not pass: %+v", r)
+	}
+	if f.read(pathOnlineCatalogue) != string(f.onlineRaw(9)) {
+		t.Error("the new file is not in place")
+	}
+}
+
 // catalogueDownloaderTo is the catalogue's downloader, sent to the test server whatever the host.
 func catalogueDownloaderTo(srv *httptest.Server) Downloader {
 	return httpDownloader{client: clientTo(srv), max: osmodule.MaxCatalogueBytes, timeout: catalogueFetchTime}
