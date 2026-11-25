@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
@@ -109,14 +111,25 @@ func planModeOf(ctx echo.Context) (string, error) {
 	return moduleMode(value)
 }
 
+// lastModulesRefresh is when a ?refresh=1 of the list last fetched the online catalogue, in Unix seconds.
+var lastModulesRefresh atomic.Int64
+
 // @Summary  the modules that this release can install, and what the box says of each
-// @Description The catalogue of this release joined with what is installed: catalogue (ok, and when it is not, error: none, unreadable or invalid, with the place in detail; the list is then empty, never partial), and modules, each with name, title, description, tier (core or community), tag, whether the catalogue has it, installed (null, or its version), system (supported, and the codes of the checks that say no: os, arch, recasaos) and broken when its manifest cannot be read. It only reads. A module that is installed and no longer in the catalogue is listed all the same, with catalogue false.
+// @Description The catalogue of this release joined with what is installed: catalogue (ok, and when it is not, error: none, unreadable or invalid, with the place in detail; the list is then empty, never partial), and modules, each with name, title, description, tier (core or community), tag, whether the catalogue has it, installed (null, or its version), system (supported, and the codes of the checks that say no: os, arch, recasaos) and broken when its manifest cannot be read. It only reads. A module that is installed and no longer in the catalogue is listed all the same, with catalogue false. catalogue.online says what became of the catalogue the box fetched (ok with serial and generated, or error: none, unreadable, invalid, or off when [modules] OnlineCatalogue is false). ?refresh=1 fetches the online catalogue first, at most once in thirty seconds for the whole box, and answers with the list after that fetch; a fetch that fails never fails the request.
+// @Param    refresh query string false "1: fetch the online catalogue before the list"
 // @Produce  application/json
 // @Tags sys
 // @Security ApiKeyAuth
 // @Success 200 {object} model.Result
 // @Router /sys/modules [get]
 func GetSystemModules(ctx echo.Context) error {
+	// the same guard as the version check's: one fetch per half minute for the whole box
+	if ctx.QueryParam("refresh") != "" {
+		now, last := time.Now().Unix(), lastModulesRefresh.Load()
+		if now-last >= 30 && lastModulesRefresh.CompareAndSwap(last, now) {
+			service.MyService.System().RefreshSystemModuleCatalogue(ctx.Request().Context())
+		}
+	}
 	list, err := service.MyService.System().ListSystemModules()
 	if err != nil {
 		return moduleFailed(ctx, err)

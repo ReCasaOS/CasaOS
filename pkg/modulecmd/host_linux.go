@@ -43,6 +43,30 @@ func (linuxHost) Lock(path string) (func(), error) {
 	return func() { _ = f.Close() }, nil
 }
 
+// lockWait takes an exclusive flock on the file at path and waits for it: what it serialises is short and bounded (the fetch of the catalogue has its own time), and each call opens the
+// file anew, so two goroutines of one process wait for each other as two processes do.
+func lockWait(path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|noFollow, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, &fs.PathError{Op: "lock", Path: path, Err: errors.New("not a regular file")}
+	}
+	for {
+		err = unix.Flock(int(f.Fd()), unix.LOCK_EX)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return func() { _ = f.Close() }, nil
+}
+
 func (linuxHost) FreeBytes(path string) (int64, error) {
 	for {
 		var st unix.Statfs_t

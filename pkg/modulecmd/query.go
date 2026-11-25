@@ -23,6 +23,8 @@ const (
 	catalogueNone       = "none"
 	catalogueUnreadable = "unreadable"
 	catalogueInvalid    = "invalid"
+	// the online catalogue only: [modules] OnlineCatalogue = false, and the file is not read
+	catalogueOff = "off"
 )
 
 type catalogueState struct {
@@ -46,6 +48,11 @@ func readCatalogueFile(path string, parse func([]byte) (osmodule.Catalogue, erro
 	case err != nil:
 		return catalogueState{err: catalogueUnreadable}
 	}
+	return checkCatalogue(raw, parse)
+}
+
+// checkCatalogue parses the bytes of a catalogue: what a file is read with, and what a fetched one has to pass before it is kept.
+func checkCatalogue(raw []byte, parse func([]byte) (osmodule.Catalogue, error)) catalogueState {
 	cat, err := parse(raw)
 	var bad *osmodule.Invalid
 	if errors.As(err, &bad) {
@@ -65,7 +72,7 @@ func readCatalogueFile(path string, parse func([]byte) (osmodule.Catalogue, erro
 
 // loadCatalogue reads the catalogue of this release (the file the installer put at /usr/share/casaos/modules) and the one the box fetched (/var/lib/casaos/modules), and gives the
 // merge of the two. Only when CASAOS_MODULE_TEST is exactly "1" do CASAOS_MODULE_CATALOGUE and CASAOS_MODULE_ONLINE_CATALOGUE name other files. An online file that does not pass
-// counts for nothing and online says why; ok is true as soon as one of the two is good. Nothing here reads the network.
+// counts for nothing and online says why; ok is true as soon as one of the two is good; with env.OnlineCatalogueOff the online file is not read at all. Nothing here reads the network.
 func loadCatalogue(env Env) catalogueState {
 	path, onlinePath := env.Roots.catalogue(), env.Roots.OnlineCatalogue()
 	if env.testMode() {
@@ -77,6 +84,9 @@ func loadCatalogue(env Env) catalogueState {
 		}
 	}
 	shipped := readCatalogueFile(path, osmodule.ParseCatalogue)
+	if env.OnlineCatalogueOff {
+		return catalogueState{cat: shipped.cat, ok: shipped.ok, err: shipped.err, detail: shipped.detail, online: OnlineInfo{Error: catalogueOff}}
+	}
 	on := readCatalogueFile(onlinePath, osmodule.ParseOnlineCatalogue)
 	res := catalogueState{cat: shipped.cat, ok: shipped.ok, err: shipped.err, detail: shipped.detail, online: OnlineInfo{Error: on.err}}
 	if !on.ok {
@@ -140,7 +150,7 @@ type CatalogueInfo struct {
 	Online *OnlineInfo `json:"online,omitempty"`
 }
 
-// OnlineInfo says whether the online catalogue was read: its serial and date when it was, and if not why ("none", "unreadable" or "invalid").
+// OnlineInfo says whether the online catalogue was read: its serial and date when it was, and if not why ("none", "unreadable", "invalid", or "off" when the setting turns it off).
 type OnlineInfo struct {
 	OK        bool   `json:"ok"`
 	Serial    int64  `json:"serial,omitempty"`

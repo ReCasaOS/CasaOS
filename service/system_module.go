@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"github.com/ReCasaOS/CasaOS/common"
+	"github.com/ReCasaOS/CasaOS/pkg/config"
 	"github.com/ReCasaOS/CasaOS/pkg/dockerpkg"
 	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
 	"github.com/ReCasaOS/CasaOS/pkg/osmodule"
@@ -73,10 +75,32 @@ type SystemModuleStatus struct {
 
 // moduleWorld is the world that the module assistant is run in when the core runs it in its own process: the box's. A field of the updater, for the tests.
 func (u *systemPackageUpdater) moduleWorld() modulecmd.Env {
+	env := modulecmd.Production
 	if u.moduleEnv != nil {
-		return u.moduleEnv()
+		env = u.moduleEnv
 	}
-	return modulecmd.Production()
+	w := env()
+	// the configuration the core was started with, which may not be the file the command reads
+	w.OnlineCatalogueOff = !config.ModulesInfo.OnlineCatalogue
+	return w
+}
+
+// RefreshSystemModuleCatalogue fetches the online catalogue from its one address.
+func (s *systemService) RefreshSystemModuleCatalogue(ctx context.Context) {
+	s.refreshModuleCatalogue(ctx, modulecmd.NewCatalogueDownloader(), common.MODULES_CATALOGUE_URL)
+}
+
+// refreshModuleCatalogue is the fetch with the downloader and the address given, for the tests. A fetch that is not kept leaves the file in place as it was, and says so in the log.
+func (s *systemService) refreshModuleCatalogue(ctx context.Context, get modulecmd.Downloader, url string) {
+	if config.ServerInfo.ImageManaged || !config.ModulesInfo.OnlineCatalogue {
+		return
+	}
+	r := modulecmd.RefreshOnline(ctx, s.systemPackageUpdater().moduleWorld().Roots, get, url)
+	if r.Kept {
+		logger.Info("the online catalogue of the modules was fetched", zap.Int64("serial", r.Serial))
+		return
+	}
+	logger.Warn("the online catalogue of the modules was not kept: the box keeps the one it has", zap.String("reason", r.Reason), zap.Int64("serial", r.Serial))
 }
 
 // listModules is the list of the modules of this release and what the box says of each. A catalogue that is not there or does not pass is an empty list that says so (catalogue.ok is false).

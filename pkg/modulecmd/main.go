@@ -98,9 +98,11 @@ func Production() Env {
 		Getenv: os.Getenv, EUID: os.Geteuid,
 		// the release of the distribution (the one min_recasaos is a number of), not the version of this component, and not the release that this binary was built for either
 		Arch: runtime.GOARCH, Version: distributionVersion(Roots{}),
-		Download: NewHTTPDownloader(),
-		Clock:    realClock{},
-		Host:     newHost(),
+		// the core sets it from the configuration it was started with; the command reads the same file
+		OnlineCatalogueOff: onlineCatalogueOff(Roots{}),
+		Download:           NewHTTPDownloader(),
+		Clock:              realClock{},
+		Host:               newHost(),
 	}
 	env.Runner = newRunner(env.Roots)
 	env.Sandbox = newSandbox(env.Roots)

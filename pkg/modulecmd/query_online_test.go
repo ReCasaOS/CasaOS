@@ -134,11 +134,34 @@ func TestPlanUsesTheMergedEntry(t *testing.T) {
 	f.writeOnline(e)
 	if p := PlanOf(context.Background(), f.env, testName); p.Tag != onlineTag || p.Archive.URL != e.Assets.AMD64.URL {
 		t.Errorf("plan: %+v", p)
+	} else if p.PlanID == "" || p.PlanID != osmodule.PlanID(testName, onlineTag, e.Assets.AMD64.SHA256, "debian", "12", p.Packages.ToInstall) {
+		// the plan's id is bound to the archive's sha256: the merged entry's, not the shipped one's
+		t.Errorf("the plan is not bound to the online archive's sha256: %+v", p)
 	}
 	f2 := installed(t)
 	e2 := f2.onlineEntry(onlineTag)
 	f2.writeOnline(e2)
 	if p := PlanUpdateOf(context.Background(), f2.env, testName); p.Tag != onlineTag || p.Archive.URL != e2.Assets.AMD64.URL {
 		t.Errorf("update plan: %+v", p)
+	}
+}
+
+func TestADirectoryAtTheOnlinePlaceIsUnreadable(t *testing.T) {
+	f := newFixture(t)
+	if err := os.MkdirAll(f.path(pathOnlineCatalogue), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cat, m := catalogueOf(t, f)
+	if on := cat["online"].(map[string]any); on["ok"] != false || on["error"] != "unreadable" || m["source"] != "shipped" {
+		t.Errorf("catalogue %v, module %v", cat, m)
+	}
+}
+
+func TestAnOnlineEntryOfTheSystemImageIsInvalid(t *testing.T) {
+	f := newFixture(t)
+	f.writeFile(pathOnlineCatalogue, f.onlineImageRaw(3))
+	cat, m := catalogueOf(t, f)
+	if on := cat["online"].(map[string]any); on["ok"] != false || on["error"] != "invalid" || m["source"] != "shipped" {
+		t.Errorf("catalogue %v, module %v", cat, m)
 	}
 }

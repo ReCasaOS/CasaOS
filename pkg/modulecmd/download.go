@@ -75,13 +75,22 @@ func newHTTPClient(rt http.RoundTripper) *http.Client {
 }
 
 type httpDownloader struct {
-	client *http.Client
-	max    int64
+	client  *http.Client
+	max     int64
+	timeout time.Duration // the time one Get has
 }
 
 // NewHTTPDownloader is the downloader of production: the archive of a release, at most osmodule.MaxArchiveBytes.
 func NewHTTPDownloader() Downloader {
-	return httpDownloader{client: newHTTPClient(nil), max: osmodule.MaxArchiveBytes}
+	return httpDownloader{client: newHTTPClient(nil), max: osmodule.MaxArchiveBytes, timeout: downloadTryTime}
+}
+
+// catalogueFetchTime is the time the fetch of the online catalogue has: a file of at most 1 MiB.
+const catalogueFetchTime = 30 * time.Second
+
+// NewCatalogueDownloader is the downloader of the online catalogue: the same fence of hosts, at most osmodule.MaxCatalogueBytes, in catalogueFetchTime.
+func NewCatalogueDownloader() Downloader {
+	return httpDownloader{client: newHTTPClient(nil), max: osmodule.MaxCatalogueBytes, timeout: catalogueFetchTime}
 }
 
 func (d httpDownloader) Get(ctx context.Context, rawURL string, dst io.Writer) (int64, error) {
@@ -92,7 +101,7 @@ func (d httpDownloader) Get(ctx context.Context, rawURL string, dst io.Writer) (
 	if err := checkURL(u); err != nil {
 		return 0, &PermanentError{Err: err}
 	}
-	ctx, cancel := context.WithTimeout(ctx, downloadTryTime)
+	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {

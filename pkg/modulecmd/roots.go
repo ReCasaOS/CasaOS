@@ -16,6 +16,7 @@ const (
 	pathOSRelease       = "/etc/os-release"
 	pathOSReleaseLib    = "/usr/lib/os-release" // what os-release(5) falls back to when /etc has none
 	pathGateway         = "/etc/casaos/gateway.ini"
+	pathCoreConfig      = "/etc/casaos/casaos.conf" // the core's configuration, as its unit names it (casaos -c)
 	pathOSBusy          = "/var/lib/casaos/os-upgrade/busy"
 	pathAptConfD        = "/etc/apt/apt.conf.d"
 	pathDpkgStatus      = "/var/lib/dpkg/status"
