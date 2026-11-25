@@ -1,0 +1,128 @@
+package autoupdate
+
+import (
+	"context"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
+	"go.uber.org/zap"
+)
+
+// Modules is what the night can do with the optional modules; main wires it to the service.
+type Modules interface {
+	// List is the installed modules that have an update. An error, or a
+	// catalogue that cannot be read, is no list: nothing is changed.
+	List(ctx context.Context) ([]ModuleUpdate, error)
+	// Update updates a module to the tag List gave and waits for its job to end.
+	Update(ctx context.Context, name string) (ok bool, detail string)
+}
+
+// ModuleUpdate is an installed module and the later tag the catalogue has.
+type ModuleUpdate struct{ Name, Installed, Latest string }
+
+// checkModules is the modules' part of a round, with the release's switch and
+// window. Each tag is first seen while the switch is on, in or out of the
+// window, and is installed minAge later, inside the window, once: a failure
+// waits for another tag. One module at a time, each to the end of its job; the
+// round stops as soon as the box is busy or the window closes.
+func (a *AutoUpdate) checkModules(ctx context.Context) {
+	if a.Modules == nil || !a.load().Enabled {
+		return
+	}
+	list, err := a.Modules.List(ctx)
+	if err != nil {
+		logger.Info("automatic update: the modules cannot be listed", zap.Error(err))
+		return
+	}
+	var due []ModuleUpdate
+	if err := a.modify(func(s *State) bool {
+		var changed bool
+		due, changed = s.seeModules(list, a.Now())
+		return changed
+	}); err != nil {
+		logger.Info("automatic update: cannot save autoupdate.json", zap.Error(err))
+		return
+	}
+	var updated, failed []string
+	for _, m := range due {
+		if !a.mayUpdateModule() {
+			break
+		}
+		// saved before the job, as a release's attempt is: a core restarted in
+		// the middle of the job does not try that tag again
+		tried := false
+		if err := a.modify(func(s *State) bool {
+			seen, ok := s.Modules[m.Name]
+			if !ok || seen.Tag != m.Latest || !seen.Tried.IsZero() {
+				return false
+			}
+			seen.Tried = a.Now().UTC().Truncate(time.Second)
+			s.Modules[m.Name], tried = seen, true
+			return true
+		}); err != nil || !tried {
+			logger.Info("automatic update: not updating the module", zap.String("module", m.Name), zap.Error(err))
+			break
+		}
+		logger.Info("automatic update: updating a module", zap.String("module", m.Name), zap.String("from", m.Installed), zap.String("to", m.Latest))
+		ok, detail := a.Modules.Update(ctx, m.Name)
+		change := m.Name + " " + m.Installed + " → " + m.Latest
+		if ok {
+			updated = append(updated, change)
+			continue
+		}
+		logger.Info("automatic update: a module update failed", zap.String("module", m.Name), zap.String("to", m.Latest), zap.String("detail", detail))
+		if detail != "" {
+			change += " (" + detail + ")"
+		}
+		failed = append(failed, change)
+	}
+	if a.NotifyModules != nil && len(updated)+len(failed) > 0 {
+		a.NotifyModules(modulesSentence(updated, failed))
+	}
+}
+
+// seeModules records the first sight of each listed tag and returns the
+// modules due: seen minAge ago and not tried, by name. A tag other than the
+// one recorded, newer or not, starts its own wait. Modules no longer listed
+// are kept, so a catalogue that is briefly unreadable forgets no try.
+func (s *State) seeModules(list []ModuleUpdate, now time.Time) (due []ModuleUpdate, changed bool) {
+	for _, m := range list {
+		seen, ok := s.Modules[m.Name]
+		if !ok || seen.Tag != m.Latest {
+			if s.Modules == nil {
+				s.Modules = map[string]ModuleSeen{}
+			}
+			seen = ModuleSeen{Tag: m.Latest, FirstSeen: now.UTC().Truncate(time.Second)}
+			s.Modules[m.Name], changed = seen, true
+		}
+		if seen.Tried.IsZero() && !now.Before(seen.FirstSeen.Add(minAge)) {
+			due = append(due, m)
+		}
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].Name < due[j].Name })
+	return due, changed
+}
+
+// mayUpdateModule is whether a module's job may start now: on, inside the
+// window, and nothing else updating (ReCasaOS, the packages, Docker, the
+// operating system, another module). Asked before each module.
+func (a *AutoUpdate) mayUpdateModule() bool {
+	now, s := a.Now(), a.load()
+	return s.Enabled && !s.window().earliest(now, time.Time{}).After(now) &&
+		(s.Last == nil || s.Last.Result != resultRunning) &&
+		!a.unitActive() && !(a.Busy != nil && a.Busy())
+}
+
+// modulesSentence is the round's alert: what was updated and what failed.
+func modulesSentence(updated, failed []string) string {
+	var parts []string
+	if len(updated) > 0 {
+		parts = append(parts, "Modules updated: "+strings.Join(updated, ", ")+".")
+	}
+	if len(failed) > 0 {
+		parts = append(parts, "Module updates failed: "+strings.Join(failed, ", ")+".")
+	}
+	return strings.Join(parts, " ")
+}

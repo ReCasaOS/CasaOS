@@ -1,0 +1,105 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/ReCasaOS/CasaOS/pkg/autoupdate"
+	"github.com/ReCasaOS/CasaOS/pkg/modulecmd"
+)
+
+// how the night waits for the job of a module's update; vars, for the tests
+var (
+	nightModulePoll = 10 * time.Second
+	// nightModuleBound is past the job's own limits (download 30 min, apt's end 5, systemctl 2, rollback 5) with room
+	// for the install, which apt does not bound: a job still running then is told as a failure, never waited on for good.
+	nightModuleBound = 2 * time.Hour
+)
+
+// NightModules is pkg/autoupdate's Modules on a module provider: the dashboard's own list, update plan, start and
+// status. It updates a module only to the tag its last List gave, so the night never installs a tag it did not wait for.
+type NightModules struct {
+	Provider ModuleProvider
+
+	mu     sync.Mutex
+	latest map[string]string // the tag each module was listed with
+}
+
+// List is the installed modules whose update the catalogue has. A catalogue that cannot be read is an error, not an
+// empty list: the night then changes nothing.
+func (n *NightModules) List(context.Context) ([]autoupdate.ModuleUpdate, error) {
+	result, err := n.Provider.ListSystemModules()
+	if err != nil {
+		return nil, err
+	}
+	if !result.Catalogue.OK {
+		return nil, fmt.Errorf("the catalogue of the modules cannot be read: %s", result.Catalogue.Error)
+	}
+	list, latest := []autoupdate.ModuleUpdate{}, map[string]string{}
+	for _, m := range result.Modules {
+		if m.Installed == nil || m.Update == nil || !m.Update.Available {
+			continue
+		}
+		list = append(list, autoupdate.ModuleUpdate{Name: m.Name, Installed: m.Update.Installed, Latest: m.Update.Latest})
+		latest[m.Name] = m.Update.Latest
+	}
+	n.mu.Lock()
+	n.latest = latest
+	n.mu.Unlock()
+	return list, nil
+}
+
+// Update plans the update of the module, starts it as the dashboard does and waits for its job to end, at most
+// nightModuleBound. Only a job that succeeded is ok; detail says how one that did not ended.
+func (n *NightModules) Update(ctx context.Context, name string) (bool, string) {
+	n.mu.Lock()
+	want, listed := n.latest[name]
+	n.mu.Unlock()
+	if !listed {
+		return false, "not started: not listed"
+	}
+	plan, err := n.Provider.PlanSystemModuleUpdate(name)
+	switch {
+	case err != nil:
+		return false, "not started: " + err.Error()
+	case plan.Refused != "":
+		return false, "not started: " + string(plan.Refused)
+	case plan.Update == nil || plan.Update.Latest != want:
+		return false, "not started: the catalogue changed"
+	}
+	if _, err := n.Provider.StartSystemModuleUpdate(ctx, name, plan.PlanID); err != nil {
+		return false, "not started: " + err.Error()
+	}
+	deadline := time.Now().Add(nightModuleBound)
+	for {
+		// a status that cannot be read is asked again, until the bound
+		if status, err := n.Provider.GetSystemModuleStatus(name); err == nil && status.Job.State != modulecmd.JobRunning {
+			return nightOutcome(status.Job)
+		}
+		if !time.Now().Before(deadline) {
+			return false, "still running after " + nightModuleBound.String()
+		}
+		select {
+		case <-ctx.Done():
+			return false, "not waited for to its end"
+		case <-time.After(nightModulePoll):
+		}
+	}
+}
+
+// nightOutcome is the job's end as the night tells it.
+func nightOutcome(job modulecmd.Job) (bool, string) {
+	switch {
+	case job.State == modulecmd.JobSucceeded:
+		return true, ""
+	case job.Undo == modulecmd.UndoRolledBack:
+		return false, "put back"
+	case job.Undo != "":
+		return false, "not fully put back: " + job.Undo
+	case job.Code != "":
+		return false, job.State + ": " + job.Code
+	}
+	return false, job.State
+}

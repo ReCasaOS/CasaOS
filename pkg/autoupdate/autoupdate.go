@@ -90,6 +90,10 @@ type AutoUpdate struct {
 	// Notify, when set, hears how an attempt ended: succeeded, failed, or
 	// paused on its second failure. main sets it to the push alerts' hook.
 	Notify func(result, version string)
+	// Modules, when set, are updated by the night after ReCasaOS, and
+	// NotifyModules hears one sentence for each round that attempted one.
+	Modules       Modules
+	NotifyModules func(sentence string)
 
 	mu sync.Mutex // serialises the read-modify-writes of autoupdate.json
 }
@@ -152,23 +156,33 @@ func fromEnv(env string, fallback time.Duration) time.Duration {
 // latest release when every condition of decide holds. Nothing is read or
 // asked when off or outside the window, and systemd and AppManagement only
 // once everything else holds. A release held is not logged: the next check
-// tries again while the window lasts.
+// tries again while the window lasts. The modules come after, in a round that
+// started no release.
 func (a *AutoUpdate) Check(ctx context.Context) {
+	if !a.checkRelease(ctx) {
+		a.checkModules(ctx)
+	}
+}
+
+// checkRelease is the release's part of Check; true when it started one.
+func (a *AutoUpdate) checkRelease(ctx context.Context) bool {
 	a.settle()
 	now := a.Now()
 	s := a.load()
 	if !s.Enabled || s.window().earliest(now, s.attempted()).After(now) {
-		return
+		return false
 	}
 	f := facts{now: now, state: s, current: a.Current(), latest: a.Releases.FetchCasaosVersion()}
 	f.settled = a.settled(f)
 	if !decide(f).start {
-		return
+		return false
 	}
 	f.unitActive, f.appsBusy = a.unitActive(), a.AppsBusy(ctx) || (a.Busy != nil && a.Busy())
-	if v := decide(f); v.start {
+	v := decide(f)
+	if v.start {
 		a.start(v.next.Version, now)
 	}
+	return v.start
 }
 
 // settled asks for the newest release old enough, only when the latest is too

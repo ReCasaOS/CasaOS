@@ -27,6 +27,16 @@ type State struct {
 	WindowEnd   string    `json:"window_end"`
 	Last        *Last     `json:"last,omitempty"`
 	Failures    *Failures `json:"failures,omitempty"`
+	// Modules is what the night saw of each module's update, by name.
+	Modules map[string]ModuleSeen `json:"modules,omitempty"`
+}
+
+// ModuleSeen is the latest tag of a module, when this box first saw it in its
+// catalogue, and when the night tried it (zero: not yet). A tag is tried once.
+type ModuleSeen struct {
+	Tag       string    `json:"tag"`
+	FirstSeen time.Time `json:"first_seen"`
+	Tried     time.Time `json:"tried,omitzero"`
 }
 
 // Last is the last automatic update started, in autoupdate.json and in the API.
