@@ -173,6 +173,8 @@ type ListModule struct {
 	// Repository is the "<owner>/<repo>" an entry of schema 3 comes from; Foreign says it is not one of ReCasaOS.
 	Repository string `json:"repository,omitempty"`
 	Foreign    bool   `json:"foreign,omitempty"`
+	// AutoUpdate is there for a module that is foreign and installed: whether its owner lets the night update it (AutoAllowed). A module of ReCasaOS follows the general switch.
+	AutoUpdate *bool `json:"auto_update,omitempty"`
 	// Withdrawn is there when the version that is installed is one the online catalogue withdrew.
 	Withdrawn *WithdrawnInfo `json:"withdrawn,omitempty"`
 	// (install.sh reads a module by patterns, from the key name to the key update: name stays first and update last)
@@ -255,7 +257,7 @@ func List(ctx context.Context, env Env) (ListResult, error) {
 	}
 	osr := bx.OS()
 	sys := osmodule.System{OSID: osr.ID, OSVersion: osr.Version, OSFrom: osr.From, Arch: env.Arch, ReCasaOS: env.Version}
-	listed := map[string]bool{}
+	listed, allowed := map[string]bool{}, AutoAllowed(env.Roots)
 	for _, e := range cs.cat.Modules {
 		m := ListModule{Name: e.Name, Title: e.Manifest.Title, Description: e.Manifest.Description, Tier: e.Tier, Tag: e.Tag, Catalogue: true, Source: "shipped", System: SystemInfo{Reasons: []string{}},
 			Repository: e.Repository, Foreign: e.Foreign()}
@@ -272,6 +274,10 @@ func List(ctx context.Context, env Env) (ListResult, error) {
 			m.Installed = &Installed{Version: installedVersion(env, e.Name)}
 			m.Update = updateInfo(m.Installed.Version, e.Tag)
 			m.Withdrawn = withdrawnInfo(cs.cat, e.Name, m.Installed.Version)
+			if m.Foreign {
+				on := allowed[e.Name]
+				m.AutoUpdate = &on
+			}
 		} else if slices.Contains(broken, e.Name) {
 			m.Broken = "manifest_invalid"
 		}

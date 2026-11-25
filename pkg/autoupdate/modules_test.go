@@ -496,3 +496,83 @@ func TestTheTryIsSavedBeforeTheUpdateStarts(t *testing.T) {
 		t.Fatalf("updated %v, want virt", m.updated)
 	}
 }
+
+// A module written outside ReCasaOS is left alone unless the owner of the box said yes for it: not seen, not
+// tried, not told. Allowed, it waits its 24 hours as a module of ReCasaOS does. The module of ReCasaOS beside it
+// is updated as before in both cases.
+func TestAForeignModuleIsLeftAloneUnlessItsOwnerSaidYes(t *testing.T) {
+	a, _, m, at, alerts := newModulesBox(t)
+	m.list = append(m.list, ModuleUpdate{Name: "tool", Installed: "v1.0.0", Latest: "v1.1.0", Foreign: true})
+	ctx := context.Background()
+
+	at("2026-09-24 03:30")
+	a.Check(ctx)
+	at("2026-09-25 03:30")
+	a.Check(ctx)
+	at("2026-09-26 03:30")
+	a.Check(ctx)
+	if !reflect.DeepEqual(m.updated, []string{"virt"}) {
+		t.Fatalf("updated %v, want virt alone", m.updated)
+	}
+	if _, seen := a.load().Modules["tool"]; seen {
+		t.Fatalf("the foreign module that is not allowed was recorded: %+v", a.load().Modules)
+	}
+	for _, sentence := range *alerts {
+		if strings.Contains(sentence, "tool") {
+			t.Fatalf("the alert names the foreign module: %q", sentence)
+		}
+	}
+
+	// the owner says yes: first seen now, and updated 24 hours later, once
+	m.list[len(m.list)-1].Allowed = true // tool
+	at("2026-09-26 03:40")
+	a.Check(ctx)
+	at("2026-09-27 03:39")
+	a.Check(ctx)
+	if !reflect.DeepEqual(m.updated, []string{"virt"}) {
+		t.Fatalf("updated %v before the allowed module's version was 24 hours old on this box", m.updated)
+	}
+	if got := a.load().Modules["tool"]; got.Tag != "v1.1.0" || !got.FirstSeen.Equal(local("2026-09-26 03:40")) {
+		t.Fatalf("the allowed module was recorded as %+v", got)
+	}
+	at("2026-09-27 03:40")
+	a.Check(ctx)
+	if !reflect.DeepEqual(m.updated, []string{"virt", "tool"}) {
+		t.Fatalf("updated %v, want virt then tool", m.updated)
+	}
+	if n := len(*alerts); n == 0 || !strings.Contains((*alerts)[n-1], "tool v1.0.0 → v1.1.0") {
+		t.Fatalf("alerts %q", *alerts)
+	}
+}
+
+// A foreign module that was allowed and then refused is no longer tried, even when its version is old enough.
+func TestAForeignModuleNoLongerAllowedIsNotTried(t *testing.T) {
+	a, _, m, at, _ := newModulesBox(t)
+	m.list = []ModuleUpdate{{Name: "tool", Installed: "v1.0.0", Latest: "v1.1.0", Foreign: true, Allowed: true}}
+	ctx := context.Background()
+
+	at("2026-09-24 02:00") // first seen, outside the window
+	a.Check(ctx)
+	m.list[0].Allowed = false
+	at("2026-09-25 03:30")
+	a.Check(ctx)
+	if len(m.updated) != 0 {
+		t.Fatalf("updated %v after the owner said no", m.updated)
+	}
+}
+
+// Off is off, for an allowed foreign module too.
+func TestAnAllowedForeignModuleWaitsForAutomaticUpdates(t *testing.T) {
+	a, _, m, at, _ := newModulesBox(t)
+	saveState(t, a, State{WindowStart: "03:00", WindowEnd: "05:00"})
+	m.list = []ModuleUpdate{{Name: "tool", Installed: "v1.0.0", Latest: "v1.1.0", Foreign: true, Allowed: true}}
+	ctx := context.Background()
+
+	at("2026-09-24 03:30")
+	a.Check(ctx)
+	at("2026-09-26 03:30")
+	a.Check(ctx)
+	if len(m.updated) != 0 || m.listed != 0 {
+		t.Fatalf("updated %v, listed %d times while automatic updates are off", m.updated, m.listed)
+	}
+}

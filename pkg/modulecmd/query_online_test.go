@@ -264,9 +264,9 @@ func TestListSaysTheInstalledVersionIsWithdrawn(t *testing.T) {
 
 // install.sh reads the list by patterns: a module begins with the key "name" and, when it has one, ends with the key "update"
 func TestAListedModuleBeginsWithNameAndEndsWithUpdate(t *testing.T) {
-	v := "v0.1.0"
+	v, on := "v0.1.0", true
 	raw, err := json.Marshal(ListModule{
-		Name: testName, Title: "t", Description: "d", Tier: "community", Tag: v, Catalogue: true, Source: "online", Repository: foreignRepo, Foreign: true,
+		Name: testName, Title: "t", Description: "d", Tier: "community", Tag: v, Catalogue: true, Source: "online", Repository: foreignRepo, Foreign: true, AutoUpdate: &on,
 		Installed: &Installed{Version: &v}, System: SystemInfo{Supported: true, Reasons: []string{}}, Broken: "manifest_invalid",
 		Withdrawn: &WithdrawnInfo{Tag: v, Reason: "r"}, Update: &UpdateInfo{Available: true, Installed: v, Latest: onlineTag},
 	})
@@ -274,7 +274,7 @@ func TestAListedModuleBeginsWithNameAndEndsWithUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	for _, k := range []string{"repository", "foreign", "withdrawn"} {
+	for _, k := range []string{"repository", "foreign", "auto_update", "withdrawn"} {
 		if !strings.Contains(s, `"`+k+`":`) {
 			t.Errorf("no %s: %s", k, s)
 		}

@@ -120,6 +120,8 @@ type SystemService interface {
 	ModuleProvider
 	// RefreshSystemModuleCatalogue fetches the online catalogue of the modules once, when [modules] OnlineCatalogue is on and the host is not image-managed, and logs what became of it.
 	RefreshSystemModuleCatalogue(ctx context.Context)
+	// SetSystemModuleAutoUpdate lets the night update an installed module written outside ReCasaOS, or no longer (system_module.go).
+	SetSystemModuleAutoUpdate(name string, enabled bool) error
 	GetSystemConfigDebug() []string
 	GetCasaOSLogs(lineNumber int) string
 	UpdateAssist()

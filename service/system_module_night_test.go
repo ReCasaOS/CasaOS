@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -20,18 +21,21 @@ type nightProvider struct {
 	startErr       error
 	jobs           []modulecmd.Job
 	started        []string
+	more           []modulecmd.ListModule // listed after the three
 }
 
 func (p *nightProvider) ListSystemModules() (modulecmd.ListResult, error) {
 	version := "v0.2.4"
-	return modulecmd.ListResult{
+	result := modulecmd.ListResult{
 		Catalogue: modulecmd.CatalogueInfo{OK: true},
 		Modules: []modulecmd.ListModule{
 			{Name: "virt", Installed: &modulecmd.Installed{Version: &version}, Update: &modulecmd.UpdateInfo{Available: true, Installed: "v0.2.4", Latest: "v0.2.5"}},
 			{Name: "scan", Installed: &modulecmd.Installed{Version: &version}, Update: &modulecmd.UpdateInfo{Installed: "v0.2.4", Latest: "v0.2.4"}},
 			{Name: "mcp"},
 		},
-	}, nil
+	}
+	result.Modules = append(result.Modules, p.more...)
+	return result, nil
 }
 
 func (p *nightProvider) PlanSystemModuleUpdate(name string) (osmodule.PlanResult, error) {
@@ -97,5 +101,37 @@ func TestTheNightUpdatesNothingItDidNotList(t *testing.T) {
 	p := &nightProvider{planLatest: "v0.2.5"}
 	if outcome, detail := (&NightModules{Provider: p}).Update(context.Background(), "virt"); outcome != autoupdate.NotStarted || len(p.started) != 0 {
 		t.Fatalf("Update() before List = %v, %q, started %v", outcome, detail, p.started)
+	}
+}
+
+// A module written outside ReCasaOS is listed to the night with whether its owner allowed it, as the list of the
+// dashboard says (auto_update), and one that is not allowed is never updated by name.
+func TestTheNightIsToldWhichForeignModulesTheOwnerAllowed(t *testing.T) {
+	version, yes, no := "v1.0.0", true, false
+	installed := &modulecmd.Installed{Version: &version}
+	update := &modulecmd.UpdateInfo{Available: true, Installed: "v1.0.0", Latest: "v1.1.0"}
+	p := &nightProvider{planLatest: "v1.1.0", more: []modulecmd.ListModule{
+		{Name: "allowed", Foreign: true, AutoUpdate: &yes, Installed: installed, Update: update},
+		{Name: "refused", Foreign: true, AutoUpdate: &no, Installed: installed, Update: update},
+		{Name: "unsaid", Foreign: true, Installed: installed, Update: update},
+	}}
+	n := &NightModules{Provider: p}
+	list, err := n.List(context.Background())
+	want := []autoupdate.ModuleUpdate{
+		{Name: "virt", Installed: "v0.2.4", Latest: "v0.2.5"},
+		{Name: "allowed", Installed: "v1.0.0", Latest: "v1.1.0", Foreign: true, Allowed: true},
+		{Name: "refused", Installed: "v1.0.0", Latest: "v1.1.0", Foreign: true},
+		{Name: "unsaid", Installed: "v1.0.0", Latest: "v1.1.0", Foreign: true},
+	}
+	if err != nil || !reflect.DeepEqual(list, want) {
+		t.Fatalf("List() = %+v, %v\nwant %+v", list, err, want)
+	}
+	for _, name := range []string{"refused", "unsaid"} {
+		if outcome, detail := n.Update(context.Background(), name); outcome != autoupdate.NotStarted || detail != "not started: not listed" {
+			t.Errorf("Update(%s) = %v, %q", name, outcome, detail)
+		}
+	}
+	if len(p.started) != 0 {
+		t.Fatalf("started %v", p.started)
 	}
 }

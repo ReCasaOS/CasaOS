@@ -27,7 +27,8 @@ type NightModules struct {
 	latest map[string]string // the tag each module was listed with
 }
 
-// List is the installed modules whose update the catalogue has. A catalogue that cannot be read is an error, not an
+// List is the installed modules whose update the catalogue has, a foreign one with whether its owner allowed the
+// night to update it (the list's auto_update, read from modulecmd.AutoAllowed). A catalogue that cannot be read is an error, not an
 // empty list: the night then changes nothing.
 func (n *NightModules) List(context.Context) ([]autoupdate.ModuleUpdate, error) {
 	result, err := n.Provider.ListSystemModules()
@@ -42,7 +43,11 @@ func (n *NightModules) List(context.Context) ([]autoupdate.ModuleUpdate, error) 
 		if m.Installed == nil || m.Update == nil || !m.Update.Available {
 			continue
 		}
-		list = append(list, autoupdate.ModuleUpdate{Name: m.Name, Installed: m.Update.Installed, Latest: m.Update.Latest})
+		allowed := m.AutoUpdate != nil && *m.AutoUpdate
+		list = append(list, autoupdate.ModuleUpdate{Name: m.Name, Installed: m.Update.Installed, Latest: m.Update.Latest, Foreign: m.Foreign, Allowed: allowed})
+		if m.Foreign && !allowed {
+			continue // the night leaves it alone; Update refuses it by name too
+		}
 		latest[m.Name] = m.Update.Latest
 	}
 	n.mu.Lock()
