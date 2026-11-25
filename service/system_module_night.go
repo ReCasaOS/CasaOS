@@ -53,7 +53,8 @@ func (n *NightModules) List(context.Context) ([]autoupdate.ModuleUpdate, error) 
 
 // Update plans the update of the module, starts it as the dashboard does and waits for its job to end, at most
 // nightModuleBound. What is refused before the unit is launched is NotStarted (a start error means systemd has no
-// unit: launchModule says a unit that may be there as a job); a job that ended other than succeeded is Failed.
+// unit: launchModule says a unit that may be there as a job), and so is a job the unit refused; a job that ended other
+// than succeeded or refused is Failed.
 func (n *NightModules) Update(ctx context.Context, name string) (autoupdate.Outcome, string) {
 	n.mu.Lock()
 	want, listed := n.latest[name]
@@ -95,6 +96,9 @@ func nightOutcome(job modulecmd.Job) (autoupdate.Outcome, string) {
 	switch {
 	case job.State == modulecmd.JobSucceeded:
 		return autoupdate.Updated, ""
+	case job.State == modulecmd.JobRefused:
+		// the unit refused before changing anything (the plan changed, the box became busy): the tag is not spent
+		return autoupdate.NotStarted, "not started: " + job.Code
 	case job.Undo == modulecmd.UndoRolledBack:
 		return autoupdate.Failed, "put back"
 	case job.Undo != "":

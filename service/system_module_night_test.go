@@ -71,6 +71,7 @@ func TestTheNightUpdatesAModuleAsTheDashboardDoes(t *testing.T) {
 		{"succeeded", nightProvider{planLatest: "v0.2.5", jobs: []modulecmd.Job{running, running, {State: modulecmd.JobSucceeded}}}, autoupdate.Updated, "", 1},
 		{"failed and put back", nightProvider{planLatest: "v0.2.5", jobs: []modulecmd.Job{running, failed}}, autoupdate.Failed, "put back", 1},
 		{"failed before changing anything", nightProvider{planLatest: "v0.2.5", jobs: []modulecmd.Job{{State: modulecmd.JobFailed, Code: "download_failed"}}}, autoupdate.Failed, "failed: download_failed", 1},
+		{"refused inside the unit", nightProvider{planLatest: "v0.2.5", jobs: []modulecmd.Job{running, {State: modulecmd.JobRefused, Code: "plan_changed"}}}, autoupdate.NotStarted, "not started: plan_changed", 1},
 		{"never ends", nightProvider{planLatest: "v0.2.5", jobs: []modulecmd.Job{running}}, autoupdate.Failed, "still running after 200ms", 1},
 		{"a tag the night did not wait for", nightProvider{planLatest: "v0.2.6"}, autoupdate.NotStarted, "not started: the catalogue changed", 0},
 		{"the plan is refused", nightProvider{planLatest: "v0.2.5", planRefused: osmodule.CheckBusy}, autoupdate.NotStarted, "not started: busy", 0},
