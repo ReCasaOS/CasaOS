@@ -261,6 +261,16 @@ func (f *fixture) run(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-done })
 }
 
+// idle waits until no operation is under way: one started in the background (OnAppEvent) holds the Service's
+// lock until its last write.
+func (f *fixture) idle(t *testing.T) {
+	t.Helper()
+	if err := f.s.lock(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.s.unlock()
+}
+
 func (f *fixture) saved(t *testing.T) State {
 	t.Helper()
 	st, ok := loadState(f.state)
@@ -411,6 +421,7 @@ func TestUninstallEventUnshares(t *testing.T) {
 	f.share(t, "jellyfin")
 	f.s.OnAppEvent("app:uninstall-end", map[string]string{"app:name": "jellyfin"})
 	eventually(t, "unshared", func() bool { return f.mgmt.count(dropJelly) == 1 && len(f.saved(t).Apps) == 0 })
+	f.idle(t) // the unshare still writes the protection state after share.json: not into a folder being removed
 }
 
 func TestResyncDropsAVanishedApp(t *testing.T) {
