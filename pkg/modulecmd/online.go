@@ -40,7 +40,7 @@ func RefreshOnline(ctx context.Context, roots Roots, get Downloader, url string)
 
 	path := roots.OnlineCatalogue()
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := makeDirs(dir, 0o755); err != nil {
 		return failed
 	}
 	// a link where the directory is is not written through
@@ -59,33 +59,12 @@ func RefreshOnline(ctx context.Context, roots Roots, get Downloader, url string)
 	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() || err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return failed
 	}
-	if writeBeside(dir, path, buf.Bytes()) != nil {
+	// under the lock, so the fixed temporary name of writeFileAtomic is this fetch's alone
+	if writeFileAtomic(path, buf.Bytes(), 0o644) != nil {
 		return failed
 	}
+	syncDir(dir)
 	return RefreshResult{Kept: true, Serial: serial}
-}
-
-// writeBeside writes raw to a new file in dir and renames it to path: whoever reads path sees the old file or the new one, whole.
-func writeBeside(dir, path string, raw []byte) error {
-	f, err := os.CreateTemp(dir, ".catalogue-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name()) // nothing is left of a write that failed; after the rename there is nothing to remove
-	_, err = f.Write(raw)
-	if err == nil {
-		err = f.Chmod(0o644)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
 }
 
 // cappedBuffer takes at most osmodule.MaxCatalogueBytes; a write past that is ErrTooLarge.
