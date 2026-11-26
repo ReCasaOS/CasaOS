@@ -63,9 +63,6 @@ var (
 	commit = "private build"
 	date   = "private build"
 
-	//go:embed api/index.html
-	_docHTML string
-
 	//go:embed api/casaos/openapi.yaml
 	_docYAML string
 
@@ -290,7 +287,7 @@ func main() {
 	v1Router := route.InitV1Router()
 
 	v2Router := route.InitV2Router()
-	v2DocRouter := route.InitV2DocRouter(_docHTML, _docYAML)
+	v2DocRouter := route.InitV2DocRouter(_docYAML)
 	v3File := route.InitFile()
 	mux := &util_http.HandlerMultiplexer{
 		HandlerMap: map[string]http.Handler{
