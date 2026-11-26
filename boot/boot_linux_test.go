@@ -121,7 +121,7 @@ func TestTheAssistantRunsBeforeTheCoreIsInitialised(t *testing.T) {
 			// pkg/stats imports only the standard library and initialises only its error values,
 			// so Go orders it before this package whatever imports it.
 			"github.com/ReCasaOS/CasaOS-Common/pkg/stats",
-			// pkg/installersig imports only the standard library and only decodes its two constant keys.
+			// pkg/installersig imports only the standard library and only compiles its patterns and decodes its constant keys.
 			"github.com/ReCasaOS/CasaOS/pkg/installersig":
 		case "github.com/ReCasaOS/CasaOS/pkg/dockerpkg", "github.com/ReCasaOS/CasaOS/pkg/osmodule", "github.com/ReCasaOS/CasaOS/pkg/ossupport", "github.com/ReCasaOS/CasaOS/pkg/osreadiness",
 			"github.com/ReCasaOS/CasaOS/pkg/osrun", "github.com/ReCasaOS/CasaOS/pkg/osplan", "github.com/ReCasaOS/CasaOS/pkg/modulecmd":
