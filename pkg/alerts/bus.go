@@ -33,11 +33,11 @@ type feed struct {
 const virtSource = "virt-management"
 
 // vulnSource is the scan module's SourceID on the message bus (common.ServiceName in
-// ReCasaOS-VulnScan), and vulnEvents the one event it publishes: at the end of a scan, the
-// apps with a critical vulnerability not told yet that an update of the app fixes.
+// ReCasaOS-VulnScan), and vulnEvents its two events: at the end of a scan, the apps with a critical vulnerability not told yet that an
+// update of the app fixes, and those with a vulnerability attackers already exploit.
 const vulnSource = "vuln-scan"
 
-var vulnEvents = []string{"vuln:found"}
+var vulnEvents = []string{"vuln:found", "vuln:exploited"}
 
 // feeds are the sources followed: AppManagement's events, the virt module's resource events, and
 // the scan module's findings.
@@ -297,6 +297,8 @@ func fromEvent(name string, p map[string]string) (a alert, resolved, ok bool) {
 		return alert{key: runtime, category: Apps, sentence: "Resolved: " + app + " runs normally again."}, true, true
 	case "vuln:found":
 		return vulnAlert(p)
+	case "vuln:exploited":
+		return exploitedAlert(p)
 	case "auto-update:night-end":
 		return nightAlert(p)
 	case "newer-tags:found":
@@ -389,6 +391,25 @@ func vulnAlert(p map[string]string) (alert, bool, bool) {
 		them = "it"
 	}
 	return alert{key: "vuln:found:" + list + ":" + p["count"], category: Vulnerabilities, sentence: sentence + ". Update " + them + " from the dashboard."}, false, true
+}
+
+// exploitedAlert is vulnAlert for the vulnerabilities attackers already exploit: same apps, same
+// count, its own sentence and key.
+func exploitedAlert(p map[string]string) (alert, bool, bool) {
+	apps := names(plain(p["apps"]))
+	if len(apps) == 0 {
+		return alert{}, false, false
+	}
+	list := truncate(strings.Join(apps, ", "), 300)
+
+	sentence, them := "Vulnerabilities that attackers already exploit are fixed by an update of "+list, "them"
+	if p["count"] == "1" {
+		sentence = "A vulnerability that attackers already exploit is fixed by an update of " + list
+	}
+	if len(apps) == 1 {
+		them = "it"
+	}
+	return alert{key: "vuln:exploited:" + list + ":" + p["count"], category: Vulnerabilities, sentence: sentence + ". Update " + them + " from the dashboard."}, false, true
 }
 
 // names is a comma-separated list, without its empty items.
