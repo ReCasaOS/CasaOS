@@ -57,13 +57,25 @@ func TestVerify(t *testing.T) {
 	}
 }
 
-func TestKeysDefaultAndRestore(t *testing.T) {
-	old := Keys
-	defer func() { Keys = old }()
+// TestTheCoreTrustsTwoKeys is the gate that keeps a core without the owner's
+// keys from being tagged: it fails until keyA and keyB in keys.go hold the
+// owner's two public keys. Do not skip or weaken it to make a build pass.
+func TestTheCoreTrustsTwoKeys(t *testing.T) {
+	if len(Keys) != 2 {
+		t.Fatalf("the core trusts %d installer keys, want 2: fill keyA and keyB in keys.go", len(Keys))
+	}
+	if Keys[0].Equal(Keys[1]) {
+		t.Fatal("keyA and keyB are the same key")
+	}
+}
+
+func TestDecodeKeys(t *testing.T) {
 	pub, _ := newKey(t)
-	Keys = []ed25519.PublicKey{pub}
-	if len(Keys) != 1 {
-		t.Fatal("Keys not replaceable")
+	good := base64.StdEncoding.EncodeToString(pub)
+	short := base64.StdEncoding.EncodeToString(pub[:31])
+	got := decodeKeys("", good, "not base64 !!", short)
+	if len(got) != 1 || !got[0].Equal(pub) {
+		t.Fatalf("got %d keys, want only the valid one", len(got))
 	}
 }
 

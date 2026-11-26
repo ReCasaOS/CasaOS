@@ -11,10 +11,6 @@ import (
 	"strings"
 )
 
-// Keys holds the public keys accepted for installer signatures.
-// The real keys A and B are added by the owner's key PR; tests set their own.
-var Keys []ed25519.PublicKey
-
 var (
 	ErrBadSignature = errors.New("installer signature is not valid")
 	ErrNoTag        = errors.New("installer announces no valid release tag")
