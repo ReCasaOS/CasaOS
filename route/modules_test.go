@@ -23,8 +23,11 @@ import (
 // Nothing else is registered below the path, so that a route is never added to it without this list being changed.
 var moduleRoutes = []string{
 	"GET /v1/sys/modules", "POST /v1/sys/modules/:name/plan", "POST /v1/sys/modules/:name/install", "POST /v1/sys/modules/:name/remove", "GET /v1/sys/modules/:name/status",
-	"PUT /v1/sys/modules/:name/auto-update",
+	"PUT /v1/sys/modules/:name/auto-update", "GET /v1/sys/modules/cards",
 }
+
+// the installed modules that may have a card on the dashboard
+const moduleCardsRoute = "/v1/sys/modules/cards"
 
 const modulePlanID = "m1-0123456789abcdef0123456789abcdef"
 
@@ -64,6 +67,8 @@ type fakeModuleSystem struct {
 	ended bool
 	// statusKind is the kind of the job that the status tells of
 	statusKind string
+	// cards is what the cards route is given
+	cards []modulecmd.Card
 }
 
 // status is the answer of the fake: a job of the kind that the call started (an install, for the status of a job that nobody asked for).
@@ -74,6 +79,15 @@ func (f *fakeModuleSystem) status(kind string) service.SystemModuleStatus {
 func (f *fakeModuleSystem) ListSystemModules() (modulecmd.ListResult, error) {
 	f.calls = append(f.calls, "list")
 	return modulecmd.ListResult{Catalogue: modulecmd.CatalogueInfo{OK: true}, Modules: []modulecmd.ListModule{}}, f.err
+}
+
+func (f *fakeModuleSystem) ListModuleCards() ([]modulecmd.Card, error) {
+	f.calls = append(f.calls, "cards")
+	cards := f.cards
+	if cards == nil {
+		cards = []modulecmd.Card{}
+	}
+	return cards, f.err
 }
 
 func (f *fakeModuleSystem) PlanSystemModule(name string) (osmodule.PlanResult, error) {
@@ -493,5 +507,78 @@ func TestTheAutoUpdateSwitchAnswersTheModuleAndItsState(t *testing.T) {
 		if recorder.Code != http.StatusOK || data["name"] != "virt" || data["auto_update"] != enabled || len(data) != 2 {
 			t.Errorf("enabled %v: %d %v", enabled, recorder.Code, data)
 		}
+	}
+}
+
+// The cards route asks of the token what /v1/sys/modules asks (the Gateway, not the core, lets only the administrator through, as for the list): no token and the refresh token are
+// refused as the list refuses them, and it answers in the envelope with data.modules, [] when there is none.
+func TestTheCardsRouteIsBehindTheTokenLikeTheListAndAnswersTheEnvelope(t *testing.T) {
+	system := &fakeModuleSystem{}
+	access, refresh, _ := theTokensOfTheTests(t, system)
+	e := InitV1Router()
+	for _, c := range []struct{ name, query, auth string }{
+		{"the access token in the header", "", access},
+		{"the access token in the query", "?token=" + access, ""},
+		{"the refresh token in the header", "", refresh},
+		{"the refresh token in the query", "?token=" + refresh, ""},
+		{"a header that is not a token", "", "nonsense"},
+		{"nothing", "", ""},
+	} {
+		cards := moduleCall(e, http.MethodGet, moduleCardsRoute+c.query, "", c.auth, "").Code
+		list := moduleCall(e, http.MethodGet, "/v1/sys/modules"+c.query, "", c.auth, "").Code
+		if cards != list {
+			t.Errorf("%s: cards = %d, list = %d", c.name, cards, list)
+		}
+	}
+	for _, auth := range []string{refresh, "nonsense", ""} {
+		if got := moduleCall(e, http.MethodGet, moduleCardsRoute, "", auth, "").Code; got != http.StatusUnauthorized {
+			t.Errorf("%q = %d, want 401", auth, got)
+		}
+	}
+	system.calls = nil
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		if got := moduleCall(e, method, moduleCardsRoute, `{}`, access, "").Code; got != http.StatusNotFound && got != http.StatusMethodNotAllowed {
+			t.Errorf("%s = %d, want 404 or 405", method, got)
+		}
+	}
+	if len(system.calls) != 0 {
+		t.Errorf("reached by another method: %v", system.calls)
+	}
+
+	recorder := moduleCall(e, http.MethodGet, moduleCardsRoute, "", access, "")
+	answer := decodeAnswer(t, recorder)
+	if recorder.Code != http.StatusOK || answer["message"] != "ok" || answer["success"] != float64(http.StatusOK) || recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("the empty answer: %d %s %v", recorder.Code, recorder.Body, recorder.Header())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, `"data":{"modules":[]}`) {
+		t.Errorf("an empty list is [], never null: %s", body)
+	}
+
+	system.cards = []modulecmd.Card{{Name: "virt", Title: "Virtual machines", Route: "/v2/virt"}, {Name: "wol", Title: "Wake on LAN", Route: "/v1/wol", Foreign: true, Repository: "inkly/recasaos-wake-on-lan"}}
+	body := moduleCall(e, http.MethodGet, moduleCardsRoute, "", access, "").Body.String()
+	const want = `"data":{"modules":[{"name":"virt","title":"Virtual machines","route":"/v2/virt"},{"name":"wol","title":"Wake on LAN","route":"/v1/wol","foreign":true,"repository":"inkly/recasaos-wake-on-lan"}]}`
+	if !strings.Contains(body, want) {
+		t.Errorf("answer: %s; want it to contain %s", body, want)
+	}
+}
+
+// A module that is called cards keeps its own routes: the static segment of the list of cards is not taken for a :name.
+func TestAModuleNamedCardsKeepsItsRoutes(t *testing.T) {
+	system := &fakeModuleSystem{}
+	access, _, _ := theTokensOfTheTests(t, system)
+	e := InitV1Router()
+	for _, c := range []struct{ method, tail, body, call string }{
+		{http.MethodGet, "status", "", "status cards"},
+		{http.MethodPost, "plan", "", "plan cards"},
+	} {
+		system.calls = nil
+		if got := moduleCall(e, c.method, moduleCardsRoute+"/"+c.tail, c.body, access, "").Code; got != http.StatusOK || !slices.Equal(system.calls, []string{c.call}) {
+			t.Errorf("%s %s = %d, calls %v; want 200 and %q", c.method, c.tail, got, system.calls, c.call)
+		}
+	}
+	system.calls = nil
+	moduleCall(e, http.MethodGet, moduleCardsRoute, "", access, "")
+	if !slices.Equal(system.calls, []string{"cards"}) {
+		t.Errorf("the list of cards: %v", system.calls)
 	}
 }

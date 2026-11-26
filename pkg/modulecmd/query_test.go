@@ -539,3 +539,28 @@ func TestProductionAsksTheReleaseOfTheDistribution(t *testing.T) {
 		t.Errorf("not wired: %+v", env)
 	}
 }
+
+func TestCardsAreTheModulesThatAreInstalledAndActive(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	cards, err := Cards(ctx, f.env)
+	if err != nil || cards == nil || len(cards) != 0 {
+		t.Fatalf("nothing installed: %v, %v (want [], never nil)", cards, err)
+	}
+	if code := f.install("--yes"); code != ExitOK {
+		t.Fatalf("install %d", code)
+	}
+	cards, err = Cards(ctx, f.env)
+	want := Card{Name: "virt", Title: "Virtual machines", Route: testRoute}
+	if err != nil || len(cards) != 1 || cards[0] != want {
+		t.Fatalf("installed and active: %+v, %v; want [%+v]", cards, err, want)
+	}
+	raw, _ := json.Marshal(cards[0])
+	if string(raw) != `{"name":"virt","title":"Virtual machines","route":"`+testRoute+`"}` {
+		t.Errorf("foreign and repository are omitted when empty: %s", raw)
+	}
+	delete(f.runner.enabled, testUnit)
+	if cards, err = Cards(ctx, f.env); err != nil || len(cards) != 0 {
+		t.Errorf("unit stopped: %+v, %v", cards, err)
+	}
+}

@@ -96,7 +96,6 @@ func InitV1Router() http.Handler {
 		TokenLookupFuncs: []echo_middleware.ValuesExtractor{lookupToken},
 	}))
 	{
-
 		v1SysGroup := v1Group.Group("/sys")
 		v1SysGroup.Use()
 		{
@@ -111,6 +110,8 @@ func InitV1Router() http.Handler {
 			// the group takes. The name in the address is checked before anything else. On an image-managed host the system image's
 			// modules (service.ModuleProvider).
 			v1SysGroup.GET("/modules", v1.GetSystemModules)
+			// the installed modules whose card the dashboard may ask for; read only, like the list (a module named "cards" keeps its /cards/status: the static segment has no :name route of its length)
+			v1SysGroup.GET("/modules/cards", v1.GetModuleCards)
 			v1SysGroup.POST("/modules/:name/plan", v1.PlanSystemModule, headerTokenOnly)
 			v1SysGroup.POST("/modules/:name/install", v1.InstallSystemModule, headerTokenOnly)
 			v1SysGroup.POST("/modules/:name/remove", v1.RemoveSystemModule, headerTokenOnly)

@@ -290,3 +290,18 @@ func PutSystemModuleAutoUpdate(ctx echo.Context) error {
 	}
 	return osPlanAnswer(ctx, http.StatusOK, common_err.GetMsg(common_err.SUCCESS), map[string]any{"name": name, "auto_update": *req.Enabled})
 }
+
+// @Summary  the installed modules whose unit is active: the ones the dashboard may ask for a card
+// @Description data.modules is, by name, each module that is installed and whose unit is active (as the status says), with name, title (its manifest's), route (its gateway_route) and, when the catalogue says so, repository and foreign. [] when there is none. It only reads, and asks what /sys/modules asks: the access token; the Gateway lets only the administrator through.
+// @Produce  application/json
+// @Tags modules
+// @Security ApiKeyAuth
+// @Success 200 {object} model.Result
+// @Router /modules/cards [get]
+func GetModuleCards(ctx echo.Context) error {
+	cards, err := service.MyService.System().ListModuleCards()
+	if err != nil {
+		return moduleFailed(ctx, err)
+	}
+	return osPlanAnswer(ctx, http.StatusOK, common_err.GetMsg(common_err.SUCCESS), map[string]any{"modules": cards})
+}

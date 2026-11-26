@@ -398,3 +398,40 @@ func statusAll(ctx context.Context, env Env) (map[string][]StatusResult, error) 
 }
 
 func fprintln(w io.Writer, a ...any) { _, _ = fmt.Fprintln(w, a...) }
+
+// ---- cards -------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+// A Card is an installed module whose unit is active: the dashboard may ask it for a card on the route the gateway reaches it on. Title and Route are the installed manifest's;
+// Repository and Foreign are what the list says of the module (absent for a catalogue that has no schema 3).
+type Card struct {
+	Name       string `json:"name"`
+	Title      string `json:"title"`
+	Route      string `json:"route"`
+	Foreign    bool   `json:"foreign,omitempty"`
+	Repository string `json:"repository,omitempty"`
+}
+
+// Cards is the modules that are installed and whose unit is active (what StatusOf says), by name; never nil.
+func Cards(ctx context.Context, env Env) ([]Card, error) {
+	env = env.withDefaults()
+	installed, _, err := (&box{ctx: ctx, env: &env}).InstalledManifests()
+	if err != nil {
+		return nil, err
+	}
+	// the catalogue may be unreadable: the cards are then without repository, as for a catalogue without schema 3
+	listed := map[string]ListModule{}
+	if list, err := List(ctx, env); err == nil {
+		for _, m := range list.Modules {
+			listed[m.Name] = m
+		}
+	}
+	out := []Card{}
+	for _, name := range sortedManifestKeys(installed) {
+		if s, err := StatusOf(ctx, env, name); err != nil || !s.Unit.Active {
+			continue
+		}
+		l := listed[name]
+		out = append(out, Card{Name: name, Title: installed[name].Title, Route: installed[name].GatewayRoute, Foreign: l.Foreign, Repository: l.Repository})
+	}
+	return out, nil
+}
