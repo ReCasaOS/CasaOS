@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,14 +49,18 @@ type releaseServer struct {
 	files  map[string][]byte
 	status map[string]int // a status served instead of the file
 	asked  []string
+	before func(path string) // called before each answer, when set
 }
 
 func (r *releaseServer) handle(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	r.asked = append(r.asked, req.URL.Path)
 	body, ok := r.files[req.URL.Path]
-	status := r.status[req.URL.Path]
+	status, before := r.status[req.URL.Path], r.before
 	r.mu.Unlock()
+	if before != nil {
+		before(req.URL.Path)
+	}
 	if status != 0 {
 		w.WriteHeader(status)
 		return
@@ -425,5 +431,125 @@ func TestARefusedInstallerIsNotRun(t *testing.T) {
 	}
 	if len(*runs) != 0 {
 		t.Fatalf("systemd-run ran %v", *runs)
+	}
+}
+
+// One update at a time: a second one asked while the first downloads is told the box is busy.
+func TestASecondUpdateWhileOneIsPreparedIsBusy(t *testing.T) {
+	srv, _ := newInstallerFixture(t, false)
+	system, runs := newIdleSystem(t)
+	entered, release := make(chan struct{}, 2), make(chan struct{})
+	srv.before = func(path string) {
+		if strings.HasSuffix(path, "/install.sh") {
+			entered <- struct{}{}
+			<-release
+		}
+	}
+	first, second := make(chan error, 1), make(chan error, 1)
+	go func() { first <- system.UpdateSystemRelease(testTag) }()
+	<-entered
+
+	go func() { second <- system.UpdateSystemRelease(testTag) }()
+	select {
+	case err := <-second:
+		if !errors.Is(err, ErrSystemMaintenanceBusy) {
+			t.Errorf("the second update: %v, want busy", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the second update waited for the first: want it told busy at once")
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("the first update: %v", err)
+	}
+	if t.Failed() {
+		<-second
+		return
+	}
+	if len(*runs) != 1 {
+		t.Fatalf("systemd-run ran %d times, want once", len(*runs))
+	}
+	// the lock is given back
+	if err := system.UpdateSystemRelease(testTag); err != nil || len(*runs) != 2 {
+		t.Fatalf("an update after: %v, %d runs", err, len(*runs))
+	}
+}
+
+// Something that starts on the box during the download keeps the update from starting.
+func TestABoxThatBecameBusyDuringTheDownloadStartsNothing(t *testing.T) {
+	srv, _ := newInstallerFixture(t, false)
+	system, runs := newIdleSystem(t)
+	var busy atomic.Bool
+	idle, active := moduleSystemd(nil), moduleSystemd(map[string]string{"casaos-module-virt.service": "active"})
+	system.packageUpdates.command = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if busy.Load() {
+			return active(ctx, name, args...)
+		}
+		return idle(ctx, name, args...)
+	}
+	srv.before = func(string) { busy.Store(true) }
+
+	err := system.UpdateSystemRelease(testTag)
+	if !errors.Is(err, ErrSystemMaintenanceBusy) {
+		t.Fatalf("err = %v, want busy", err)
+	}
+	if len(*runs) != 0 {
+		t.Fatalf("systemd-run ran %v", *runs)
+	}
+}
+
+func TestAnUpdateFolderThatIsALinkIsReplaced(t *testing.T) {
+	newInstallerFixture(t, false)
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, installerDir); err != nil {
+		t.Fatal(err)
+	}
+	path, err := fetchVerifiedInstaller(t.Context(), testTag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(installerDir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
+		t.Fatalf("the folder is %v (%v), want a real 0700 folder", info.Mode(), err)
+	}
+	if filepath.Dir(path) != installerDir {
+		t.Fatalf("written at %q", path)
+	}
+	if entries, _ := os.ReadDir(elsewhere); len(entries) != 0 {
+		t.Fatalf("%d files written where the link pointed", len(entries))
+	}
+}
+
+func TestLeftoverTempFilesAreRemoved(t *testing.T) {
+	newInstallerFixture(t, false)
+	if err := os.MkdirAll(installerDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installerDir, ".install-123"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fetchVerifiedInstaller(t.Context(), testTag); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(installerDir, ".install-123")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the leftover is still there: %v", err)
+	}
+}
+
+// A tag that is none, spaces aside, is not a failure of a release: nothing is counted.
+func TestATagThatIsNoneIsBusy(t *testing.T) {
+	srv, _ := newInstallerFixture(t, false)
+	system, runs := newIdleSystem(t)
+	for _, tag := range []string{"v0.5.70/../x", "latest", " v0.5.x "} {
+		if err := system.UpdateSystemRelease(tag); !errors.Is(err, autoupdate.ErrBusy) {
+			t.Errorf("tag %q: %v, want busy", tag, err)
+		}
+	}
+	// spaces around a real tag are trimmed
+	if err := system.UpdateSystemRelease(" " + testTag + "\n"); err != nil {
+		t.Fatalf("a tag with spaces: %v", err)
+	}
+	if len(*runs) != 1 || len(srv.paths()) != 2 {
+		t.Fatalf("%d runs, asked %q", len(*runs), srv.paths())
 	}
 }

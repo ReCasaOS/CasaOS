@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ReCasaOS/CasaOS-Common/utils/command"
@@ -521,7 +522,7 @@ func (e installerRefused) Unwrap() error { return autoupdate.ErrRefused }
 // can read, write or run: its path. Nothing is written for an installer that fails its check.
 func fetchVerifiedInstaller(ctx context.Context, tag string) (string, error) {
 	if !releaseTag.MatchString(tag) {
-		return "", fmt.Errorf("%q is not a release tag", tag)
+		return "", installerUnreachable{fmt.Errorf("%q is not a release tag", tag)}
 	}
 	url := resolveReleaseInstallerURL(tag)
 	script, err := downloadInstallerFile(ctx, url)
@@ -590,8 +591,9 @@ func checkInstaller(script, sig []byte, tag string) string {
 	if announced != tag {
 		return "it announces " + announced
 	}
-	// A missing or unreadable file, or one that holds no tag, is no lower bound: the box does
-	// not know what is installed, and the signature and the tag asked still hold.
+	// A missing or unreadable file, or one whose content is not a vX.Y.Z tag (Newer is false
+	// then), is no lower bound: the box does not know what is installed, only root writes that
+	// file, and the signature and the tag asked still hold.
 	if data, err := os.ReadFile(installedReleaseFile); err == nil {
 		installed := "v" + strings.TrimPrefix(strings.TrimSpace(string(data)), "v")
 		if installersig.Newer(installed, tag) {
@@ -618,6 +620,12 @@ func installerKeys() []ed25519.PublicKey {
 // writeInstaller writes script to installerDir/install-<tag>.sh, folder and file 0700: through a
 // new file renamed over the old, so a script that runs is never rewritten under it.
 func writeInstaller(script []byte, tag string) (string, error) {
+	// the folder must be a real folder of root's: a link or anything else in its place goes
+	if info, err := os.Lstat(installerDir); err == nil && !ownFolder(info) {
+		if err := os.RemoveAll(installerDir); err != nil {
+			return "", fmt.Errorf("write the installer: %w", err)
+		}
+	}
 	if err := os.MkdirAll(installerDir, 0o700); err != nil {
 		return "", fmt.Errorf("write the installer: %w", err)
 	}
@@ -625,9 +633,11 @@ func writeInstaller(script []byte, tag string) (string, error) {
 	if err := os.Chmod(installerDir, 0o700); err != nil {
 		return "", fmt.Errorf("write the installer: %w", err)
 	}
-	// only the last checked installer is kept; one that runs keeps its file open, removed or not
+	// only the last checked installer is kept, and no temporary file of an earlier write; one
+	// that runs keeps its file open, removed or not
 	old, _ := filepath.Glob(filepath.Join(installerDir, "install-*.sh"))
-	for _, name := range old {
+	temps, _ := filepath.Glob(filepath.Join(installerDir, ".install-*"))
+	for _, name := range append(old, temps...) {
 		_ = os.Remove(name)
 	}
 	tmp, err := os.CreateTemp(installerDir, ".install-*")
@@ -652,6 +662,12 @@ func writeInstaller(script []byte, tag string) (string, error) {
 	return path, nil
 }
 
+// ownFolder says whether info is a directory (not a link) owned by root.
+func ownFolder(info os.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return info.IsDir() && ok && st.Uid == 0
+}
+
 // UpdateSystemVersion installs the release the version announcement names, whatever the
 // argument says: its installer and signature are both taken from that release.
 func (s *systemService) UpdateSystemVersion(string) error {
@@ -661,6 +677,9 @@ func (s *systemService) UpdateSystemVersion(string) error {
 func (s *systemService) UpdateSystemRelease(tag string) error {
 	return s.updateSystem(tag)
 }
+
+// updateSystemLock is held by the update being prepared and started.
+var updateSystemLock sync.Mutex
 
 // releaseTag is a release's tag as the fork cuts them; it goes into a URL and a file name.
 var releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
@@ -678,19 +697,31 @@ func resolveReleaseInstallerURL(tag string) string {
 // updateSystem installs the release tagged tag, or with "" the one the version announcement
 // names, once its installer is checked.
 func (s *systemService) updateSystem(tag string) error {
+	// one update at a time, the button's or the night's: the download takes minutes
+	if !updateSystemLock.TryLock() {
+		return fmt.Errorf("%w: another update of ReCasaOS is being prepared", ErrSystemMaintenanceBusy)
+	}
+	defer updateSystemLock.Unlock()
 	if reason, busy := s.systemPackageUpdater().maintenanceBusy(context.Background(), common.UPDATE_UNIT+".service"); busy {
 		return fmt.Errorf("%w: %s", ErrSystemMaintenanceBusy, reason)
 	}
 	if tag == "" {
-		if tag = strings.TrimSpace(latestReleaseTag()); tag == "" {
-			return installerUnreachable{errors.New("no release is announced")}
-		}
+		tag = latestReleaseTag()
 	}
 	// a feed may announce a release without its "v": the tag is the release's
-	tag = "v" + strings.TrimPrefix(tag, "v")
+	tag = "v" + strings.TrimPrefix(strings.TrimSpace(tag), "v")
+	if !releaseTag.MatchString(tag) {
+		// no release to aim at is no failure of one: nothing is counted, the next check tries again
+		return installerUnreachable{fmt.Errorf("no release tag to install (%q)", tag)}
+	}
 	installer, err := fetchVerifiedInstaller(context.Background(), tag)
 	if err != nil {
 		return err
+	}
+	// the download took time: whatever started meanwhile keeps the update away (the file stays
+	// until the next checked installer replaces it)
+	if reason, busy := s.systemPackageUpdater().maintenanceBusy(context.Background(), common.UPDATE_UNIT+".service"); busy {
+		return fmt.Errorf("%w: %s", ErrSystemMaintenanceBusy, reason)
 	}
 	keyName := "casa_version:" + resolveUpdateVersionURL()
 	Cache.Delete(keyName)
