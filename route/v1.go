@@ -96,6 +96,8 @@ func InitV1Router() http.Handler {
 		TokenLookupFuncs: []echo_middleware.ValuesExtractor{lookupToken},
 	}))
 	{
+		// the modules whose card the dashboard may ask for: read only, behind the group's token like /sys/modules
+		v1Group.GET("/modules/cards", v1.GetModuleCards)
 
 		v1SysGroup := v1Group.Group("/sys")
 		v1SysGroup.Use()

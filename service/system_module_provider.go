@@ -24,6 +24,8 @@ type ModuleProvider interface {
 	PlanSystemModuleUpdate(name string) (osmodule.PlanResult, error)
 	StartSystemModuleUpdate(ctx context.Context, name, planID string) (SystemModuleStatus, error)
 	GetSystemModuleStatus(name string) (SystemModuleStatus, error)
+	// ListModuleCards is the modules that are installed and whose unit is active: the ones the dashboard may ask for a card.
+	ListModuleCards() ([]modulecmd.Card, error)
 }
 
 // modules is the provider of this core: the system image's on an image-managed host, the module assistant's otherwise.
@@ -63,6 +65,10 @@ func (s *systemService) GetSystemModuleStatus(name string) (SystemModuleStatus, 
 	return s.modules().GetSystemModuleStatus(name)
 }
 
+func (s *systemService) ListModuleCards() ([]modulecmd.Card, error) {
+	return s.modules().ListModuleCards()
+}
+
 // casaosModules is the module assistant's provider: the code of system_module.go, as it was.
 type casaosModules struct{ u *systemPackageUpdater }
 
@@ -90,4 +96,10 @@ func (m casaosModules) StartSystemModuleRemove(ctx context.Context, name string)
 
 func (m casaosModules) GetSystemModuleStatus(name string) (SystemModuleStatus, error) {
 	return m.u.moduleStatus(name)
+}
+
+func (m casaosModules) ListModuleCards() ([]modulecmd.Card, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), systemModuleReadTimeout)
+	defer cancel()
+	return modulecmd.Cards(ctx, m.u.moduleWorld())
 }

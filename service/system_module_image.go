@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -502,4 +503,17 @@ func (imageRunner) Run(ctx context.Context, c modulecmd.Cmd) (modulecmd.Output, 
 		err = ctx.Err()
 	}
 	return modulecmd.Output{Text: string(out)}, err
+}
+
+// ListModuleCards is the modules of the image that are enabled and whose unit is active.
+func (m *imageModules) ListModuleCards() ([]modulecmd.Card, error) {
+	cat, _ := m.load()
+	out := []modulecmd.Card{}
+	for _, e := range cat.Modules {
+		if m.status(e.Name).Unit.Active {
+			out = append(out, modulecmd.Card{Name: e.Name, Title: e.Manifest.Title, Route: e.Manifest.GatewayRoute, Foreign: e.Foreign(), Repository: e.Repository})
+		}
+	}
+	slices.SortFunc(out, func(a, b modulecmd.Card) int { return strings.Compare(a.Name, b.Name) })
+	return out, nil
 }
