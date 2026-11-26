@@ -23,11 +23,11 @@ import (
 // Nothing else is registered below the path, so that a route is never added to it without this list being changed.
 var moduleRoutes = []string{
 	"GET /v1/sys/modules", "POST /v1/sys/modules/:name/plan", "POST /v1/sys/modules/:name/install", "POST /v1/sys/modules/:name/remove", "GET /v1/sys/modules/:name/status",
-	"PUT /v1/sys/modules/:name/auto-update",
+	"PUT /v1/sys/modules/:name/auto-update", "GET /v1/sys/modules/cards",
 }
 
-// the one route of the modules outside /v1/sys: the installed modules that may have a card on the dashboard
-const moduleCardsRoute = "/v1/modules/cards"
+// the installed modules that may have a card on the dashboard
+const moduleCardsRoute = "/v1/sys/modules/cards"
 
 const modulePlanID = "m1-0123456789abcdef0123456789abcdef"
 
@@ -559,5 +559,26 @@ func TestTheCardsRouteIsBehindTheTokenLikeTheListAndAnswersTheEnvelope(t *testin
 	const want = `"data":{"modules":[{"name":"virt","title":"Virtual machines","route":"/v2/virt"},{"name":"wol","title":"Wake on LAN","route":"/v1/wol","foreign":true,"repository":"inkly/recasaos-wake-on-lan"}]}`
 	if !strings.Contains(body, want) {
 		t.Errorf("answer: %s; want it to contain %s", body, want)
+	}
+}
+
+// A module that is called cards keeps its own routes: the static segment of the list of cards is not taken for a :name.
+func TestAModuleNamedCardsKeepsItsRoutes(t *testing.T) {
+	system := &fakeModuleSystem{}
+	access, _, _ := theTokensOfTheTests(t, system)
+	e := InitV1Router()
+	for _, c := range []struct{ method, tail, body, call string }{
+		{http.MethodGet, "status", "", "status cards"},
+		{http.MethodPost, "plan", "", "plan cards"},
+	} {
+		system.calls = nil
+		if got := moduleCall(e, c.method, moduleCardsRoute+"/"+c.tail, c.body, access, "").Code; got != http.StatusOK || !slices.Equal(system.calls, []string{c.call}) {
+			t.Errorf("%s %s = %d, calls %v; want 200 and %q", c.method, c.tail, got, system.calls, c.call)
+		}
+	}
+	system.calls = nil
+	moduleCall(e, http.MethodGet, moduleCardsRoute, "", access, "")
+	if !slices.Equal(system.calls, []string{"cards"}) {
+		t.Errorf("the list of cards: %v", system.calls)
 	}
 }

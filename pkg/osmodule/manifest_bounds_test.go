@@ -193,12 +193,3 @@ func withRoute(t *testing.T, route string) string {
 	}
 	return string(out)
 }
-
-// The dashboard asks the core on /v1/modules/cards: a module cannot take that name.
-func TestAModuleCannotTakeTheRouteOfTheCards(t *testing.T) {
-	for _, route := range []string{"/v1/modules", "/v2/modules"} {
-		if field, reason := invalidAt(t, withRoute(t, route)); field != "gateway_route" || reason != ReasonValue {
-			t.Errorf("%s: refused for %q %q", route, field, reason)
-		}
-	}
-}
