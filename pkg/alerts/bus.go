@@ -294,9 +294,10 @@ func fromEvent(name string, p map[string]string) (a alert, resolved, ok bool) {
 	case "app:container-restarting":
 		return alert{key: runtime, category: Apps, sentence: app + " keeps restarting" + container + "."}, false, true
 	case "app:container-auto-restarted":
-		return alert{key: runtime, category: Apps, sentence: app + " was unhealthy and has been restarted" + container + "."}, false, true
+		// keys of their own: under runtime they would be held back as repeats of the unhealthy alert
+		return alert{key: runtime + ":auto-restart:" + p["auto-restart:count"], category: Apps, sentence: app + " was unhealthy and has been restarted" + container + "."}, false, true
 	case "app:container-auto-restart-stopped":
-		return alert{key: runtime, category: Apps, sentence: app + " is still unhealthy after 3 restarts; it is no longer restarted automatically" + container + "."}, false, true
+		return alert{key: runtime + ":auto-restart-stopped", category: Apps, sentence: app + " is still unhealthy; it is no longer restarted automatically" + container + "."}, false, true
 	case "app:container-healthy":
 		return alert{key: runtime, category: Apps, sentence: "Resolved: " + app + " runs normally again."}, true, true
 	case "vuln:found":

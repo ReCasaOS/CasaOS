@@ -88,14 +88,14 @@ func TestEachEventsAlert(t *testing.T) {
 		{"app:container-healthy", with(immich), alert{"app:immich:runtime", Apps, "Resolved: Immich runs normally again."}, true},
 		{
 			"app:container-auto-restarted", with(immich, "docker:container:name", "immich-server", "auto-restart:count", "1"),
-			alert{"app:immich:runtime", Apps, "Immich was unhealthy and has been restarted (container immich-server)."}, false,
+			alert{"app:immich:runtime:auto-restart:1", Apps, "Immich was unhealthy and has been restarted (container immich-server)."}, false,
 		},
 		{
 			"app:container-auto-restart-stopped", with(immich, "docker:container:name", "immich-server"),
-			alert{"app:immich:runtime", Apps, "Immich is still unhealthy after 3 restarts; it is no longer restarted automatically (container immich-server)."}, false,
+			alert{"app:immich:runtime:auto-restart-stopped", Apps, "Immich is still unhealthy; it is no longer restarted automatically (container immich-server)."}, false,
 		},
 		{
-			"auto-update:night-end", map[string]string{"auto-update:updated": "jellyfin,immich","auto-update:failed": "sonarr"},
+			"auto-update:night-end", map[string]string{"auto-update:updated": "jellyfin,immich", "auto-update:failed": "sonarr"},
 			alert{"auto-update-night:jellyfin,immich|sonarr|", AppUpdates, "Tonight's automatic updates: updated jellyfin, immich; failed for sonarr (each runs the version it had)."}, false,
 		},
 		{
