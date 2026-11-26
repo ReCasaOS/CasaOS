@@ -121,19 +121,18 @@ func skipRequestValidation(c echo.Context) bool {
 	return strings.Contains(c.Request().Header.Get(echo.HeaderContentType), "multipart/form-data")
 }
 
-func InitV2DocRouter(docHTML string, docYAML string) http.Handler {
+func InitV2DocRouter(docYAML string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == V2DocPath {
-			if _, err := w.Write([]byte(docHTML)); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
+		// The base path and /openapi.yaml both answer with the spec; nothing else.
+		if p := strings.TrimRight(r.URL.Path, "/"); p != V2DocPath && p != V2DocPath+"/openapi.yaml" {
+			http.NotFound(w, r)
 			return
 		}
 
-		if r.URL.Path == V2DocPath+"/openapi.yaml" {
-			if _, err := w.Write([]byte(docYAML)); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
+		w.Header().Set("Content-Type", "application/yaml")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if _, err := w.Write([]byte(docYAML)); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
 		}
 	})
 }
