@@ -662,10 +662,11 @@ func writeInstaller(script []byte, tag string) (string, error) {
 	return path, nil
 }
 
-// ownFolder says whether info is a directory (not a link) owned by root.
+// ownFolder says whether info is a directory (not a link) owned by the user the core runs as.
 func ownFolder(info os.FileInfo) bool {
 	st, ok := info.Sys().(*syscall.Stat_t)
-	return info.IsDir() && ok && st.Uid == 0
+	// root on a box
+	return info.IsDir() && ok && int(st.Uid) == os.Geteuid()
 }
 
 // UpdateSystemVersion installs the release the version announcement names, whatever the
