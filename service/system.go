@@ -529,14 +529,29 @@ func fetchVerifiedInstaller(ctx context.Context, tag string) (string, error) {
 		return "", installerUnreachable{err}
 	}
 	sig, err := downloadInstallerFile(ctx, url+".sig")
-	if err != nil {
+	var status installerStatusError
+	reason := ""
+	switch {
+	case errors.As(err, &status) && int(status) == http.StatusNotFound:
+		// the script was there: its release has no signature, which is no network problem
+		reason = "it has no signature"
+	case err != nil:
 		return "", installerUnreachable{err}
+	default:
+		reason = checkInstaller(script, sig, tag)
 	}
-	if reason := checkInstaller(script, sig, tag); reason != "" {
+	if reason != "" {
 		logger.Info("update: the installer is refused", zap.String("tag", tag), zap.String("url", url), zap.String("reason", reason))
 		return "", installerRefused{tag}
 	}
 	return writeInstaller(script, tag)
+}
+
+// installerStatusError is an HTTP status other than 200.
+type installerStatusError int
+
+func (e installerStatusError) Error() string {
+	return fmt.Sprintf("answered %d %s", int(e), http.StatusText(int(e)))
 }
 
 // downloadInstallerFile is the body of url: a 200 of at most installerMaxSize bytes.
@@ -551,7 +566,7 @@ func downloadInstallerFile(ctx context.Context, url string) ([]byte, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s answered %s", url, response.Status)
+		return nil, fmt.Errorf("%s: %w", url, installerStatusError(response.StatusCode))
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, installerMaxSize+1))
 	if err != nil {
@@ -609,6 +624,11 @@ func writeInstaller(script []byte, tag string) (string, error) {
 	// MkdirAll leaves a folder that exists as it is
 	if err := os.Chmod(installerDir, 0o700); err != nil {
 		return "", fmt.Errorf("write the installer: %w", err)
+	}
+	// only the last checked installer is kept; one that runs keeps its file open, removed or not
+	old, _ := filepath.Glob(filepath.Join(installerDir, "install-*.sh"))
+	for _, name := range old {
+		_ = os.Remove(name)
 	}
 	tmp, err := os.CreateTemp(installerDir, ".install-*")
 	if err != nil {

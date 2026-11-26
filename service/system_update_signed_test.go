@@ -43,16 +43,22 @@ func newInstallerKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 // releaseServer serves files by path, 404 for any other, and records the paths asked.
 type releaseServer struct {
 	*httptest.Server
-	mu    sync.Mutex
-	files map[string][]byte
-	asked []string
+	mu     sync.Mutex
+	files  map[string][]byte
+	status map[string]int // a status served instead of the file
+	asked  []string
 }
 
 func (r *releaseServer) handle(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	r.asked = append(r.asked, req.URL.Path)
 	body, ok := r.files[req.URL.Path]
+	status := r.status[req.URL.Path]
 	r.mu.Unlock()
+	if status != 0 {
+		w.WriteHeader(status)
+		return
+	}
 	if !ok {
 		http.NotFound(w, req)
 		return
@@ -195,8 +201,7 @@ func TestAnInstallerWithABadSignatureIsRefused(t *testing.T) {
 
 func TestAnInstallerThatCannotBeDownloadedIsBusyNotRefused(t *testing.T) {
 	for name, change := range map[string]func(files map[string][]byte){
-		"no signature": func(f map[string][]byte) { delete(f, "/"+testTag+"/install.sh.sig") },
-		"no script":    func(f map[string][]byte) { delete(f, "/"+testTag+"/install.sh") },
+		"no script": func(f map[string][]byte) { delete(f, "/"+testTag+"/install.sh") },
 		"a script over 5 MiB": func(f map[string][]byte) {
 			f["/"+testTag+"/install.sh"] = append(installerScript(testTag), make([]byte, 5<<20)...)
 		},
@@ -208,12 +213,49 @@ func TestAnInstallerThatCannotBeDownloadedIsBusyNotRefused(t *testing.T) {
 			wantUnreachable(t, err)
 		})
 	}
+	t.Run("a signature that answers 500", func(t *testing.T) {
+		srv, _ := newInstallerFixture(t, false)
+		srv.status = map[string]int{"/" + testTag + "/install.sh.sig": http.StatusInternalServerError}
+		_, err := fetchVerifiedInstaller(t.Context(), testTag)
+		wantUnreachable(t, err)
+	})
 	t.Run("no server", func(t *testing.T) {
 		srv, _ := newInstallerFixture(t, false)
 		srv.Close()
 		_, err := fetchVerifiedInstaller(t.Context(), testTag)
 		wantUnreachable(t, err)
 	})
+}
+
+// The script is there and its signature is not: the release is not signed, not out of reach.
+func TestAnInstallerWithoutItsSignatureIsRefused(t *testing.T) {
+	srv, _ := newInstallerFixture(t, false)
+	delete(srv.files, "/"+testTag+"/install.sh.sig")
+	_, err := fetchVerifiedInstaller(t.Context(), testTag)
+	wantRefused(t, err)
+}
+
+func TestOnlyTheLastCheckedInstallerIsKept(t *testing.T) {
+	newInstallerFixture(t, false)
+	if err := os.MkdirAll(installerDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"install-v0.5.198.sh", "install-v0.5.199.sh", "notes.txt", "install.sh"} {
+		if err := os.WriteFile(filepath.Join(installerDir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fetchVerifiedInstaller(t.Context(), testTag); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	entries, _ := os.ReadDir(installerDir)
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if got, want := strings.Join(names, " "), "install-"+testTag+".sh install.sh notes.txt"; got != want {
+		t.Fatalf("the folder holds %q, want %q", got, want)
+	}
 }
 
 func TestAnInstallerOfAnotherReleaseIsRefused(t *testing.T) {
@@ -365,14 +407,21 @@ func TestTheButtonInstallsTheAnnouncedReleaseFromItsOwnFiles(t *testing.T) {
 func TestARefusedInstallerIsNotRun(t *testing.T) {
 	srv, _ := newInstallerFixture(t, false)
 	system, runs := newIdleSystem(t)
-	delete(srv.files, "/"+testTag+"/install.sh.sig")
+	srv.status = map[string]int{"/" + testTag + "/install.sh.sig": http.StatusServiceUnavailable}
 	// a tag given without its "v" is the same release
 	if err := system.UpdateSystemRelease(strings.TrimPrefix(testTag, "v")); !errors.Is(err, autoupdate.ErrBusy) {
 		t.Fatalf("err = %v", err)
 	}
-	srv.files["/"+testTag+"/install.sh.sig"] = []byte("AAAA\n")
-	if err := system.UpdateSystemRelease(testTag); err == nil || err.Error() != notSigned {
-		t.Fatalf("err = %v", err)
+	srv.status = nil
+	for name, sig := range map[string][]byte{"a bad signature": []byte("AAAA\n"), "no signature": nil} {
+		if sig == nil {
+			delete(srv.files, "/"+testTag+"/install.sh.sig")
+		} else {
+			srv.files["/"+testTag+"/install.sh.sig"] = sig
+		}
+		if err := system.UpdateSystemRelease(testTag); err == nil || err.Error() != notSigned {
+			t.Fatalf("%s: err = %v", name, err)
+		}
 	}
 	if len(*runs) != 0 {
 		t.Fatalf("systemd-run ran %v", *runs)
