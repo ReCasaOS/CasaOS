@@ -69,7 +69,7 @@ var recheckRegistered = time.Minute
 
 // containerEvents are the events of AppManagement's watch of the containers. They are the ones a
 // Docker update stirs up, and so the only ones Hub.Muted silences.
-var containerEvents = []string{"app:container-died", "app:container-unhealthy", "app:container-restarting", "app:container-healthy"}
+var containerEvents = []string{"app:container-died", "app:container-unhealthy", "app:container-restarting", "app:container-healthy", "app:container-auto-restarted", "app:container-auto-restart-stopped"}
 
 // appEvents are passed to Hub.OnAppEvent; they raise no alert.
 var appEvents = []string{"app:install-end", "app:uninstall-end", "app:apply-changes-end"}
@@ -235,7 +235,7 @@ func (h *Hub) onEvent(name string, properties map[string]string) {
 }
 
 // logsEvents are the alerts that end with a link to the app's logs.
-var logsEvents = []string{"app:container-died", "app:container-unhealthy", "app:container-restarting"}
+var logsEvents = []string{"app:container-died", "app:container-unhealthy", "app:container-restarting", "app:container-auto-restart-stopped"}
 
 // logsLink opens the Logs page on app at the minute of the event: on the fleet master when the box
 // is a member, else on the box's own dashboard, else "".
@@ -293,6 +293,10 @@ func fromEvent(name string, p map[string]string) (a alert, resolved, ok bool) {
 		return alert{key: runtime, category: Apps, sentence: app + " is unhealthy" + container + "."}, false, true
 	case "app:container-restarting":
 		return alert{key: runtime, category: Apps, sentence: app + " keeps restarting" + container + "."}, false, true
+	case "app:container-auto-restarted":
+		return alert{key: runtime, category: Apps, sentence: app + " was unhealthy and has been restarted" + container + "."}, false, true
+	case "app:container-auto-restart-stopped":
+		return alert{key: runtime, category: Apps, sentence: app + " is still unhealthy after 3 restarts; it is no longer restarted automatically" + container + "."}, false, true
 	case "app:container-healthy":
 		return alert{key: runtime, category: Apps, sentence: "Resolved: " + app + " runs normally again."}, true, true
 	case "vuln:found":

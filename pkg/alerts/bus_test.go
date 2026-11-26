@@ -87,7 +87,15 @@ func TestEachEventsAlert(t *testing.T) {
 		},
 		{"app:container-healthy", with(immich), alert{"app:immich:runtime", Apps, "Resolved: Immich runs normally again."}, true},
 		{
-			"auto-update:night-end", map[string]string{"auto-update:updated": "jellyfin,immich", "auto-update:failed": "sonarr"},
+			"app:container-auto-restarted", with(immich, "docker:container:name", "immich-server", "auto-restart:count", "1"),
+			alert{"app:immich:runtime", Apps, "Immich was unhealthy and has been restarted (container immich-server)."}, false,
+		},
+		{
+			"app:container-auto-restart-stopped", with(immich, "docker:container:name", "immich-server"),
+			alert{"app:immich:runtime", Apps, "Immich is still unhealthy after 3 restarts; it is no longer restarted automatically (container immich-server)."}, false,
+		},
+		{
+			"auto-update:night-end", map[string]string{"auto-update:updated": "jellyfin,immich","auto-update:failed": "sonarr"},
 			alert{"auto-update-night:jellyfin,immich|sonarr|", AppUpdates, "Tonight's automatic updates: updated jellyfin, immich; failed for sonarr (each runs the version it had)."}, false,
 		},
 		{
@@ -478,6 +486,20 @@ func TestLogsLink(t *testing.T) {
 		if got := logsLink(c.master, c.box, c.address, c.app, at); got != c.want {
 			t.Errorf("%+v: %q", c, got)
 		}
+	}
+}
+
+func TestAutoRestartEventsAreFollowedAndMuted(t *testing.T) {
+	for _, name := range []string{"app:container-auto-restarted", "app:container-auto-restart-stopped"} {
+		if !slices.Contains(busEvents(), name) || !slices.Contains(containerEvents, name) {
+			t.Errorf("%s is not followed as a container event", name)
+		}
+	}
+}
+
+func TestOnlyTheStoppedAutoRestartLinksToTheLogs(t *testing.T) {
+	if slices.Contains(logsEvents, "app:container-auto-restarted") || !slices.Contains(logsEvents, "app:container-auto-restart-stopped") {
+		t.Fatalf("logsEvents = %v", logsEvents)
 	}
 }
 
