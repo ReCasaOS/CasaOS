@@ -266,6 +266,12 @@ func TestTheTestKeyCountsOnlyWithTheInstallCheckInstaller(t *testing.T) {
 	// the key alone, the release's own address: refused
 	_, err := fetchVerifiedInstaller(t.Context(), testTag)
 	wantRefused(t, err)
+	// an installer named by config is not the install check's
+	config.ServerInfo.UpdateUrl = "https://example.com/install.sh"
+	if keys := installerKeys(); len(keys) != 0 {
+		t.Fatalf("with an installer in config, %d keys", len(keys))
+	}
+	config.ServerInfo.UpdateUrl = ""
 
 	// with the install check's installer, from its address and that address + .sig
 	srv.files["/check/install.sh"] = srv.files["/"+testTag+"/install.sh"]
@@ -360,7 +366,8 @@ func TestARefusedInstallerIsNotRun(t *testing.T) {
 	srv, _ := newInstallerFixture(t, false)
 	system, runs := newIdleSystem(t)
 	delete(srv.files, "/"+testTag+"/install.sh.sig")
-	if err := system.UpdateSystemRelease(testTag); !errors.Is(err, autoupdate.ErrBusy) {
+	// a tag given without its "v" is the same release
+	if err := system.UpdateSystemRelease(strings.TrimPrefix(testTag, "v")); !errors.Is(err, autoupdate.ErrBusy) {
 		t.Fatalf("err = %v", err)
 	}
 	srv.files["/"+testTag+"/install.sh.sig"] = []byte("AAAA\n")

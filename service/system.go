@@ -662,12 +662,12 @@ func (s *systemService) updateSystem(tag string) error {
 		return fmt.Errorf("%w: %s", ErrSystemMaintenanceBusy, reason)
 	}
 	if tag == "" {
-		latest := strings.TrimSpace(latestReleaseTag())
-		if latest == "" {
+		if tag = strings.TrimSpace(latestReleaseTag()); tag == "" {
 			return installerUnreachable{errors.New("no release is announced")}
 		}
-		tag = "v" + strings.TrimPrefix(latest, "v")
 	}
+	// a feed may announce a release without its "v": the tag is the release's
+	tag = "v" + strings.TrimPrefix(tag, "v")
 	installer, err := fetchVerifiedInstaller(context.Background(), tag)
 	if err != nil {
 		return err
