@@ -12,6 +12,7 @@ func TestAutomaticUpdatesAlerts(t *testing.T) {
 		"succeeded": "ReCasaOS updated itself to v0.5.8.",
 		"failed":    "The automatic update to v0.5.8 failed: it is tried again next night.",
 		"paused":    "The automatic update to v0.5.8 failed twice: it is paused until you resume it in the settings, or a newer release comes out.",
+		"refused":   "The update to v0.5.8 was not installed: its installer is not signed by ReCasaOS.",
 	} {
 		t.Run(result, func(t *testing.T) {
 			h, o, _ := newHub(t)

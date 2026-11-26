@@ -377,6 +377,9 @@ func TestTheAlertsHearHowAnAttemptEnded(t *testing.T) {
 		{"paused on the second failure", "0.5.7", "failed\n", &Failures{Version: "v0.5.8", Count: 1}, nil, []string{"paused v0.5.8"}},
 		{"still running", "0.5.7", "active\n", nil, nil, nil},
 		{"a start that fails", "0.5.7", "inactive\n", nil, errors.New("exit status 1"), []string{"failed v0.5.8"}},
+		// an installer refused is said as such, and still counts: its second time pauses the release
+		{"an installer refused", "0.5.7", "inactive\n", nil, fmt.Errorf("not signed: %w", ErrRefused), []string{"refused v0.5.8"}},
+		{"an installer refused twice", "0.5.7", "inactive\n", &Failures{Version: "v0.5.8", Count: 1}, fmt.Errorf("not signed: %w", ErrRefused), []string{"paused v0.5.8"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, b := newBox(t)
@@ -385,6 +388,7 @@ func TestTheAlertsHearHowAnAttemptEnded(t *testing.T) {
 			s := on()
 			b.current, b.unit, b.startErr = tc.current, tc.unit, tc.startErr
 			if tc.startErr != nil {
+				s.Failures = tc.failures
 				saveState(t, a, s)
 				a.Check(context.Background())
 			} else {

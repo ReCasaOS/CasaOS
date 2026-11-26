@@ -14,6 +14,8 @@ const (
 	resultRunning   = "running"
 	resultSucceeded = "succeeded"
 	resultFailed    = "failed"
+	// resultRefused is told, never kept: an attempt whose installer was refused is kept as failed
+	resultRefused = "refused"
 )
 
 // ErrWindow is a window_start or window_end that is not HH:MM, or a window
