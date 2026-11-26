@@ -537,7 +537,7 @@ func TestWatchDockerUpdateReturnsAtOnceAndTellsTheEnd(t *testing.T) {
 // The restarts of an unhealthy app are each told, after the unhealthy alert and not merged into it,
 // and the app's healthy again still resolves the unhealthy one.
 func TestEachAutoRestartAlertIsSent(t *testing.T) {
-	h, o, _ := newHub(t)
+	h, o, now := newHub(t)
 	immich := map[string]string{"app:name": "immich", "docker:container:name": "immich-server"}
 	with := func(k, v string) map[string]string {
 		p := map[string]string{"app:name": "immich", "docker:container:name": "immich-server"}
@@ -546,6 +546,7 @@ func TestEachAutoRestartAlertIsSent(t *testing.T) {
 	}
 	h.onEvent("app:container-unhealthy", immich)
 	h.onEvent("app:container-auto-restarted", with("auto-restart:count", "1"))
+	*now = now.Add(time.Minute) // the watch restarts one container a minute at most
 	h.onEvent("app:container-auto-restarted", with("auto-restart:count", "2"))
 	h.onEvent("app:container-auto-restart-stopped", immich)
 	h.sending.Wait()
@@ -569,5 +570,19 @@ func TestEachAutoRestartAlertIsSent(t *testing.T) {
 	h.sending.Wait()
 	if got := o.texts(phone); len(got) != 5 || !strings.HasPrefix(got[4], "Resolved: immich runs normally again.") {
 		t.Fatalf("sent %q, want the resolution last", got)
+	}
+}
+
+// The count is a rank in a sliding window: the same count comes back, and each restart is told still.
+func TestEveryAutoRestartIsToldWhateverItsCount(t *testing.T) {
+	h, o, now := newHub(t)
+	second := map[string]string{"app:name": "immich", "docker:container:name": "immich-server", "auto-restart:count": "2"}
+	for _, after := range []time.Duration{0, 7 * time.Hour, 10 * time.Minute} {
+		*now = now.Add(after)
+		h.onEvent("app:container-auto-restarted", second)
+		h.sending.Wait()
+	}
+	if got := o.texts(phone); len(got) != 3 {
+		t.Fatalf("sent %q, want the 3 restarts", got)
 	}
 }

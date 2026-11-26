@@ -88,7 +88,7 @@ func TestEachEventsAlert(t *testing.T) {
 		{"app:container-healthy", with(immich), alert{"app:immich:runtime", Apps, "Resolved: Immich runs normally again."}, true},
 		{
 			"app:container-auto-restarted", with(immich, "docker:container:name", "immich-server", "auto-restart:count", "1"),
-			alert{"app:immich:runtime:auto-restart:1", Apps, "Immich was unhealthy and has been restarted (container immich-server)."}, false,
+			alert{"app:immich:runtime:auto-restart", Apps, "Immich was unhealthy and has been restarted (container immich-server)."}, false,
 		},
 		{
 			"app:container-auto-restart-stopped", with(immich, "docker:container:name", "immich-server"),

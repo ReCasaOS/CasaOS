@@ -222,6 +222,11 @@ func (h *Hub) onEvent(name string, properties map[string]string) {
 		from = fromResource
 	}
 	a, resolved, ok := from(name, properties)
+	if ok && name == "app:container-auto-restarted" {
+		// the count is a rank in a sliding window and comes back: the time tells each restart apart.
+		// shortcut: these keys stay in h.sent until the core restarts (a few a day per app at most), accepted
+		a.key += ":" + h.Now().UTC().Format(time.RFC3339Nano)
+	}
 	switch {
 	case !ok:
 	case resolved:
@@ -294,8 +299,9 @@ func fromEvent(name string, p map[string]string) (a alert, resolved, ok bool) {
 	case "app:container-restarting":
 		return alert{key: runtime, category: Apps, sentence: app + " keeps restarting" + container + "."}, false, true
 	case "app:container-auto-restarted":
-		// keys of their own: under runtime they would be held back as repeats of the unhealthy alert
-		return alert{key: runtime + ":auto-restart:" + p["auto-restart:count"], category: Apps, sentence: app + " was unhealthy and has been restarted" + container + "."}, false, true
+		// keys of their own: under runtime they would be held back as repeats of the unhealthy alert;
+		// onEvent makes this one unique per restart
+		return alert{key: runtime + ":auto-restart", category: Apps, sentence: app + " was unhealthy and has been restarted" + container + "."}, false, true
 	case "app:container-auto-restart-stopped":
 		return alert{key: runtime + ":auto-restart-stopped", category: Apps, sentence: app + " is still unhealthy; it is no longer restarted automatically" + container + "."}, false, true
 	case "app:container-healthy":
