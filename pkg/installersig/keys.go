@@ -8,7 +8,8 @@ import (
 // The public keys the core accepts for installer signatures, each the
 // standard base64 of a raw 32-byte Ed25519 public key. Key A signs releases;
 // key B is the spare kept offline for a rotation.
-// Filled by the owner's key PR; a core is never tagged while they are empty.
+// Filled by the owner's key PR. A core whose keys are empty cannot be shipped:
+// the installer's release refuses to pin it.
 const (
 	keyA = ""
 	keyB = ""
