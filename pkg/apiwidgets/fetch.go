@@ -41,6 +41,9 @@ type quiet struct{ err error }
 func (q quiet) Error() string { return reason(q.err) }
 func (q quiet) Unwrap() error { return q.err }
 
+// Is makes every failed read ErrRead, without a word added to its text.
+func (q quiet) Is(target error) bool { return target == ErrRead }
+
 // reachable says whether a widget may be read from a: anywhere but the box's
 // loopback, where its own services listen and trust the caller. 0/8 and "::" lead
 // to the loopback too. Link-local (169.254.169.254 included), multicast and

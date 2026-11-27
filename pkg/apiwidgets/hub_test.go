@@ -548,10 +548,18 @@ func TestTestFailure(t *testing.T) {
 	srv, _ := served(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) })
 	h := testHub(t)
 	got, err := h.Test(context.Background(), "", Change{Base: srv.URL, Recipe: widgetRecipe(t, nil), Secrets: filled()})
-	if err == nil || err.Error() != "the address answered 403" || errors.Is(err, ErrInvalid) || got.Response != nil {
+	if err == nil || err.Error() != "the address answered 403" || errors.Is(err, ErrInvalid) || !errors.Is(err, ErrRead) || got.Response != nil {
 		t.Errorf("got %+v, %v", got, err)
 	}
 	discreet(t, err, srv.URL)
+	// a change that is refused is not a read that failed, nor is a widget that is not there
+	_, err = h.Test(context.Background(), "", Change{Base: srv.URL, Recipe: widgetRecipe(t, nil)})
+	if !errors.Is(err, ErrInvalid) || errors.Is(err, ErrRead) {
+		t.Errorf("a change without its secret: %v", err)
+	}
+	if _, err = h.Test(context.Background(), "abcdefgh", Change{}); errors.Is(err, ErrRead) {
+		t.Errorf("an unknown widget: %v", err)
+	}
 }
 
 func TestRemovedInputLosesItsSecret(t *testing.T) {

@@ -34,6 +34,9 @@ const (
 var (
 	// ErrNotFound is an id no widget has.
 	ErrNotFound = errors.New("no such widget")
+	// ErrRead is a read of a widget's address that failed, in Test: the text of
+	// such an error is its reason, and nothing else.
+	ErrRead = errors.New("the address could not be read")
 	// ErrSecretAgain is a change of what is sent, or of where, that came without
 	// every secret: the ones kept were given for another request.
 	ErrSecretAgain = fmt.Errorf("%w: the address or the request changed, every input must be filled again", ErrInvalid)
