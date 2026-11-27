@@ -165,6 +165,17 @@ func InitV1Router() http.Handler {
 			v1SysGroup.GET("/weather", v1.GetWeather)
 			v1SysGroup.PUT("/weather", v1.PutWeather)
 			v1SysGroup.GET("/weather/places", v1.GetWeatherPlaces)
+			// The dashboard's API widgets: an address on the network, read by the box
+			// with secrets it keeps (owner only, as the feeds). What writes one, or reads
+			// an address for one, takes the access token in the header and no other, as
+			// the modules do; the list and a card are read-only and take what the group takes.
+			v1SysGroup.GET("/widgets", v1.GetAPIWidgets)
+			v1SysGroup.POST("/widgets", v1.PostAPIWidget, headerTokenOnly)
+			v1SysGroup.POST("/widgets/test", v1.PostAPIWidgetTest, headerTokenOnly)
+			v1SysGroup.POST("/widgets/preview", v1.PostAPIWidgetPreview, headerTokenOnly)
+			v1SysGroup.PUT("/widgets/:id", v1.PutAPIWidget, headerTokenOnly)
+			v1SysGroup.DELETE("/widgets/:id", v1.DeleteAPIWidget, headerTokenOnly)
+			v1SysGroup.GET("/widgets/:id/card", v1.GetAPIWidgetCard)
 		}
 		v1PortGroup := v1Group.Group("/port")
 		v1PortGroup.Use()
