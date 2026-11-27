@@ -213,6 +213,14 @@ func TestFetchRealGuardRefusesLoopback(t *testing.T) {
 		}
 		discreet(t, err, base)
 	}
+
+	// a name is judged by the address it resolves to; requestURL would stop this
+	// one earlier, so the client is asked directly
+	resp, err := guarded.Get("http://localhost:" + strconv.Itoa(port) + "/")
+	if !errors.Is(err, errRefused) {
+		resp.Body.Close()
+		t.Errorf("a name that resolves to the loopback: got %v", err)
+	}
 	if n := hits.Load(); n != 0 {
 		t.Errorf("the loopback server received %d requests", n)
 	}
