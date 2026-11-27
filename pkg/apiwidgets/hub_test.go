@@ -631,13 +631,16 @@ func TestBrokenFileIsSetAside(t *testing.T) {
 				t.Error("the broken file was overwritten before a widget was created")
 			}
 
-			// a widget created starts a new file; the copy stays
+			// a widget created starts a new file; the broken one is moved over its copy
 			v := mustCreate(t, h, "http://h")
 			if list := h.List(); len(list) != 1 || list[0].ID != v.ID {
 				t.Errorf("list %+v", list)
 			}
-			if got, _ := os.ReadFile(aside); string(got) != "marker" {
-				t.Errorf("the copy after a create: %q", got)
+			if got, _ := os.ReadFile(aside); string(got) != content {
+				t.Errorf("the file set aside by a create: %q", got)
+			}
+			if info, _ := os.Stat(aside); info == nil || info.Mode().Perm() != 0o600 {
+				t.Errorf("the file set aside by a create: %v", info)
 			}
 
 			// broken again, it is set aside again
@@ -651,6 +654,38 @@ func TestBrokenFileIsSetAside(t *testing.T) {
 				t.Errorf("the second copy holds %q", got)
 			}
 		})
+	}
+}
+
+// The copy made when the file was first seen broken is not what save relies on:
+// the file may have been edited by hand, to another broken content, since.
+func TestBrokenFileChangedAfterItsCopyIsSetAside(t *testing.T) {
+	const a, b = `{"widgets": [{"id": "abcdefgh", "secrets": {"k": "first`, `{"widgets": [{"id": "abcdefgh", "secrets": {"k": "second`
+	h := testHub(t)
+	aside := h.path() + ".broken"
+	if err := os.MkdirAll(filepath.Dir(h.path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.path(), []byte(a), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.List()
+	if got, _ := os.ReadFile(aside); string(got) != a {
+		t.Fatalf("the copy holds %q", got)
+	}
+	if err := os.WriteFile(h.path(), []byte(b), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v := mustCreate(t, h, "http://h")
+	if got, _ := os.ReadFile(aside); string(got) != b {
+		t.Errorf("the file set aside holds %q, want what the create found: %q", got, b)
+	}
+	// it holds secrets, whatever the mode it was written with
+	if info, _ := os.Stat(aside); info == nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("the file set aside: %v", info)
+	}
+	if list := h.List(); len(list) != 1 || list[0].ID != v.ID {
+		t.Errorf("list %+v", list)
 	}
 }
 

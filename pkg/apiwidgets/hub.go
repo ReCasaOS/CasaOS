@@ -100,9 +100,8 @@ type Hub struct {
 
 	mu    sync.Mutex
 	cache map[string]*reading
-	// what load found: a file that gives no widget, whether its copy was tried,
-	// and whether there is one
-	broken, triedAside, setAside bool
+	// what load found: a file that gives no widget, and whether its copy was tried
+	broken, triedAside bool
 }
 
 // Default is the box's own.
@@ -150,7 +149,7 @@ func (h *Hub) load() []stored {
 		if !h.triedAside && readErr == nil {
 			h.triedAside = true
 			// 0600: it holds secrets
-			h.setAside = file.WriteFileAtomic(h.path()+".broken", data) == nil
+			_ = file.WriteFileAtomic(h.path()+".broken", data)
 		}
 		return nil
 	}
@@ -158,22 +157,28 @@ func (h *Hub) load() []stored {
 }
 
 // save writes the widgets, 0600; h.mu is held, and load was called under it. It
-// never writes over a broken file that has no copy: that file is moved aside
-// first, and when it cannot be, nothing is written.
+// never writes over a broken file: that file is moved aside first, over the copy
+// load made, which may be of an older content, and when it cannot be, nothing is
+// written.
 func (h *Hub) save(widgets []stored) error {
 	data, err := json.Marshal(config{Widgets: widgets})
 	if err != nil {
 		return err
 	}
-	if h.broken && !h.setAside {
-		if err := os.Rename(h.path(), h.path()+".broken"); err != nil {
+	if h.broken {
+		aside := h.path() + ".broken"
+		if err := os.Rename(h.path(), aside); err != nil {
 			return errors.New("the widgets file cannot be read and could not be set aside: nothing was written")
+		}
+		// it holds secrets, whatever the mode it was edited with
+		if info, err := os.Stat(aside); err == nil && info.Mode().IsRegular() {
+			_ = os.Chmod(aside, 0o600)
 		}
 	}
 	if err := file.WriteFileAtomic(h.path(), data); err != nil {
 		return err
 	}
-	h.broken, h.triedAside, h.setAside = false, false, false
+	h.broken, h.triedAside = false, false
 	return nil
 }
 
