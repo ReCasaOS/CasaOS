@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -113,6 +115,23 @@ func TestRequestURLRefused(t *testing.T) {
 	}
 }
 
+// A path that Go would write another way is refused: "%2F" beside a character
+// left unescaped would be sent as "/".
+func TestRequestURLKeepsThePathAsWritten(t *testing.T) {
+	for _, path := range []string{"/é%2Fx", "/a b%2Fc", "/é", "/a b", "/a%2Fb^"} {
+		u, err := requestURL("http://h/api", Recipe{Path: path}, nil)
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(reason(err), "percent-encoded") {
+			t.Errorf("path %q must be refused as invalid, got %v, %v", path, u, err)
+		}
+	}
+	for _, path := range []string{"/a%2Fb", "/%C3%A9%2Fx", "/a%20b", "/a:b@c;d=e,f+g!$&'()*~._-"} {
+		u, err := requestURL("http://h/api", Recipe{Path: path}, nil)
+		if err != nil || u.EscapedPath() != "/api"+path || !strings.HasSuffix(u.String(), "/api"+path) {
+			t.Errorf("path %q: got %v, %v", path, u, err)
+		}
+	}
+}
+
 // served starts a plain server and counts what it receives.
 func served(t *testing.T, h http.HandlerFunc) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
@@ -217,9 +236,11 @@ func TestFetchRealGuardRefusesLoopback(t *testing.T) {
 	// a name is judged by the address it resolves to; requestURL would stop this
 	// one earlier, so the client is asked directly
 	resp, err := guarded.Get("http://localhost:" + strconv.Itoa(port) + "/")
-	if !errors.Is(err, errRefused) {
+	if err == nil {
 		resp.Body.Close()
-		t.Errorf("a name that resolves to the loopback: got %v", err)
+	}
+	if !errors.Is(err, errRefused) || reason(err) != refusedMsg {
+		t.Errorf("a name that resolves to the loopback: got %v (%q)", err, reason(err))
 	}
 	if n := hits.Load(); n != 0 {
 		t.Errorf("the loopback server received %d requests", n)
@@ -299,10 +320,12 @@ func TestFetchSizeLimit(t *testing.T) {
 
 func TestFetchSelfSigned(t *testing.T) {
 	var hits atomic.Int32
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		w.Write([]byte(`{"ok": true}`))
 	}))
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0) // the refused handshake is the test
+	srv.StartTLS()
 	defer srv.Close()
 
 	_, _, err := fetch(context.Background(), newClient(false, anywhere), srv.URL, secretRecipe(), secrets)

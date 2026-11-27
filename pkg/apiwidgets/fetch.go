@@ -126,6 +126,11 @@ func requestURL(base string, r Recipe, secrets map[string]string) (*url.URL, err
 	}
 	u := &url.URL{Scheme: b.Scheme, Host: b.Host, RawPath: path}
 	u.Path, _ = url.PathUnescape(path) // checkPath has unescaped it already
+	// Go writes another path than the one given when a character in it should be
+	// escaped and is not, and then "%2F" leaves as "/"
+	if u.EscapedPath() != path {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, failure("the path must be written percent-encoded: a space is %20, an accented letter its UTF-8 bytes"))
+	}
 
 	query := url.Values{}
 	for name, v := range r.Query {
