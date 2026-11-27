@@ -1077,3 +1077,43 @@ func TestPreview(t *testing.T) {
 		t.Errorf("a preview wrote the file: %v", err)
 	}
 }
+
+// The file a box of this version wrote must keep giving its widgets: every stored
+// recipe is judged again by check at each load, and a file check refuses gives none.
+func TestStoredV1FileStillLoads(t *testing.T) {
+	data, err := os.ReadFile("testdata/api_widgets.v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(t.TempDir())
+	if err := os.MkdirAll(filepath.Dir(h.path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.path(), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list := h.List()
+	if len(list) != 2 {
+		t.Fatalf("the stored file gives %d widgets, want 2", len(list))
+	}
+	figures, rows := list[0], list[1]
+	if figures.ID != "wqk48gov" || figures.Base != "http://nas.lan:2283" || figures.InsecureTLS || figures.Recipe.Name != "Immich" ||
+		figures.Recipe.Layout != "figures" || len(figures.Recipe.Rows) != 3 || figures.Recipe.Headers["x-api-key"].Input != "api_key" ||
+		len(figures.InputsSet) != 1 || !figures.InputsSet["api_key"] {
+		t.Errorf("the widget with a header secret: %+v", figures)
+	}
+	if rows.ID != "dgjvjqss" || rows.Base != "https://sonarr.lan/base" || !rows.InsecureTLS || rows.Recipe.Name != "Queue" ||
+		rows.Recipe.Layout != "rows" || len(rows.Recipe.Rows) != 6 || rows.Recipe.Rows[1].Each == nil || len(rows.Recipe.Rows[1].Rules) != 3 ||
+		rows.Recipe.Query["api_token"].Input != "tok" || rows.Recipe.Basic == nil || rows.Recipe.Basic.Password.Input != "pass" ||
+		rows.Recipe.Status == nil || len(rows.Recipe.Status.Rules) != 2 ||
+		len(rows.InputsSet) != 2 || !rows.InputsSet["tok"] || !rows.InputsSet["pass"] {
+		t.Errorf("the list widget: %+v", rows)
+	}
+	// read whole and written again, it is the same file: nothing of it is lost or mended
+	if again, err := json.Marshal(config{Widgets: h.load()}); err != nil || string(again) != string(data) {
+		t.Errorf("written again, the file is\n%s\nwant\n%s (%v)", again, data, err)
+	}
+	if _, err := os.Stat(h.path() + ".broken"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the stored file was taken for a broken one: %v", err)
+	}
+}

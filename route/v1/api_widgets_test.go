@@ -2,6 +2,7 @@ package v1
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -408,5 +409,25 @@ func TestAPIWidgetsInternalError(t *testing.T) {
 	}
 	if strings.Contains(got.body, hub.Root) || strings.Contains(got.body, widgetSecret) {
 		t.Errorf("the answer tells too much: %s", got.body)
+	}
+}
+
+// readFailure is a failed read as the hub gives it: it is ErrRead, and its text is
+// the reason alone.
+type readFailure string
+
+func (f readFailure) Error() string        { return string(f) }
+func (f readFailure) Is(target error) bool { return target == apiwidgets.ErrRead }
+
+// A failed read is the caller's to see, whatever address this machine has: 400 with
+// its reason (TestAPIWidgetsFailedRead proves it end to end, where it can listen).
+func TestAPIWidgetsFailedReadIsA400(t *testing.T) {
+	for _, failed := range []error{readFailure("the address answered 403"), fmt.Errorf("%w: no answer in time", apiwidgets.ErrRead)} {
+		got := callWidgets(t, func(ctx echo.Context) error {
+			return widgetAnswer(ctx, apiwidgets.TestResult{Response: json.RawMessage(`"` + widgetSecret + `"`)}, failed)
+		}, http.MethodPost, "", "")
+		if got.code != http.StatusBadRequest || got.message != failed.Error() || string(got.data) != "null" {
+			t.Errorf("%v = %d %s", failed, got.code, got.body)
+		}
 	}
 }

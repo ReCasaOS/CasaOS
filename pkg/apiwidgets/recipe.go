@@ -264,6 +264,9 @@ func checkKeys(d *json.Decoder, at string, t reflect.Type) error {
 	return err
 }
 
+// check judges a recipe that comes in, and every stored one at each start (load):
+// a rule added here must still accept what earlier versions stored, or the widgets
+// of a box vanish when it is updated (TestStoredV1FileStillLoads).
 func (r Recipe) check(draft bool) error {
 	if r.Version != recipeVersion {
 		return fmt.Errorf("recasaos_widget must be %d", recipeVersion)
