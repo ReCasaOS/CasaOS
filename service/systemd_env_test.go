@@ -228,7 +228,7 @@ func TestSystemdLeavesTheOtherUnitsCommandsAsTheyAreWritten(t *testing.T) {
 			return systemPackageUpdateArgs(aptPath, logPath, []string{"libc6"}, false)
 		},
 		"the ReCasaOS update": func() ([]string, error) {
-			return detachedUpdateArgs("https://example.org/install.sh", "/var/log/casaos/upgrade.log", "v0.5.1"), nil
+			return detachedUpdateArgs("/var/lib/casaos/update/install-v0.5.1.sh", "/var/log/casaos/upgrade.log", "v0.5.1"), nil
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

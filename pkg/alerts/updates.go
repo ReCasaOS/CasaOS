@@ -8,9 +8,11 @@ import (
 )
 
 // AutoUpdate is pkg/autoupdate's hook: an automatic update of release that
-// succeeded, failed, or failed a second time and paused.
+// succeeded, failed, failed because its installer was refused (not signed, or not that
+// release), or failed a second time and paused.
 func (h *Hub) AutoUpdate(result, release string) {
 	sentences := map[string]string{
+		"refused":   "The update to " + release + " was not installed: its installer is not signed by ReCasaOS.",
 		"succeeded": "ReCasaOS updated itself to " + release + ".",
 		"failed":    "The automatic update to " + release + " failed: it is tried again next night.",
 		"paused":    "The automatic update to " + release + " failed twice: it is paused until you resume it in the settings, or a newer release comes out.",

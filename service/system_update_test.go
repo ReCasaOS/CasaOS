@@ -53,9 +53,10 @@ func TestAReleaseUpdateUsesItsOwnInstaller(t *testing.T) {
 	if got, want := resolveReleaseInstallerURL("v0.5.70"), common.FORK_RELEASE_BASE+"v0.5.70/install.sh"; got != want {
 		t.Errorf("resolveReleaseInstallerURL() = %q, want %q", got, want)
 	}
-	// a tag that is not one goes nowhere near a URL
-	if got := resolveReleaseInstallerURL("v0.5.70/../x"); got != common.FORK_UPDATE_URL {
-		t.Errorf("resolveReleaseInstallerURL(bad tag) = %q", got)
+	// the address the setup writes into casaos.conf is the default one, not an installer of its own
+	config.ServerInfo.UpdateUrl = common.FORK_UPDATE_URL
+	if got, want := resolveReleaseInstallerURL("v0.5.70"), common.FORK_RELEASE_BASE+"v0.5.70/install.sh"; got != want {
+		t.Errorf("resolveReleaseInstallerURL() with the default in config = %q, want %q", got, want)
 	}
 	// an installer named by config stays
 	config.ServerInfo.UpdateUrl = "https://example.com/install.sh"
@@ -90,15 +91,15 @@ func TestShellQuote(t *testing.T) {
 }
 
 func TestDetachedUpdateCommand(t *testing.T) {
-	got := detachedUpdateCommand("https://example.com/a'b", "/var/log/casaos/upgrade.log")
-	want := `set -o pipefail; exec >> '/var/log/casaos/upgrade.log' 2>&1; curl -fsSL 'https://example.com/a'"'"'b' | /bin/bash`
+	got := detachedUpdateCommand("/var/lib/casaos/update/install-v0.4.20.sh", "/var/log/casaos/upgrade.log")
+	want := `exec >> '/var/log/casaos/upgrade.log' 2>&1; exec /bin/bash '/var/lib/casaos/update/install-v0.4.20.sh'`
 	if got != want {
 		t.Fatalf("detachedUpdateCommand() = %q, want %q", got, want)
 	}
 }
 
 func TestDetachedUpdateArgs(t *testing.T) {
-	got := detachedUpdateArgs("https://example.com/install.sh", "/var/log/casaos/upgrade.log", "v0.4.20")
+	got := detachedUpdateArgs("/var/lib/casaos/update/install-v0.4.20.sh", "/var/log/casaos/upgrade.log", "v0.4.20")
 	want := []string{
 		"--quiet",
 		"--collect",
@@ -108,7 +109,7 @@ func TestDetachedUpdateArgs(t *testing.T) {
 		"--description=CasaOS update v0.4.20",
 		"/bin/bash",
 		"-c",
-		"set -o pipefail; exec >> '/var/log/casaos/upgrade.log' 2>&1; curl -fsSL 'https://example.com/install.sh' | /bin/bash",
+		"exec >> '/var/log/casaos/upgrade.log' 2>&1; exec /bin/bash '/var/lib/casaos/update/install-v0.4.20.sh'",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("detachedUpdateArgs() = %#v, want %#v", got, want)

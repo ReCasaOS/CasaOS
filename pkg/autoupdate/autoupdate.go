@@ -9,11 +9,13 @@
 // second failure that release is paused until the owner resumes it or a newer
 // one comes out.
 //
-// Four environment variables are for the install check only, never for a box:
+// Five environment variables are for the install check only, never for a box:
 // CASAOS_AUTOUPDATE_START_DELAY and CASAOS_AUTOUPDATE_INTERVAL (Go durations,
 // e.g. 0s) replace the random start delay and the hour between checks, and
 // CASAOS_AUTOUPDATE_VERSION_URL and CASAOS_AUTOUPDATE_INSTALLER_URL, read by
-// the update button's own code in service, replace version.json and install.sh.
+// the update button's own code in service, replace version.json and install.sh;
+// with the latter set, CASAOS_INSTALLER_TEST_PUBKEY adds a key that the
+// installer's signature may be made with.
 package autoupdate
 
 import (
@@ -57,9 +59,14 @@ type Releases interface {
 	FetchCasaosVersion() model.Version
 }
 
-// ErrBusy is what Start returns, wrapped, when something else is changing the box and the
-// update was not started: that is not a failed attempt, and the next check tries again.
+// ErrBusy is what Start returns, wrapped, when something else is changing the box, or the
+// release's installer could not be downloaded, and the update was not started: that is not a
+// failed attempt, and the next check tries again.
 var ErrBusy = errors.New("the box is being changed by something else")
+
+// ErrRefused is what Start returns, wrapped, when the release's installer failed its signature or
+// release check: a failed attempt, told to the owner as such (result "refused").
+var ErrRefused = errors.New("the release's installer was refused")
 
 // AutoUpdate is the automatic updates of one box.
 type AutoUpdate struct {
@@ -227,11 +234,15 @@ func (a *AutoUpdate) start(release string, now time.Time) {
 			return
 		}
 		logger.Info("automatic update: cannot start", zap.String("version", release), zap.Error(err))
+		result := resultFailed
+		if errors.Is(err, ErrRefused) {
+			result = resultRefused
+		}
 		if err := a.modify(func(s *State) bool {
 			if s.Last == nil || s.Last.Result != resultRunning {
 				return false
 			}
-			a.fail(s)
+			a.fail(s, result)
 			return true
 		}); err != nil {
 			logger.Info("automatic update: cannot save autoupdate.json", zap.Error(err))
@@ -259,7 +270,7 @@ func (a *AutoUpdate) settle() {
 			logger.Info("automatic update: succeeded", zap.String("version", s.Last.Version), zap.String("installed", installed))
 			a.notify(resultSucceeded, s.Last.Version)
 		} else {
-			a.fail(s)
+			a.fail(s, resultFailed)
 		}
 		return true
 	}); err != nil {
@@ -268,8 +279,9 @@ func (a *AutoUpdate) settle() {
 }
 
 // fail marks the last attempt failed and counts it against its release, whose
-// second failure pauses it; a failure of another release starts a new count.
-func (a *AutoUpdate) fail(s *State) {
+// second failure pauses it; a failure of another release starts a new count. told is what the
+// owner hears of a first failure: failed, or refused for an installer that failed its check.
+func (a *AutoUpdate) fail(s *State, told string) {
 	s.Last.Result = resultFailed
 	if s.Failures == nil || s.Failures.Version != s.Last.Version {
 		s.Failures = &Failures{Version: s.Last.Version}
@@ -280,7 +292,7 @@ func (a *AutoUpdate) fail(s *State) {
 		logger.Info("automatic update: paused until resumed or a newer release", zap.String("version", s.Last.Version))
 		a.notify(statePaused, s.Last.Version)
 	} else {
-		a.notify(resultFailed, s.Last.Version)
+		a.notify(told, s.Last.Version)
 	}
 }
 
