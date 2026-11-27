@@ -226,3 +226,22 @@ func TestIsPointer(t *testing.T) {
 		}
 	}
 }
+
+// the other side of the bounds: the most that is still accepted
+func TestParseRecipeAtTheLimits(t *testing.T) {
+	name, unit := strings.Repeat("é", 40), strings.Repeat("é", 12)
+	row := `{"label":"` + name + `","value":"/a","unit":"` + unit + `","format":"percent","bar":true}`
+	each := `{"each":"/a","label":"","value":"","limit":8,"format":"ratio","bar":true}`
+	for layout, rows := range map[string][]string{
+		"rows":    {row, row, row, row, row, row, row, each},
+		"figures": {row, row, row, each},
+	} {
+		for _, refresh := range []string{"60", "3600"} {
+			text := `{"recasaos_widget":1,"name":"` + name + `","path":"/","layout":"` + layout +
+				`","rows":[` + strings.Join(rows, ",") + `],"refresh":` + refresh + `}`
+			if _, err := ParseRecipe([]byte(text), false); err != nil {
+				t.Errorf("%s, refresh %s: %v", layout, refresh, err)
+			}
+		}
+	}
+}
