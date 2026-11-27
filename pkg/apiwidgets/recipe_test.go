@@ -220,7 +220,7 @@ func TestParseRecipeRefused(t *testing.T) {
 		{"query and Query", `"query":{},"Query":{"x":"y"}`, `"Query"`},
 		{"folded rows", `"rowſ":[]`, "unknown field"},
 		{"path twice", `"path":"/b"`, `"path"`},
-		{"path twice, escaped", `"path":"/b"`, `"path"`},
+		{"path twice, escaped", `"p\u0061th":"/b"`, `"path"`},
 		{"header twice, same case", `"headers":{"X-A":"1","X-A":"2"}`, `headers: "X-A"`},
 		{"query twice", `"query":{"a":"1"},"query":{"b":"2"}`, `"query"`},
 		{"query parameter twice", `"query":{"a":"1","a":"2"}`, `query: "a"`},
