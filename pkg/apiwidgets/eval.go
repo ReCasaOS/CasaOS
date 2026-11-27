@@ -107,6 +107,7 @@ func Evaluate(r Recipe, doc any) Card {
 // 100 when it is a percentage. The rules look at the value as it was read.
 func show(raw any, found bool, format, unit string, rules []Rule) (shown Shown, level string, bar *float64) {
 	shown = Shown{Kind: "missing"}
+	unit = clean(unit)
 	number := func(kind string, f float64, ok bool) {
 		if ok && finite(f) {
 			shown = Shown{Kind: kind, Number: &f, Unit: unit}

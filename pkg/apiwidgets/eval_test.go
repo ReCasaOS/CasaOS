@@ -335,6 +335,10 @@ func TestEvaluateCleansText(t *testing.T) {
 			}
 		}
 	}
+	// the unit is the recipe's own text, and cleaned all the same
+	if got := one(t, `{"v":1}`, RowSpec{Value: "/v", Format: "number", Unit: "k" + string(rune(0x202e)) + "m"}).Value.Unit; got != "km" {
+		t.Errorf("got the unit %q, want km", got)
+	}
 	// a number written at length is cut like any text
 	if got := one(t, `{"v":1`+strings.Repeat("0", 60)+`}`, RowSpec{Value: "/v"}).Value.Text; utf8.RuneCountInString(got) != 40 || !strings.HasSuffix(got, "…") {
 		t.Errorf("got %q, want 40 characters ending with …", got)
