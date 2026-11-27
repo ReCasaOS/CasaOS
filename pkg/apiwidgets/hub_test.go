@@ -279,6 +279,35 @@ func TestNoSecretLeaves(t *testing.T) {
 	}
 }
 
+// A secret in the query is in the address, which a network error quotes.
+func TestNoSecretLeavesInAFailedRead(t *testing.T) {
+	srv, _ := served(t, answer(`{}`))
+	base := srv.URL
+	srv.Close() // nothing listens there any more
+
+	h := testHub(t)
+	recipe := widgetRecipe(t, func(m map[string]any) {
+		delete(m, "headers")
+		m["query"] = map[string]any{"api_key": map[string]any{"input": "k"}}
+	})
+	v, err := h.Create(Change{Base: base, Recipe: recipe, Secrets: filled()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := mustCard(t, h, v.ID)
+	_, err = h.Test(context.Background(), v.ID, Change{Base: base, Recipe: recipe})
+	if err == nil || card.Error == "" || h.List()[0].Error != card.Error {
+		t.Fatalf("card %+v, view %+v, test %v", card, h.List()[0], err)
+	}
+	discreet(t, err, base)
+	shown, _ := json.Marshal(card)
+	views, _ := json.Marshal(h.List())
+	said := string(shown) + err.Error() + fmt.Sprint(err)
+	if strings.Contains(said+string(views), testSecret) || strings.Contains(said, "api_key=") || strings.Contains(said, "hidden-path") {
+		t.Errorf("a failed read tells the request: %s %s", said, views)
+	}
+}
+
 func TestUpdateKeepsTheSecret(t *testing.T) {
 	var key string
 	srv, _ := served(t, func(w http.ResponseWriter, r *http.Request) {
@@ -710,6 +739,9 @@ func TestUpdateAndDeleteEmptyTheCache(t *testing.T) {
 	if err := h.Delete(v.ID); err != nil {
 		t.Fatal(err)
 	}
+	if len(h.cache) != 0 {
+		t.Errorf("%d readings kept by a delete", len(h.cache))
+	}
 	if _, err := h.Card(context.Background(), v.ID); !errors.Is(err, ErrNotFound) || len(h.cache) != 0 || hits.Load() != 2 {
 		t.Errorf("after a delete: %v, %d readings kept, %d requests", err, len(h.cache), hits.Load())
 	}
@@ -763,11 +795,15 @@ func TestReadStartedBeforeADeleteIsNotKept(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Go(func() { h.Card(context.Background(), v.ID) })
 	arrived(t, started)
+	out := h.cache[v.ID]
 	if err := h.Delete(v.ID); err != nil {
 		t.Fatal(err)
 	}
 	release()
 	wg.Wait()
+	if out.filled || len(h.cache) != 0 {
+		t.Errorf("the early read was kept: %+v, %d readings", out.card, len(h.cache))
+	}
 	if _, err := h.Card(context.Background(), v.ID); !errors.Is(err, ErrNotFound) || len(h.cache) != 0 || hits() != 1 {
 		t.Errorf("after a delete: %v, %d readings kept, %d requests", err, len(h.cache), hits())
 	}
