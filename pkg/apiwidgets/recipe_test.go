@@ -121,7 +121,7 @@ func TestParseRecipeRefused(t *testing.T) {
 		{"unknown at root", set("extra", 1), "extra"},
 		{"unknown in row", inRow("colour", "red"), "colour"},
 		{"unknown in rule", inRule("blink", true), "blink"},
-		{"unknown beside input", set("headers", obj("A", map[string]any{"input": "a", "x": 1})), "x"},
+		{"unknown beside input", set("headers", obj("A", map[string]any{"input": "a", "x": 1})), "headers.A"},
 		{"version", set("recasaos_widget", 2), "recasaos_widget"},
 		{"too big", set("base_hint", strings.Repeat("a", 16<<10)), "16 KiB"},
 		{"host header", set("headers", obj("Host", "h")), "Host"},
@@ -138,9 +138,12 @@ func TestParseRecipeRefused(t *testing.T) {
 		{"fixed basic password", set("basic", map[string]any{"user": "u", "password": "z"}), "basic.password"},
 		{"absent input", set("headers", obj("X-A", obj("input", "absent"))), "absent"},
 		{"absent input in basic", set("basic", map[string]any{"user": obj("input", "absent")}), "absent"},
-		{"empty input", set("query", obj("a", obj("input", ""))), "input"},
-		{"null value", set("query", obj("a", nil)), "input"},
-		{"number value", set("query", obj("a", 1)), "input"},
+		{"empty input", set("query", obj("a", obj("input", ""))), "query.a"},
+		{"null value", set("query", obj("q", nil)), "query.q"},
+		{"number value", set("headers", obj("x-name", 1)), "headers.x-name"},
+		{"input not a text", set("query", obj("q", obj("input", 5))), "query.q"},
+		{"bad basic user", set("basic", map[string]any{"user": 1}), "basic.user"},
+		{"bad basic password", set("basic", map[string]any{"password": nil}), "basic.password"},
 		{"input twice", set("inputs", []any{in("k"), in("k")}), "inputs"},
 		{"input id capital", set("inputs", []any{in("K")}), "inputs"},
 		{"input id digit first", set("inputs", []any{in("1k")}), "inputs"},
@@ -209,6 +212,31 @@ func TestParseRecipeRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 		check(c.name, data, false, c.field)
+	}
+	// keys must be written exactly, once: encoding/json would fold case and merge
+	for _, c := range []struct{ name, extra, field string }{
+		{"Name", `"Name":"B"`, `"Name"`},
+		{"lone Headers", `"Headers":{"X-A":"b"}`, `"Headers"`},
+		{"query and Query", `"query":{},"Query":{"x":"y"}`, `"Query"`},
+		{"folded rows", `"rowſ":[]`, "unknown field"},
+		{"path twice", `"path":"/b"`, `"path"`},
+		{"path twice, escaped", `"path":"/b"`, `"path"`},
+		{"header twice, same case", `"headers":{"X-A":"1","X-A":"2"}`, `headers: "X-A"`},
+		{"query twice", `"query":{"a":"1"},"query":{"b":"2"}`, `"query"`},
+		{"query parameter twice", `"query":{"a":"1","a":"2"}`, `query: "a"`},
+		{"status key case", `"status":{"Value":"/a"}`, `status: unknown field "Value"`},
+		{"rule key twice", `"status":{"value":"/a","rules":[{"op":"eq","op":"ne","level":"ok"}]}`, `status.rules[0]: "op"`},
+		{"basic key case", `"basic":{"User":"u"}`, `basic: unknown field "User"`},
+		{"input key case", `"query":{"q":{"Input":"k"}},"inputs":[{"id":"k","label":"K"}]`, `query.q: unknown field "Input"`},
+		{"input key twice", `"query":{"q":{"input":"k","input":"k"}},"inputs":[{"id":"k","label":"K"}]`, `query.q: "input"`},
+		{"twice inside to", `"status":{"value":"/a","rules":[{"op":"eq","to":{"a":1,"a":2},"level":"ok"}]}`, `status.rules[0].to: "a"`},
+	} {
+		check(c.name, []byte(strings.TrimSuffix(string(whole), "}")+","+c.extra+"}"), false, c.field)
+	}
+	// the message names the field, never what was in it
+	_, err := ParseRecipe([]byte(`{"query":{"q":987654}}`), false)
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "query.q") || strings.Contains(err.Error(), "987654") {
+		t.Errorf("got %v, want ErrInvalid naming query.q without the value", err)
 	}
 	check("trailing data", append(whole, " {}"...), false, "after")
 	check("trailing junk", append(whole, " x"...), false, "after")

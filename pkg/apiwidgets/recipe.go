@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -169,8 +170,12 @@ func ParseRecipe(data []byte, draft bool) (Recipe, error) {
 	return r, nil
 }
 
-// decodeStrict reads one JSON value, with no unknown field and nothing after it.
+// decodeStrict reads one JSON value, with no unknown field, no key written twice
+// and nothing after it.
 func decodeStrict(data []byte, into any) error {
+	if err := checkKeys(json.NewDecoder(bytes.NewReader(data)), "", reflect.TypeOf(into)); err != nil {
+		return err
+	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(into); err != nil {
@@ -180,6 +185,83 @@ func decodeStrict(data []byte, into any) error {
 		return errors.New("unexpected data after the JSON value")
 	}
 	return nil
+}
+
+// checkKeys reads the next JSON value the way t will receive it. encoding/json
+// matches a key whatever its case and lets the last of two win: here a key of a
+// struct is its JSON tag, exactly, and no object writes a key twice. A value of
+// another shape than t is left for the decoder to refuse.
+func checkKeys(d *json.Decoder, at string, t reflect.Type) error {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == reflect.TypeFor[Value]() {
+		var raw json.RawMessage
+		if err := d.Decode(&raw); err != nil {
+			return err
+		}
+		if err := checkKeys(json.NewDecoder(bytes.NewReader(raw)), at, reflect.TypeFor[inputRef]()); err != nil {
+			return err
+		}
+		if new(Value).UnmarshalJSON(raw) != nil {
+			return fmt.Errorf(`%s must be a text or {"input": id}`, at)
+		}
+		return nil
+	}
+	tok, err := d.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('['):
+		var elem reflect.Type
+		if t != nil && t.Kind() == reflect.Slice {
+			elem = t.Elem()
+		}
+		for i := 0; d.More(); i++ {
+			if err := checkKeys(d, fmt.Sprintf("%s[%d]", at, i), elem); err != nil {
+				return err
+			}
+		}
+		_, err = d.Token()
+	case json.Delim('{'):
+		where := ""
+		if at != "" {
+			where = at + ": "
+		}
+		seen := map[string]bool{}
+		for d.More() {
+			tok, err := d.Token()
+			key, ok := tok.(string)
+			if err != nil || !ok {
+				return errors.Join(err, errors.New("a key is expected"))
+			}
+			if seen[key] {
+				return fmt.Errorf("%s%q is written twice", where, key)
+			}
+			seen[key] = true
+			var elem reflect.Type
+			switch {
+			case t == nil:
+			case t.Kind() == reflect.Map:
+				elem = t.Elem()
+			case t.Kind() == reflect.Struct:
+				for i := range t.NumField() {
+					if tag, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); tag == key {
+						elem = t.Field(i).Type
+					}
+				}
+				if elem == nil {
+					return fmt.Errorf("%sunknown field %q", where, key)
+				}
+			}
+			if err := checkKeys(d, strings.TrimPrefix(at+"."+key, "."), elem); err != nil {
+				return err
+			}
+		}
+		_, err = d.Token()
+	}
+	return err
 }
 
 func (r Recipe) check(draft bool) error {
