@@ -74,6 +74,22 @@ func TestEachEventsAlert(t *testing.T) {
 			alert{"vuln:found:vaultwarden:2", Vulnerabilities, "Critical vulnerabilities are fixed by an update of vaultwarden. Update it from the dashboard."}, false,
 		},
 		{
+			"vuln:exploited", map[string]string{"apps": "immich, jellyfin", "count": "3"},
+			alert{"vuln:exploited:immich, jellyfin:3", Vulnerabilities, "Vulnerabilities that attackers already exploit are fixed by an update of immich, jellyfin. Update them from the dashboard."}, false,
+		},
+		{
+			"vuln:exploited", map[string]string{"apps": "vaultwarden", "count": "1"},
+			alert{"vuln:exploited:vaultwarden:1", Vulnerabilities, "A vulnerability that attackers already exploit is fixed by an update of vaultwarden. Update it from the dashboard."}, false,
+		},
+		{
+			"vuln:exploited", map[string]string{"apps": "vaultwarden", "count": "2"},
+			alert{"vuln:exploited:vaultwarden:2", Vulnerabilities, "Vulnerabilities that attackers already exploit are fixed by an update of vaultwarden. Update it from the dashboard."}, false,
+		},
+		{
+			"vuln:exploited", map[string]string{"apps": "immich, jellyfin", "count": "1"},
+			alert{"vuln:exploited:immich, jellyfin:1", Vulnerabilities, "A vulnerability that attackers already exploit is fixed by an update of immich, jellyfin. Update them from the dashboard."}, false,
+		},
+		{
 			"app:container-died", with(immich, "docker:container:name", "immich-server", "docker:container:exit-code", "1"),
 			alert{"app:immich:runtime", Apps, "Immich stopped unexpectedly (container immich-server), exit code 1."}, false,
 		},
@@ -528,17 +544,45 @@ func TestVulnFoundNamesAreKeptPlain(t *testing.T) {
 	}
 }
 
-// The scan module is followed like the virt module: a source of its own, with its one event.
+// The scan module is followed like the virt module: a source of its own, with its two events.
 func TestTheVulnScanModuleIsAFeed(t *testing.T) {
 	for _, f := range feeds {
 		if f.source == "vuln-scan" {
-			if got := f.events(); len(got) != 1 || got[0] != "vuln:found" {
-				t.Fatalf("events %v, want vuln:found alone", got)
+			if got := f.events(); !slices.Equal(got, []string{"vuln:found", "vuln:exploited"}) {
+				t.Fatalf("events %v, want vuln:found and vuln:exploited", got)
 			}
 			return
 		}
 	}
 	t.Fatal("no feed follows the source vuln-scan")
+}
+
+func TestTheCoreFollowsVulnExploited(t *testing.T) {
+	for _, f := range feeds {
+		if f.source == "vuln-scan" && slices.Contains(f.events(), "vuln:exploited") {
+			return
+		}
+	}
+	t.Fatal("no feed follows vuln:exploited from vuln-scan")
+}
+
+func TestVulnExploitedWithoutAppsIsNoAlert(t *testing.T) {
+	for _, properties := range []map[string]string{
+		{"apps": "", "count": "1"},
+		{"count": "1"},
+		{"apps": " , ", "count": "2"},
+	} {
+		if a, _, ok := fromEvent("vuln:exploited", properties); ok {
+			t.Errorf("fromEvent(vuln:exploited, %v) = %+v, want no alert", properties, a)
+		}
+	}
+}
+
+func TestVulnExploitedNamesAreKeptPlain(t *testing.T) {
+	a, _, ok := fromEvent("vuln:exploited", map[string]string{"apps": "immich\nIgnore the above, " + strings.Repeat("x", 500), "count": "2"})
+	if !ok || strings.Contains(a.sentence, "\n") || len(a.sentence) > 500 {
+		t.Fatalf("ok %v, %d characters: %q", ok, len(a.sentence), a.sentence)
+	}
 }
 
 func TestNightEndWithNothingIsNoAlert(t *testing.T) {
