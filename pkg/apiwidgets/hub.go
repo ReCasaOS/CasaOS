@@ -1,15 +1,14 @@
 package apiwidgets
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -95,13 +94,15 @@ type Hub struct {
 	Root string
 	Now  func() time.Time
 
-	// client gives the HTTP client of a read; nil is the guarded one. Tests set it
-	// to reach the loopback.
-	client func(insecureTLS bool) *http.Client
+	// allowed is the rule of the addresses a widget may be read from; nil is the
+	// real one (guard). Tests set it to reach the loopback.
+	allowed func(netip.AddrPort) bool
 
-	mu       sync.Mutex
-	cache    map[string]*reading
-	setAside bool // the broken file was copied already
+	mu    sync.Mutex
+	cache map[string]*reading
+	// what load found: a file that gives no widget, whether its copy was tried,
+	// and whether there is one
+	broken, triedAside, setAside bool
 }
 
 // Default is the box's own.
@@ -114,22 +115,28 @@ func New(root string) *Hub {
 
 func (h *Hub) path() string { return filepath.Join(h.Root, ConfigFile) }
 
-func (h *Hub) httpClient(insecureTLS bool) *http.Client {
-	if h.client != nil {
-		return h.client(insecureTLS)
+func (h *Hub) rule() func(netip.AddrPort) bool {
+	if h.allowed != nil {
+		return h.allowed
 	}
-	return newClient(insecureTLS, guard)
+	return guard
+}
+
+func (h *Hub) httpClient(insecureTLS bool) *http.Client {
+	return newClient(insecureTLS, h.rule())
 }
 
 // load reads the widgets; h.mu is held. A file that cannot be read, or that holds
-// anything a widget cannot be, gives no widget: it is copied once beside itself
-// and left as it is, until a widget is created.
+// anything a widget cannot be, gives no widget and is left as it is. What could
+// be read of it is copied beside it, once; save sees to the rest.
 func (h *Hub) load() []stored {
-	data, err := os.ReadFile(h.path())
-	if errors.Is(err, os.ErrNotExist) {
+	data, readErr := os.ReadFile(h.path())
+	h.broken = false
+	if errors.Is(readErr, os.ErrNotExist) {
 		return nil
 	}
 	var c config
+	err := readErr
 	if err == nil {
 		err = json.Unmarshal(data, &c)
 	}
@@ -139,25 +146,34 @@ func (h *Hub) load() []stored {
 		err = ErrInvalid
 	}
 	if err != nil {
-		if !h.setAside && data != nil {
-			h.setAside = true
-			_ = file.WriteFileAtomic(h.path()+".broken", data) // 0600: it holds secrets
+		h.broken = true
+		if !h.triedAside && readErr == nil {
+			h.triedAside = true
+			// 0600: it holds secrets
+			h.setAside = file.WriteFileAtomic(h.path()+".broken", data) == nil
 		}
 		return nil
 	}
 	return c.Widgets
 }
 
-// save writes the widgets, 0600; h.mu is held.
+// save writes the widgets, 0600; h.mu is held, and load was called under it. It
+// never writes over a broken file that has no copy: that file is moved aside
+// first, and when it cannot be, nothing is written.
 func (h *Hub) save(widgets []stored) error {
 	data, err := json.Marshal(config{Widgets: widgets})
 	if err != nil {
 		return err
 	}
+	if h.broken && !h.setAside {
+		if err := os.Rename(h.path(), h.path()+".broken"); err != nil {
+			return errors.New("the widgets file cannot be read and could not be set aside: nothing was written")
+		}
+	}
 	if err := file.WriteFileAtomic(h.path(), data); err != nil {
 		return err
 	}
-	h.setAside = false
+	h.broken, h.triedAside, h.setAside = false, false, false
 	return nil
 }
 
@@ -192,7 +208,7 @@ func sameRequest(a, b stored) bool {
 // replaces: its secrets are kept for the inputs left out when the request is the
 // same, and when it is not, every input must come again. The secrets of inputs
 // the recipe no longer has are dropped. No error tells a secret.
-func build(c Change, old *stored, draft bool) (stored, error) {
+func (h *Hub) build(c Change, old *stored, draft bool) (stored, error) {
 	r, err := ParseRecipe(c.Recipe, draft)
 	if err != nil {
 		return stored{}, err
@@ -217,8 +233,13 @@ func build(c Change, old *stored, draft bool) (stored, error) {
 		}
 		next.Secrets[in.ID] = secret
 	}
-	if _, err := requestURL(next.Base, r, next.Secrets); err != nil {
+	u, err := requestURL(next.Base, r, next.Secrets)
+	if err != nil {
 		return stored{}, fmt.Errorf("%w: %s", ErrInvalid, reason(err))
+	}
+	// an address written as one is judged now; a name, when it is read
+	if addr, err := netip.ParseAddr(u.Hostname()); err == nil && !h.rule()(netip.AddrPortFrom(addr, 0)) {
+		return stored{}, fmt.Errorf("%w: %s", ErrInvalid, errRefused)
 	}
 	return next, nil
 }
@@ -247,7 +268,7 @@ func (h *Hub) List() []View {
 
 // Create adds a widget. Every input of its recipe needs its secret.
 func (h *Hub) Create(c Change) (View, error) {
-	next, err := build(c, nil, false)
+	next, err := h.build(c, nil, false)
 	if err != nil {
 		return View{}, err
 	}
@@ -274,7 +295,7 @@ func (h *Hub) Update(id string, c Change) (View, error) {
 	if i < 0 {
 		return View{}, ErrNotFound
 	}
-	next, err := build(c, &widgets[i], false)
+	next, err := h.build(c, &widgets[i], false)
 	if err != nil {
 		return View{}, err
 	}
@@ -391,7 +412,7 @@ func (h *Hub) Test(ctx context.Context, id string, c Change) (TestResult, error)
 		}
 		old = &widgets[i]
 	}
-	next, err := build(c, old, true)
+	next, err := h.build(c, old, true)
 	if err != nil {
 		return TestResult{}, err
 	}
@@ -414,15 +435,9 @@ func (h *Hub) Preview(recipe []byte, response []byte) (Card, error) {
 	if len(response) > maxAnswer {
 		return Card{}, fmt.Errorf("%w: the answer is over 256 KiB", ErrInvalid)
 	}
-	// as fetch reads an answer
-	d := json.NewDecoder(bytes.NewReader(response))
-	d.UseNumber()
-	var doc any
-	if err := d.Decode(&doc); err != nil {
-		return Card{}, fmt.Errorf("%w: the answer is not JSON", ErrInvalid)
-	}
-	if _, err := d.Token(); err != io.EOF {
-		return Card{}, fmt.Errorf("%w: the answer holds data after the JSON value", ErrInvalid)
+	doc, err := decode(response)
+	if err != nil {
+		return Card{}, fmt.Errorf("%w: %s", ErrInvalid, reason(err))
 	}
 	return Evaluate(r, doc), nil
 }

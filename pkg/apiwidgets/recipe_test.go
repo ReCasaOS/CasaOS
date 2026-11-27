@@ -44,6 +44,28 @@ const list = `{
   "refresh": 60
 }`
 
+// The path is sent as it is written, or not at all (requestURL keeps the rule too).
+func TestParseRecipePathAsWritten(t *testing.T) {
+	recipe := func(path string) []byte {
+		data, _ := json.Marshal(map[string]any{
+			"recasaos_widget": 1, "name": "x", "path": path, "rows": []any{map[string]any{"label": "a", "value": "/a"}},
+		})
+		return data
+	}
+	for _, path := range []string{"/\u00e9%2Fx", "/a b%2Fc", "/\u00e9", "/a b", "/a%2Fb^"} {
+		for _, draft := range []bool{false, true} {
+			if _, err := ParseRecipe(recipe(path), draft); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "percent-encoded") {
+				t.Errorf("path %q (draft %v): %v", path, draft, err)
+			}
+		}
+	}
+	for _, path := range []string{"/a%2Fb", "/%C3%A9%2Fx", "/a%20b", "/a:b@c;d=e,f+g!$&'()*~._-"} {
+		if r, err := ParseRecipe(recipe(path), false); err != nil || r.Path != path {
+			t.Errorf("path %q: %v", path, err)
+		}
+	}
+}
+
 func TestParseRecipe(t *testing.T) {
 	for name, text := range map[string]string{"immich": immich, "list": list} {
 		r, err := ParseRecipe([]byte(text), false)

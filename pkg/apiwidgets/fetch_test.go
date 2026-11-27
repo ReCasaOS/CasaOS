@@ -120,8 +120,13 @@ func TestRequestURLRefused(t *testing.T) {
 func TestRequestURLKeepsThePathAsWritten(t *testing.T) {
 	for _, path := range []string{"/é%2Fx", "/a b%2Fc", "/é", "/a b", "/a%2Fb^"} {
 		u, err := requestURL("http://h/api", Recipe{Path: path}, nil)
-		if !errors.Is(err, ErrInvalid) || !strings.Contains(reason(err), "percent-encoded") {
-			t.Errorf("path %q must be refused as invalid, got %v, %v", path, u, err)
+		// a failed read is not the fault of who asks for the card
+		if err == nil || errors.Is(err, ErrInvalid) || !strings.Contains(reason(err), "percent-encoded") {
+			t.Errorf("path %q must be refused, got %v, %v", path, u, err)
+		}
+		_, _, err = fetch(context.Background(), newClient(false, anywhere), "http://192.0.2.1", Recipe{Path: path}, nil)
+		if err == nil || errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "percent-encoded") {
+			t.Errorf("path %q: a read gave %v", path, err)
 		}
 	}
 	for _, path := range []string{"/a%2Fb", "/%C3%A9%2Fx", "/a%20b", "/a:b@c;d=e,f+g!$&'()*~._-"} {

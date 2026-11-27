@@ -121,15 +121,16 @@ func requestURL(base string, r Recipe, secrets map[string]string) (*url.URL, err
 	}
 	// the joined path is checked: each half may be fine and the whole not
 	path := strings.TrimSuffix(b.EscapedPath(), "/") + r.Path
-	if checkPath(r.Path) != nil || checkPath(path) != nil {
-		return nil, failure(`the path must start with "/", without query, fragment, "//", ".." or "\"`)
+	for _, p := range []string{r.Path, path} {
+		if err := checkPath(p); err != nil {
+			return nil, failure("the " + err.Error())
+		}
 	}
 	u := &url.URL{Scheme: b.Scheme, Host: b.Host, RawPath: path}
 	u.Path, _ = url.PathUnescape(path) // checkPath has unescaped it already
-	// Go writes another path than the one given when a character in it should be
-	// escaped and is not, and then "%2F" leaves as "/"
+	// checkPath refused it already: a read never sends another path than the one written
 	if u.EscapedPath() != path {
-		return nil, fmt.Errorf("%w: %w", ErrInvalid, failure("the path must be written percent-encoded: a space is %20, an accented letter its UTF-8 bytes"))
+		return nil, failure("the path must be written percent-encoded")
 	}
 
 	query := url.Values{}
@@ -203,16 +204,25 @@ func get(ctx context.Context, client *http.Client, base string, r Recipe, secret
 	if len(raw) > maxAnswer {
 		return nil, nil, failure("the answer is over 256 KiB")
 	}
+	doc, err := decode(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	return raw, doc, nil
+}
+
+// decode reads an answer: one JSON value, its numbers kept as they are written.
+func decode(raw []byte) (any, error) {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	var doc any
 	if err := d.Decode(&doc); err != nil {
-		return nil, nil, failure("the answer is not JSON")
+		return nil, failure("the answer is not JSON")
 	}
 	if _, err := d.Token(); err != io.EOF {
-		return nil, nil, failure("the answer holds data after the JSON value")
+		return nil, failure("the answer holds data after the JSON value")
 	}
-	return raw, doc, nil
+	return doc, nil
 }
 
 // reason says why a fetch failed, in a text that can be shown and kept: a text

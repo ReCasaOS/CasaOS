@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,7 +25,7 @@ const otherSecret = "0ther-Xk2-secret"
 func testHub(t *testing.T) *Hub {
 	t.Helper()
 	h := New(t.TempDir())
-	h.client = func(insecureTLS bool) *http.Client { return newClient(insecureTLS, anywhere) }
+	h.allowed = anywhere
 	return h
 }
 
@@ -444,6 +445,20 @@ func TestChangedRequestAsksEveryInput(t *testing.T) {
 	if _, err := h.Update(v.ID, Change{Base: "http://h", Recipe: two("/b"), Secrets: both}); err != nil {
 		t.Errorf("both inputs: %v", err)
 	}
+	// the two inputs change places: each secret would go where the other went
+	swapped := widgetRecipe(t, func(m map[string]any) {
+		m["path"] = "/b"
+		m["headers"] = map[string]any{"X-Api-Key": map[string]any{"input": "k2"}, "X-Other": map[string]any{"input": "k"}}
+		m["inputs"] = []any{map[string]any{"id": "k", "label": "Key"}, map[string]any{"id": "k2", "label": "Two"}}
+	})
+	for _, secrets := range []map[string]string{nil, filled()} {
+		if _, err := h.Update(v.ID, Change{Base: "http://h", Recipe: swapped, Secrets: secrets}); !errors.Is(err, ErrSecretAgain) {
+			t.Errorf("two inputs swapped, secrets %d: %v", len(secrets), err)
+		}
+		if _, err := h.Test(context.Background(), v.ID, Change{Base: "http://h", Recipe: swapped, Secrets: secrets}); !errors.Is(err, ErrSecretAgain) {
+			t.Errorf("two inputs swapped, a test, secrets %d: %v", len(secrets), err)
+		}
+	}
 	// the same request: one may be replaced and the other kept
 	if _, err := h.Update(v.ID, Change{Base: "http://h", Recipe: two("/b"), Secrets: map[string]string{"k2": "new-one"}}); err != nil {
 		t.Errorf("one replaced: %v", err)
@@ -639,6 +654,93 @@ func TestBrokenFileIsSetAside(t *testing.T) {
 	}
 }
 
+// A broken file that could not be copied is never written over.
+func TestBrokenFileWithoutACopyIsNotOverwritten(t *testing.T) {
+	const content = `{"widgets": [{"id": "abcdefgh", "secrets": {"k": "` + testSecret
+	h := testHub(t)
+	aside := h.path() + ".broken"
+	// a directory with something in it stands where the copy goes
+	if err := os.MkdirAll(filepath.Join(aside, "in the way"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.path(), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if len(h.List()) != 0 {
+			t.Errorf("list %+v", h.List())
+		}
+		_, err := h.Create(Change{Base: "http://h", Recipe: widgetRecipe(t, nil), Secrets: filled()})
+		if err == nil || errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "set aside") || strings.Contains(err.Error(), testSecret) {
+			t.Errorf("a create with no copy of the broken file: %v", err)
+		}
+		if readConfig(t, h) != content {
+			t.Fatal("the broken file was overwritten, and there is no copy of it")
+		}
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(h.path())); len(entries) != 2 {
+		t.Errorf("%d entries beside the file, a temporary one was left", len(entries))
+	}
+
+	// the way cleared, the file is moved aside and the widget created
+	if err := os.RemoveAll(aside); err != nil {
+		t.Fatal(err)
+	}
+	v := mustCreate(t, h, "http://h")
+	if got, _ := os.ReadFile(aside); string(got) != content {
+		t.Errorf("the file set aside holds %q", got)
+	}
+	if info, _ := os.Stat(aside); info == nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("the file set aside: %v", info)
+	}
+	if list := h.List(); len(list) != 1 || list[0].ID != v.ID {
+		t.Errorf("list %+v", list)
+	}
+}
+
+// A file that cannot even be read (here, a directory) is moved aside whole.
+func TestUnreadableFileIsSetAside(t *testing.T) {
+	h := testHub(t)
+	if err := os.MkdirAll(h.path(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.path(), "kept"), []byte(testSecret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	aside := h.path() + ".broken"
+	if got, _ := json.Marshal(h.List()); string(got) != "[]" {
+		t.Errorf("the list is %s", got)
+	}
+	if _, err := os.Stat(aside); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("nothing could be read, so nothing is copied yet: %v", err)
+	}
+	if err := h.Delete("abcdefgh"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("delete: %v", err)
+	}
+
+	// what stands in the way of the move stops the create
+	if err := os.WriteFile(aside, []byte("in the way"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Create(Change{Base: "http://h", Recipe: widgetRecipe(t, nil), Secrets: filled()}); err == nil || errors.Is(err, ErrInvalid) {
+		t.Errorf("a create that cannot set the file aside: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(h.path(), "kept")); string(got) != testSecret {
+		t.Fatalf("what could not be read was lost: %q", got)
+	}
+	if err := os.Remove(aside); err != nil {
+		t.Fatal(err)
+	}
+
+	v := mustCreate(t, h, "http://h")
+	if got, _ := os.ReadFile(filepath.Join(aside, "kept")); string(got) != testSecret {
+		t.Errorf("what could not be read was not set aside: %q", got)
+	}
+	if list := h.List(); len(list) != 1 || list[0].ID != v.ID {
+		t.Errorf("list %+v", list)
+	}
+}
+
 func TestCardIsKeptRefreshSeconds(t *testing.T) {
 	srv, hits := served(t, answer(`{"n": 42}`))
 	h := testHub(t)
@@ -828,36 +930,75 @@ func TestCardOfACallerThatLeftIsNotKept(t *testing.T) {
 	}
 }
 
-// New, untouched, reads through the real rule: the box itself is refused.
+// New, untouched, reads through the real rule: the box itself is refused, even
+// for a widget that is in the file already.
 func TestNewHubIsGuarded(t *testing.T) {
 	srv, hits := served(t, answer(`{"n": 1}`))
-	h := New(t.TempDir())
-	v := mustCreate(t, h, srv.URL)
+	root := t.TempDir()
+	writer := New(root)
+	writer.allowed = anywhere
+	v := mustCreate(t, writer, srv.URL)
+
+	h := New(root)
 	if card := mustCard(t, h, v.ID); card.Error != refusedMsg || len(card.Rows) != 0 {
 		t.Errorf("card %+v", card)
 	}
+	// the same request, so the kept secret: it is the read that is refused
 	_, err := h.Test(context.Background(), v.ID, Change{Base: srv.URL, Recipe: widgetRecipe(t, nil)})
-	if !errors.Is(err, errRefused) {
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), refusedMsg) {
 		t.Errorf("test: %v", err)
 	}
 	// a hub that was not made by New is guarded too
-	bare := &Hub{Root: h.Root, Now: time.Now, cache: map[string]*reading{}}
+	bare := &Hub{Root: root, Now: time.Now, cache: map[string]*reading{}}
 	if card := mustCard(t, bare, v.ID); card.Error != refusedMsg {
 		t.Errorf("a bare hub: %+v", card)
 	}
 	if hits.Load() != 0 {
 		t.Errorf("the loopback server received %d requests", hits.Load())
 	}
-	if Default.Root != "/" || Default.client != nil {
+	if Default.Root != "/" || Default.allowed != nil {
 		t.Errorf("Default is on %q", Default.Root)
+	}
+}
+
+// An address written as one is judged when the widget is saved, not at its first read.
+func TestAddressOfTheBoxIsRefusedAtOnce(t *testing.T) {
+	h := New(t.TempDir())
+	kept, err := h.Create(Change{Base: "http://192.168.1.2:8080", Recipe: widgetRecipe(t, nil), Secrets: filled()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, base := range []string{
+		"http://127.0.0.1:8080", "http://127.0.1.1", "https://[::1]", "http://[::ffff:127.0.0.1]:80", "http://0.0.0.0", "http://[::]:8080",
+		"http://169.254.169.254", "http://[fe80::1%25eth0]", "http://224.0.0.1", "http://255.255.255.255",
+	} {
+		c := Change{Base: base, Recipe: widgetRecipe(t, nil), Secrets: filled()}
+		_, createErr := h.Create(c)
+		_, updateErr := h.Update(kept.ID, c)
+		_, testErr := h.Test(context.Background(), "", c)
+		_, testIDErr := h.Test(context.Background(), kept.ID, c)
+		for what, err := range map[string]error{"create": createErr, "update": updateErr, "test": testErr, "test with an id": testIDErr} {
+			if !errors.Is(err, ErrInvalid) || errors.Is(err, ErrSecretAgain) || !strings.Contains(err.Error(), refusedMsg) || strings.Contains(err.Error(), testSecret) {
+				t.Errorf("%s, %s: %v", base, what, err)
+			}
+		}
+	}
+	if list := h.List(); len(list) != 1 || list[0].Base != "http://192.168.1.2:8080" {
+		t.Errorf("list %+v", list)
+	}
+	// the local network, Tailscale and the containers stay allowed
+	for _, base := range []string{"http://10.0.0.1:8080", "https://[fd00::1]", "http://100.100.1.1", "http://172.18.0.3", "http://nas.lan"} {
+		if _, err := h.Create(Change{Base: base, Recipe: widgetRecipe(t, nil), Secrets: filled()}); err != nil {
+			t.Errorf("%s: %v", base, err)
+		}
 	}
 }
 
 func TestPreview(t *testing.T) {
 	h := New(t.TempDir())
-	h.client = func(bool) *http.Client {
-		t.Error("a preview asked for a client")
-		return nil
+	h.allowed = func(netip.AddrPort) bool {
+		t.Error("a preview asked for the rule of the addresses")
+		return false
 	}
 	draft := `{"recasaos_widget": 1, "name": "Draft", "path": "/x", "headers": {"X-Api-Key": {"input": "k"}}, "inputs": [{"id": "k", "label": "Key"}]}`
 	card, err := h.Preview([]byte(draft), []byte(`{"n": 1}`))
@@ -881,6 +1022,13 @@ func TestPreview(t *testing.T) {
 	}
 	if _, err := h.Preview([]byte(`{"recasaos_widget": 2}`), []byte(`{}`)); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a refused recipe: %v", err)
+	}
+	// the path of a preview is held to the rule of a widget that is created
+	spaced := widgetRecipe(t, func(m map[string]any) { m["path"] = "/a b%2Fc" })
+	_, previewErr := h.Preview(spaced, []byte(`{}`))
+	_, createErr := testHub(t).Create(Change{Base: "http://h", Recipe: spaced, Secrets: filled()})
+	if !errors.Is(previewErr, ErrInvalid) || !errors.Is(createErr, ErrInvalid) || previewErr.Error() != createErr.Error() {
+		t.Errorf("a path Go would send another way: preview %v, create %v", previewErr, createErr)
 	}
 	if _, err := os.Stat(h.path()); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a preview wrote the file: %v", err)

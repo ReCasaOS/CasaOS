@@ -468,6 +468,11 @@ func checkPath(path string) error {
 			return errors.New(`path must start with "/", without scheme, host, query, fragment, "//", ".." or "\"`)
 		}
 	}
+	// Go writes another path than the one given when a character in it should be
+	// escaped and is not, and then "%2F" leaves as "/"
+	if (&url.URL{Path: decoded, RawPath: path}).EscapedPath() != path {
+		return errors.New("path must be written percent-encoded: a space is %20, an accented letter its UTF-8 bytes")
+	}
 	return nil
 }
 
