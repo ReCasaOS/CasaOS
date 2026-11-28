@@ -49,7 +49,7 @@ var (
 	// headers the HTTP client owns
 	reservedHeaders = []string{"host", "connection", "content-length", "transfer-encoding"}
 	// a header or parameter whose name holds one of these carries a secret
-	secretNames = []string{"authorization", "key", "token", "secret", "password"}
+	secretNames = []string{"auth", "cookie", "key", "token", "secret", "pass", "appid"}
 )
 
 // Value is a header, query or basic value: a fixed text, or the input that fills it.
