@@ -544,10 +544,14 @@ func TestEachAutoRestartAlertIsSent(t *testing.T) {
 		p[k] = v
 		return p
 	}
+	// each message is sent on its own goroutine: wait for one before the next, or they arrive in any order
 	h.onEvent("app:container-unhealthy", immich)
+	h.sending.Wait()
 	h.onEvent("app:container-auto-restarted", with("auto-restart:count", "1"))
+	h.sending.Wait()
 	*now = now.Add(time.Minute) // the watch restarts one container a minute at most
 	h.onEvent("app:container-auto-restarted", with("auto-restart:count", "2"))
+	h.sending.Wait()
 	h.onEvent("app:container-auto-restart-stopped", immich)
 	h.sending.Wait()
 	want := []string{
