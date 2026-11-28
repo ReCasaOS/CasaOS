@@ -133,7 +133,7 @@ func shareFail(ctx echo.Context, err error) error {
 	case errors.Is(err, share.ErrGatewayNoShare):
 		status, msg, reason = http.StatusServiceUnavailable, err.Error(), "gateway"
 	case errors.Is(err, share.ErrWaitMaster):
-		status, msg, reason = http.StatusServiceUnavailable, share.ErrWaitMaster.Error(), "master" // not err: it may wrap a cause
+		status, msg, reason = http.StatusServiceUnavailable, share.ErrWaitMaster.Error(), "master" // the sentinel's own text: no cause wraps it today, and none must reach the answer
 	case errors.As(err, &busy):
 		status, msg = http.StatusTooManyRequests, busy.Error()
 		if busy.RetryAfter > 0 {

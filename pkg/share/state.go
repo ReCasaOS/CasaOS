@@ -29,6 +29,7 @@ type State struct {
 	Domain        string         `json:"domain"`
 	TOSAcceptedAt time.Time      `json:"tos_accepted_at,omitzero"`
 	Apps          map[string]App `json:"apps"`
+	Revoked       bool           `json:"revoked,omitempty"` // the relay closed the tunnel with 4403: no dial until a Share
 }
 
 // loadState reads the state; ok is false when there is none or it is unreadable.

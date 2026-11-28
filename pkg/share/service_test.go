@@ -650,6 +650,45 @@ func TestRevokedCloseCodeStopsTheTunnel(t *testing.T) {
 	f.tunnel.Next()
 }
 
+// A revocation is kept with the state: after a restart the box still says why its tunnel is down, and does not
+// dial a relay that would refuse it.
+func TestARevocationSurvivesARestart(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, claim)
+	f.named(t)
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { f.s.Run(runCtx); close(done) }()
+	t.Cleanup(func() { stop(); <-done })
+	f.share(t, "jellyfin")
+	f.tunnel.Next()
+	f.tunnel.CloseWith(4403)
+	eventually(t, "revoked", func() bool {
+		return strings.Contains(f.s.Status(ctx).Tunnel.Error, "revoked by the relay operator")
+	})
+	stop()
+	<-done
+
+	s2 := New(f.s.Root) // the core restarts
+	s2.Relay.Signed, s2.RuntimePath, s2.RelayURL, s2.BoxKey, s2.Now = f.s.Relay.Signed, f.s.RuntimePath, f.s.RelayURL, f.s.BoxKey, f.s.Now
+	s2.ACME, s2.backoffMin, s2.retryMin = nil, f.s.backoffMin, f.s.retryMin
+	f.s = s2
+	f.run(t)
+	time.Sleep(1500 * time.Millisecond) // past the 1 s spacing and the test's backoff: any dial would be there
+	if n := f.tunnel.Upgrades(); n != 1 {
+		t.Fatalf("%d dials: the restarted box dialled the relay that revoked it", n)
+	}
+	if st := s2.Status(ctx); st.Tunnel.Connected || !strings.Contains(st.Tunnel.Error, "revoked by the relay operator") {
+		t.Fatalf("tunnel %+v after the restart", st.Tunnel)
+	}
+	f.share(t, "jellyfin") // the owner acts
+	f.tunnel.Next()
+	eventually(t, "connected, with no error left", func() bool {
+		st := s2.Status(ctx)
+		return st.Tunnel.Connected && st.Tunnel.Error == ""
+	})
+}
+
 func TestSetNameReclaimsWhenTheRelayForgotTheName(t *testing.T) {
 	ctx := context.Background()
 	other := reply{status: 201, body: `{"name":"other","host":"other.box.example.org","domain":"box.example.org"}`}
@@ -721,6 +760,26 @@ func TestAShareEndsTheTunnelBackoff(t *testing.T) {
 	f.tunnel.Next()
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("dialled after %v", d)
+	}
+}
+
+// A Share while the tunnel is up has nothing to hurry: it must not end the backoff of a drop that comes later.
+func TestAShareWhileConnectedEndsNoLaterBackoff(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, claim)
+	f.s.backoffMin = 1500 * time.Millisecond // 1.2 s at least once jittered: more than the second between dials
+	f.named(t)
+	f.run(t)
+	f.share(t, "jellyfin")
+	f.tunnel.Next()
+	eventually(t, "connected", func() bool { return f.s.Status(ctx).Tunnel.Connected })
+	f.share(t, "jellyfin")              // the owner acts while the tunnel is up
+	time.Sleep(1100 * time.Millisecond) // past the second between dials: only the backoff is left to wait
+	dropped := time.Now()
+	f.tunnel.Drop()
+	f.tunnel.Next()
+	if d := time.Since(dropped); d < time.Second {
+		t.Fatalf("redialled %v after the drop: the backoff was skipped", d)
 	}
 }
 
