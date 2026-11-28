@@ -826,6 +826,10 @@ func (s *Service) tunnelOnce(ctx context.Context, backoff *time.Duration) time.D
 	s.mu.Unlock()
 	start := time.Now()
 	code := Serve(sctx, session, s.Gateway.ShareAddr)
+	select { // a kick from while the tunnel was up is spent, like one from before the dial: it ends no backoff
+	case <-s.kick:
+	default:
+	}
 	s.mu.Lock()
 	s.connected = false
 	s.mu.Unlock()

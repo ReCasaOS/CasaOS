@@ -724,6 +724,26 @@ func TestAShareEndsTheTunnelBackoff(t *testing.T) {
 	}
 }
 
+// A Share while the tunnel is up has nothing to hurry: it must not end the backoff of a drop that comes later.
+func TestAShareWhileConnectedEndsNoLaterBackoff(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, claim)
+	f.s.backoffMin = 1500 * time.Millisecond // 1.2 s at least once jittered: more than the second between dials
+	f.named(t)
+	f.run(t)
+	f.share(t, "jellyfin")
+	f.tunnel.Next()
+	eventually(t, "connected", func() bool { return f.s.Status(ctx).Tunnel.Connected })
+	f.share(t, "jellyfin")              // the owner acts while the tunnel is up
+	time.Sleep(1100 * time.Millisecond) // past the second between dials: only the backoff is left to wait
+	dropped := time.Now()
+	f.tunnel.Drop()
+	f.tunnel.Next()
+	if d := time.Since(dropped); d < time.Second {
+		t.Fatalf("redialled %v after the drop: the backoff was skipped", d)
+	}
+}
+
 func TestABadPortOrSchemeIsNotShared(t *testing.T) {
 	f := newFixture(t, claim)
 	f.compose.set("badport", "80a", "http")
