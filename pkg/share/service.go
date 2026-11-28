@@ -70,7 +70,7 @@ type Service struct {
 	relayAt      time.Time  // when the relay last answered or was probed, by Now
 	connected    bool
 	tunnelErr    string
-	revoked      bool               // a 4403: no dial until a Share
+	revoked      bool               // a 4403: no dial until a Share; share.json keeps it for the next start
 	cancelTunnel context.CancelFunc // ends the tunnel being dialled or served
 	running      bool               // a Run is under way
 	guard        *GuardState        // the one copy of share-guard.json, loaded at first use
@@ -178,6 +178,9 @@ func (s *Service) Status(ctx context.Context) Status {
 	s.mu.Lock()
 	st.Tunnel = TunnelView{Connected: s.connected, Error: s.tunnelErr}
 	s.mu.Unlock()
+	if state.Revoked { // from before a restart: nothing in memory says it
+		st.Tunnel.Error = revokedText
+	}
 	st.Apps = s.appStatus(ctx, state)
 	return st
 }
@@ -354,6 +357,7 @@ func (s *Service) Share(ctx context.Context, composeName string) error {
 			return false
 		}
 		cur.Apps[composeName] = App{Port: app.Port, Scheme: app.Scheme}
+		cur.Revoked = false
 		return true
 	})
 	if reset || (err != nil && !wasShared) { // the host must not outlive a share that did not happen
@@ -843,6 +847,13 @@ func (s *Service) tunnelOnce(ctx context.Context, backoff *time.Duration) time.D
 		s.mu.Lock()
 		s.revoked, s.tunnelErr = true, revokedText
 		s.mu.Unlock()
+		// Kept with the state too: after a restart the relay would refuse every dial, and say less.
+		if err := s.update(func(st *State) bool {
+			st.Revoked = st.Name != ""
+			return st.Revoked
+		}); err != nil {
+			s.log("share: cannot save the revocation", err)
+		}
 		return 0
 	case code == 4409:
 		s.setTunnelErr("another connection of this box replaced the tunnel")
@@ -857,7 +868,7 @@ func (s *Service) setTunnelErr(text string) { s.mu.Lock(); s.tunnelErr = text; s
 // wantedLocked is whether the tunnel should run: a name, an app shared, no revocation.
 func (s *Service) wantedLocked() bool {
 	st := s.readLocked()
-	return st.Name != "" && len(st.Apps) > 0 && !s.revoked
+	return st.Name != "" && len(st.Apps) > 0 && !s.revoked && !st.Revoked
 }
 
 // changed wakes the tunnel loop, and ends the tunnel at once when it is no longer wanted.

@@ -650,6 +650,45 @@ func TestRevokedCloseCodeStopsTheTunnel(t *testing.T) {
 	f.tunnel.Next()
 }
 
+// A revocation is kept with the state: after a restart the box still says why its tunnel is down, and does not
+// dial a relay that would refuse it.
+func TestARevocationSurvivesARestart(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, claim)
+	f.named(t)
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { f.s.Run(runCtx); close(done) }()
+	t.Cleanup(func() { stop(); <-done })
+	f.share(t, "jellyfin")
+	f.tunnel.Next()
+	f.tunnel.CloseWith(4403)
+	eventually(t, "revoked", func() bool {
+		return strings.Contains(f.s.Status(ctx).Tunnel.Error, "revoked by the relay operator")
+	})
+	stop()
+	<-done
+
+	s2 := New(f.s.Root) // the core restarts
+	s2.Relay.Signed, s2.RuntimePath, s2.RelayURL, s2.BoxKey, s2.Now = f.s.Relay.Signed, f.s.RuntimePath, f.s.RelayURL, f.s.BoxKey, f.s.Now
+	s2.ACME, s2.backoffMin, s2.retryMin = nil, f.s.backoffMin, f.s.retryMin
+	f.s = s2
+	f.run(t)
+	time.Sleep(1500 * time.Millisecond) // past the 1 s spacing and the test's backoff: any dial would be there
+	if n := f.tunnel.Upgrades(); n != 1 {
+		t.Fatalf("%d dials: the restarted box dialled the relay that revoked it", n)
+	}
+	if st := s2.Status(ctx); st.Tunnel.Connected || !strings.Contains(st.Tunnel.Error, "revoked by the relay operator") {
+		t.Fatalf("tunnel %+v after the restart", st.Tunnel)
+	}
+	f.share(t, "jellyfin") // the owner acts
+	f.tunnel.Next()
+	eventually(t, "connected, with no error left", func() bool {
+		st := s2.Status(ctx)
+		return st.Tunnel.Connected && st.Tunnel.Error == ""
+	})
+}
+
 func TestSetNameReclaimsWhenTheRelayForgotTheName(t *testing.T) {
 	ctx := context.Background()
 	other := reply{status: 201, body: `{"name":"other","host":"other.box.example.org","domain":"box.example.org"}`}
