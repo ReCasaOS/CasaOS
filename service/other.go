@@ -61,7 +61,7 @@ func (s *otherService) Search(key string) ([]model.SearchEngine, error) {
 			defer wg.Done()
 			resp, err := client.R().Get(url)
 			if err != nil {
-				logger.Error("Then get search result error: %v", zap.Error(err), zap.String("name", name), zap.String("url", url))
+				logger.Error("Then get search result error", zap.Error(err), zap.String("name", name), zap.String("url", url))
 				return
 			}
 			res := []string{}
@@ -105,7 +105,7 @@ func (s *otherService) AgentSearch(url string) ([]byte, error) {
 	client.SetTimeout(3 * time.Second) // 设置全局超时时间
 	resp, err := client.R().Get(url)
 	if err != nil {
-		logger.Error("Then get search result error: %v", zap.Error(err), zap.String("url", url))
+		logger.Error("Then get search result error", zap.Error(err), zap.String("url", url))
 		return nil, err
 	}
 	return resp.Body(), nil
